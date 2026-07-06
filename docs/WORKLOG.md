@@ -13,3 +13,16 @@
 - [7] harness summary: src/core/summary.ts + src/commands/summary.ts. run_state+docs 읽어 CONTEXT_SUMMARY 갱신, 다음 작업 도출. acceptance Test 4 통과
 - [8] harness task-prompt: src/core/taskPrompt.ts + src/commands/taskPrompt.ts. Context/Task/Include/Exclude/Rules/Done Criteria + 안전 규칙(설치/배포/DB) 포함. acceptance Test 5 통과
 - [9] 통합 검증: scripts/acceptance.sh (npm test) — Test 1~5 자동 검증 30 checks all pass. README 사용법/테스트 섹션 추가. **v1 완료.**
+
+## 2026-07-06 (v2 착수)
+
+- v1 재검증: npm test 30/30 통과, 5개 명령 라이브 데모 정상 확인
+- provider 전략 C안 확정 (구독기반 B안 지금 / API A안 나중) — 설계 문서 docs/reference/PROVIDER_ARCHITECTURE_V2.md 작성, V2_KICKOFF 링크
+- [v2-1] Provider 인터페이스 async화 + token usage 필드 신설:
+  - provider.ts: `generate()` 동기 string → `Promise<AgentResult>`, TokenUsage/AgentResult 타입 추가
+  - mockProvider.ts: async화, usage 0 반환 (테스트/오프라인 기반 유지)
+  - runAgent.ts / runWorkflow.ts: async 전파, run_state에 `provider` + `usage`(per_agent 합계) 기록
+  - providers/index.ts: provider 셀렉터(getProvider), 현재 mock만 등록
+  - cli.ts/run.ts: `run --provider <id>` 플래그(기본 mock), async action
+  - 회귀 검증: acceptance 30/30 그대로 통과. run_state 새 필드 라이브 확인.
+- 다음: [v2-2] claude-code provider(B안) 구현 — `claude -p` 위임, 실제 LLM 첫 연동

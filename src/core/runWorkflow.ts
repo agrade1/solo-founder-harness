@@ -17,12 +17,26 @@ export interface StepWarning {
   missing: string[];
 }
 
+export interface UsageEntry {
+  agent_id: string;
+  input_tokens: number;
+  output_tokens: number;
+}
+
+export interface UsageSummary {
+  input_tokens: number;
+  output_tokens: number;
+  per_agent: UsageEntry[];
+}
+
 export interface RunState {
   workflow_id: string;
   project: string;
+  provider: string;
   completed_steps: string[];
   failed_agent: string | null;
   warnings: StepWarning[];
+  usage: UsageSummary;
   started_at: string;
   finished_at: string;
 }
@@ -48,7 +62,7 @@ const RUN_STATE_REL = "outputs/run_state.json";
  * - agent 실행 실패 시 중단하고 failed_agent 기록
  * - 항상 outputs/run_state.json 기록
  */
-export function runWorkflow(args: RunWorkflowArgs): RunWorkflowResult {
+export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowResult> {
   const now = args.now ?? (() => new Date().toISOString());
   const { workflowId, project, provider } = args;
 
@@ -67,6 +81,7 @@ export function runWorkflow(args: RunWorkflowArgs): RunWorkflowResult {
   const warnings: StepWarning[] = [];
   const savedFiles: string[] = [];
   const priorFindings: string[] = [];
+  const usagePerAgent: UsageEntry[] = [];
   let failed_agent: string | null = null;
 
   for (let i = 0; i < workflow.steps.length; i++) {
@@ -82,7 +97,7 @@ export function runWorkflow(args: RunWorkflowArgs): RunWorkflowResult {
     const nextAgentId = workflow.steps[i + 1];
 
     try {
-      const { markdown } = runAgent({
+      const { markdown, usage } = await runAgent({
         agent,
         registry,
         workflowId,
@@ -92,6 +107,14 @@ export function runWorkflow(args: RunWorkflowArgs): RunWorkflowResult {
         nextAgentId,
         provider,
       });
+
+      if (usage) {
+        usagePerAgent.push({
+          agent_id: agentId,
+          input_tokens: usage.inputTokens,
+          output_tokens: usage.outputTokens,
+        });
+      }
 
       // 필수 헤더 검증 (경고 수준)
       const validation = validateAgentOutput(markdown);
@@ -113,12 +136,19 @@ export function runWorkflow(args: RunWorkflowArgs): RunWorkflowResult {
   }
 
   const finished_at = now();
+  const usage: UsageSummary = {
+    input_tokens: usagePerAgent.reduce((s, u) => s + u.input_tokens, 0),
+    output_tokens: usagePerAgent.reduce((s, u) => s + u.output_tokens, 0),
+    per_agent: usagePerAgent,
+  };
   const state: RunState = {
     workflow_id: workflowId,
     project,
+    provider: provider.id,
     completed_steps,
     failed_agent,
     warnings,
+    usage,
     started_at,
     finished_at,
   };

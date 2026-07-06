@@ -16,9 +16,24 @@ export interface AgentRunInput {
   nextAgentId?: string;
 }
 
-/** provider 추상화. v1은 mock만, v2에서 실제 LLM provider 추가. */
+/** token 사용량. 실제 API provider만 채운다 (mock=0, claude-code=계측 불가 시 생략). */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** provider 한 번 실행의 결과. */
+export interface AgentResult {
+  markdown: string;
+  usage?: TokenUsage;
+}
+
+/**
+ * provider 추상화. v2에서 mock/claude-code/anthropic 3종을 이 인터페이스로 교체.
+ * (상세: docs/reference/PROVIDER_ARCHITECTURE_V2.md)
+ */
 export interface Provider {
   readonly id: string;
-  /** agent 결과 markdown을 생성한다. */
-  generate(input: AgentRunInput): string;
+  /** agent 결과 markdown을 생성한다. 실제 LLM은 비동기라 Promise 반환. */
+  generate(input: AgentRunInput): Promise<AgentResult>;
 }

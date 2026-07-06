@@ -1,7 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { fromRoot } from "./paths.js";
 import type { AgentDef, AgentRegistry } from "./registry.js";
-import type { Provider } from "../providers/provider.js";
+import type { Provider, TokenUsage } from "../providers/provider.js";
 
 export interface RunAgentArgs {
   agent: AgentDef;
@@ -17,6 +17,7 @@ export interface RunAgentArgs {
 export interface RunAgentResult {
   agentId: string;
   markdown: string;
+  usage?: TokenUsage;
 }
 
 function loadPrompt(relPath: string, label: string): string {
@@ -33,13 +34,13 @@ function loadPrompt(relPath: string, label: string): string {
  * - provider로 결과 markdown을 생성한다.
  * prompt 파일이 없으면 throw → 호출자(runWorkflow)가 failed_agent로 기록한다.
  */
-export function runAgent(args: RunAgentArgs): RunAgentResult {
+export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
   const { agent, registry, workflowId, project, createdAt, priorFindings, nextAgentId, provider } = args;
 
   const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
   const agentPrompt = loadPrompt(agent.prompt_path, agent.agent_id);
 
-  const markdown = provider.generate({
+  const { markdown, usage } = await provider.generate({
     agent,
     workflowId,
     project,
@@ -50,5 +51,5 @@ export function runAgent(args: RunAgentArgs): RunAgentResult {
     nextAgentId,
   });
 
-  return { agentId: agent.agent_id, markdown };
+  return { agentId: agent.agent_id, markdown, usage };
 }
