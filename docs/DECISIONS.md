@@ -1,0 +1,18 @@
+# DECISIONS.md
+
+## 2026-07-06
+
+- agent prompt 파일명에서 버전 접미사 제거 (버전은 파일 내부 헤더로 관리)
+- harness init 생성 docs = 6개 (00_IDEA, TASKS, DECISIONS, CONTEXT_SUMMARY, WORKLOG, API_CONTRACT), HANDOFF.md v1 제외
+- 01~06 번호 문서는 workflow 실행 시 생성
+- 구버전 가이드(solo_founder_harness_dev_guide)와 COMBINED_CORE_PROMPTS.md는 레포에서 제외
+- v1 완료 기준 = acceptance test 1~5 전부 통과
+
+## 2026-07-06 (2차)
+
+- run_state.json v1 필수 필드 확정 (workflow_id, project, completed_steps, failed_agent, warnings, started_at, finished_at). resume은 v2
+- 결과 저장 시 필수 섹션 헤더 검증(경고 수준) v1 포함
+- v2/v3 로드맵은 docs/reference/ROADMAP.md — v1 개발 중 로드 금지
+- v2 최우선 결정 = provider 전략 (API 직접 vs Claude Code subagent) → backlog/PROVIDER_STRATEGY_TODO.md
+- 개발은 Opus 모델로 진행, 운영 규칙은 prompts/opus_optimization_guide.md
+- IMPLEMENTATION_PLAYBOOK.md 추가: 세션 5개 기준 단계별 진행 순서 (사람용, Claude 기본 로드 제외)

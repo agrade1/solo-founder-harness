@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+
+# 비공개 아이디어 문서 (공개 레포 제외)
+projects/idea-discovery/IDEA_*.md

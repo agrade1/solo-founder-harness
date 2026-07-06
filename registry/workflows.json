@@ -1,0 +1,24 @@
+{
+  "workflows": [
+    {
+      "workflow_id": "idea-validation",
+      "description": "아이디어를 개발하기 전에 검토한다.",
+      "steps": ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]
+    },
+    {
+      "workflow_id": "mvp-planning",
+      "description": "MVP 범위와 화면/기술 계획을 정리한다.",
+      "steps": ["pm", "ux_ui", "tech_lead", "red_team", "founder_ceo"]
+    },
+    {
+      "workflow_id": "dev-preflight",
+      "description": "Claude Code 개발 착수 전 기술/리스크/작업 순서를 점검한다.",
+      "steps": ["tech_lead", "red_team", "chief_of_staff"]
+    },
+    {
+      "workflow_id": "full-predev",
+      "description": "아이디어부터 개발 착수까지 전체 사전 검토를 한 번에 실행한다.",
+      "steps": ["chief_of_staff", "research", "pm", "ux_ui", "tech_lead", "red_team", "founder_ceo"]
+    }
+  ]
+}
