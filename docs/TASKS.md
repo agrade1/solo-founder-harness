@@ -2,7 +2,7 @@
 
 ## 진행 중
 
-- [ ] 하네스 v1 구현 착수
+- [x] 하네스 v1 구현 완료 (2026-07-06) — acceptance Test 1~5 전부 통과
 
 ## 구현 순서 (v1)
 
@@ -15,7 +15,7 @@
 6-1. [x] 결과 필수 섹션 헤더 validator (누락 시 경고)
 7. [x] harness summary (CONTEXT_SUMMARY.md 갱신)
 8. [x] harness task-prompt (Context/Task/Include/Exclude/Rules/Done Criteria)
-9. [ ] acceptance test 1~5 통과 확인
+9. [x] acceptance test 1~5 통과 확인 (scripts/acceptance.sh, 30 checks all pass)
 
 ## 완료
 

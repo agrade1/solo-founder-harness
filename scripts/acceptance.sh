@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Acceptance Test 1~5 자동 검증 (docs/ACCEPTANCE_TEST_CHECKLIST.md 기준)
+# 외부 의존성 없이 실행. throwaway 프로젝트로 검증 후 정리한다.
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+PROJ="_acceptance_check"
+PDIR="projects/$PROJ"
+HARNESS="npx tsx src/cli.ts"
+
+PASS=0
+FAIL=0
+check() { # check "설명" <조건 종료코드>
+  if [ "$2" -eq 0 ]; then echo "  OK   $1"; PASS=$((PASS+1));
+  else echo "  FAIL $1"; FAIL=$((FAIL+1)); fi
+}
+
+cleanup() { rm -rf "$PDIR"; }
+trap cleanup EXIT
+cleanup
+
+echo "== build =="
+npm run -s build || { echo "빌드 실패"; exit 1; }
+
+echo ""
+echo "== Test 1: init =="
+$HARNESS init "$PROJ" >/dev/null
+test -d "$PDIR/docs";    check "docs 폴더 생성" $?
+test -d "$PDIR/outputs"; check "outputs 폴더 생성" $?
+for f in 00_IDEA.md TASKS.md CONTEXT_SUMMARY.md DECISIONS.md WORKLOG.md API_CONTRACT.md; do
+  test -f "$PDIR/docs/$f"; check "docs/$f" $?
+done
+
+echo ""
+echo "== Test 2: list =="
+OUT="$($HARNESS list)"
+echo "$OUT" | grep -q "Core Agents (7)";            check "7 core agents" $?
+echo "$OUT" | grep -q "Common Prompt:.*(존재)";      check "common prompt 존재" $?
+echo "$OUT" | grep -q "Workflows (4)";              check "workflows 출력" $?
+
+echo ""
+echo "== Test 3: run idea-validation =="
+OUT="$($HARNESS run idea-validation --project "$PROJ")"
+echo "$OUT" | grep -q "chief_of_staff → research → pm → red_team → founder_ceo"; check "workflow 순서" $?
+test -f "$PDIR/docs/01_RESEARCH.md";     check "01_RESEARCH.md 저장" $?
+test -f "$PDIR/docs/06_CEO_DECISION.md"; check "06_CEO_DECISION.md 저장" $?
+test -f "$PDIR/outputs/run_state.json";  check "run_state.json 생성" $?
+grep -q '"failed_agent": null' "$PDIR/outputs/run_state.json"; check "failed_agent 기록(null)" $?
+grep -q '"completed_steps"' "$PDIR/outputs/run_state.json";    check "completed_steps 기록" $?
+grep -q '"started_at"' "$PDIR/outputs/run_state.json";         check "started_at 기록" $?
+
+echo ""
+echo "== Test 4: summary =="
+$HARNESS summary --project "$PROJ" >/dev/null
+grep -q "## 다음 작업" "$PDIR/docs/CONTEXT_SUMMARY.md"; check "CONTEXT_SUMMARY 다음 작업 표시" $?
+grep -q "## 현재 상태" "$PDIR/docs/CONTEXT_SUMMARY.md"; check "CONTEXT_SUMMARY 현재 상태 표시" $?
+
+echo ""
+echo "== Test 5: task-prompt =="
+$HARNESS task-prompt --project "$PROJ" >/dev/null
+TP="$PDIR/outputs/claude_code_task_prompt.md"
+test -f "$TP"; check "claude_code_task_prompt.md 생성" $?
+for h in "## Context" "## Task" "## Include" "## Exclude" "## Rules" "## Done Criteria"; do
+  grep -qF "$h" "$TP"; check "섹션 $h" $?
+done
+grep -qF "패키지 설치" "$TP"; check "패키지 설치 금지 규칙" $?
+grep -qF "배포" "$TP";       check "배포 금지 규칙" $?
+grep -qF "DB" "$TP";         check "DB 변경 금지 규칙" $?
+
+echo ""
+echo "==================================="
+echo " 결과: PASS=$PASS  FAIL=$FAIL"
+echo "==================================="
+[ "$FAIL" -eq 0 ] && { echo "ALL PASS ✅"; exit 0; } || { echo "일부 실패 ❌"; exit 1; }

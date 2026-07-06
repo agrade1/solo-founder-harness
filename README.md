@@ -22,5 +22,39 @@ src/core         → runWorkflow → runAgent → saveArtifact → updateContext
 projects/<name>  → 사용자 프로젝트 (docs + outputs)
 ```
 
-개발 시작: `prompts/claude_code_minimal_context_start_prompt.md` 참고.
+## 사용법
+
+```bash
+npm install          # 최초 1회 (의존성: commander/tsx/typescript)
+npm run build        # 타입 체크 + dist 빌드 (선택)
+
+# 개발 중에는 tsx로 바로 실행
+npm run harness -- list
+npm run harness -- init my-project
+npm run harness -- run idea-validation --project my-project
+npm run harness -- summary --project my-project
+npm run harness -- task-prompt --project my-project
+```
+
+명령 요약:
+
+| 명령 | 설명 | 산출물 |
+|---|---|---|
+| `list` | core agents / common prompt / workflows 출력 | (stdout) |
+| `init <name>` | 프로젝트 docs 6개 + outputs 생성 | `projects/<name>/` |
+| `run <workflow> --project <name>` | workflow 순서 실행, mock 결과 저장 | `docs/0N_*.md`, `outputs/run_state.json` |
+| `summary --project <name>` | 상태 요약 갱신 | `docs/CONTEXT_SUMMARY.md` |
+| `task-prompt --project <name>` | Claude Code 작업 지시문 생성 | `outputs/claude_code_task_prompt.md` |
+
+기본 workflow: `idea-validation`, `mvp-planning`, `dev-preflight`, `full-predev`.
+
+## 테스트
+
+```bash
+npm test             # acceptance Test 1~5 자동 검증 (30 checks)
+```
+
+## 참고
+
+개발 시작: `prompts/claude_code_minimal_context_start_prompt.md`.
 문서 로드 정책: `docs/reference/MINIMAL_CONTEXT_LOAD_POLICY.md`.

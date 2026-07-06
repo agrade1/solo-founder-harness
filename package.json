@@ -9,7 +9,9 @@
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsc",
-    "harness": "tsx src/cli.ts"
+    "harness": "tsx src/cli.ts",
+    "acceptance": "bash scripts/acceptance.sh",
+    "test": "bash scripts/acceptance.sh"
   },
   "dependencies": {
     "commander": "^12.1.0"

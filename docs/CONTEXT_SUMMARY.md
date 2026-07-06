@@ -4,13 +4,18 @@
 
 ## 현재 상태
 
-- 문서/프롬프트 정리 완료. 코드 미착수.
-- agent 파일명 표준화 완료 (버전 접미사 제거, AGENTS_INDEX/registry 경로와 일치).
-- init 생성 docs는 6개로 확정 (spec 4.1 = acceptance Test 1). HANDOFF.md는 v1 제외.
-- registry/agent_registry.json, registry/workflows.json 생성 완료 (spec 7장 기준).
-- spec에 run_state.json 필드와 섹션 헤더 검증(경고) 추가. acceptance Test 3 갱신.
-- v2/v3 로드맵과 Opus 최적화 가이드 추가 (개발 중 로드 대상 아님).
+- **하네스 v1 구현 완료.** acceptance Test 1~5 전부 통과 (`npm test` → 30 checks all pass).
+- 5개 명령 동작: list / init / run / summary / task-prompt (mock provider 기반, 실제 LLM 미호출).
+- 코드 구조:
+  - `src/cli.ts` — commander 진입점
+  - `src/core/` — paths, registry, project, runAgent, runWorkflow, validate, saveArtifact, summary, taskPrompt
+  - `src/providers/` — provider 인터페이스 + mockProvider
+  - `src/commands/` — 각 CLI 명령 래퍼
+- `scripts/acceptance.sh` = 통합 검증 스위트 (`npm test`/`npm run acceptance`).
+- git: origin = github.com/agrade1/solo-founder-harness, main 브랜치에 단계별 커밋/푸시.
+- 비공개: `projects/idea-discovery/IDEA_*.md`는 .gitignore로 원격 제외.
 
 ## 다음 작업
 
-- docs/TASKS.md 구현 순서 1번부터 진행.
+- v1 안정화됨. 확장 시 docs/reference/ROADMAP.md 및 backlog 참고 (v2 최우선 = provider 전략: API 직접 vs Claude Code subagent).
+- v1 범위에서는 추가 기능 없음 (범위 확장 금지 규칙 유지).
