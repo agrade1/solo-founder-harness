@@ -49,7 +49,10 @@ export function extractSectionBullets(markdown: string, headerPattern: RegExp): 
   return bullets.filter((b) => b.length > 0);
 }
 
-/** "## Main Judgment" 섹션의 첫 bullet을 handoff 요약으로 추출한다. */
+/**
+ * "## Main Judgment" 섹션의 첫 내용 줄을 handoff 요약으로 추출한다.
+ * bullet(mock)이든 문단(실제 LLM)이든 첫 비어있지 않은 줄을 반환한다.
+ */
 export function extractMainJudgment(markdown: string): string {
   const lines = markdown.split("\n");
   const idx = lines.findIndex((l) => /^##\s+Main Judgment\s*$/.test(l));
@@ -57,9 +60,8 @@ export function extractMainJudgment(markdown: string): string {
   for (let i = idx + 1; i < lines.length; i++) {
     const line = lines[i].trim();
     if (line.startsWith("## ")) break; // 다음 섹션
-    if (line.startsWith("- ") || line.startsWith("* ")) {
-      return line.replace(/^[-*]\s+/, "").trim();
-    }
+    if (line.length === 0) continue; // 빈 줄 건너뜀
+    return line.replace(/^([-*]|\d+\.)\s+/, "").trim(); // bullet 마커 있으면 제거
   }
   return "(Main Judgment 내용 없음)";
 }

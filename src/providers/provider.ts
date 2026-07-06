@@ -10,6 +10,8 @@ export interface AgentRunInput {
   commonPrompt: string;
   /** 로드된 agent prompt 원문 */
   agentPrompt: string;
+  /** 프로젝트 docs/00_IDEA.md 원문 (없으면 빈 문자열). mock은 미사용, 실제 LLM은 검토 대상 아이디어. */
+  ideaContent: string;
   /** 이전 agent들의 Main Judgment 요약 (handoff 맥락) */
   priorFindings: string[];
   /** 다음 agent id (없으면 workflow 종료) */

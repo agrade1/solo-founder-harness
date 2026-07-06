@@ -25,4 +25,11 @@
   - providers/index.ts: provider 셀렉터(getProvider), 현재 mock만 등록
   - cli.ts/run.ts: `run --provider <id>` 플래그(기본 mock), async action
   - 회귀 검증: acceptance 30/30 그대로 통과. run_state 새 필드 라이브 확인.
-- 다음: [v2-2] claude-code provider(B안) 구현 — `claude -p` 위임, 실제 LLM 첫 연동
+- [v2-2] claude-code provider(B안) 구현 — 실제 LLM 첫 연동:
+  - claudeCodeProvider.ts: `claude -p --output-format json` 에 프롬프트를 stdin으로 위임, JSON `.result`/`.usage` 파싱, 코드펜스 제거. 환경변수(HARNESS_CLAUDE_BIN/MODEL/TIMEOUT_MS).
+  - AgentRunInput에 `ideaContent` 추가, runAgent가 docs/00_IDEA.md 로드해 전달 (실제 LLM이 검토할 아이디어).
+  - buildPrompt: common+agent 프롬프트 + 아이디어 + 컨텍스트 + AGENT_OUTPUT_SCHEMA 출력형식 지시.
+  - providers/index.ts에 claude-code 등록.
+  - **버그 수정**: extractMainJudgment가 불릿만 뽑아 실제 LLM의 문단형 Main Judgment를 놓쳐 handoff 요약이 비었음 → 첫 비어있지 않은 줄(불릿/문단 both) 반환하도록 수정.
+  - 검증: `claude -p` 스모크(stdin+JSON shape 확인) → dev-preflight(3 agent) end-to-end 실행 성공(경고 0, usage 집계 in 9399/out 12798, ~3.5분). 실제 출력 스키마 준수 확인. acceptance 30/30 유지.
+- 다음: [v2-3] anthropic provider(A안, @anthropic-ai/sdk 설치 승인 후) 또는 루프 엔지니어링(V2_KICKOFF 2번~)

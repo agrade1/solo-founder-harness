@@ -1,5 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
 import { fromRoot } from "./paths.js";
+import { projectPaths } from "./project.js";
 import type { AgentDef, AgentRegistry } from "./registry.js";
 import type { Provider, TokenUsage } from "../providers/provider.js";
 
@@ -40,6 +42,10 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
   const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
   const agentPrompt = loadPrompt(agent.prompt_path, agent.agent_id);
 
+  // 검토 대상 아이디어 원문 (docs/00_IDEA.md). 없으면 빈 문자열 — mock은 미사용.
+  const ideaPath = join(projectPaths(project).root, "docs", "00_IDEA.md");
+  const ideaContent = existsSync(ideaPath) ? readFileSync(ideaPath, "utf8") : "";
+
   const { markdown, usage } = await provider.generate({
     agent,
     workflowId,
@@ -47,6 +53,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
     createdAt,
     commonPrompt,
     agentPrompt,
+    ideaContent,
     priorFindings,
     nextAgentId,
   });
