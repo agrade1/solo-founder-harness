@@ -23,11 +23,13 @@
 - 사용: `harness run <wf> --project <p> --provider claude-code` (claude CLI가 Max 구독 로그인 상태여야 함). 기본은 mock.
 - **[v2-3 완료] 스키마 검증 재생성 루프.** 필수 헤더 누락 시 피드백해 재생성(`--max-regen <n>`, 기본 1). run_state.regenerations 기록.
 - **[v2-4 완료] Red Team 비평 루프.** workflow steps를 `(string|{critique_loop})[]`로 확장. critic(red_team)이 Critical 리스크 발견 시 target(tech_lead)에 되먹여 revise→재검토, Critical 소멸/max_rounds까지. mvp-planning에 내장(`↻[red_team⟲tech_lead×2]`). run_state.critique_rounds 기록. mock+stub 검증, acceptance 30/30 유지.
-- 아키텍처: runWorkflow가 runStepWithRegen 헬퍼 + priorFindings Map(upsert) 구조. CEO 게이트도 이 위에 얹으면 됨.
+- **[v2-6 완료] CEO 게이트 분기.** WorkflowStep에 `{gate}` 확장. decider(founder_ceo) 판정이 on 키와 맞으면 해당 agent로 되돌려 재실행(max_jumps로 무한루프 방지). full-predev에 내장(`⤴[founder_ceo?축소→pm,검증→research×1]`). run_state.gate_jumps 기록. mock+stub 검증.
+- **[v2-5 완료] anthropic provider(A안).** @anthropic-ai/sdk 연동, 프롬프트 빌더를 promptParts.ts로 공유. ANTHROPIC_API_KEY 필요(종량과금). 키 없으면 안전 실패+claude-code 안내. 기본 provider는 mock 유지. **실제 유료 호출 미검증**.
+- provider 3종(mock/claude-code/anthropic) + 루프 3종(재생성/비평/게이트) 완비.
 
 ## 다음 작업
 
-- **[v2-5] anthropic provider(A안)** — @anthropic-ai/sdk 직접, 종량과금. 사용자가 원할 때 (설치 승인 필요).
-- **[v2-6] CEO 게이트 분기**(V2_KICKOFF 4번): founder_ceo 판정("축소"→pm, "검증"→research)에 따라 되돌아가는 조건 분기. steps에 `{gate}` 구성 추가하는 식.
-- 실사용: mvp-planning을 `--provider claude-code`로 실제 돌려 비평 루프 품질 체감(아직 미실행 — mock/stub만 검증).
-- 범위 확장 금지 규칙 유지. 패키지 설치(@anthropic-ai/sdk)는 A안 붙일 때만.
+- 실전 실행(미완): `--provider claude-code`로 mvp-planning(비평 루프)/full-predev(게이트) 실제 돌려 품질 체감. 지금까지 루프·게이트는 mock/stub로만 검증.
+- 선택: **Obsidian 연동**(V2_KICKOFF 5번, 독립 트랙) 또는 v2 안정화 후 `main` 병합 + 태그.
+- anthropic 실사용: 사용자가 ANTHROPIC_API_KEY 세팅 시 `--provider anthropic`. 모델은 HARNESS_ANTHROPIC_MODEL(기본 opus-4-8).
+- 범위 확장 금지 규칙 유지.

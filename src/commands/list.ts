@@ -1,10 +1,15 @@
-import { loadAgentRegistry, loadWorkflows, commonPromptExists, isCritiqueLoop, type WorkflowStep } from "../core/registry.js";
+import { loadAgentRegistry, loadWorkflows, commonPromptExists, isCritiqueLoop, isGate, type WorkflowStep } from "../core/registry.js";
 
-/** step을 사람이 읽을 문자열로 렌더링한다 (비평 루프는 critic⟲target×N 형태). */
+/** step을 사람이 읽을 문자열로 렌더링한다 (비평 루프/게이트는 특수 표기). */
 function renderStep(step: WorkflowStep): string {
   if (isCritiqueLoop(step)) {
     const { critic, target, max_rounds } = step.critique_loop;
     return `↻[${critic}⟲${target}×${max_rounds}]`;
+  }
+  if (isGate(step)) {
+    const { decider, on, max_jumps } = step.gate;
+    const branches = Object.entries(on).map(([k, v]) => `${k}→${v}`).join(",");
+    return `⤴[${decider}?${branches}×${max_jumps}]`;
   }
   return step;
 }

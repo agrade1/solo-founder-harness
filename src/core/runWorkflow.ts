@@ -6,6 +6,7 @@ import {
   findWorkflow,
   findAgent,
   isCritiqueLoop,
+  isGate,
   type AgentDef,
   type AgentRegistry,
   type WorkflowStep,
@@ -13,7 +14,7 @@ import {
 import { projectPaths, projectExists } from "./project.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
-import { validateAgentOutput, extractMainJudgment, extractCriticalRisks } from "./validate.js";
+import { validateAgentOutput, extractMainJudgment, extractCriticalRisks, extractDecision } from "./validate.js";
 import type { Provider } from "../providers/provider.js";
 
 export interface StepWarning {
@@ -32,6 +33,12 @@ export interface CritiqueRoundEntry {
   critic: string;
   rounds: number; // 실행된 critic 라운드 수
   resolved: boolean; // 마지막에 Critical 리스크가 사라졌는가
+}
+
+export interface GateJumpEntry {
+  decider: string;
+  decision: string | null; // 매칭된 판정 키워드 (없으면 null)
+  jumped_to: string | null; // 되돌아간 agent (점프 안 했으면 null)
 }
 
 export interface UsageEntry {
@@ -55,6 +62,7 @@ export interface RunState {
   warnings: StepWarning[];
   regenerations: RegenEntry[];
   critique_rounds: CritiqueRoundEntry[];
+  gate_jumps: GateJumpEntry[];
   usage: UsageSummary;
   started_at: string;
   finished_at: string;
@@ -89,7 +97,9 @@ interface StepOutcome {
 function nextHint(steps: WorkflowStep[], i: number): string | undefined {
   const nx = steps[i + 1];
   if (nx === undefined) return undefined;
-  return isCritiqueLoop(nx) ? nx.critique_loop.critic : nx;
+  if (isCritiqueLoop(nx)) return nx.critique_loop.critic;
+  if (isGate(nx)) return undefined; // 게이트는 다음 agent가 아님
+  return nx;
 }
 
 /**
@@ -118,9 +128,12 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const warnings: StepWarning[] = [];
   const regenerations: RegenEntry[] = [];
   const critique_rounds: CritiqueRoundEntry[] = [];
+  const gate_jumps: GateJumpEntry[] = [];
   const savedFiles: string[] = [];
   const usagePerAgent: UsageEntry[] = [];
   const findings = new Map<string, string>(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
+  const lastMarkdown = new Map<string, string>(); // agentId → 마지막 출력 원문 (게이트 판정 추출용)
+  const gateBudget = new Map<number, number>(); // gate step index → 남은 되돌림 횟수
   const maxRegen = Math.max(0, args.maxRegenerations ?? 1);
   let failed_agent: string | null = null;
   let currentAgentId = "";
@@ -190,6 +203,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     savedFiles.push(saved);
     if (!completed_steps.includes(agent.agent_id)) completed_steps.push(agent.agent_id);
     findings.set(agent.agent_id, `${agent.agent_id}: ${extractMainJudgment(o.markdown)}`);
+    lastMarkdown.set(agent.agent_id, o.markdown);
     return saved;
   }
 
@@ -197,7 +211,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     const step = workflow.steps[i];
 
     try {
-      if (!isCritiqueLoop(step)) {
+      if (typeof step === "string") {
         // ── 일반 step ──────────────────────────────
         const agent = findAgent(registry, step);
         if (!agent) {
@@ -208,6 +222,36 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         const o = await runStepWithRegen(agent, nextHint(workflow.steps, i));
         const saved = commitOutcome(agent, o);
         console.log(`  ✓ ${agent.agent_id} → ${saved}`);
+        continue;
+      }
+
+      if (isGate(step)) {
+        // ── CEO 게이트 분기 ────────────────────────────
+        const { decider, on, max_jumps } = step.gate;
+        if (!completed_steps.includes(decider)) {
+          failed_agent = decider;
+          console.error(`  ✗ gate: decider '${decider}'이(가) 게이트 전에 실행되지 않음 — 중단`);
+          break;
+        }
+        if (!gateBudget.has(i)) gateBudget.set(i, Math.max(0, max_jumps ?? 0));
+        const remaining = gateBudget.get(i) ?? 0;
+
+        const decision = extractDecision(lastMarkdown.get(decider) ?? "", Object.keys(on));
+        const jumpTarget = decision ? on[decision] : null;
+
+        if (decision && jumpTarget && remaining > 0) {
+          const targetIdx = workflow.steps.findIndex((s) => s === jumpTarget);
+          if (targetIdx >= 0) {
+            gateBudget.set(i, remaining - 1);
+            gate_jumps.push({ decider, decision, jumped_to: jumpTarget });
+            console.log(`  ⤴ 게이트: ${decider} 판정 '${decision}' → ${jumpTarget} 되돌림 (남은 되돌림 ${remaining - 1})`);
+            i = targetIdx - 1; // 다음 i++가 targetIdx를 가리킴
+            continue;
+          }
+          console.warn(`  ⤴ 게이트: 되돌림 대상 '${jumpTarget}' 스텝을 찾지 못함 — 진행`);
+        }
+        gate_jumps.push({ decider, decision, jumped_to: null });
+        console.log(`  ⤴ 게이트: ${decider} 판정 '${decision ?? "미매칭"}' → 진행`);
         continue;
       }
 
@@ -282,6 +326,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     warnings,
     regenerations,
     critique_rounds,
+    gate_jumps,
     usage,
     started_at,
     finished_at,

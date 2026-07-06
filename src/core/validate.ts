@@ -70,6 +70,31 @@ export function extractSectionBullets(markdown: string, headerPattern: RegExp): 
   return bullets.filter((b) => b.length > 0);
 }
 
+/** 지정 "## 헤더" 섹션의 본문 텍스트를 반환한다 (다음 "## " 전까지). 없으면 빈 문자열. */
+function sectionText(markdown: string, headerPattern: RegExp): string {
+  const lines = markdown.split("\n");
+  const idx = lines.findIndex((l) => headerPattern.test(l));
+  if (idx === -1) return "";
+  const buf: string[] = [];
+  for (let i = idx + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i])) break;
+    buf.push(lines[i]);
+  }
+  return buf.join("\n");
+}
+
+/**
+ * decider 출력에서 판정 키워드를 찾는다 (CEO 게이트 분기용).
+ * 판정이 실제로 담기는 Main Judgment + Decisions 섹션만 검색한다.
+ * (문서 전체 검색은 Input Summary의 역할 설명 등 boilerplate를 오탐하므로 쓰지 않는다.)
+ */
+export function extractDecision(markdown: string, keywords: string[]): string | null {
+  const haystack =
+    sectionText(markdown, /^##\s+Main Judgment\s*$/) + "\n" + sectionText(markdown, /^##\s+Decisions\s*$/);
+  for (const kw of keywords) if (haystack.includes(kw)) return kw;
+  return null;
+}
+
 /**
  * "## Main Judgment" 섹션의 첫 내용 줄을 handoff 요약으로 추출한다.
  * bullet(mock)이든 문단(실제 LLM)이든 첫 비어있지 않은 줄을 반환한다.

@@ -26,6 +26,9 @@ export async function runRun(
   for (const c of state.critique_rounds) {
     console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
   }
+  for (const g of state.gate_jumps) {
+    console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${g.jumped_to ? `${g.jumped_to} 되돌림` : "진행"}`);
+  }
   if (state.regenerations.length > 0) {
     const total = state.regenerations.reduce((s, r) => s + r.attempts, 0);
     const unresolved = state.regenerations.filter((r) => !r.resolved).length;
