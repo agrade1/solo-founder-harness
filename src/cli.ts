@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Command } from "commander";
 import { runList } from "./commands/list.js";
+import { runInit } from "./commands/init.js";
 
 const program = new Command();
 
@@ -21,7 +22,7 @@ program
   .argument("<projectName>", "생성할 프로젝트 이름")
   .description("프로젝트 폴더와 필수 docs/outputs를 생성한다")
   .action((projectName: string) => {
-    console.log(`(not implemented yet: init ${projectName})`);
+    runInit(projectName);
   });
 
 program
