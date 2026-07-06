@@ -16,6 +16,8 @@ export interface AgentRunInput {
   priorFindings: string[];
   /** 다음 agent id (없으면 workflow 종료) */
   nextAgentId?: string;
+  /** 재생성 시도일 때, 직전 출력에서 무엇이 잘못됐는지 교정 지시 (스키마 재생성 루프). mock은 미사용. */
+  retryFeedback?: string;
 }
 
 /** token 사용량. 실제 API provider만 채운다 (mock=0, claude-code=계측 불가 시 생략). */

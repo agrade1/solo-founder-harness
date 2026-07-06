@@ -17,6 +17,12 @@ export interface StepWarning {
   missing: string[];
 }
 
+export interface RegenEntry {
+  agent_id: string;
+  attempts: number; // 추가 재생성 횟수 (0 = 첫 시도에 통과)
+  resolved: boolean; // 재생성 후 최종적으로 스키마 통과했는가
+}
+
 export interface UsageEntry {
   agent_id: string;
   input_tokens: number;
@@ -36,6 +42,7 @@ export interface RunState {
   completed_steps: string[];
   failed_agent: string | null;
   warnings: StepWarning[];
+  regenerations: RegenEntry[];
   usage: UsageSummary;
   started_at: string;
   finished_at: string;
@@ -51,6 +58,7 @@ export interface RunWorkflowArgs {
   workflowId: string;
   project: string;
   provider: Provider;
+  maxRegenerations?: number; // 스키마 실패 시 재생성 상한 (기본 1). mock은 항상 통과라 미발동.
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
 }
 
@@ -79,9 +87,11 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const started_at = now();
   const completed_steps: string[] = [];
   const warnings: StepWarning[] = [];
+  const regenerations: RegenEntry[] = [];
   const savedFiles: string[] = [];
   const priorFindings: string[] = [];
   const usagePerAgent: UsageEntry[] = [];
+  const maxRegen = Math.max(0, args.maxRegenerations ?? 1);
   let failed_agent: string | null = null;
 
   for (let i = 0; i < workflow.steps.length; i++) {
@@ -97,30 +107,55 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     const nextAgentId = workflow.steps[i + 1];
 
     try {
-      const { markdown, usage } = await runAgent({
-        agent,
-        registry,
-        workflowId,
-        project,
-        createdAt: now(),
-        priorFindings: [...priorFindings],
-        nextAgentId,
-        provider,
-      });
+      // 스키마 검증 재생성 루프: 필수 헤더 누락 시 누락 항목을 피드백해 maxRegen회까지 재생성.
+      let markdown = "";
+      let validation = { ok: false, missing: [] as string[] };
+      let feedback: string | undefined;
+      let attempt = 0;
+      let agentInput = 0;
+      let agentOutput = 0;
+      let sawUsage = false;
 
-      if (usage) {
-        usagePerAgent.push({
-          agent_id: agentId,
-          input_tokens: usage.inputTokens,
-          output_tokens: usage.outputTokens,
+      while (true) {
+        const res = await runAgent({
+          agent,
+          registry,
+          workflowId,
+          project,
+          createdAt: now(),
+          priorFindings: [...priorFindings],
+          nextAgentId,
+          provider,
+          retryFeedback: feedback,
         });
+        markdown = res.markdown;
+        if (res.usage) {
+          sawUsage = true;
+          agentInput += res.usage.inputTokens;
+          agentOutput += res.usage.outputTokens;
+        }
+
+        validation = validateAgentOutput(markdown);
+        if (validation.ok || attempt >= maxRegen) break;
+
+        attempt++;
+        feedback =
+          `직전 출력에 필수 섹션 헤더가 누락되었다: ${validation.missing.join(", ")}. ` +
+          `누락된 "## <헤더>"를 정확한 이름으로 포함하여 문서 전체를 다시 작성하라. 문서 외 텍스트는 출력하지 마라.`;
+        console.warn(`  ↻ ${agentId}: 필수 섹션 누락(${validation.missing.join(", ")}) — 재생성 ${attempt}/${maxRegen}`);
       }
 
-      // 필수 헤더 검증 (경고 수준)
-      const validation = validateAgentOutput(markdown);
+      if (sawUsage) {
+        usagePerAgent.push({ agent_id: agentId, input_tokens: agentInput, output_tokens: agentOutput });
+      }
+      if (attempt > 0) {
+        regenerations.push({ agent_id: agentId, attempts: attempt, resolved: validation.ok });
+      }
+
+      // 재생성 후에도 실패면 경고 수준으로 기록하고 저장은 진행 (spec 4.4)
       if (!validation.ok) {
         warnings.push({ agent_id: agentId, missing: validation.missing });
-        console.warn(`  ⚠ ${agentId}: 필수 섹션 누락 — ${validation.missing.join(", ")} (저장은 진행)`);
+        console.warn(`  ⚠ ${agentId}: 필수 섹션 누락 — ${validation.missing.join(", ")} (재생성 ${attempt}회 후에도, 저장은 진행)`);
       }
 
       const saved = saveArtifact(project, agent.default_output, markdown);
@@ -148,6 +183,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     completed_steps,
     failed_agent,
     warnings,
+    regenerations,
     usage,
     started_at,
     finished_at,

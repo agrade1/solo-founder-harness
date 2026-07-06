@@ -14,6 +14,7 @@ export interface RunAgentArgs {
   priorFindings: string[];
   nextAgentId?: string;
   provider: Provider;
+  retryFeedback?: string;
 }
 
 export interface RunAgentResult {
@@ -37,7 +38,7 @@ function loadPrompt(relPath: string, label: string): string {
  * prompt 파일이 없으면 throw → 호출자(runWorkflow)가 failed_agent로 기록한다.
  */
 export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
-  const { agent, registry, workflowId, project, createdAt, priorFindings, nextAgentId, provider } = args;
+  const { agent, registry, workflowId, project, createdAt, priorFindings, nextAgentId, provider, retryFeedback } = args;
 
   const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
   const agentPrompt = loadPrompt(agent.prompt_path, agent.agent_id);
@@ -56,6 +57,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
     ideaContent,
     priorFindings,
     nextAgentId,
+    retryFeedback,
   });
 
   return { agentId: agent.agent_id, markdown, usage };

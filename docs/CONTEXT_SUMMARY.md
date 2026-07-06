@@ -21,9 +21,10 @@
 - **[v2-1 완료] Provider 인터페이스 async화 + token usage 필드.** `generate()` → `Promise<AgentResult>`, run_state에 provider+usage 기록, `run --provider` 플래그.
 - **[v2-2 완료] claude-code provider(B안).** `claude -p --output-format json` stdin 위임, usage 파싱. AgentRunInput에 ideaContent(00_IDEA.md) 추가. extractMainJudgment 문단형 대응 버그수정. dev-preflight end-to-end 검증 완료. mock acceptance 30/30 유지.
 - 사용: `harness run <wf> --project <p> --provider claude-code` (claude CLI가 Max 구독 로그인 상태여야 함). 기본은 mock.
+- **[v2-3 완료] 스키마 검증 재생성 루프.** 필수 헤더 누락 시 누락 항목 피드백해 재생성(`--max-regen <n>`, 기본 1). run_state에 regenerations 라운드 기록, usage는 시도 합산. flaky provider로 결정적 검증. mock 30/30 유지.
 
 ## 다음 작업
 
-- 선택: **[v2-3] anthropic provider(A안)** — @anthropic-ai/sdk 직접, 종량과금. 사용자가 원할 때 (설치 승인 필요). 스텁만 먼저 둬도 됨.
-- 또는 **루프 엔지니어링 착수**(V2_KICKOFF 2번): 스키마 재생성 루프 → Red Team 비평 루프 → CEO 게이트. 실제 provider 붙었으니 이제 수렴 신호 생김.
+- 선택: **[v2-4] anthropic provider(A안)** — @anthropic-ai/sdk 직접, 종량과금. 사용자가 원할 때 (설치 승인 필요).
+- 또는 **루프 엔지니어링 계속**(V2_KICKOFF 3번): Red Team 비평 루프(Critical 리스크를 PM/Tech Lead에 되먹여 revise → 재검토) → CEO 게이트 분기. 루프 아키텍처(steps→loop/gate 확장)가 여기서 필요해짐.
 - 범위 확장 금지 규칙 유지. 패키지 설치(@anthropic-ai/sdk)는 A안 붙일 때만.

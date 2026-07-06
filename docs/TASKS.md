@@ -22,8 +22,9 @@
 - [x] provider 전략 C안 확정 + 설계 문서 (2026-07-06)
 - [x] [v2-1] Provider 인터페이스 async화 + token usage 필드 + run_state 기록 (mock 30/30 유지)
 - [x] [v2-2] claude-code provider(B안) 구현 — `claude -p` 위임, 실제 LLM 첫 연동 (dev-preflight end-to-end 검증, handoff 버그 수정)
-- [ ] [v2-3] anthropic provider(A안) — API 직접 (@anthropic-ai/sdk, 사용자 승인 후)
-- [ ] [v2-4~] 루프 엔지니어링 (스키마 재생성 → Red Team → CEO 게이트)
+- [x] [v2-3] 스키마 검증 재생성 루프 — 누락 헤더 피드백 재생성(--max-regen), run_state 라운드 기록 (flaky provider로 검증)
+- [ ] [v2-4] anthropic provider(A안) — API 직접 (@anthropic-ai/sdk, 사용자 승인 후)
+- [ ] [v2-5~] 루프 엔지니어링 계속 (Red Team 비평 루프 → CEO 게이트)
 
 ## 완료
 

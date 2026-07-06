@@ -13,6 +13,15 @@
 
 - 자동 코드 실행, Codex/OMC/Agent Teams 연동, 웹 UI, DB, 배포, 결제
 
+## v2 (진행 중)
+
+- **실제 LLM provider** (mock과 교체 가능): `--provider mock | claude-code | anthropic`
+  - `claude-code`(B안): `claude -p`에 위임, Claude 구독으로 실행 (추가 API 비용 0). `claude` CLI 로그인 필요.
+  - `anthropic`(A안): Anthropic API 직접 (예정, 종량 과금).
+- **스키마 검증 재생성 루프**: 필수 헤더 누락 시 누락 항목을 피드백해 자동 재생성 (`--max-regen <n>`, 기본 1). run_state에 라운드 기록.
+- token usage를 `run_state.json`에 집계.
+- 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`.
+
 ## 구조 (요약 아키텍처)
 
 ```text
@@ -42,7 +51,7 @@ npm run harness -- task-prompt --project my-project
 |---|---|---|
 | `list` | core agents / common prompt / workflows 출력 | (stdout) |
 | `init <name>` | 프로젝트 docs 6개 + outputs 생성 | `projects/<name>/` |
-| `run <workflow> --project <name>` | workflow 순서 실행, mock 결과 저장 | `docs/0N_*.md`, `outputs/run_state.json` |
+| `run <workflow> --project <name> [--provider <id>] [--max-regen <n>]` | workflow 순서 실행, 결과 저장 (기본 provider=mock) | `docs/0N_*.md`, `outputs/run_state.json` |
 | `summary --project <name>` | 상태 요약 갱신 | `docs/CONTEXT_SUMMARY.md` |
 | `task-prompt --project <name>` | Claude Code 작업 지시문 생성 | `outputs/claude_code_task_prompt.md` |
 
