@@ -33,6 +33,22 @@ export function validateAgentOutput(markdown: string): ValidationResult {
   return { ok: missing.length === 0, missing };
 }
 
+/** 지정한 "## 헤더" 섹션의 bullet 목록을 추출한다. 없으면 빈 배열. */
+export function extractSectionBullets(markdown: string, headerPattern: RegExp): string[] {
+  const lines = markdown.split("\n");
+  const idx = lines.findIndex((l) => headerPattern.test(l));
+  if (idx === -1) return [];
+  const bullets: string[] = [];
+  for (let i = idx + 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith("## ")) break;
+    if (line.startsWith("- ") || line.startsWith("* ") || /^\d+\.\s/.test(line)) {
+      bullets.push(line.replace(/^([-*]|\d+\.)\s+/, "").trim());
+    }
+  }
+  return bullets.filter((b) => b.length > 0);
+}
+
 /** "## Main Judgment" 섹션의 첫 bullet을 handoff 요약으로 추출한다. */
 export function extractMainJudgment(markdown: string): string {
   const lines = markdown.split("\n");

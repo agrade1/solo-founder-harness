@@ -4,6 +4,7 @@ import { runList } from "./commands/list.js";
 import { runInit } from "./commands/init.js";
 import { runRun } from "./commands/run.js";
 import { runSummary } from "./commands/summary.js";
+import { runTaskPrompt } from "./commands/taskPrompt.js";
 
 const program = new Command();
 
@@ -49,7 +50,7 @@ program
   .requiredOption("--project <projectName>", "대상 프로젝트 이름")
   .description("Claude Code 작업 지시문을 생성한다")
   .action((opts: { project: string }) => {
-    console.log(`(not implemented yet: task-prompt --project ${opts.project})`);
+    runTaskPrompt(opts.project);
   });
 
 program.parse();

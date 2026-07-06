@@ -14,7 +14,7 @@
 6. [x] runWorkflow (순서 실행, 결과 markdown 저장, run_state.json 기록, 실패 시 failed_agent 기록)
 6-1. [x] 결과 필수 섹션 헤더 validator (누락 시 경고)
 7. [x] harness summary (CONTEXT_SUMMARY.md 갱신)
-8. [ ] harness task-prompt (Context/Task/Include/Exclude/Rules/Done Criteria)
+8. [x] harness task-prompt (Context/Task/Include/Exclude/Rules/Done Criteria)
 9. [ ] acceptance test 1~5 통과 확인
 
 ## 완료
