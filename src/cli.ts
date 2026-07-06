@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { runList } from "./commands/list.js";
 import { runInit } from "./commands/init.js";
+import { runRun } from "./commands/run.js";
 
 const program = new Command();
 
@@ -31,7 +32,7 @@ program
   .requiredOption("--project <projectName>", "대상 프로젝트 이름")
   .description("workflow를 순서대로 실행하고 결과를 저장한다")
   .action((workflowName: string, opts: { project: string }) => {
-    console.log(`(not implemented yet: run ${workflowName} --project ${opts.project})`);
+    runRun(workflowName, opts.project);
   });
 
 program

@@ -1,0 +1,15 @@
+{
+  "workflow_id": "idea-validation",
+  "project": "sample-project",
+  "completed_steps": [
+    "chief_of_staff",
+    "research",
+    "pm",
+    "red_team",
+    "founder_ceo"
+  ],
+  "failed_agent": null,
+  "warnings": [],
+  "started_at": "2026-07-06T07:00:06.774Z",
+  "finished_at": "2026-07-06T07:00:06.778Z"
+}
