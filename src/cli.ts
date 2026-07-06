@@ -3,6 +3,7 @@ import { Command } from "commander";
 import { runList } from "./commands/list.js";
 import { runInit } from "./commands/init.js";
 import { runRun } from "./commands/run.js";
+import { runSummary } from "./commands/summary.js";
 
 const program = new Command();
 
@@ -40,7 +41,7 @@ program
   .requiredOption("--project <projectName>", "대상 프로젝트 이름")
   .description("CONTEXT_SUMMARY.md를 갱신한다")
   .action((opts: { project: string }) => {
-    console.log(`(not implemented yet: summary --project ${opts.project})`);
+    runSummary(opts.project);
   });
 
 program
