@@ -1,17 +1,19 @@
 import type { Provider } from "./provider.js";
 import { mockProvider } from "./mockProvider.js";
 import { claudeCodeProvider } from "./claudeCodeProvider.js";
+import { anthropicProvider } from "./anthropicProvider.js";
 
 /**
- * provider id → 구현체. v2 페이즈별로 추가:
- *   mock         (완료)  — 테스트/오프라인
- *   claude-code  (완료)  — B안, `claude -p` 위임 (구독 소비)
- *   anthropic    (3단계) — A안, Anthropic API 직접
+ * provider id → 구현체:
+ *   mock         — 테스트/오프라인 (기본)
+ *   claude-code  — B안, `claude -p` 위임 (구독 소비, 추가비용 0)
+ *   anthropic    — A안, Anthropic API 직접 (별도 API 키, 종량과금)
  * (상세: docs/reference/PROVIDER_ARCHITECTURE_V2.md)
  */
 const PROVIDERS: Record<string, Provider> = {
   mock: mockProvider,
   "claude-code": claudeCodeProvider,
+  anthropic: anthropicProvider,
 };
 
 export const DEFAULT_PROVIDER_ID = "mock";

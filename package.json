@@ -14,6 +14,7 @@
     "test": "bash scripts/acceptance.sh"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.110.0",
     "commander": "^12.1.0"
   },
   "devDependencies": {
