@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { runList } from "./commands/list.js";
 
 const program = new Command();
 
@@ -12,7 +13,7 @@ program
   .command("list")
   .description("core agents와 workflows 목록을 출력한다")
   .action(() => {
-    console.log("(not implemented yet: list)");
+    runList();
   });
 
 program
