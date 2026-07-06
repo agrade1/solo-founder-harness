@@ -21,10 +21,13 @@
 - **[v2-1 완료] Provider 인터페이스 async화 + token usage 필드.** `generate()` → `Promise<AgentResult>`, run_state에 provider+usage 기록, `run --provider` 플래그.
 - **[v2-2 완료] claude-code provider(B안).** `claude -p --output-format json` stdin 위임, usage 파싱. AgentRunInput에 ideaContent(00_IDEA.md) 추가. extractMainJudgment 문단형 대응 버그수정. dev-preflight end-to-end 검증 완료. mock acceptance 30/30 유지.
 - 사용: `harness run <wf> --project <p> --provider claude-code` (claude CLI가 Max 구독 로그인 상태여야 함). 기본은 mock.
-- **[v2-3 완료] 스키마 검증 재생성 루프.** 필수 헤더 누락 시 누락 항목 피드백해 재생성(`--max-regen <n>`, 기본 1). run_state에 regenerations 라운드 기록, usage는 시도 합산. flaky provider로 결정적 검증. mock 30/30 유지.
+- **[v2-3 완료] 스키마 검증 재생성 루프.** 필수 헤더 누락 시 피드백해 재생성(`--max-regen <n>`, 기본 1). run_state.regenerations 기록.
+- **[v2-4 완료] Red Team 비평 루프.** workflow steps를 `(string|{critique_loop})[]`로 확장. critic(red_team)이 Critical 리스크 발견 시 target(tech_lead)에 되먹여 revise→재검토, Critical 소멸/max_rounds까지. mvp-planning에 내장(`↻[red_team⟲tech_lead×2]`). run_state.critique_rounds 기록. mock+stub 검증, acceptance 30/30 유지.
+- 아키텍처: runWorkflow가 runStepWithRegen 헬퍼 + priorFindings Map(upsert) 구조. CEO 게이트도 이 위에 얹으면 됨.
 
 ## 다음 작업
 
-- 선택: **[v2-4] anthropic provider(A안)** — @anthropic-ai/sdk 직접, 종량과금. 사용자가 원할 때 (설치 승인 필요).
-- 또는 **루프 엔지니어링 계속**(V2_KICKOFF 3번): Red Team 비평 루프(Critical 리스크를 PM/Tech Lead에 되먹여 revise → 재검토) → CEO 게이트 분기. 루프 아키텍처(steps→loop/gate 확장)가 여기서 필요해짐.
+- **[v2-5] anthropic provider(A안)** — @anthropic-ai/sdk 직접, 종량과금. 사용자가 원할 때 (설치 승인 필요).
+- **[v2-6] CEO 게이트 분기**(V2_KICKOFF 4번): founder_ceo 판정("축소"→pm, "검증"→research)에 따라 되돌아가는 조건 분기. steps에 `{gate}` 구성 추가하는 식.
+- 실사용: mvp-planning을 `--provider claude-code`로 실제 돌려 비평 루프 품질 체감(아직 미실행 — mock/stub만 검증).
 - 범위 확장 금지 규칙 유지. 패키지 설치(@anthropic-ai/sdk)는 A안 붙일 때만.

@@ -18,9 +18,12 @@ const TIMEOUT_MS = Number(process.env.HARNESS_CLAUDE_TIMEOUT_MS ?? 300_000);
 
 /** AGENT_OUTPUT_SCHEMA를 따르는 단일 프롬프트를 구성한다 (system+context+아이디어+출력형식). */
 function buildPrompt(input: AgentRunInput): string {
-  const { agent, workflowId, project, createdAt, commonPrompt, agentPrompt, ideaContent, priorFindings, nextAgentId, retryFeedback } =
+  const { agent, workflowId, project, createdAt, commonPrompt, agentPrompt, ideaContent, priorFindings, nextAgentId, retryFeedback, revisionRequest } =
     input;
 
+  const revisionBlock = revisionRequest
+    ? `\n---\n# 🔁 비평 반영 수정 지시\n\n${revisionRequest}\n`
+    : "";
   const retryBlock = retryFeedback
     ? `\n---\n# ⚠️ 재작성 지시\n\n${retryFeedback}\n`
     : "";
@@ -75,7 +78,7 @@ Risks(하위 "### Critical" "### High" "### Medium" "### Low") /
 Recommended Next Actions(1~3개) / Next Agent(값: ${nextAgentLine}) /
 Artifacts To Update(값: ${agent.default_output}) / Handoff Notes.
 
-Main Judgment은 결론을 먼저 한 문장으로 제시하고, 각 섹션은 이 역할 관점에서 구체적으로 채운다.${retryBlock}`;
+Main Judgment은 결론을 먼저 한 문장으로 제시하고, 각 섹션은 이 역할 관점에서 구체적으로 채운다.${revisionBlock}${retryBlock}`;
 }
 
 interface ClaudeJsonResult {

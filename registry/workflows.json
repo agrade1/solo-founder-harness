@@ -7,8 +7,14 @@
     },
     {
       "workflow_id": "mvp-planning",
-      "description": "MVP 범위와 화면/기술 계획을 정리한다.",
-      "steps": ["pm", "ux_ui", "tech_lead", "red_team", "founder_ceo"]
+      "description": "MVP 범위와 화면/기술 계획을 정리한다. (Red Team 비평 루프로 tech_lead 계획 강화)",
+      "steps": [
+        "pm",
+        "ux_ui",
+        "tech_lead",
+        { "critique_loop": { "target": "tech_lead", "critic": "red_team", "max_rounds": 2 } },
+        "founder_ceo"
+      ]
     },
     {
       "workflow_id": "dev-preflight",

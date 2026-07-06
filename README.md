@@ -19,6 +19,7 @@
   - `claude-code`(B안): `claude -p`에 위임, Claude 구독으로 실행 (추가 API 비용 0). `claude` CLI 로그인 필요.
   - `anthropic`(A안): Anthropic API 직접 (예정, 종량 과금).
 - **스키마 검증 재생성 루프**: 필수 헤더 누락 시 누락 항목을 피드백해 자동 재생성 (`--max-regen <n>`, 기본 1). run_state에 라운드 기록.
+- **Red Team 비평 루프**: workflow steps를 loop 구성으로 확장(`(string | {critique_loop})[]`). critic이 Critical 리스크를 지적하면 target에 되먹여 revise → 재검토(Critical 소멸/max_rounds까지). `mvp-planning`에 내장(`↻[red_team⟲tech_lead×2]`). run_state에 `critique_rounds` 기록.
 - token usage를 `run_state.json`에 집계.
 - 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`.
 

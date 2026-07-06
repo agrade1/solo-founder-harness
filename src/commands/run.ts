@@ -23,6 +23,9 @@ export async function runRun(
   if (state.failed_agent) {
     console.log(`실패 agent: ${state.failed_agent}`);
   }
+  for (const c of state.critique_rounds) {
+    console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
+  }
   if (state.regenerations.length > 0) {
     const total = state.regenerations.reduce((s, r) => s + r.attempts, 0);
     const unresolved = state.regenerations.filter((r) => !r.resolved).length;

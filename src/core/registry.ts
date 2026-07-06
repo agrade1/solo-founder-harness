@@ -14,10 +14,25 @@ export interface AgentRegistry {
   agents: AgentDef[];
 }
 
+/** Red Team 비평 루프 step: critic이 target의 Critical 리스크를 지적하면 target이 revise → 재검토. */
+export interface CritiqueLoopDef {
+  target: string; // 비평 반영해 수정할 agent (루프 전에 이미 실행돼 있어야 함)
+  critic: string; // 비평하는 agent (예: red_team)
+  max_rounds: number; // 라운드 상한 (무한루프 방지)
+}
+
+/** workflow step: agent id 문자열, 또는 비평 루프 객체. */
+export type WorkflowStep = string | { critique_loop: CritiqueLoopDef };
+
 export interface WorkflowDef {
   workflow_id: string;
   description: string;
-  steps: string[];
+  steps: WorkflowStep[];
+}
+
+/** step이 비평 루프인지 판별 */
+export function isCritiqueLoop(step: WorkflowStep): step is { critique_loop: CritiqueLoopDef } {
+  return typeof step === "object" && step !== null && "critique_loop" in step;
 }
 
 export interface WorkflowsFile {

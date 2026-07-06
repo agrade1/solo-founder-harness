@@ -23,8 +23,9 @@
 - [x] [v2-1] Provider 인터페이스 async화 + token usage 필드 + run_state 기록 (mock 30/30 유지)
 - [x] [v2-2] claude-code provider(B안) 구현 — `claude -p` 위임, 실제 LLM 첫 연동 (dev-preflight end-to-end 검증, handoff 버그 수정)
 - [x] [v2-3] 스키마 검증 재생성 루프 — 누락 헤더 피드백 재생성(--max-regen), run_state 라운드 기록 (flaky provider로 검증)
-- [ ] [v2-4] anthropic provider(A안) — API 직접 (@anthropic-ai/sdk, 사용자 승인 후)
-- [ ] [v2-5~] 루프 엔지니어링 계속 (Red Team 비평 루프 → CEO 게이트)
+- [x] [v2-4] Red Team 비평 루프 — steps를 loop 구성으로 확장, critic Critical→target revise→재검토(critique_rounds). mvp-planning에 내장 (mock+stub 검증)
+- [ ] [v2-5] anthropic provider(A안) — API 직접 (@anthropic-ai/sdk, 사용자 승인 후)
+- [ ] [v2-6] CEO 게이트 분기 (founder_ceo 판정→pm/research 되돌림)
 
 ## 완료
 

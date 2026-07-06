@@ -1,4 +1,13 @@
-import { loadAgentRegistry, loadWorkflows, commonPromptExists } from "../core/registry.js";
+import { loadAgentRegistry, loadWorkflows, commonPromptExists, isCritiqueLoop, type WorkflowStep } from "../core/registry.js";
+
+/** step을 사람이 읽을 문자열로 렌더링한다 (비평 루프는 critic⟲target×N 형태). */
+function renderStep(step: WorkflowStep): string {
+  if (isCritiqueLoop(step)) {
+    const { critic, target, max_rounds } = step.critique_loop;
+    return `↻[${critic}⟲${target}×${max_rounds}]`;
+  }
+  return step;
+}
 
 /** harness list: core agents, common prompt 존재 여부, workflows를 출력한다. */
 export function runList(): void {
@@ -19,6 +28,6 @@ export function runList(): void {
   console.log(`Workflows (${workflows.length}):`);
   for (const w of workflows) {
     console.log(`  - ${w.workflow_id.padEnd(14)} ${w.description}`);
-    console.log(`    steps: ${w.steps.join(" → ")}`);
+    console.log(`    steps: ${w.steps.map(renderStep).join(" → ")}`);
   }
 }
