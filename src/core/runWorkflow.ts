@@ -242,7 +242,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   async function runStepWithRegen(
     agent: AgentDef,
     nextAgentId: string | undefined,
-    opts: { revisionRequest?: string; spawnRequest?: string; agentPromptText?: string } = {},
+    opts: {
+      revisionRequest?: string;
+      spawnRequest?: string;
+      agentPromptText?: string;
+      contextMode?: "full" | "conclusion_only";
+      priorFindingsOverride?: string[];
+    } = {},
   ): Promise<StepOutcome> {
     currentAgentId = agent.agent_id;
     // 테스트용 강제 실패 훅 (0-1 resume 검증): 지정 agent에서 throw → failed_agent로 기록.
@@ -264,7 +270,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         workflowId,
         project,
         createdAt: now(),
-        priorFindings: findingsList(),
+        priorFindings: opts.priorFindingsOverride ?? findingsList(),
+        contextMode: opts.contextMode,
         nextAgentId,
         provider,
         retryFeedback: feedback,
@@ -486,8 +493,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
 
       while (round < maxRounds) {
         round++;
-        // 1) critic 실행
-        const co = await runStepWithRegen(criticAgent, target);
+        // 1) critic 실행 — 편향 분리: critic은 비평 대상(target)의 결론만 보고 판단한다.
+        //    전체 findings 체인을 넘기면 앞선 에이전트 합의에 anchoring될 수 있어 target 결론만 격리.
+        const targetFinding = findings.get(target);
+        const co = await runStepWithRegen(criticAgent, target, {
+          contextMode: "conclusion_only",
+          priorFindingsOverride: targetFinding ? [targetFinding] : [],
+        });
         const criticSaved = commitOutcome(criticAgent, co);
         console.log(`  ✓ ${critic} → ${criticSaved}`);
 

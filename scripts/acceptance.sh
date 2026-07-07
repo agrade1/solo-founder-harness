@@ -122,6 +122,17 @@ $HARNESS run dev-preflight --project "$PROJ" --resume --yes >/dev/null 2>&1
 grep -q '"status": "completed"' "$RS";            check "--yes resume → 승인 완료" $?
 
 echo ""
+echo "== Test 10: Red Team 편향 분리 (critic 격리) =="
+# mvp-planning: pm→ux_ui→tech_lead→[red_team⟲tech_lead]→founder_ceo
+$HARNESS run mvp-planning --project "$PROJ" >/dev/null 2>&1
+RT="$PDIR/docs/05_RED_TEAM.md"
+CEO="$PDIR/docs/06_CEO_DECISION.md"
+grep -q "tech_lead:" "$RT";                 check "critic가 target(tech_lead) 결론은 봄" $?
+if grep -q "ux_ui:" "$RT"; then false; else true; fi;  check "critic가 ux_ui 결론은 못 봄 (격리)" $?
+if grep -q "pm:" "$RT"; then false; else true; fi;     check "critic가 pm 결론은 못 봄 (격리)" $?
+grep -q "ux_ui:" "$CEO";                    check "일반 step(founder_ceo)은 full 컨텍스트 유지" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
