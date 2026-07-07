@@ -1,6 +1,6 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-06
+최종 갱신: 2026-07-07
 
 ## 현재 상태
 
@@ -27,9 +27,12 @@
 - **[v2-5 완료] anthropic provider(A안).** @anthropic-ai/sdk 연동, 프롬프트 빌더를 promptParts.ts로 공유. ANTHROPIC_API_KEY 필요(종량과금). 키 없으면 안전 실패+claude-code 안내. 기본 provider는 mock 유지. **실제 유료 호출 미검증**.
 - provider 3종(mock/claude-code/anthropic) + 루프 3종(재생성/비평/게이트) 완비.
 
-## 다음 작업
+- **[실전 검증 완료]** mvp-planning을 claude-code로 실제 실행 → 비평 루프 실작동 확인(red_team이 Critical 2건 발견→tech_lead 반영 수정→재검토→max_rounds 종료). 루프가 출력 개선함.
+- **v2 완료 → v2.0.0 태그** (develop→main 병합).
 
-- 실전 실행(미완): `--provider claude-code`로 mvp-planning(비평 루프)/full-predev(게이트) 실제 돌려 품질 체감. 지금까지 루프·게이트는 mock/stub로만 검증.
-- 선택: **Obsidian 연동**(V2_KICKOFF 5번, 독립 트랙) 또는 v2 안정화 후 `main` 병합 + 태그.
-- anthropic 실사용: 사용자가 ANTHROPIC_API_KEY 세팅 시 `--provider anthropic`. 모델은 HARNESS_ANTHROPIC_MODEL(기본 opus-4-8).
-- 범위 확장 금지 규칙 유지.
+## 다음 작업 (v3 후보)
+
+- 아직 실전 미검증: full-predev의 CEO 게이트 실제 발화(founder_ceo가 축소/검증 판정할 때). mock/stub로만 확인.
+- anthropic provider 실제 유료 호출 미검증(사용자 ANTHROPIC_API_KEY 세팅 후 `--provider anthropic`).
+- **Obsidian 연동**(V2_KICKOFF 5번, 독립 트랙) — v3 후보.
+- 범위 확장 금지 규칙 유지. docs/reference/ROADMAP.md v3 참고.
