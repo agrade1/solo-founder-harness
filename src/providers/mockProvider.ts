@@ -1,13 +1,14 @@
-import type { Provider, AgentRunInput } from "./provider.js";
+import type { Provider, AgentRunInput, AgentResult } from "./provider.js";
 
 /**
  * Mock provider: 실제 LLM을 호출하지 않고 AGENT_OUTPUT_SCHEMA를 따르는
- * 결정적(deterministic) markdown을 생성한다. v1 전용.
+ * 결정적(deterministic) markdown을 생성한다. 테스트/오프라인/CI 기반.
+ * usage는 0 — 실제 provider(anthropic)만 토큰을 계측한다.
  */
 export const mockProvider: Provider = {
   id: "mock",
 
-  generate(input: AgentRunInput): string {
+  async generate(input: AgentRunInput): Promise<AgentResult> {
     const { agent, workflowId, project, createdAt, priorFindings, nextAgentId } = input;
 
     const priorBlock =
@@ -19,7 +20,7 @@ export const mockProvider: Provider = {
       ? `- ${nextAgentId}`
       : "- (없음 — 이 workflow의 마지막 단계)";
 
-    return `# Agent Output
+    const markdown = `# Agent Output
 
 ## Metadata
 
@@ -91,5 +92,7 @@ ${nextAgentLine}
 
 - [MOCK] 다음 agent가 알아야 할 핸드오프 메모
 `;
+
+    return { markdown, usage: { inputTokens: 0, outputTokens: 0 } };
   },
 };

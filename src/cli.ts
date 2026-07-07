@@ -32,9 +32,11 @@ program
   .command("run")
   .argument("<workflowName>", "실행할 workflow id")
   .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+  .option("--provider <id>", "LLM provider (mock | claude-code | anthropic)", "mock")
+  .option("--max-regen <n>", "스키마 실패 시 재생성 상한 (기본 1)", "1")
   .description("workflow를 순서대로 실행하고 결과를 저장한다")
-  .action((workflowName: string, opts: { project: string }) => {
-    runRun(workflowName, opts.project);
+  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string }) => {
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen));
   });
 
 program

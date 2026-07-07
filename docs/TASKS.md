@@ -17,6 +17,17 @@
 8. [x] harness task-prompt (Context/Task/Include/Exclude/Rules/Done Criteria)
 9. [x] acceptance test 1~5 통과 확인 (scripts/acceptance.sh, 30 checks all pass)
 
+## v2 (진행 중)
+
+- [x] provider 전략 C안 확정 + 설계 문서 (2026-07-06)
+- [x] [v2-1] Provider 인터페이스 async화 + token usage 필드 + run_state 기록 (mock 30/30 유지)
+- [x] [v2-2] claude-code provider(B안) 구현 — `claude -p` 위임, 실제 LLM 첫 연동 (dev-preflight end-to-end 검증, handoff 버그 수정)
+- [x] [v2-3] 스키마 검증 재생성 루프 — 누락 헤더 피드백 재생성(--max-regen), run_state 라운드 기록 (flaky provider로 검증)
+- [x] [v2-4] Red Team 비평 루프 — steps를 loop 구성으로 확장, critic Critical→target revise→재검토(critique_rounds). mvp-planning에 내장 (mock+stub 검증)
+- [x] [v2-5] anthropic provider(A안) — @anthropic-ai/sdk 연동, 공유 프롬프트 빌더. 키 없을 때 안전 실패 (실제 유료 호출은 미검증)
+- [x] [v2-6] CEO 게이트 분기 — WorkflowStep에 {gate} 확장, 판정→되돌림(max_jumps). full-predev에 내장 (mock+stub 검증)
+- [ ] [v2-7] (선택) Obsidian 연동 (V2_KICKOFF 5번) 또는 실전 실행 후 v2 태그
+
 ## 완료
 
 - [x] 문서/레포 구조 정리 (2026-07-06)
