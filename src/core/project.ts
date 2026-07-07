@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { fromRoot } from "./paths.js";
+import { fromWorkspace } from "./paths.js";
 
 export interface ProjectPaths {
   name: string;
@@ -10,12 +10,12 @@ export interface ProjectPaths {
 
 /** projects/<name> 하위 경로 묶음을 계산한다. (생성은 하지 않음) */
 export function projectPaths(name: string): ProjectPaths {
-  const root = fromRoot("projects", name);
+  const root = fromWorkspace("projects", name);
   return {
     name,
     root,
-    docs: fromRoot("projects", name, "docs"),
-    outputs: fromRoot("projects", name, "outputs"),
+    docs: fromWorkspace("projects", name, "docs"),
+    outputs: fromWorkspace("projects", name, "outputs"),
   };
 }
 

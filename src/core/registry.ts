@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { fromRoot } from "./paths.js";
+import { fromPackage } from "./paths.js";
 
 export interface AgentDef {
   agent_id: string;
@@ -55,7 +55,7 @@ const AGENT_REGISTRY_PATH = "registry/agent_registry.json";
 const WORKFLOWS_PATH = "registry/workflows.json";
 
 function readJson<T>(relPath: string): T {
-  const abs = fromRoot(relPath);
+  const abs = fromPackage(relPath);
   if (!existsSync(abs)) {
     throw new Error(`registry 파일을 찾을 수 없습니다: ${relPath}`);
   }
@@ -78,7 +78,7 @@ export function loadWorkflows(): WorkflowDef[] {
 
 /** common prompt 파일이 실제로 존재하는지 확인 */
 export function commonPromptExists(reg: AgentRegistry): boolean {
-  return existsSync(fromRoot(reg.common_prompt_path));
+  return existsSync(fromPackage(reg.common_prompt_path));
 }
 
 /** agent_id로 agent 정의를 찾는다. 없으면 undefined. */

@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { fromRoot } from "./paths.js";
+import { fromPackage } from "./paths.js";
 import { projectPaths } from "./project.js";
 import type { AgentDef, AgentRegistry } from "./registry.js";
 import type { Provider, TokenUsage } from "../providers/provider.js";
@@ -25,7 +25,7 @@ export interface RunAgentResult {
 }
 
 function loadPrompt(relPath: string, label: string): string {
-  const abs = fromRoot(relPath);
+  const abs = fromPackage(relPath);
   if (!existsSync(abs)) {
     throw new Error(`${label} prompt 파일이 없습니다: ${relPath}`);
   }
