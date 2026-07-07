@@ -7,6 +7,7 @@ import {
   findAgent,
   isCritiqueLoop,
   isGate,
+  isFanout,
   type AgentDef,
   type AgentRegistry,
   type WorkflowStep,
@@ -14,7 +15,13 @@ import {
 import { projectPaths, projectExists } from "./project.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
-import { validateAgentOutput, extractMainJudgment, extractCriticalRisks, extractDecision } from "./validate.js";
+import {
+  validateAgentOutput,
+  extractMainJudgment,
+  extractCriticalRisks,
+  extractDecision,
+  extractSpawnDeclarations,
+} from "./validate.js";
 import type { Provider } from "../providers/provider.js";
 
 export interface StepWarning {
@@ -41,6 +48,15 @@ export interface GateJumpEntry {
   jumped_to: string | null; // 되돌아간 agent (점프 안 했으면 null)
 }
 
+export interface SpawnEntry {
+  parent: string; // 분화를 선언한 planner
+  id: string;
+  name: string;
+  focus: string;
+  executed: boolean; // 실제 실행됨(--allow-spawn) or 계획만(승인 대기)
+  output: string | null; // 실행 시 저장 경로
+}
+
 export interface UsageEntry {
   agent_id: string;
   input_tokens: number;
@@ -63,6 +79,7 @@ export interface RunState {
   regenerations: RegenEntry[];
   critique_rounds: CritiqueRoundEntry[];
   gate_jumps: GateJumpEntry[];
+  spawned_agents: SpawnEntry[];
   usage: UsageSummary;
   started_at: string;
   finished_at: string;
@@ -79,6 +96,7 @@ export interface RunWorkflowArgs {
   project: string;
   provider: Provider;
   maxRegenerations?: number; // 스키마 실패 시 재생성 상한 (기본 1). mock은 항상 통과라 미발동.
+  allowSpawn?: boolean; // 동적 분화된 하위 에이전트를 실제 실행할지 (기본 false = 계획만, 사람 승인 게이트)
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
 }
 
@@ -98,7 +116,7 @@ function nextHint(steps: WorkflowStep[], i: number): string | undefined {
   const nx = steps[i + 1];
   if (nx === undefined) return undefined;
   if (isCritiqueLoop(nx)) return nx.critique_loop.critic;
-  if (isGate(nx)) return undefined; // 게이트는 다음 agent가 아님
+  if (isGate(nx) || isFanout(nx)) return undefined; // 게이트/분화는 다음 agent가 아님
   return nx;
 }
 
@@ -129,12 +147,14 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const regenerations: RegenEntry[] = [];
   const critique_rounds: CritiqueRoundEntry[] = [];
   const gate_jumps: GateJumpEntry[] = [];
+  const spawned_agents: SpawnEntry[] = [];
   const savedFiles: string[] = [];
   const usagePerAgent: UsageEntry[] = [];
   const findings = new Map<string, string>(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
   const lastMarkdown = new Map<string, string>(); // agentId → 마지막 출력 원문 (게이트 판정 추출용)
   const gateBudget = new Map<number, number>(); // gate step index → 남은 되돌림 횟수
   const maxRegen = Math.max(0, args.maxRegenerations ?? 1);
+  const allowSpawn = args.allowSpawn ?? false;
   let failed_agent: string | null = null;
   let currentAgentId = "";
 
@@ -144,7 +164,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   async function runStepWithRegen(
     agent: AgentDef,
     nextAgentId: string | undefined,
-    revisionRequest?: string,
+    opts: { revisionRequest?: string; spawnRequest?: string; agentPromptText?: string } = {},
   ): Promise<StepOutcome> {
     currentAgentId = agent.agent_id;
     let markdown = "";
@@ -166,7 +186,9 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         nextAgentId,
         provider,
         retryFeedback: feedback,
-        revisionRequest,
+        revisionRequest: opts.revisionRequest,
+        spawnRequest: opts.spawnRequest,
+        agentPromptText: opts.agentPromptText,
       });
       markdown = res.markdown;
       if (res.usage) {
@@ -219,7 +241,18 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           console.error(`  ✗ ${step}: registry에 없는 agent — 중단`);
           break;
         }
-        const o = await runStepWithRegen(agent, nextHint(workflow.steps, i));
+        // 다음 step이 이 agent를 planner로 하는 fanout이면, 하위 에이전트 선언을 유도한다.
+        const nx = workflow.steps[i + 1];
+        let spawnRequest: string | undefined;
+        if (nx && isFanout(nx) && nx.fanout.planner === step) {
+          const max = Math.max(1, nx.fanout.max_agents ?? 1);
+          spawnRequest =
+            `이 계획을 실제로 진행할 때 병렬/전문화하면 좋은 하위 에이전트가 있으면, ` +
+            `문서 맨 끝에 아래 형식으로 각 줄에 정확히 나열하라 (최대 ${max}개):\n` +
+            `SPAWN id=<영문소문자_id> | name=<이름> | focus=<한 줄 담당 범위>\n` +
+            `분화가 불필요하면 정확히 "SPAWN none" 한 줄만 출력하라.`;
+        }
+        const o = await runStepWithRegen(agent, nextHint(workflow.steps, i), { spawnRequest });
         const saved = commitOutcome(agent, o);
         console.log(`  ✓ ${agent.agent_id} → ${saved}`);
         continue;
@@ -254,6 +287,53 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         console.log(`  ⤴ 게이트: ${decider} 판정 '${decision ?? "미매칭"}' → 진행`);
         continue;
       }
+
+      if (isFanout(step)) {
+        // ── 동적 분화 (하위 전문 에이전트) ────────────────
+        const { planner, max_agents } = step.fanout;
+        if (!completed_steps.includes(planner)) {
+          failed_agent = planner;
+          console.error(`  ✗ fanout: planner '${planner}'이(가) 분화 전에 실행되지 않음 — 중단`);
+          break;
+        }
+        const max = Math.max(1, max_agents ?? 1);
+        const specs = extractSpawnDeclarations(lastMarkdown.get(planner) ?? "").slice(0, max);
+        console.log(`  ⑂ 분화: ${planner}가 선언한 하위 에이전트 ${specs.length}개${specs.length ? ` — ${specs.map((s) => s.id).join(", ")}` : ""}`);
+
+        if (specs.length === 0) {
+          console.log(`  ⑂ 분화 없음 — 진행`);
+          continue;
+        }
+
+        const plannerPlan = lastMarkdown.get(planner) ?? "";
+        for (const spec of specs) {
+          if (!allowSpawn) {
+            spawned_agents.push({ parent: planner, id: spec.id, name: spec.name, focus: spec.focus, executed: false, output: null });
+            continue;
+          }
+          const subAgent: AgentDef = {
+            agent_id: `spawn_${spec.id}`,
+            name: spec.name,
+            role: spec.focus,
+            prompt_path: "",
+            default_output: `outputs/spawned/${spec.id}.md`,
+          };
+          const brief =
+            `너는 '${spec.name}' 전문 에이전트다. 담당 범위: ${spec.focus}.\n` +
+            `아래는 상위 '${planner}'의 전체 계획이다. 이 중 네 담당 범위에 해당하는 부분을 구체화하라.\n\n` +
+            `--- 상위 계획 시작 ---\n${plannerPlan}\n--- 상위 계획 끝 ---`;
+          const so = await runStepWithRegen(subAgent, undefined, { agentPromptText: brief });
+          const saved = commitOutcome(subAgent, so);
+          spawned_agents.push({ parent: planner, id: spec.id, name: spec.name, focus: spec.focus, executed: true, output: saved });
+          console.log(`  ⑂ 하위 실행: ${spec.id} (${spec.name}) → ${saved}`);
+        }
+        if (!allowSpawn) {
+          console.log(`  ⑂ 계획만 기록 (실행하려면 --allow-spawn) — 사람 승인 게이트`);
+        }
+        continue;
+      }
+
+      if (!isCritiqueLoop(step)) continue; // 알 수 없는 step 타입 방어
 
       // ── 비평 루프 step ─────────────────────────────
       const { target, critic, max_rounds } = step.critique_loop;
@@ -297,7 +377,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           critical.map((c, idx) => `${idx + 1}. ${c}`).join("\n") +
           `\n이 리스크들을 정면으로 반영해 이전 판단을 수정하고 문서 전체를 다시 작성하라. ` +
           `각 리스크에 대한 대응·완화책을 Decisions / Assumptions / Risks에 반영하라.`;
-        const to = await runStepWithRegen(targetAgent, critic, revisionRequest);
+        const to = await runStepWithRegen(targetAgent, critic, { revisionRequest });
         const targetSaved = commitOutcome(targetAgent, to);
         console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved}`);
       }
@@ -327,6 +407,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     regenerations,
     critique_rounds,
     gate_jumps,
+    spawned_agents,
     usage,
     started_at,
     finished_at,

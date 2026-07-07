@@ -18,8 +18,13 @@
     },
     {
       "workflow_id": "dev-preflight",
-      "description": "Claude Code 개발 착수 전 기술/리스크/작업 순서를 점검한다.",
-      "steps": ["tech_lead", "red_team", "chief_of_staff"]
+      "description": "개발 착수 전 기술/리스크/작업 점검. tech_lead가 필요하면 하위 전문 에이전트로 분화.",
+      "steps": [
+        "tech_lead",
+        { "fanout": { "planner": "tech_lead", "max_agents": 4 } },
+        "red_team",
+        "chief_of_staff"
+      ]
     },
     {
       "workflow_id": "full-predev",
