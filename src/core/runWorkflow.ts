@@ -8,6 +8,7 @@ import {
   isCritiqueLoop,
   isGate,
   isFanout,
+  isApproval,
   type AgentDef,
   type AgentRegistry,
   type WorkflowStep,
@@ -109,6 +110,7 @@ export interface RunWorkflowArgs {
   allowSpawn?: boolean; // 동적 분화된 하위 에이전트를 실제 실행할지 (기본 false = 계획만, 사람 승인 게이트)
   resume?: boolean; // outputs/run_state.json이 status=failed면 resume_from부터 재개
   maxTokens?: number; // 누적 토큰(input+output) 상한. 0/미지정 = 무제한. 초과 시 step 경계에서 중단
+  approve?: (message: string, show?: string) => Promise<boolean>; // 승인 게이트 응답자. 미지정 시 자동 승인
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
 }
 
@@ -148,7 +150,7 @@ function nextHint(steps: WorkflowStep[], i: number): string | undefined {
   const nx = steps[i + 1];
   if (nx === undefined) return undefined;
   if (isCritiqueLoop(nx)) return nx.critique_loop.critic;
-  if (isGate(nx) || isFanout(nx)) return undefined; // 게이트/분화는 다음 agent가 아님
+  if (isGate(nx) || isFanout(nx) || isApproval(nx)) return undefined; // 게이트/분화/승인은 다음 agent가 아님
   return nx;
 }
 
@@ -187,10 +189,12 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const maxRegen = Math.max(0, args.maxRegenerations ?? 1);
   const allowSpawn = args.allowSpawn ?? false;
   const maxTokens = Math.max(0, args.maxTokens ?? 0);
+  const approve = args.approve;
   let failed_agent: string | null = null;
   let failed_reason: string | null = null;
   let failedIndex: number | null = null;
   let budgetStopped = false;
+  let rejected = false;
   let warned80 = false;
   let currentAgentId = "";
 
@@ -433,6 +437,27 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         continue;
       }
 
+      if (isApproval(step)) {
+        // ── 승인 게이트 ────────────────────────────────
+        const { message, show } = step.approval;
+        if (show) {
+          const abs = join(projectPaths(project).root, show);
+          if (existsSync(abs)) {
+            console.log(`\n--- 승인 검토 문서: ${show} ---\n${readFileSync(abs, "utf8")}\n--- (문서 끝) ---`);
+          }
+        }
+        const ok = approve ? await approve(message, show) : true; // approver 없으면 자동 승인(프로그램 호출 기본)
+        if (!ok) {
+          failed_reason = "user_rejected";
+          failedIndex = i; // 승인 step 자체 — resume 시 다시 묻는다
+          rejected = true;
+          console.error(`  ✗ 승인 거부: "${message}" — 중단 (--resume으로 재개)`);
+          break;
+        }
+        console.log(`  ✔ 승인: "${message}"`);
+        continue;
+      }
+
       if (!isCritiqueLoop(step)) continue; // 알 수 없는 step 타입 방어
 
       // ── 비평 루프 step ─────────────────────────────
@@ -503,7 +528,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     output_tokens: usagePerAgent.reduce((s, u) => s + u.output_tokens, 0),
     per_agent: usagePerAgent,
   };
-  const stopped = failed_agent !== null || budgetStopped;
+  const stopped = failed_agent !== null || budgetStopped || rejected;
   const state: RunState = {
     workflow_id: workflowId,
     project,

@@ -112,6 +112,16 @@ grep -q '"status": "completed"' "$RS"; check "resume 후 완료" $?
 node -e "const s=require('./$RS'); process.exit(s.completed_steps.includes('founder_ceo')?0:1)"; check "resume 후 founder_ceo 실행" $?
 
 echo ""
+echo "== Test 9: approval gate (dev-preflight) =="
+# 거부: stdin n → user_rejected 로 중단
+echo n | $HARNESS run dev-preflight --project "$PROJ" >/dev/null 2>&1
+grep -q '"failed_reason": "user_rejected"' "$RS"; check "승인 거부 → user_rejected" $?
+grep -q '"status": "failed"' "$RS";               check "거부 → status=failed" $?
+# --yes resume → 비대화 승인으로 완주
+$HARNESS run dev-preflight --project "$PROJ" --resume --yes >/dev/null 2>&1
+grep -q '"status": "completed"' "$RS";            check "--yes resume → 승인 완료" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

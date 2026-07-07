@@ -23,7 +23,8 @@
         "tech_lead",
         { "fanout": { "planner": "tech_lead", "max_agents": 4 } },
         "red_team",
-        "chief_of_staff"
+        "chief_of_staff",
+        { "approval": { "message": "사전 검토 완료. 개발 착수를 승인하는가?", "show": "outputs/chief_of_staff.md" } }
       ]
     },
     {

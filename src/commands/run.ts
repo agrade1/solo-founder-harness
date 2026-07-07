@@ -1,6 +1,18 @@
+import { createInterface } from "node:readline";
 import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
+
+/** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
+function stdinApprover(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`\n[승인 필요] ${message} (y/N): `, (ans) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(ans.trim()));
+    });
+  });
+}
 
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(
@@ -12,8 +24,10 @@ export async function runRun(
   vault?: string,
   resume = false,
   maxTokens = 0,
+  yes = false,
 ): Promise<void> {
   const provider = getProvider(providerId);
+  const approve = yes ? async () => true : stdinApprover;
 
   if (resume) {
     // 재개 전 안전 점검: 완료된 실행을 덮어쓰지 않는다 (FAILURE_RECOVERY).
@@ -40,6 +54,7 @@ export async function runRun(
     allowSpawn,
     resume,
     maxTokens,
+    approve,
   });
 
   console.log("");
