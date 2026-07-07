@@ -113,10 +113,33 @@ harness task-prompt --project sample-project
 
 ---
 
+## 2-1. v2 확장 테스트 (v1 완료 기준 아님)
+
+### Test 6. Obsidian export
+
+명령:
+
+```bash
+harness run idea-validation --project sample-project --vault <vault경로>
+```
+
+확인:
+
+```text
+- <vault>/<project>/<workflow>_run.md (MOC 인덱스 노트) 생성
+- <vault>/<project>/<agent_id>.md (agent별 노트) 생성
+- 노트에 YAML frontmatter (project/workflow/agent/role/provider/date/tags)
+- agent 노트에 [[인덱스]] wikilink, 인덱스에 [[agent]] wikilink (양방향)
+- --vault/HARNESS_VAULT 미지정 시 export 하지 않음(기존 동작 무영향)
+```
+
+---
+
 ## 3. v1 통과 조건
 
 ```text
-위 5개 테스트가 모두 통과하면 v1 MVP 완료로 본다.
+위 5개 테스트(Test 1~5)가 모두 통과하면 v1 MVP 완료로 본다.
+(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~6 총 35 checks 검증.)
 ```
 
 ## 4. v1 실패 조건

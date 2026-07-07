@@ -83,3 +83,14 @@
   - **경계 유지**: 하네스는 병렬 실행 "스펙을 생성"만. 실제 병렬 코딩은 Claude Code subagent가 사람 승인 후 수행(하네스가 코드 실행 안 함).
   - 검증: stub fanout(--allow-spawn) → task-prompt에 병렬 섹션·통합·Include 반영 확인. acceptance 30/30 유지.
 - 다음(선택): 실전(claude-code) dev-preflight로 분화·병렬스펙 품질 체감, 또는 v2.3.0 태그.
+- **v2.3.0 태그** (B-③ 멀티에이전트 task-prompt). develop→main 병합.
+
+## 2026-07-07 (Obsidian 연동 — V2_KICKOFF 5번)
+
+- [Obsidian] workflow 실행 결과를 Obsidian vault로 export:
+  - src/core/obsidianExport.ts: `exportToVault({vault, state})` — run_state 기반으로 vault에 노트 사본 생성. 원본 프로젝트 파일은 읽기만(비파괴).
+  - 각 완료 agent 출력 → `<vault>/<project>/<agent_id>.md`: YAML frontmatter(project/workflow/agent/role/provider/date/tags) + 원문 + "## 연결"(이전/다음/인덱스 `[[wikilink]]`).
+  - run 인덱스 노트(MOC) `<workflow>_run.md`: 실행 순서대로 `[[wikilink]]` 나열 + 실행 메타(provider/토큰/비평루프/게이트/분화). tags에 moc 추가 → 그래프뷰 허브.
+  - 분화된 하위 에이전트(spawn_*) 출력도 함께 export. safeName으로 노트명 안전화, YAML 값 이스케이프.
+  - CLI `run --vault <path>` 플래그 + `HARNESS_VAULT` 환경변수. 미지정 시 export 안 함(기존 동작 무영향). export 실패해도 실행 결과 저장은 보존(경고만).
+  - 검증: acceptance에 Test 6 추가(인덱스/agent 노트 생성, frontmatter, wikilink 양방향) → 35/35 통과. e2e로 vault 트리·노트 내용 확인.

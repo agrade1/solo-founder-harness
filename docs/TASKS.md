@@ -30,8 +30,8 @@
 - [~] [B-①] FE/BE 전문 에이전트 — 정적 추가는 보류(동적 분화로 대체), 필요 시 수동
 - [x] [B-②] 동적 분화(fanout) — planner SPAWN 선언 → 승인(--allow-spawn) → 하위 에이전트 런타임 실행. dev-preflight 내장 (stub 검증)
 - [x] [B-③] task-prompt 멀티에이전트 실행 스펙 — 분화 시 FE/BE 병렬 subagent 지시문 생성(승인 게이트). 실제 코딩은 Claude Code (stub 검증)
+- [x] [Obsidian] Obsidian 연동 (V2_KICKOFF 5번) — run 결과를 vault로 export(frontmatter + wikilink + MOC 인덱스). `run --vault`/`HARNESS_VAULT`, read-only opt-in. acceptance Test 6 추가(35/35)
 - [ ] (선택) 하네스→Claude Code 실행 자동 연동 (스펙 생성 넘어 실행 트리거, 승인 게이트 필수) — 신중히
-- [ ] (선택) Obsidian 연동 (V2_KICKOFF 5번)
 
 ## 완료
 

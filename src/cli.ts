@@ -35,9 +35,10 @@ program
   .option("--provider <id>", "LLM provider (mock | claude-code | anthropic)", "mock")
   .option("--max-regen <n>", "스키마 실패 시 재생성 상한 (기본 1)", "1")
   .option("--allow-spawn", "동적 분화된 하위 에이전트를 실제 실행 (기본: 계획만)", false)
+  .option("--vault <path>", "실행 결과를 Obsidian vault로 export (frontmatter + wikilink). 미지정 시 HARNESS_VAULT 환경변수 사용")
   .description("workflow를 순서대로 실행하고 결과를 저장한다")
-  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean }) => {
-    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn);
+  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean; vault?: string }) => {
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault);
   });
 
 program
