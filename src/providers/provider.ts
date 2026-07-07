@@ -20,6 +20,8 @@ export interface AgentRunInput {
   retryFeedback?: string;
   /** 비평 루프에서 critic의 Critical 리스크를 반영해 판단을 수정하라는 지시. mock은 미사용. */
   revisionRequest?: string;
+  /** 동적 분화: planner에게 하위 에이전트를 SPAWN 형식으로 선언하라는 지시. mock은 미사용. */
+  spawnRequest?: string;
 }
 
 /** token 사용량. 실제 API provider만 채운다 (mock=0, claude-code=계측 불가 시 생략). */

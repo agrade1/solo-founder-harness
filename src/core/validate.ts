@@ -70,6 +70,34 @@ export function extractSectionBullets(markdown: string, headerPattern: RegExp): 
   return bullets.filter((b) => b.length > 0);
 }
 
+export interface SpawnSpec {
+  id: string;
+  name: string;
+  focus: string;
+}
+
+/**
+ * planner 출력에서 하위 에이전트 선언을 파싱한다 (동적 분화용).
+ * 형식: `SPAWN id=<id> | name=<name> | focus=<한 줄>` (문서 어디에 있어도 됨).
+ * "SPAWN none"이거나 없으면 빈 배열. id는 [a-z0-9_-]로 정규화, 중복 제거.
+ */
+export function extractSpawnDeclarations(markdown: string): SpawnSpec[] {
+  const out: SpawnSpec[] = [];
+  const seen = new Set<string>();
+  for (const raw of markdown.split("\n")) {
+    const line = raw.trim().replace(/^[-*]\s+/, ""); // 앞 bullet 허용
+    const m = line.match(/^SPAWN\s+id=([^|]+)\|\s*name=([^|]+)\|\s*focus=(.+)$/i);
+    if (!m) continue;
+    const id = m[1].trim().toLowerCase().replace(/[^a-z0-9_-]/g, "-").replace(/^-+|-+$/g, "");
+    const name = m[2].trim();
+    const focus = m[3].trim();
+    if (!id || !name || !focus || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, name, focus });
+  }
+  return out;
+}
+
 /** 지정 "## 헤더" 섹션의 본문 텍스트를 반환한다 (다음 "## " 전까지). 없으면 빈 문자열. */
 function sectionText(markdown: string, headerPattern: RegExp): string {
   const lines = markdown.split("\n");

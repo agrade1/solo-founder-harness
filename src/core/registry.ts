@@ -28,8 +28,18 @@ export interface GateDef {
   max_jumps: number; // 되돌림 상한 (무한루프 방지)
 }
 
-/** workflow step: agent id 문자열, 비평 루프, 또는 CEO 게이트. */
-export type WorkflowStep = string | { critique_loop: CritiqueLoopDef } | { gate: GateDef };
+/** 동적 분화: planner가 선언한 하위 전문 에이전트를 (승인 시) 런타임 생성·실행. */
+export interface FanoutDef {
+  planner: string; // 하위 에이전트를 선언하는 agent (fanout 직전 step, 예: tech_lead)
+  max_agents: number; // 생성 상한 (폭주 방지)
+}
+
+/** workflow step: agent id 문자열, 비평 루프, CEO 게이트, 또는 동적 분화. */
+export type WorkflowStep =
+  | string
+  | { critique_loop: CritiqueLoopDef }
+  | { gate: GateDef }
+  | { fanout: FanoutDef };
 
 export interface WorkflowDef {
   workflow_id: string;
@@ -45,6 +55,11 @@ export function isCritiqueLoop(step: WorkflowStep): step is { critique_loop: Cri
 /** step이 CEO 게이트인지 판별 */
 export function isGate(step: WorkflowStep): step is { gate: GateDef } {
   return typeof step === "object" && step !== null && "gate" in step;
+}
+
+/** step이 동적 분화인지 판별 */
+export function isFanout(step: WorkflowStep): step is { fanout: FanoutDef } {
+  return typeof step === "object" && step !== null && "fanout" in step;
 }
 
 export interface WorkflowsFile {

@@ -34,9 +34,10 @@ program
   .requiredOption("--project <projectName>", "대상 프로젝트 이름")
   .option("--provider <id>", "LLM provider (mock | claude-code | anthropic)", "mock")
   .option("--max-regen <n>", "스키마 실패 시 재생성 상한 (기본 1)", "1")
+  .option("--allow-spawn", "동적 분화된 하위 에이전트를 실제 실행 (기본: 계획만)", false)
   .description("workflow를 순서대로 실행하고 결과를 저장한다")
-  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string }) => {
-    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen));
+  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean }) => {
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn);
   });
 
 program

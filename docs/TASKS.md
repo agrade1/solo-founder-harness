@@ -27,8 +27,8 @@
 - [x] [v2-5] anthropic provider(A안) — @anthropic-ai/sdk 연동, 공유 프롬프트 빌더. 키 없을 때 안전 실패 (실제 유료 호출은 미검증)
 - [x] [v2-6] CEO 게이트 분기 — WorkflowStep에 {gate} 확장, 판정→되돌림(max_jumps). full-predev에 내장 (mock+stub 검증)
 - [x] [v2.1-A] 라이브러리화 — PACKAGE_ROOT(자산)/WORKSPACE_ROOT(CWD) 경로 분리, install-ready (외부 CWD 검증)
-- [ ] [B-①] FE/BE 전문 에이전트 추가 (정적 전문화)
-- [ ] [B-②] 동적 에이전트 분리 게이트 (tech_lead 제안 → 승인 → 실행)
+- [~] [B-①] FE/BE 전문 에이전트 — 정적 추가는 보류(동적 분화로 대체), 필요 시 수동
+- [x] [B-②] 동적 분화(fanout) — planner SPAWN 선언 → 승인(--allow-spawn) → 하위 에이전트 런타임 실행. dev-preflight 내장 (stub 검증)
 - [ ] [B-③/v3] Claude Code 병렬 실행 연동 (실제 FE/BE 코딩)
 - [ ] (선택) Obsidian 연동 (V2_KICKOFF 5번)
 

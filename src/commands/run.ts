@@ -7,6 +7,7 @@ export async function runRun(
   project: string,
   providerId: string = DEFAULT_PROVIDER_ID,
   maxRegenerations = 1,
+  allowSpawn = false,
 ): Promise<void> {
   const provider = getProvider(providerId);
   console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
@@ -16,6 +17,7 @@ export async function runRun(
     project,
     provider,
     maxRegenerations,
+    allowSpawn,
   });
 
   console.log("");
@@ -28,6 +30,15 @@ export async function runRun(
   }
   for (const g of state.gate_jumps) {
     console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${g.jumped_to ? `${g.jumped_to} 되돌림` : "진행"}`);
+  }
+  if (state.spawned_agents.length > 0) {
+    const executed = state.spawned_agents.filter((s) => s.executed).length;
+    const ids = state.spawned_agents.map((s) => s.id).join(", ");
+    console.log(
+      executed > 0
+        ? `분화: ${state.spawned_agents.length}개 하위 에이전트 실행 (${ids})`
+        : `분화: ${state.spawned_agents.length}개 선언됨 (${ids}) — 계획만, 실행하려면 --allow-spawn`,
+    );
   }
   if (state.regenerations.length > 0) {
     const total = state.regenerations.reduce((s, r) => s + r.attempts, 0);

@@ -24,6 +24,7 @@ export function buildPromptParts(input: AgentRunInput, providerId: string): Prom
     nextAgentId,
     retryFeedback,
     revisionRequest,
+    spawnRequest,
   } = input;
 
   const priorBlock =
@@ -33,6 +34,7 @@ export function buildPromptParts(input: AgentRunInput, providerId: string): Prom
   const nextAgentLine = nextAgentId ? nextAgentId : "(없음 — 이 workflow의 마지막 단계)";
   const revisionBlock = revisionRequest ? `\n---\n# 🔁 비평 반영 수정 지시\n\n${revisionRequest}\n` : "";
   const retryBlock = retryFeedback ? `\n---\n# ⚠️ 재작성 지시\n\n${retryFeedback}\n` : "";
+  const spawnBlock = spawnRequest ? `\n---\n# 🧩 하위 에이전트 분화\n\n${spawnRequest}\n` : "";
 
   const user = `# 너의 역할: ${agent.name} (${agent.role})
 
@@ -74,7 +76,7 @@ Risks(하위 "### Critical" "### High" "### Medium" "### Low") /
 Recommended Next Actions(1~3개) / Next Agent(값: ${nextAgentLine}) /
 Artifacts To Update(값: ${agent.default_output}) / Handoff Notes.
 
-Main Judgment은 결론을 먼저 한 문장으로 제시하고, 각 섹션은 이 역할 관점에서 구체적으로 채운다.${revisionBlock}${retryBlock}`;
+Main Judgment은 결론을 먼저 한 문장으로 제시하고, 각 섹션은 이 역할 관점에서 구체적으로 채운다.${revisionBlock}${retryBlock}${spawnBlock}`;
 
   return { system: commonPrompt, user };
 }
