@@ -79,6 +79,24 @@ grep -q "\[\[idea-validation_run\]\]" "$VDIR/research.md"; check "노트 wikilin
 grep -q "\[\[research\]\]" "$VDIR/idea-validation_run.md";  check "인덱스 wikilink(agent)" $?
 
 echo ""
+echo "== Test 7: run --resume =="
+RS="$PDIR/outputs/run_state.json"
+# pm에서 강제 실패 (idea-validation: chief_of_staff→research→pm→red_team→founder_ceo)
+HARNESS_FAIL_AT=pm $HARNESS run idea-validation --project "$PROJ" >/dev/null 2>&1
+grep -q '"status": "failed"' "$RS";        check "강제 실패 → status=failed" $?
+grep -q '"failed_agent": "pm"' "$RS";      check "failed_agent=pm 기록" $?
+grep -q '"resume_from": 2' "$RS";          check "resume_from=2 (pm step)" $?
+# 완료 실행에 --resume → 덮어쓰기 방지 (재개 대상 아님)
+$HARNESS run idea-validation --project "$PROJ" --resume >/dev/null 2>&1
+grep -q '"status": "completed"' "$RS";     check "resume 후 status=completed" $?
+grep -q '"resume_from": null' "$RS";       check "완료 후 resume_from=null" $?
+grep -q '"founder_ceo"' "$RS";             check "resume 후 마지막 step 도달" $?
+test -f "$PDIR/docs/06_CEO_DECISION.md";   check "resume 후 CEO 문서 생성" $?
+# 완료 상태에서 재개 시도 → 덮어쓰기 없이 안내
+OUT="$($HARNESS run idea-validation --project "$PROJ" --resume 2>&1)"
+echo "$OUT" | grep -q "재개할 것이 없습니다"; check "완료 실행 재개 방지 안내" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

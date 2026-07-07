@@ -1,8 +1,8 @@
-import { runWorkflow } from "../core/runWorkflow.js";
+import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 
-/** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] */
+/** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(
   workflowName: string,
   project: string,
@@ -10,9 +10,26 @@ export async function runRun(
   maxRegenerations = 1,
   allowSpawn = false,
   vault?: string,
+  resume = false,
 ): Promise<void> {
   const provider = getProvider(providerId);
-  console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
+
+  if (resume) {
+    // 재개 전 안전 점검: 완료된 실행을 덮어쓰지 않는다 (FAILURE_RECOVERY).
+    const prior = loadRunState(project);
+    if (!prior) {
+      console.error(`재개할 run_state가 없습니다: ${project} (먼저 'harness run ${workflowName} --project ${project}' 실행)`);
+      process.exitCode = 1;
+      return;
+    }
+    if (prior.status === "completed") {
+      console.log(`이미 완료된 실행입니다 (${prior.workflow_id}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
+      return;
+    }
+    console.log(`workflow 재개: ${workflowName} (project: ${project}, provider: ${provider.id}, step ${prior.resume_from}부터)`);
+  } else {
+    console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
+  }
 
   const { state, savedFiles, runStatePath } = await runWorkflow({
     workflowId: workflowName,
@@ -20,6 +37,7 @@ export async function runRun(
     provider,
     maxRegenerations,
     allowSpawn,
+    resume,
   });
 
   console.log("");

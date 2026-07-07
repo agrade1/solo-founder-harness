@@ -22,13 +22,17 @@ function listMarkdown(dir: string): string[] {
 }
 
 /** 다음 작업을 상태로부터 도출한다. */
-function nextActions(state: RunState | null): string[] {
+function nextActions(state: RunState | null, project: string): string[] {
   if (!state) {
     return ["아직 workflow 미실행 — `harness run <workflow> --project <name>` 실행."];
   }
   const actions: string[] = [];
   if (state.failed_agent) {
-    actions.push(`\`${state.failed_agent}\`에서 중단됨 — 원인 확인 후 workflow 재실행.`);
+    const reason = state.failed_reason ? ` (${state.failed_reason})` : "";
+    actions.push(
+      `\`${state.failed_agent}\`에서 중단됨${reason} — 원인 확인 후 ` +
+        `\`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`,
+    );
   } else {
     actions.push(`workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
   }
@@ -52,6 +56,7 @@ export function buildSummary(project: string, today: string): string {
   lines.push("## 현재 상태");
   if (state) {
     lines.push(`- 마지막 workflow: \`${state.workflow_id}\``);
+    lines.push(`- 상태: ${state.status ?? (state.failed_agent ? "failed" : "completed")}`);
     lines.push(`- 완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
     lines.push(`- 실패 agent: ${state.failed_agent ?? "없음"}`);
     lines.push(`- 경고: ${state.warnings.length}건`);
@@ -73,7 +78,7 @@ export function buildSummary(project: string, today: string): string {
   lines.push("");
 
   lines.push("## 다음 작업");
-  for (const a of nextActions(state)) lines.push(`- ${a}`);
+  for (const a of nextActions(state, project)) lines.push(`- ${a}`);
   lines.push("");
 
   return lines.join("\n");
