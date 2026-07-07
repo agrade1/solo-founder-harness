@@ -26,7 +26,11 @@
 - [x] [v2-4] Red Team 비평 루프 — steps를 loop 구성으로 확장, critic Critical→target revise→재검토(critique_rounds). mvp-planning에 내장 (mock+stub 검증)
 - [x] [v2-5] anthropic provider(A안) — @anthropic-ai/sdk 연동, 공유 프롬프트 빌더. 키 없을 때 안전 실패 (실제 유료 호출은 미검증)
 - [x] [v2-6] CEO 게이트 분기 — WorkflowStep에 {gate} 확장, 판정→되돌림(max_jumps). full-predev에 내장 (mock+stub 검증)
-- [ ] [v2-7] (선택) Obsidian 연동 (V2_KICKOFF 5번) 또는 실전 실행 후 v2 태그
+- [x] [v2.1-A] 라이브러리화 — PACKAGE_ROOT(자산)/WORKSPACE_ROOT(CWD) 경로 분리, install-ready (외부 CWD 검증)
+- [ ] [B-①] FE/BE 전문 에이전트 추가 (정적 전문화)
+- [ ] [B-②] 동적 에이전트 분리 게이트 (tech_lead 제안 → 승인 → 실행)
+- [ ] [B-③/v3] Claude Code 병렬 실행 연동 (실제 FE/BE 코딩)
+- [ ] (선택) Obsidian 연동 (V2_KICKOFF 5번)
 
 ## 완료
 

@@ -29,6 +29,7 @@
 
 - **[실전 검증 완료]** mvp-planning을 claude-code로 실제 실행 → 비평 루프 실작동 확인(red_team이 Critical 2건 발견→tech_lead 반영 수정→재검토→max_rounds 종료). 루프가 출력 개선함.
 - **v2 완료 → v2.0.0 태그** (develop→main 병합).
+- **[v2.1-A 완료] 라이브러리화.** 경로 PACKAGE_ROOT(자산)/WORKSPACE_ROOT(=CWD, projects). 서비스 레포마다 설치해 쓰는 모델. package.json 2.1.0, files/bin/engines 설정, install-ready. 외부 CWD 검증 완료. (아직 develop, 미태그·미배포)
 
 ## 다음 작업 (v3 후보)
 

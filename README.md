@@ -27,11 +27,33 @@
 ## 구조 (요약 아키텍처)
 
 ```text
+[패키지 자산 — PACKAGE_ROOT 기준]
 registry/*.json  → agent/workflow 정의 (데이터)
 agents/*.md      → prompt 원문 (runAgent가 로드)
 src/core         → runWorkflow → runAgent → saveArtifact → updateContextSummary → generateClaudeTaskPrompt
+
+[사용자 데이터 — WORKSPACE_ROOT(=CWD) 기준]
 projects/<name>  → 사용자 프로젝트 (docs + outputs)
 ```
+
+경로는 둘로 분리된다(`src/core/paths.ts`): **자산**은 설치된 패키지 위치에서, **projects 데이터**는 실행한 디렉토리(CWD)에서. `HARNESS_WORKSPACE`로 데이터 위치 오버라이드 가능.
+
+## 라이브러리로 다른 레포에서 사용
+
+하네스 하나에 서비스를 쌓지 말고, **서비스 레포마다 하네스를 설치**해서 쓴다. projects/는 실행한 레포(CWD)에 생성된다.
+
+```bash
+# 새 서비스 레포에서 (아직 npm 미배포 → git/로컬 설치)
+npm install github:agrade1/solo-founder-harness
+# 또는 로컬 개발용: npm install /path/to/solo-founder-harness
+
+npx harness init my-service        # ./projects/my-service/ 생성 (이 레포 안)
+# ./projects/my-service/docs/00_IDEA.md 작성
+npx harness run mvp-planning --project my-service --provider claude-code
+npx harness task-prompt --project my-service
+```
+
+에이전트 프롬프트/워크플로우 정의는 설치된 패키지에서 로드되므로 서비스 레포는 깨끗하게 유지된다.
 
 ## 사용법
 
