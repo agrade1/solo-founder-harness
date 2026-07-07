@@ -1,13 +1,15 @@
 import { runWorkflow } from "../core/runWorkflow.js";
+import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 
-/** harness run <workflow> --project <name> [--provider <id>] */
+/** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] */
 export async function runRun(
   workflowName: string,
   project: string,
   providerId: string = DEFAULT_PROVIDER_ID,
   maxRegenerations = 1,
   allowSpawn = false,
+  vault?: string,
 ): Promise<void> {
   const provider = getProvider(providerId);
   console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
@@ -55,6 +57,17 @@ export async function runRun(
     );
   }
   console.log(`run_state: ${runStatePath}`);
+
+  // Obsidian vault export (옵션). --vault 또는 HARNESS_VAULT 환경변수.
+  const vaultPath = vault ?? process.env.HARNESS_VAULT;
+  if (vaultPath && vaultPath.trim()) {
+    try {
+      const ex = exportToVault({ vault: vaultPath.trim(), state });
+      console.log(`Obsidian: ${ex.notesWritten}개 노트 → ${ex.folder} (인덱스: [[${ex.indexNote}]])`);
+    } catch (err) {
+      console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${(err as Error).message}`);
+    }
+  }
 
   // 실패가 있으면 비정상 종료 코드로 신호
   if (state.failed_agent) process.exitCode = 1;

@@ -15,7 +15,8 @@ check() { # check "설명" <조건 종료코드>
   else echo "  FAIL $1"; FAIL=$((FAIL+1)); fi
 }
 
-cleanup() { rm -rf "$PDIR"; }
+VAULT="projects/_acceptance_vault"
+cleanup() { rm -rf "$PDIR" "$VAULT"; }
 trap cleanup EXIT
 cleanup
 
@@ -66,6 +67,16 @@ done
 grep -qF "패키지 설치" "$TP"; check "패키지 설치 금지 규칙" $?
 grep -qF "배포" "$TP";       check "배포 금지 규칙" $?
 grep -qF "DB" "$TP";         check "DB 변경 금지 규칙" $?
+
+echo ""
+echo "== Test 6: obsidian export (--vault) =="
+$HARNESS run idea-validation --project "$PROJ" --vault "$VAULT" >/dev/null
+VDIR="$VAULT/$PROJ"
+test -f "$VDIR/idea-validation_run.md"; check "vault 인덱스 노트 생성" $?
+test -f "$VDIR/research.md";            check "vault agent 노트 생성" $?
+grep -q "^project:" "$VDIR/research.md";        check "노트 frontmatter" $?
+grep -q "\[\[idea-validation_run\]\]" "$VDIR/research.md"; check "노트 wikilink(인덱스)" $?
+grep -q "\[\[research\]\]" "$VDIR/idea-validation_run.md";  check "인덱스 wikilink(agent)" $?
 
 echo ""
 echo "==================================="

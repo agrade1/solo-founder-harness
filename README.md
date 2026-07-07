@@ -23,6 +23,7 @@
 - **CEO 게이트 분기**: decider(founder_ceo) 판정이 매칭되면 지정 agent로 되돌려 재실행(max_jumps로 무한루프 방지). `full-predev`에 내장(`⤴[founder_ceo?축소→pm,검증→research×1]`). run_state에 `gate_jumps` 기록.
 - **동적 분화(fanout)**: planner(tech_lead)가 `SPAWN id=..|name=..|focus=..`로 하위 전문 에이전트 선언 → 기본은 계획만 기록(사람 승인 게이트), `--allow-spawn` 시 런타임 생성·실행(`outputs/spawned/<id>.md`). `dev-preflight`에 내장(`⑂[tech_lead→spawn×4]`). run_state에 `spawned_agents` 기록.
 - **멀티에이전트 task-prompt**: 분화가 있었으면 `task-prompt`가 FE/BE별 **병렬 subagent 실행 스펙**을 생성(담당범위·계획문서·API_CONTRACT 통합·승인 게이트). 하네스는 스펙 생성까지 — 실제 병렬 코딩은 Claude Code subagent가 사람 승인 후 수행.
+- **Obsidian export**: `run --vault <경로>`(또는 `HARNESS_VAULT`) 지정 시 실행 결과를 Obsidian vault로 read-only export. agent별 노트(YAML frontmatter + 이전/다음/인덱스 `[[wikilink]]`) + run MOC 인덱스(실행 순서 링크 + 메타). 미지정 시 동작 안 함(기존 파이프라인 무영향). 원본 `projects/` 파일은 비파괴.
 - token usage를 `run_state.json`에 집계.
 - 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`.
 
@@ -77,7 +78,7 @@ npm run harness -- task-prompt --project my-project
 |---|---|---|
 | `list` | core agents / common prompt / workflows 출력 | (stdout) |
 | `init <name>` | 프로젝트 docs 6개 + outputs 생성 | `projects/<name>/` |
-| `run <workflow> --project <name> [--provider <id>] [--max-regen <n>]` | workflow 순서 실행, 결과 저장 (기본 provider=mock) | `docs/0N_*.md`, `outputs/run_state.json` |
+| `run <workflow> --project <name> [--provider <id>] [--max-regen <n>] [--allow-spawn] [--vault <경로>]` | workflow 순서 실행, 결과 저장 (기본 provider=mock). `--vault` 시 Obsidian export | `docs/0N_*.md`, `outputs/run_state.json`, (`--vault` 시) `<vault>/<project>/*.md` |
 | `summary --project <name>` | 상태 요약 갱신 | `docs/CONTEXT_SUMMARY.md` |
 | `task-prompt --project <name>` | Claude Code 작업 지시문 생성 | `outputs/claude_code_task_prompt.md` |
 
