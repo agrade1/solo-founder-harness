@@ -76,4 +76,10 @@
   - 하위 에이전트: 런타임 AgentDef + 생성 브리프(agentPromptText 오버라이드, runAgent가 prompt_path 파일 대신 사용) → outputs/spawned/<id>.md. 레포 영구등록 안 함.
   - dev-preflight에 fanout 내장(tech_lead→spawn×4). list `⑂[planner→spawn×N]`, run 요약 표시.
   - 검증: stub으로 계획만(executed:false) + --allow-spawn(실제 실행, outputs/spawned 생성) 두 모드 확인. acceptance 30/30 유지.
-- 다음(B-③, v3): Claude Code 병렬 실행 연동(실제 FE/BE 코딩).
+- **v2.2.0 태그** (동적 분화). develop→main 병합 + Release.
+- [B-③] task-prompt를 멀티에이전트 실행 스펙으로 확장:
+  - run_state.spawned_agents가 있으면 task-prompt에 "## 병렬 실행 (Claude Code subagents)" 섹션 추가 — FE/BE별 담당범위·계획문서(outputs/spawned/*.md)·산출범위 + API_CONTRACT 기준 통합 + 승인 게이트("자동 실행 금지").
+  - Include에 spawned 계획문서 자동 포함. spawned 없으면 기존 단일 task-prompt 그대로(acceptance 무영향).
+  - **경계 유지**: 하네스는 병렬 실행 "스펙을 생성"만. 실제 병렬 코딩은 Claude Code subagent가 사람 승인 후 수행(하네스가 코드 실행 안 함).
+  - 검증: stub fanout(--allow-spawn) → task-prompt에 병렬 섹션·통합·Include 반영 확인. acceptance 30/30 유지.
+- 다음(선택): 실전(claude-code) dev-preflight로 분화·병렬스펙 품질 체감, 또는 v2.3.0 태그.

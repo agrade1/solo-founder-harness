@@ -87,8 +87,33 @@ export function buildTaskPrompt(project: string, today: string): string {
   nextActions.slice(0, 5).forEach((a, i) => lines.push(`${i + 1}. ${a}`));
   lines.push("");
 
+  // 동적 분화(fanout)가 있었으면 병렬 subagent 실행 스펙을 추가한다 (B-③).
+  const spawned = state?.spawned_agents ?? [];
+  if (spawned.length > 0) {
+    lines.push("## 병렬 실행 (Claude Code subagents)");
+    lines.push(
+      `\`${spawned[0].parent}\`가 아래 ${spawned.length}개 전문 영역으로 분화했다. ` +
+        "Claude Code에서 각 영역을 **병렬 subagent**로 띄워 진행하고, 전부 완료된 뒤 통합·교차검증한다.",
+    );
+    lines.push("⚠️ 각 subagent 작업 전 구현 계획을 먼저 제시하고 사용자 승인을 받는다 (자동 실행 금지).");
+    lines.push("");
+    for (const s of spawned) {
+      lines.push(`### ${s.id} — ${s.name}`);
+      lines.push(`- 담당 범위: ${s.focus}`);
+      if (s.output) lines.push(`- 계획 문서: ${s.output}`);
+      else lines.push(`- (계획 문서 미생성 — \`harness run ... --allow-spawn\`으로 생성 가능)`);
+      lines.push(`- 산출: 담당 범위의 코드/변경만. 다른 영역 파일은 건드리지 않는다.`);
+      lines.push("");
+    }
+    lines.push("### 통합");
+    lines.push("- `docs/API_CONTRACT.md`의 인터페이스 계약을 기준으로 각 영역을 통합한다.");
+    lines.push("- 각 subagent 완료 후 계약 일치·빌드·테스트로 교차 검증한다.");
+    lines.push("");
+  }
+
   lines.push("## Include (읽을 것)");
   for (const rel of includeCandidates) lines.push(`- ${rel}`);
+  for (const s of spawned) if (s.output) lines.push(`- ${s.output}`);
   lines.push("");
 
   lines.push("## Exclude (건드리지 말 것)");

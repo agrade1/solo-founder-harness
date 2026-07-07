@@ -29,7 +29,8 @@
 - [x] [v2.1-A] 라이브러리화 — PACKAGE_ROOT(자산)/WORKSPACE_ROOT(CWD) 경로 분리, install-ready (외부 CWD 검증)
 - [~] [B-①] FE/BE 전문 에이전트 — 정적 추가는 보류(동적 분화로 대체), 필요 시 수동
 - [x] [B-②] 동적 분화(fanout) — planner SPAWN 선언 → 승인(--allow-spawn) → 하위 에이전트 런타임 실행. dev-preflight 내장 (stub 검증)
-- [ ] [B-③/v3] Claude Code 병렬 실행 연동 (실제 FE/BE 코딩)
+- [x] [B-③] task-prompt 멀티에이전트 실행 스펙 — 분화 시 FE/BE 병렬 subagent 지시문 생성(승인 게이트). 실제 코딩은 Claude Code (stub 검증)
+- [ ] (선택) 하네스→Claude Code 실행 자동 연동 (스펙 생성 넘어 실행 트리거, 승인 게이트 필수) — 신중히
 - [ ] (선택) Obsidian 연동 (V2_KICKOFF 5번)
 
 ## 완료
