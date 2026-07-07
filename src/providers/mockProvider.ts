@@ -93,6 +93,10 @@ ${nextAgentLine}
 - [MOCK] 다음 agent가 알아야 할 핸드오프 메모
 `;
 
-    return { markdown, usage: { inputTokens: 0, outputTokens: 0 } };
+    // 기본 usage는 0 (실제 provider만 토큰 계측). 단, 예산 로직 검증용으로
+    // HARNESS_MOCK_TOKENS가 설정되면 호출당 그 값을 input 토큰으로 계측한다.
+    const mockTokens = Number(process.env.HARNESS_MOCK_TOKENS ?? 0);
+    const usage = mockTokens > 0 ? { inputTokens: mockTokens, outputTokens: 0 } : { inputTokens: 0, outputTokens: 0 };
+    return { markdown, usage };
   },
 };

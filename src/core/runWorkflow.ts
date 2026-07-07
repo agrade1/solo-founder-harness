@@ -108,6 +108,7 @@ export interface RunWorkflowArgs {
   maxRegenerations?: number; // 스키마 실패 시 재생성 상한 (기본 1). mock은 항상 통과라 미발동.
   allowSpawn?: boolean; // 동적 분화된 하위 에이전트를 실제 실행할지 (기본 false = 계획만, 사람 승인 게이트)
   resume?: boolean; // outputs/run_state.json이 status=failed면 resume_from부터 재개
+  maxTokens?: number; // 누적 토큰(input+output) 상한. 0/미지정 = 무제한. 초과 시 step 경계에서 중단
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
 }
 
@@ -185,10 +186,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const gateBudget = new Map<number, number>(); // gate step index → 남은 되돌림 횟수
   const maxRegen = Math.max(0, args.maxRegenerations ?? 1);
   const allowSpawn = args.allowSpawn ?? false;
+  const maxTokens = Math.max(0, args.maxTokens ?? 0);
   let failed_agent: string | null = null;
   let failed_reason: string | null = null;
   let failedIndex: number | null = null;
+  let budgetStopped = false;
+  let warned80 = false;
   let currentAgentId = "";
+
+  const tokensSpent = () => usagePerAgent.reduce((s, u) => s + u.input_tokens + u.output_tokens, 0);
 
   // ── resume: 이전 실패 지점부터 이어서 실행 ──────────────
   // 완료된 step은 재실행하지 않고 저장된 산출물을 컨텍스트(findings)로만 복원한다 (FAILURE_RECOVERY).
@@ -302,6 +308,22 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   }
 
   for (let i = startIndex; i < workflow.steps.length; i++) {
+    // ── 토큰 예산 검사 (step 경계) ──────────────────
+    if (maxTokens > 0) {
+      const spent = tokensSpent();
+      if (spent >= maxTokens) {
+        failed_reason = "token_budget_exceeded";
+        failedIndex = i; // 아직 실행 안 한 step — resume 시 여기부터
+        budgetStopped = true;
+        console.error(`  ✗ 토큰 예산 초과: ${spent}/${maxTokens} — step ${i} 앞에서 중단 (--resume으로 재개)`);
+        break;
+      }
+      if (!warned80 && spent >= maxTokens * 0.8) {
+        warned80 = true;
+        console.warn(`  ⚠ 토큰 예산 80% 도달: ${spent}/${maxTokens}`);
+      }
+    }
+
     const step = workflow.steps[i];
 
     try {
@@ -481,17 +503,17 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     output_tokens: usagePerAgent.reduce((s, u) => s + u.output_tokens, 0),
     per_agent: usagePerAgent,
   };
-  const failed = failed_agent !== null;
+  const stopped = failed_agent !== null || budgetStopped;
   const state: RunState = {
     workflow_id: workflowId,
     project,
     provider: provider.id,
-    status: failed ? "failed" : "completed",
+    status: stopped ? "failed" : "completed",
     completed_steps,
     failed_agent,
-    failed_reason: failed ? failed_reason : null,
-    resume_from: failed ? failedIndex : null,
-    loop_state: failed && failedIndex !== null ? { step_index: failedIndex } : null,
+    failed_reason: stopped ? failed_reason : null,
+    resume_from: stopped ? failedIndex : null,
+    loop_state: stopped && failedIndex !== null ? { step_index: failedIndex } : null,
     warnings,
     regenerations,
     critique_rounds,

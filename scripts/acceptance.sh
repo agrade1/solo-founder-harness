@@ -97,6 +97,21 @@ OUT="$($HARNESS run idea-validation --project "$PROJ" --resume 2>&1)"
 echo "$OUT" | grep -q "재개할 것이 없습니다"; check "완료 실행 재개 방지 안내" $?
 
 echo ""
+echo "== Test 8: token budget (--max-tokens) =="
+# 호출당 100토큰(HARNESS_MOCK_TOKENS), 상한 250 → chief/research/pm 실행 후 예산 초과
+OUT="$(HARNESS_MOCK_TOKENS=100 $HARNESS run idea-validation --project "$PROJ" --max-tokens 250 2>&1)"
+grep -q '"failed_reason": "token_budget_exceeded"' "$RS"; check "예산 초과 → failed_reason 기록" $?
+grep -q '"status": "failed"' "$RS";                       check "예산 초과 → status=failed" $?
+grep -q '"resume_from": 3' "$RS";                         check "예산 초과 resume_from=3 (다음 step)" $?
+echo "$OUT" | grep -q "80% 도달";                          check "80% 경고 출력" $?
+# 예산 중단 시점엔 founder_ceo 미도달
+node -e "const s=require('./$RS'); process.exit(s.completed_steps.includes('founder_ceo')?1:0)"; check "중단 시 founder_ceo 미실행" $?
+# resume (예산 없이) → 완주
+$HARNESS run idea-validation --project "$PROJ" --resume >/dev/null 2>&1
+grep -q '"status": "completed"' "$RS"; check "resume 후 완료" $?
+node -e "const s=require('./$RS'); process.exit(s.completed_steps.includes('founder_ceo')?0:1)"; check "resume 후 founder_ceo 실행" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

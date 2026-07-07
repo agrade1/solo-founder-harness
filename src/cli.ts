@@ -37,9 +37,11 @@ program
   .option("--allow-spawn", "동적 분화된 하위 에이전트를 실제 실행 (기본: 계획만)", false)
   .option("--vault <path>", "실행 결과를 Obsidian vault로 export (frontmatter + wikilink). 미지정 시 HARNESS_VAULT 환경변수 사용")
   .option("--resume", "이전 실패 지점부터 재개 (outputs/run_state.json status=failed일 때)", false)
+  .option("--max-tokens <n>", "누적 토큰(input+output) 상한. 초과 시 step 경계에서 중단(--resume 재개 가능). 미지정 시 HARNESS_MAX_TOKENS, 기본 무제한")
   .description("workflow를 순서대로 실행하고 결과를 저장한다")
-  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean; vault?: string; resume: boolean }) => {
-    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume);
+  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean; vault?: string; resume: boolean; maxTokens?: string }) => {
+    const maxTokens = Number(opts.maxTokens ?? process.env.HARNESS_MAX_TOKENS ?? 0) || 0;
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens);
   });
 
 program

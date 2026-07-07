@@ -11,6 +11,7 @@ export async function runRun(
   allowSpawn = false,
   vault?: string,
   resume = false,
+  maxTokens = 0,
 ): Promise<void> {
   const provider = getProvider(providerId);
 
@@ -38,12 +39,19 @@ export async function runRun(
     maxRegenerations,
     allowSpawn,
     resume,
+    maxTokens,
   });
 
   console.log("");
   console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
   if (state.failed_agent) {
     console.log(`실패 agent: ${state.failed_agent}`);
+  }
+  if (state.status === "failed") {
+    if (!state.failed_agent && state.failed_reason) {
+      console.log(`중단 사유: ${state.failed_reason}`);
+    }
+    console.log(`재개: harness run ${state.workflow_id} --project ${project} --resume`);
   }
   for (const c of state.critique_rounds) {
     console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
@@ -87,6 +95,6 @@ export async function runRun(
     }
   }
 
-  // 실패가 있으면 비정상 종료 코드로 신호
-  if (state.failed_agent) process.exitCode = 1;
+  // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호
+  if (state.status === "failed") process.exitCode = 1;
 }
