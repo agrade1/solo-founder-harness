@@ -22,6 +22,7 @@
 - **Red Team 비평 루프**: workflow steps를 loop 구성으로 확장(`(string | {critique_loop} | {gate})[]`). critic이 Critical 리스크를 지적하면 target에 되먹여 revise → 재검토(Critical 소멸/max_rounds까지). `mvp-planning`에 내장(`↻[red_team⟲tech_lead×2]`). run_state에 `critique_rounds` 기록.
 - **CEO 게이트 분기**: decider(founder_ceo) 판정이 매칭되면 지정 agent로 되돌려 재실행(max_jumps로 무한루프 방지). `full-predev`에 내장(`⤴[founder_ceo?축소→pm,검증→research×1]`). run_state에 `gate_jumps` 기록.
 - **동적 분화(fanout)**: planner(tech_lead)가 `SPAWN id=..|name=..|focus=..`로 하위 전문 에이전트 선언 → 기본은 계획만 기록(사람 승인 게이트), `--allow-spawn` 시 런타임 생성·실행(`outputs/spawned/<id>.md`). `dev-preflight`에 내장(`⑂[tech_lead→spawn×4]`). run_state에 `spawned_agents` 기록.
+- **멀티에이전트 task-prompt**: 분화가 있었으면 `task-prompt`가 FE/BE별 **병렬 subagent 실행 스펙**을 생성(담당범위·계획문서·API_CONTRACT 통합·승인 게이트). 하네스는 스펙 생성까지 — 실제 병렬 코딩은 Claude Code subagent가 사람 승인 후 수행.
 - token usage를 `run_state.json`에 집계.
 - 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`.
 
