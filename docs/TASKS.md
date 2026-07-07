@@ -33,6 +33,17 @@
 - [x] [Obsidian] Obsidian 연동 (V2_KICKOFF 5번) — run 결과를 vault로 export(frontmatter + wikilink + MOC 인덱스). `run --vault`/`HARNESS_VAULT`, read-only opt-in. acceptance Test 6 추가(35/35)
 - [ ] (선택) 하네스→Claude Code 실행 자동 연동 (스펙 생성 넘어 실행 트리거, 승인 게이트 필수) — 신중히
 
+## 보류 (ROADMAP v2 목록 중 V2_KICKOFF 미승격 — 필요 발생 시 v2.5/v3 승격)
+
+사유·상세: docs/DECISIONS.md 2026-07-07 "v2 범위 정합성 정리", ROADMAP.md "v2 포함" 범례.
+
+- [~] token budget 상한/초과 중단 — 종량 API(anthropic) 실사용 시작 시 재검토
+- [~] `run --resume` — 중간 실패 재개, 실익 낮아 보류
+- [~] step 사이 승인 게이트 — 분화는 `--allow-spawn`로 대체, 일반 step 보류
+- [~] schema validation 강화(내용 길이/형식) — 재생성 루프가 주 실패모드 처리, 보류
+- [~] prompt CHANGELOG — 파일 내부 버전 헤더는 v1부터 존재, CHANGELOG 보류
+- [x] Red Team 편향 분리 — handoff가 결론(Main Judgment)만 전달해 사실상 달성
+
 ## 완료
 
 - [x] 문서/레포 구조 정리 (2026-07-06)

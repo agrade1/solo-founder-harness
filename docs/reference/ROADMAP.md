@@ -29,13 +29,15 @@ B안: Claude Code subagent/skill로 7개 에이전트 실행 (구독 요금 내 
 
 ### v2 포함
 
-- 실제 provider 1개 연동 (mock과 인터페이스 동일, token usage 리포트 포함)
-- token budget: run당 상한, 초과 시 중단 (backlog TOKEN_COST_POLICY 승격)
-- `harness run --resume`: run_state 기반 실패 지점부터 재개
-- approval gate: workflow step 사이 사용자 확인 옵션 (backlog APPROVAL_GATES 승격)
-- Red Team 편향 분리: red_team에는 이전 agent의 결론 문서만 입력 (추론 과정 제외)
-- prompt versioning: agent 파일 내부 헤더 버전 + CHANGELOG (backlog 승격)
-- output schema validation 강화: 섹션 존재 → 내용 최소 길이/형식 검증
+> **실제 배포 상태 (2026-07-07 정리).** v2 실제 착수 범위는 `docs/backlog/V2_KICKOFF.md`(provider 전략 + 루프 3종 + Obsidian)로 잡혔고, 아래 목록 중 일부는 V2_KICKOFF 스펙으로 승격되지 않아 보류됐다. 각 항목 상태·사유는 `docs/DECISIONS.md` 2026-07-07 "v2 범위 정합성 정리" 참고. 범례: ✅ 완료 / ⚠️ 부분·대체 / ⏸ 보류.
+
+- ✅ **초과 달성** — 실제 provider 3종 연동(mock/claude-code/anthropic), token usage 리포트 포함
+- ⏸ token budget: run당 상한, 초과 시 중단 (backlog TOKEN_COST_POLICY 승격) — 종량 API 경로 미사용으로 필요 미발생, 보류
+- ⏸ `harness run --resume`: run_state 기반 실패 지점부터 재개 — 실익 대비 우선순위 낮아 보류
+- ⚠️ approval gate: workflow step 사이 사용자 확인 옵션 — 분화(fanout) 지점은 `--allow-spawn`으로 승인 게이트 구현, 일반 step 승인은 보류
+- ⚠️ Red Team 편향 분리 — handoff가 각 agent의 결론(Main Judgment 한 줄)만 전달, 전체 추론 문서 미전달로 사실상 달성(red_team 전용 로직은 아님)
+- ⚠️ prompt versioning: agent 파일 내부 헤더 버전(v1부터 존재) — CHANGELOG는 보류
+- ⏸ output schema validation 강화(내용 최소 길이/형식) — 주 실패모드(섹션 누락)는 재생성 루프가 처리, 내용 검증은 ROI 낮아 보류
 
 ### v2 계속 제외
 
