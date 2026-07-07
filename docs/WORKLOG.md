@@ -94,3 +94,13 @@
   - 분화된 하위 에이전트(spawn_*) 출력도 함께 export. safeName으로 노트명 안전화, YAML 값 이스케이프.
   - CLI `run --vault <path>` 플래그 + `HARNESS_VAULT` 환경변수. 미지정 시 export 안 함(기존 동작 무영향). export 실패해도 실행 결과 저장은 보존(경고만).
   - 검증: acceptance에 Test 6 추가(인덱스/agent 노트 생성, frontmatter, wikilink 양방향) → 35/35 통과. e2e로 vault 트리·노트 내용 확인.
+
+## 2026-07-07 (v3 킥오프 → v2.5 안정화 Phase 0)
+
+- **V3_KICKOFF.md(Fable 5 작성) 기반 착수.** v3 착수 조건(아이디어 2개 검증) 미충족 판정 → 버전 승격 원칙대로 Phase 0(v2.5 안정화: v2에서 보류했던 안전장치)을 v3 선결로 먼저 구현. 각 항목 단위 커밋(develop).
+- **[v2.5 0-1] run --resume.** RunState에 status/failed_reason/resume_from/loop_state 추가(기존 필드 유지 → 하위호환). `--resume` 시 완료 step은 저장 산출물에서 findings만 복원(재실행 X), 중단 지점부터 완주. 완료 실행 재개는 덮어쓰기 방지(FAILURE_RECOVERY). loadRunState() export, summary는 실패 시 --resume 안내. 검증용 HARNESS_FAIL_AT 훅. acceptance Test 7.
+- **[v2.5 0-2] token budget.** `run --max-tokens <n>` / `HARNESS_MAX_TOKENS`(기본 무제한). step 경계 누적(input+output) 검사 → 초과 시 status=failed, failed_reason="token_budget_exceeded", resume_from=다음 step → --resume 재개. 80% 도달 stderr 경고. 예산 중단도 exit 1. 검증용 HARNESS_MOCK_TOKENS 훅. acceptance Test 8.
+- **[v2.5 0-3] approval gate.** WorkflowStep에 `{approval:{message,show}}` 타입 + isApproval. 승인 게이트: show 문서 표시 후 stdin y/N, 거부 시 user_rejected로 중단(--resume 재개), `--yes` 비대화 전체 승인. dev-preflight 마지막에 "개발 착수 승인" 1곳 내장(나머지 지점은 v3 executor 책임). list에 ✔[승인게이트]. acceptance Test 9.
+- **[v2.5 0-4] Red Team 편향 분리.** AgentRunInput.contextMode(full|conclusion_only). critique_loop critic은 target 결론만 격리 검토(전체 findings 체인 anchoring 방지 — priorFindings를 target 결론만으로 제한 + 프롬프트 격리 문구). 일반 step은 full 유지. acceptance Test 10.
+- 검증: mock `npm test` → **57/57 통과**.
+- **남음(0-5, 사용자 액션)**: ① anthropic provider 유료 1회 실검증(ANTHROPIC_API_KEY + --max-tokens 상한), ② v2.5.0 태그(develop→main). 이후 Phase 1 도그푸딩(실제 아이디어 2개 full-predev 검증).

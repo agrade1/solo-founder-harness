@@ -79,6 +79,60 @@ grep -q "\[\[idea-validation_run\]\]" "$VDIR/research.md"; check "노트 wikilin
 grep -q "\[\[research\]\]" "$VDIR/idea-validation_run.md";  check "인덱스 wikilink(agent)" $?
 
 echo ""
+echo "== Test 7: run --resume =="
+RS="$PDIR/outputs/run_state.json"
+# pm에서 강제 실패 (idea-validation: chief_of_staff→research→pm→red_team→founder_ceo)
+HARNESS_FAIL_AT=pm $HARNESS run idea-validation --project "$PROJ" >/dev/null 2>&1
+grep -q '"status": "failed"' "$RS";        check "강제 실패 → status=failed" $?
+grep -q '"failed_agent": "pm"' "$RS";      check "failed_agent=pm 기록" $?
+grep -q '"resume_from": 2' "$RS";          check "resume_from=2 (pm step)" $?
+# 완료 실행에 --resume → 덮어쓰기 방지 (재개 대상 아님)
+$HARNESS run idea-validation --project "$PROJ" --resume >/dev/null 2>&1
+grep -q '"status": "completed"' "$RS";     check "resume 후 status=completed" $?
+grep -q '"resume_from": null' "$RS";       check "완료 후 resume_from=null" $?
+grep -q '"founder_ceo"' "$RS";             check "resume 후 마지막 step 도달" $?
+test -f "$PDIR/docs/06_CEO_DECISION.md";   check "resume 후 CEO 문서 생성" $?
+# 완료 상태에서 재개 시도 → 덮어쓰기 없이 안내
+OUT="$($HARNESS run idea-validation --project "$PROJ" --resume 2>&1)"
+echo "$OUT" | grep -q "재개할 것이 없습니다"; check "완료 실행 재개 방지 안내" $?
+
+echo ""
+echo "== Test 8: token budget (--max-tokens) =="
+# 호출당 100토큰(HARNESS_MOCK_TOKENS), 상한 250 → chief/research/pm 실행 후 예산 초과
+OUT="$(HARNESS_MOCK_TOKENS=100 $HARNESS run idea-validation --project "$PROJ" --max-tokens 250 2>&1)"
+grep -q '"failed_reason": "token_budget_exceeded"' "$RS"; check "예산 초과 → failed_reason 기록" $?
+grep -q '"status": "failed"' "$RS";                       check "예산 초과 → status=failed" $?
+grep -q '"resume_from": 3' "$RS";                         check "예산 초과 resume_from=3 (다음 step)" $?
+echo "$OUT" | grep -q "80% 도달";                          check "80% 경고 출력" $?
+# 예산 중단 시점엔 founder_ceo 미도달
+node -e "const s=require('./$RS'); process.exit(s.completed_steps.includes('founder_ceo')?1:0)"; check "중단 시 founder_ceo 미실행" $?
+# resume (예산 없이) → 완주
+$HARNESS run idea-validation --project "$PROJ" --resume >/dev/null 2>&1
+grep -q '"status": "completed"' "$RS"; check "resume 후 완료" $?
+node -e "const s=require('./$RS'); process.exit(s.completed_steps.includes('founder_ceo')?0:1)"; check "resume 후 founder_ceo 실행" $?
+
+echo ""
+echo "== Test 9: approval gate (dev-preflight) =="
+# 거부: stdin n → user_rejected 로 중단
+echo n | $HARNESS run dev-preflight --project "$PROJ" >/dev/null 2>&1
+grep -q '"failed_reason": "user_rejected"' "$RS"; check "승인 거부 → user_rejected" $?
+grep -q '"status": "failed"' "$RS";               check "거부 → status=failed" $?
+# --yes resume → 비대화 승인으로 완주
+$HARNESS run dev-preflight --project "$PROJ" --resume --yes >/dev/null 2>&1
+grep -q '"status": "completed"' "$RS";            check "--yes resume → 승인 완료" $?
+
+echo ""
+echo "== Test 10: Red Team 편향 분리 (critic 격리) =="
+# mvp-planning: pm→ux_ui→tech_lead→[red_team⟲tech_lead]→founder_ceo
+$HARNESS run mvp-planning --project "$PROJ" >/dev/null 2>&1
+RT="$PDIR/docs/05_RED_TEAM.md"
+CEO="$PDIR/docs/06_CEO_DECISION.md"
+grep -q "tech_lead:" "$RT";                 check "critic가 target(tech_lead) 결론은 봄" $?
+if grep -q "ux_ui:" "$RT"; then false; else true; fi;  check "critic가 ux_ui 결론은 못 봄 (격리)" $?
+if grep -q "pm:" "$RT"; then false; else true; fi;     check "critic가 pm 결론은 못 봄 (격리)" $?
+grep -q "ux_ui:" "$CEO";                    check "일반 step(founder_ceo)은 full 컨텍스트 유지" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

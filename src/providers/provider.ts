@@ -12,8 +12,10 @@ export interface AgentRunInput {
   agentPrompt: string;
   /** 프로젝트 docs/00_IDEA.md 원문 (없으면 빈 문자열). mock은 미사용, 실제 LLM은 검토 대상 아이디어. */
   ideaContent: string;
-  /** 이전 agent들의 Main Judgment 요약 (handoff 맥락) */
+  /** 이전 agent들의 Main Judgment 요약 (handoff 맥락). conclusion_only면 비평 대상의 결론만 담긴다. */
   priorFindings: string[];
+  /** 컨텍스트 범위. "conclusion_only"는 critic 편향 분리용 — 비평 대상의 결론만 보고 판단. 기본 "full". */
+  contextMode?: "full" | "conclusion_only";
   /** 다음 agent id (없으면 workflow 종료) */
   nextAgentId?: string;
   /** 재생성 시도일 때, 직전 출력에서 무엇이 잘못됐는지 교정 지시 (스키마 재생성 루프). mock은 미사용. */

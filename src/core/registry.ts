@@ -34,12 +34,19 @@ export interface FanoutDef {
   max_agents: number; // 생성 상한 (폭주 방지)
 }
 
-/** workflow step: agent id 문자열, 비평 루프, CEO 게이트, 또는 동적 분화. */
+/** 승인 게이트: 진행 전 사람 확인(y/n). 거부 시 중단(--resume 재개), --yes로 비대화 승인. */
+export interface ApprovalDef {
+  message: string; // 사용자에게 물을 문구
+  show?: string; // 승인 전 보여줄 산출물 상대경로 (예: "outputs/chief_of_staff.md")
+}
+
+/** workflow step: agent id 문자열, 비평 루프, CEO 게이트, 동적 분화, 또는 승인 게이트. */
 export type WorkflowStep =
   | string
   | { critique_loop: CritiqueLoopDef }
   | { gate: GateDef }
-  | { fanout: FanoutDef };
+  | { fanout: FanoutDef }
+  | { approval: ApprovalDef };
 
 export interface WorkflowDef {
   workflow_id: string;
@@ -60,6 +67,11 @@ export function isGate(step: WorkflowStep): step is { gate: GateDef } {
 /** step이 동적 분화인지 판별 */
 export function isFanout(step: WorkflowStep): step is { fanout: FanoutDef } {
   return typeof step === "object" && step !== null && "fanout" in step;
+}
+
+/** step이 승인 게이트인지 판별 */
+export function isApproval(step: WorkflowStep): step is { approval: ApprovalDef } {
+  return typeof step === "object" && step !== null && "approval" in step;
 }
 
 export interface WorkflowsFile {

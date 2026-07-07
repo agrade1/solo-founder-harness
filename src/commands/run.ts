@@ -1,8 +1,20 @@
-import { runWorkflow } from "../core/runWorkflow.js";
+import { createInterface } from "node:readline";
+import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 
-/** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] */
+/** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
+function stdinApprover(message: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    rl.question(`\n[승인 필요] ${message} (y/N): `, (ans) => {
+      rl.close();
+      resolve(/^y(es)?$/i.test(ans.trim()));
+    });
+  });
+}
+
+/** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(
   workflowName: string,
   project: string,
@@ -10,9 +22,29 @@ export async function runRun(
   maxRegenerations = 1,
   allowSpawn = false,
   vault?: string,
+  resume = false,
+  maxTokens = 0,
+  yes = false,
 ): Promise<void> {
   const provider = getProvider(providerId);
-  console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
+  const approve = yes ? async () => true : stdinApprover;
+
+  if (resume) {
+    // 재개 전 안전 점검: 완료된 실행을 덮어쓰지 않는다 (FAILURE_RECOVERY).
+    const prior = loadRunState(project);
+    if (!prior) {
+      console.error(`재개할 run_state가 없습니다: ${project} (먼저 'harness run ${workflowName} --project ${project}' 실행)`);
+      process.exitCode = 1;
+      return;
+    }
+    if (prior.status === "completed") {
+      console.log(`이미 완료된 실행입니다 (${prior.workflow_id}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
+      return;
+    }
+    console.log(`workflow 재개: ${workflowName} (project: ${project}, provider: ${provider.id}, step ${prior.resume_from}부터)`);
+  } else {
+    console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
+  }
 
   const { state, savedFiles, runStatePath } = await runWorkflow({
     workflowId: workflowName,
@@ -20,12 +52,21 @@ export async function runRun(
     provider,
     maxRegenerations,
     allowSpawn,
+    resume,
+    maxTokens,
+    approve,
   });
 
   console.log("");
   console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
   if (state.failed_agent) {
     console.log(`실패 agent: ${state.failed_agent}`);
+  }
+  if (state.status === "failed") {
+    if (!state.failed_agent && state.failed_reason) {
+      console.log(`중단 사유: ${state.failed_reason}`);
+    }
+    console.log(`재개: harness run ${state.workflow_id} --project ${project} --resume`);
   }
   for (const c of state.critique_rounds) {
     console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
@@ -69,6 +110,6 @@ export async function runRun(
     }
   }
 
-  // 실패가 있으면 비정상 종료 코드로 신호
-  if (state.failed_agent) process.exitCode = 1;
+  // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호
+  if (state.status === "failed") process.exitCode = 1;
 }

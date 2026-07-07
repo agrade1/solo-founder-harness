@@ -21,12 +21,17 @@ export function buildPromptParts(input: AgentRunInput, providerId: string): Prom
     agentPrompt,
     ideaContent,
     priorFindings,
+    contextMode,
     nextAgentId,
     retryFeedback,
     revisionRequest,
     spawnRequest,
   } = input;
 
+  const conclusionOnly = contextMode === "conclusion_only";
+  const priorHeading = conclusionOnly
+    ? "- 비평 대상의 결론 (편향 분리 — 이 결론만 보고 독립적으로 검증하라. 다른 에이전트 판단은 의도적으로 제공하지 않음):"
+    : "- 이전 에이전트 판단 요약:";
   const priorBlock =
     priorFindings.length > 0
       ? priorFindings.map((f, i) => `- (${i + 1}) ${f}`).join("\n")
@@ -52,7 +57,7 @@ ${ideaContent.trim() || "(아이디어 문서가 비어 있음 — 일반 원칙
 
 - workflow_id: ${workflowId}
 - project: ${project}
-- 이전 에이전트 판단 요약:
+${priorHeading}
 ${priorBlock}
 - 다음 에이전트: ${nextAgentLine}
 

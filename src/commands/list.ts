@@ -1,4 +1,4 @@
-import { loadAgentRegistry, loadWorkflows, commonPromptExists, isCritiqueLoop, isGate, isFanout, type WorkflowStep } from "../core/registry.js";
+import { loadAgentRegistry, loadWorkflows, commonPromptExists, isCritiqueLoop, isGate, isFanout, isApproval, type WorkflowStep } from "../core/registry.js";
 
 /** step을 사람이 읽을 문자열로 렌더링한다 (비평 루프/게이트는 특수 표기). */
 function renderStep(step: WorkflowStep): string {
@@ -14,6 +14,9 @@ function renderStep(step: WorkflowStep): string {
   if (isFanout(step)) {
     const { planner, max_agents } = step.fanout;
     return `⑂[${planner}→spawn×${max_agents}]`;
+  }
+  if (isApproval(step)) {
+    return `✔[승인게이트]`;
   }
   return step;
 }
