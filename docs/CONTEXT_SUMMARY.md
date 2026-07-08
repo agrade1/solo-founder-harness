@@ -45,7 +45,7 @@
 
 ## 현재 상태 요약 (한 줄)
 
-provider 3종 + 루프 3종 + 분화 + 멀티에이전트 task-prompt + Obsidian + v2.5 안전장치(resume/budget/approval/편향분리)까지 완비. mock 기준 `npm test` 57/57. git: main=v2.4.0, develop에 v2.5 Phase 0 커밋(미태그).
+provider 3종 + 루프 3종 + 분화 + 멀티에이전트 task-prompt + Obsidian + v2.5 안전장치(resume/budget/approval/편향분리)까지 완비. mock 기준 `npm test` 57/57. git: **main=v2.5.0(태그 완료)**, develop에 v3 dogfooding 문서까지(origin/develop 동기화됨).
 
 ## Phase 1 도그푸딩 완료 (2026-07-08)
 
@@ -55,10 +55,15 @@ provider 3종 + 루프 3종 + 분화 + 멀티에이전트 task-prompt + Obsidian
 - 실전 검증된 v2.5 경로: 게이트 두 분기·무한루프 가드·분화+allow-spawn·승인게이트·critique_loop·편향분리·토큰계측. 스키마 경고 0. (resume/budget만 실패상황 미재현, mock 검증됨.)
 - 산출물: `docs/backlog/V3_FIELD_NOTES.md`. 아이디어 원문/결과는 gitignore된 `projects/dogfood-*` 로컬 전용.
 
+## v3 진입 게이트 충족 (2026-07-08, 이 세션)
+
+- **"실제 개발 착수 1건" 게이트 충족됨.** 별도 private 레포 `github.com/agrade1/audit-evidence-engine`(하네스 로컬 설치)에서 아이디어 A(증적엔진)를 full-predev(claude-code) 검증 → task-prompt → **실제 코드 착수 완주**(`scripts/collect_evidence.sh`: KISA U-코드 읽기전용 점검→증적 패키지. CEO 판정 경계 준수로 remediation/제품코드 없음). 아이디어 F(인프라교육)도 idea-validation로 추가 검증("추가 검증" 판정).
+- → v3 착수 3조건(아이디어 2건 검증 + 1건 개발착수) **모두 충족.** 이제 v3는 "규율상 착수 가능" 상태.
+
 ## 다음 작업 (self-review 결론 반영)
 
-- **하네스 self-review가 "지금 v3.0 코딩 시작 말라"고 판정.** 근거: v3 착수 조건 중 "실제 개발 착수 1건"이 아직 0 → 조건 미충족 상태의 v3 구현은 하네스가 자기 게이트를 어기는 것.
-- **따라서 다음 코딩은 하네스가 아니라 실제 서비스 쪽에서**: 아이디어 1개를 기존 task-prompt로 개발 착수까지 손으로 완주(신규 하네스 코드 불필요) → v3 게이트 충족.
-- 그 경험 후에야 Phase 2 재검토: execute는 안전경계 시나리오 서면 뒤에만, report는 관측성 통증 수치 확인 뒤 최소형. (FIELD_NOTES "자기검토 결론" 참고.)
+- v3 게이트는 충족됐으나, self-review 처방대로 **바로 v3.0 코딩에 들어가지 않는다.** execute는 안전경계 시나리오("게이트 이후 실패 시 롤백 주체") 서면 뒤에만, report는 **관측성 통증이 실사용에서 수치로 확인된 뒤** 최소형. (FIELD_NOTES "자기검토 결론" 참고.)
+- **관측성 통증 측정법**(v3 report 필요성 판단 기준): 하네스를 실서비스에 반복 사용하며 — ① run당 소요/토큰을 run_state에서 집계했을 때 "매번 파일 열어 확인"이 번거로운가, ② 프로젝트 여러 개의 최신 run 상태를 한눈에 못 봐서 불편한가, ③ 게이트 되돌림/실패 원인을 run_state.json 수동 파싱으로 찾는 빈도가 높은가. 이 통증이 실제로 쌓이면 그때 `harness report`(read-only 스냅샷 표)를 최소형으로.
+- 하네스 자체는 현재 "충분히 좋다"(v2.5.0) — 다음 코딩은 하네스가 아니라 **실서비스(audit-evidence-engine 등)** 쪽에서 나온다.
 - [보류] anthropic 유료 1회 실검증(비용), resume/budget 실패상황 재현 — 우선순위 낮음.
 - 범위 확장 금지 유지. 하네스는 현재 "충분히 좋다"(v2.5.0).
