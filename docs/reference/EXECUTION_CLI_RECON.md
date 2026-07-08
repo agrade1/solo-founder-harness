@@ -32,6 +32,8 @@
 
 → **핵심 전제는 전부 충족.** ExecutionProvider(§1) 인터페이스는 이 CLI로 구현 가능.
 
+> **호출 요건(실측)**: `--print`(-p) + `--output-format stream-json` 조합은 **`--verbose` 필수** (없으면 즉시 에러 종료). ExecutionProvider start 인자에 `--verbose` 고정 포함.
+
 ---
 
 ## 2. 어긋난 전제 — 조치 필요
@@ -45,27 +47,54 @@
 
 ---
 
-## 3. 미완 항목 — 실제 호출 1회 필요 (다음 단계 진입 조건)
+## 3. stream-json 이벤트 스키마 (실측 완료)
 
-플래그 존재는 정적 확인으로 끝났지만, **stream-json 이벤트 스키마**(event 종류·필드: `system/init`의 session_id, `assistant`/`user` 메시지, `tool_use`/`tool_result`, `result`의 usage·is_error 등)는 실제 1회 실행해야 확정된다. 이벤트 파서(§9-2)가 이 스키마에 의존하므로 **다음 작업의 선행 조건**.
+프로브: `printf 'reply with the single word: ok' | claude -p --output-format stream-json --include-partial-messages --verbose` (2026-07-08, 승인 후 실행. 비용 $0.06, 14 이벤트). 도구 사용 없는 최소 호출.
 
-- 제안 프로브(최소 비용, 도구 미사용): `printf 'reply with the single word: ok' | claude -p --output-format stream-json --include-partial-messages` → 나오는 NDJSON 이벤트 종류/필드를 캡처해 이 문서 §3에 스키마 표로 추가.
-- 이건 **실제 구독 토큰을 쓰는 호출**이므로 창업자 승인 후 실행.
+**공통**: 모든 이벤트에 top-level `type`, `session_id`, `uuid`. 하위 구분은 `subtype`.
+
+| type / subtype | 핵심 필드 | 파서 용도 |
+|---|---|---|
+| `system` / `init` | `session_id`, `model`(예 `claude-opus-4-8[1m]`), `cwd`, `permissionMode`, `tools`(배열), `agents`, `mcp_servers`, `skills`, `slash_commands`, `claude_code_version` | **세션 기동 확인 + session_id 확보**. `--session-id` 미지정 시 여기서 취득. 상태머신 `RUNNING` 진입 |
+| `assistant` | `message`{`id`,`role`,`model`,`content`[{type: text/tool_use…}],`stop_reason`,`usage`}, `parent_tool_use_id`, `request_id` | **turn 카운트**(assistant 이벤트 = 1 turn → max_turns 강제). tool_use content로 도구 호출 관측 |
+| `stream_event` | `event`(Anthropic SSE: message_start / content_block_start / content_block_delta / content_block_stop / message_delta / message_stop), `parent_tool_use_id`, `ttft_ms` | StatusBoard 실시간 텍스트/진행. 첫 토큰 지연(ttft) |
+| `system` / `status` | `status` | 세션 상태 표시 |
+| `system` / `hook_started`·`hook_progress`·`hook_response` | `hook_name`, `hook_event`, `outcome`, `exit_code`, `stdout`/`stderr` | **T3 거부 훅 관측** — PreToolUse 훅 발화·거부 결과가 여기로. 권한 위반 감지 |
+| `rate_limit_event` | `rate_limit_info`{`status`(allowed/…), `resetsAt`(epoch s), `rateLimitType`(five_hour/weekly), `overageStatus`, `overageDisabledReason`, `isUsingOverage`} | **강등 사다리 + 체크포인트/재개의 1급 신호** (§4.2 참고) |
+| `result` / `success` | `is_error`, `result`(최종 텍스트), `num_turns`, `duration_ms`, `duration_api_ms`, `total_cost_usd`, `usage`{input/output/cache_creation/cache_read/…, `modelUsage`(모델별)}, `stop_reason`, `terminal_reason`, `permission_denials`(배열), `api_error_status` | **세션 종료 처리**: 성공/실패 판정, 토큰·비용 집계(run_state.usage), 권한 거부 목록, 종료 사유 |
+
+파서 계약 요지:
+- 스트림은 NDJSON(한 줄 = 한 JSON). `result`가 **정확히 1회, 마지막**에 오며 세션 종료 신호.
+- `is_error` + `terminal_reason` + `api_error_status`로 실패 분류 → 상태머신 `ABORTED` 사유.
+- usage는 `assistant.usage`(중간)와 `result.usage`(최종 합계) 둘 다 존재 → 최종은 `result.usage` 채택(기존 provider usage 규약과 정합).
 
 ---
 
 ## 4. 실측이 바꾸는 설계 반영 요약
 
-1. `SessionSpec.budget.max_turns` = CLI 플래그 아님 → **오케스트레이터 이벤트 카운팅으로 강제** (ARCH §3.1 각주 갱신 대상).
+1. `SessionSpec.budget.max_turns` = CLI 플래그 아님 → **오케스트레이터가 `assistant` 이벤트를 카운트해 강제** (`result.num_turns`로 사후 검증). ARCH §3.1 각주 갱신 대상.
 2. 강등 사다리(§1.1)는 `--model` + **`--fallback-model`** 조합으로 CLI 레벨 자동 폴백까지 활용 가능 (설계는 오케스트레이터 재산출만 가정했음 — 더 견고해짐).
-3. 세션 ID는 `--session-id`로 **사전 할당** → run_state.sessions[] 추적이 단순해짐.
+3. 세션 ID는 `--session-id`로 **사전 할당**하거나 `system/init.session_id`로 취득 → run_state.sessions[] 추적 단순화.
 4. v4 병행은 `claude agents`(`--bg` + `--json` 폴링)라는 1급 기반이 이미 있음 → SessionManager가 프로세스 핸들을 직접 들 필요가 줄 수 있음(설계 시 재검토).
+5. **`rate_limit_event` 실존(설계 강화)**: ARCH §6.2 rate limit 대응(강등/체크포인트)이 추측이 아니라 **CLI가 turn마다 흘려주는 실데이터**로 구동 가능. `rate_limit_info.status`가 임계로 바뀌면 강등 사다리 발동, `resetsAt`(epoch)까지 체크포인트 대기 후 자동 재개. `overageStatus/overageDisabledReason`로 유료 초과분(overage) 사용 가부도 판단. → §6.2를 이벤트 기반으로 구체화 가능.
+6. **T3 거부 관측 경로 확인**: PreToolUse 훅 결과가 `system/hook_response`(+`result.permission_denials`)로 스트림에 노출 → 오케스트레이터가 권한 위반을 사후 로그가 아니라 실시간으로 감지.
+7. **비용 계측 보너스**: 구독 경로에서도 `result.total_cost_usd`·`modelUsage`(모델별)가 채워짐 → 미션 예산·모델 소모 프로파일(ARCH §10 첫 미션 계측)을 USD/모델 단위로 집계 가능.
 
 ---
 
 ## 5. 다음 작업 (ARCH §9 순서 기준)
 
-- [x] §9-1 CLI 플래그 실측 (이 문서)
-- [ ] **선행: stream-json 이벤트 스키마 프로브 1회** (§3, 승인 필요)
-- [ ] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서 + 단일 세션 수명
+- [x] §9-1 CLI 플래그 실측 (이 문서 §1·§2)
+- [x] stream-json 이벤트 스키마 프로브 (이 문서 §3) — **완료, §9-2 선행 조건 해소**
+- [ ] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서(§3 스키마 기반) + 단일 세션 수명 ← **다음**
 - [ ] §9-3 권한 컴파일러(티어→플래그+훅)
+
+호출 인자 확정형(§9-2 착수 기준):
+```
+claude -p --output-format stream-json --include-partial-messages --verbose \
+  --permission-mode acceptEdits --allowedTools <컴파일 목록> \
+  --model <spec.model> --fallback-model <강등대상> \
+  --session-id <사전할당 uuid> --add-dir <worktree> \
+  --append-system-prompt <역할>
+# 후속 지시: --resume <session_id> (stdin으로 메시지)
+```
