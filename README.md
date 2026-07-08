@@ -41,28 +41,70 @@ projects/<name>  → 사용자 프로젝트 (docs + outputs)
 
 경로는 둘로 분리된다(`src/core/paths.ts`): **자산**은 설치된 패키지 위치에서, **projects 데이터**는 실행한 디렉토리(CWD)에서. `HARNESS_WORKSPACE`로 데이터 위치 오버라이드 가능.
 
-## 라이브러리로 다른 레포에서 사용
+## 사용 가이드 — 새 레포에서 작업 시작 순서
 
-하네스 하나에 서비스를 쌓지 말고, **서비스 레포마다 하네스를 설치**해서 쓴다. projects/는 실행한 레포(CWD)에 생성된다.
+하네스 하나에 서비스를 쌓지 말고, **서비스 레포마다 하네스를 설치**해서 쓴다.
+`projects/`는 실행한 레포(CWD)에 생성되고, 에이전트/워크플로우 정의는 설치된 패키지에서 로드되므로 서비스 레포는 깨끗하게 유지된다.
+
+### 0. 최초 1회 — 레포 세팅 + 하네스 설치 (public repo)
 
 ```bash
-# 새 서비스 레포에서 (아직 npm 미배포 → git/로컬 설치)
-npm install github:agrade1/solo-founder-harness
-# 또는 로컬 개발용: npm install /path/to/solo-founder-harness
+mkdir my-service && cd my-service
+git init
+npm init -y                                     # package.json 없으면
 
-npx harness init my-service        # ./projects/my-service/ 생성 (이 레포 안)
-# ./projects/my-service/docs/00_IDEA.md 작성
-npx harness run mvp-planning --project my-service --provider claude-code
-npx harness task-prompt --project my-service
+# public GitHub 레포에서 설치 (dist 포함 커밋돼 있어 별도 빌드 불필요)
+npm install github:agrade1/solo-founder-harness
+
+# (선택) 비공개 서비스 레포로 만들기 — 실제 아이디어는 private 권장
+gh repo create my-service --private --source=. --push
 ```
 
-에이전트 프롬프트/워크플로우 정의는 설치된 패키지에서 로드되므로 서비스 레포는 깨끗하게 유지된다.
+> 특정 버전 고정: `npm install github:agrade1/solo-founder-harness#v2.5.1`
 
-## 사용법
+### 1. 아이디어마다 — 작업 흐름
 
 ```bash
-npm install          # 최초 1회 (의존성: commander/tsx/typescript)
-npm run build        # 타입 체크 + dist 빌드 (선택)
+# ① 프로젝트 생성 → ./projects/<name>/ (docs 6개 + outputs)
+npx harness init <프로젝트명>
+
+# ② 아이디어 작성 (사람이): projects/<프로젝트명>/docs/00_IDEA.md 편집
+
+# ③ 판단·기획 실행 (실제 LLM)
+npx harness run full-predev --project <프로젝트명> --provider claude-code
+
+# ④ 결과 검토 (사람이): docs/01_RESEARCH ~ 06_CEO_DECISION.md, 특히 CEO 판정
+
+# ⑤ 개발 지시문 생성 → outputs/claude_code_task_prompt.md
+npx harness task-prompt --project <프로젝트명>
+
+# ⑥ 실제 개발: ⑤ 지시문을 근거로 Claude Code(또는 사람)가 코딩
+#    ← 하네스는 여기서 코드를 짜지 않는다. 판단·기획·지시문(handoff)까지가 하네스 몫.
+```
+
+### 2. 워크플로우 선택
+
+| 워크플로우 | 언제 | 특징 |
+|---|---|---|
+| `idea-validation` | 아이디어 go/no-go 빠른 검증 | 5단계, 게이트 없음 |
+| `mvp-planning` | MVP 범위 잡기 | red_team 비평 루프 내장 |
+| `full-predev` | **제품 아이디어 종합 사전검토(가장 많이 씀)** | research→pm→ux→tech→red→ceo + CEO 게이트 |
+| `dev-preflight` | 개발 직전 | 에이전트 분화 + 승인게이트 + 병렬 task-prompt |
+
+### 주의
+
+- 실제 아이디어는 **private 레포**에. 공개 레포면 `00_IDEA.md`·`docs/`·`evidence/` 등을 `.gitignore` 처리.
+- 하네스는 **텔레메트리 없음** — 아무것도 외부로 안 보낸다. 전부 로컬.
+- `--provider mock`(기본)은 오프라인 더미 출력(구조 확인용). 실제 판단은 `--provider claude-code`(구독 로그인 필요).
+
+## 하네스 자체 개발/수정 시 (from source)
+
+> 아래는 **하네스 레포를 직접 수정**할 때만. 서비스에서 쓰는 법은 위 "사용 가이드" 참고.
+> dist는 레포에 커밋되므로, 소스 수정 후에는 `npm run build`로 dist를 갱신해 커밋한다.
+
+```bash
+npm install          # 최초 1회 (prepare로 자동 빌드됨)
+npm run build        # 소스 수정 후 dist 갱신 (커밋 전 필수)
 
 # 개발 중에는 tsx로 바로 실행
 npm run harness -- list
