@@ -45,7 +45,7 @@
 
 ## 현재 상태 요약 (한 줄)
 
-provider 3종 + 루프 3종 + 분화 + 멀티에이전트 task-prompt + Obsidian + v2.5 안전장치(resume/budget/approval/편향분리)까지 완비. mock 기준 `npm test` 57/57. git: **main=v2.5.0(태그 완료)**, develop에 v3 dogfooding 문서까지(origin/develop 동기화됨).
+provider 3종 + 루프 3종 + 분화 + 멀티에이전트 task-prompt + Obsidian + v2.5 안전장치(resume/budget/approval/편향분리) + ux_ui 디자인 레퍼런스 확장(v2.6.0)까지 완비. mock 기준 `npm test` 57/57. git: **main=v2.6.0**. public github 설치 지원(dist 커밋, `npm install github:agrade1/solo-founder-harness`). 실사용 개발 착수 1건 완료(audit-evidence-engine) → v3 게이트 충족.
 
 ## Phase 1 도그푸딩 완료 (2026-07-08)
 
