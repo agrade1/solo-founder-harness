@@ -103,6 +103,15 @@ export function buildTaskPrompt(project, today) {
         lines.push("- 각 subagent 완료 후 계약 일치·빌드·테스트로 교차 검증한다.");
         lines.push("");
     }
+    // ux_ui 산출물(03_UX_FLOW.md)이 있으면 디자인 실행(레퍼런스 검색 + Claude 시안) 지시를 추가한다.
+    if (existsSync(join(paths.root, "docs/03_UX_FLOW.md"))) {
+        lines.push("## 디자인 실행 (화면 시안)");
+        lines.push("`docs/03_UX_FLOW.md`의 화면 흐름/컴포넌트와 그 안의 [디자인 레퍼런스]·[비주얼 방향]을 근거로 화면 시안을 만든다.");
+        lines.push("1. **레퍼런스 수집** — 문서가 지목한 소스(Pinterest/Dribbble/Mobbin/경쟁사·유사 서비스)와 검색 키워드로 WebSearch/WebFetch해 레퍼런스 3~5개를 모으고, 차용할 패턴을 한 줄씩 정리한다.");
+        lines.push("2. **시안 생성** — 위 레퍼런스와 비주얼 방향을 반영해 Claude 아티팩트로 핵심 화면(Landing/Input/Result 등)의 HTML/React 시안을 만든다. 화면 수는 UX 문서 범위를 넘기지 않는다.");
+        lines.push("3. **검증(MVP-lean)** — 레퍼런스는 명확성·속도용이며 과장/과설계 금지. 모바일·접근성 기본을 지킨다. 저작권 자산을 그대로 복제하지 않는다.");
+        lines.push("");
+    }
     lines.push("## Include (읽을 것)");
     for (const rel of includeCandidates)
         lines.push(`- ${rel}`);
