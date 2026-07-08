@@ -1,6 +1,6 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-07
+최종 갱신: 2026-07-08
 
 ## 현재 상태
 
@@ -47,9 +47,18 @@
 
 provider 3종 + 루프 3종 + 분화 + 멀티에이전트 task-prompt + Obsidian + v2.5 안전장치(resume/budget/approval/편향분리)까지 완비. mock 기준 `npm test` 57/57. git: main=v2.4.0, develop에 v2.5 Phase 0 커밋(미태그).
 
-## 다음 작업
+## Phase 1 도그푸딩 완료 (2026-07-08)
 
-- **[0-5 사용자 액션] anthropic 유료 1회 실검증** — ANTHROPIC_API_KEY 세팅 후 `--provider anthropic --max-tokens <상한>`로 실호출 1회(비용 발생).
-- **[0-5 릴리스] v2.5.0 태그** — develop→main 병합 + 태그(사용자 결정. 유료 검증 전 태그할지 여부 포함).
-- **[Phase 1 도그푸딩]** 실제 아이디어 2개를 full-predev(claude-code)로 검증(CEO 게이트 실발화 유도) + 1개 개발 착수 → V3_FIELD_NOTES.md 기록. **이게 v3 착수 조건.**
-- 이후 Phase 2(v3.0 execute/report/security baseline)는 FIELD_NOTES로 범위 재조정. 범위 확장 금지 유지.
+- 실제 아이디어 A(증적엔진)/B(폐쇄망) full-predev(claude-code) 검증 — **CEO 게이트 두 분기(축소/검증) 실발화**.
+- A로 dev-preflight(--allow-spawn --yes) → 하위 3개 실제 실행 + 승인게이트 + task-prompt 병렬 스펙 handoff.
+- 하네스 self-review(mvp-planning) — critique_loop 2R + 0-4 편향분리 실전 검증.
+- 실전 검증된 v2.5 경로: 게이트 두 분기·무한루프 가드·분화+allow-spawn·승인게이트·critique_loop·편향분리·토큰계측. 스키마 경고 0. (resume/budget만 실패상황 미재현, mock 검증됨.)
+- 산출물: `docs/backlog/V3_FIELD_NOTES.md`. 아이디어 원문/결과는 gitignore된 `projects/dogfood-*` 로컬 전용.
+
+## 다음 작업 (self-review 결론 반영)
+
+- **하네스 self-review가 "지금 v3.0 코딩 시작 말라"고 판정.** 근거: v3 착수 조건 중 "실제 개발 착수 1건"이 아직 0 → 조건 미충족 상태의 v3 구현은 하네스가 자기 게이트를 어기는 것.
+- **따라서 다음 코딩은 하네스가 아니라 실제 서비스 쪽에서**: 아이디어 1개를 기존 task-prompt로 개발 착수까지 손으로 완주(신규 하네스 코드 불필요) → v3 게이트 충족.
+- 그 경험 후에야 Phase 2 재검토: execute는 안전경계 시나리오 서면 뒤에만, report는 관측성 통증 수치 확인 뒤 최소형. (FIELD_NOTES "자기검토 결론" 참고.)
+- [보류] anthropic 유료 1회 실검증(비용), resume/budget 실패상황 재현 — 우선순위 낮음.
+- 범위 확장 금지 유지. 하네스는 현재 "충분히 좋다"(v2.5.0).
