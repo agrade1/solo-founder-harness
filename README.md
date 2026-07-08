@@ -13,7 +13,9 @@
 
 - 자동 코드 실행, Codex/OMC/Agent Teams 연동, 웹 UI, DB, 배포, 결제
 
-## v2 (진행 중)
+## 기능 (v2.6.0 — 전부 릴리스 완료)
+
+> v1(문서 자동화) 이후 v2.x에서 아래를 순차 추가·완료했다. **현재 진행 중인 개발 항목은 없다.** (v3는 실사용 통증이 확인되면 착수 — `docs/backlog/V3_KICKOFF.md`)
 
 - **실제 LLM provider** (mock과 교체 가능): `--provider mock | claude-code | anthropic`
   - `claude-code`(B안): `claude -p`에 위임, Claude 구독으로 실행 (추가 API 비용 0). `claude` CLI 로그인 필요.
@@ -24,8 +26,10 @@
 - **동적 분화(fanout)**: planner(tech_lead)가 `SPAWN id=..|name=..|focus=..`로 하위 전문 에이전트 선언 → 기본은 계획만 기록(사람 승인 게이트), `--allow-spawn` 시 런타임 생성·실행(`outputs/spawned/<id>.md`). `dev-preflight`에 내장(`⑂[tech_lead→spawn×4]`). run_state에 `spawned_agents` 기록.
 - **멀티에이전트 task-prompt**: 분화가 있었으면 `task-prompt`가 FE/BE별 **병렬 subagent 실행 스펙**을 생성(담당범위·계획문서·API_CONTRACT 통합·승인 게이트). 하네스는 스펙 생성까지 — 실제 병렬 코딩은 Claude Code subagent가 사람 승인 후 수행.
 - **Obsidian export**: `run --vault <경로>`(또는 `HARNESS_VAULT`) 지정 시 실행 결과를 Obsidian vault로 read-only export. agent별 노트(YAML frontmatter + 이전/다음/인덱스 `[[wikilink]]`) + run MOC 인덱스(실행 순서 링크 + 메타). 미지정 시 동작 안 함(기존 파이프라인 무영향). 원본 `projects/` 파일은 비파괴.
+- **안전장치 (v2.5)**: `run --resume`(실패 지점부터 재개), `--max-tokens`(토큰 상한, 초과 시 중단→재개, 80% 경고), `{approval}` step(진행 전 y/n 승인, `--yes`로 비대화), Red Team 편향 분리(critic은 대상의 결론만 격리 검토).
+- **디자인 레퍼런스 (v2.6)**: `ux_ui` 에이전트가 레퍼런스 리서치 방향(Pinterest/Dribbble/Mobbin/경쟁사·유사서비스 + 검색 키워드) + 비주얼 방향 + 디자인 실행 handoff 산출. `03_UX_FLOW.md`가 있으면 `task-prompt`에 "디자인 실행(화면 시안)" 섹션 자동 추가 → Claude Code에서 레퍼런스 검색 + Claude 아티팩트로 시안 생성. (ux_ui는 방향만 지시, 픽셀은 Claude Code가.)
 - token usage를 `run_state.json`에 집계.
-- 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`.
+- 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`, `docs/backlog/V3_KICKOFF.md`.
 
 ## 구조 (요약 아키텍처)
 
