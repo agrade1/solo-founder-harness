@@ -25,7 +25,6 @@
     "harness": "tsx src/cli.ts",
     "acceptance": "bash scripts/acceptance.sh",
     "test": "bash scripts/acceptance.sh",
-    "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
