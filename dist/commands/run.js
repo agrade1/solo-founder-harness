@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
+import { createProgressReporter } from "./progress.js";
 /** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
 function stdinApprover(message) {
     return new Promise((resolve) => {
@@ -42,6 +43,7 @@ export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDE
         resume,
         maxTokens,
         approve,
+        reporter: createProgressReporter(),
     });
     console.log("");
     console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);

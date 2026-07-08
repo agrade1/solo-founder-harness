@@ -6,6 +6,13 @@ import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import { validateAgentOutput, extractMainJudgment, extractCriticalRisks, extractDecision, extractSpawnDeclarations, } from "./validate.js";
 const RUN_STATE_REL = "outputs/run_state.json";
+/** ms를 사람이 읽는 경과시간으로. 60초 미만은 "12s", 이상은 "1:23". */
+function fmtElapsed(ms) {
+    const s = Math.round(ms / 1000);
+    if (s < 60)
+        return `${s}s`;
+    return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
 /** outputs/run_state.json을 읽는다. 없거나 파싱 실패면 null. */
 export function loadRunState(project) {
     const p = join(projectPaths(project).root, RUN_STATE_REL);
@@ -71,6 +78,8 @@ export async function runWorkflow(args) {
     const allowSpawn = args.allowSpawn ?? false;
     const maxTokens = Math.max(0, args.maxTokens ?? 0);
     const approve = args.approve;
+    const reporter = args.reporter;
+    const total = workflow.steps.length;
     let failed_agent = null;
     let failed_reason = null;
     let failedIndex = null;
@@ -130,38 +139,49 @@ export async function runWorkflow(args) {
         let usageIn = 0;
         let usageOut = 0;
         let sawUsage = false;
-        while (true) {
-            const res = await runAgent({
-                agent,
-                registry,
-                workflowId,
-                project,
-                createdAt: now(),
-                priorFindings: opts.priorFindingsOverride ?? findingsList(),
-                contextMode: opts.contextMode,
-                nextAgentId,
-                provider,
-                retryFeedback: feedback,
-                revisionRequest: opts.revisionRequest,
-                spawnRequest: opts.spawnRequest,
-                agentPromptText: opts.agentPromptText,
-            });
-            markdown = res.markdown;
-            if (res.usage) {
-                sawUsage = true;
-                usageIn += res.usage.inputTokens;
-                usageOut += res.usage.outputTokens;
+        const startedAt = Date.now();
+        reporter?.start(opts.progressLabel ?? agent.agent_id);
+        try {
+            while (true) {
+                const res = await runAgent({
+                    agent,
+                    registry,
+                    workflowId,
+                    project,
+                    createdAt: now(),
+                    priorFindings: opts.priorFindingsOverride ?? findingsList(),
+                    contextMode: opts.contextMode,
+                    nextAgentId,
+                    provider,
+                    retryFeedback: feedback,
+                    revisionRequest: opts.revisionRequest,
+                    spawnRequest: opts.spawnRequest,
+                    agentPromptText: opts.agentPromptText,
+                });
+                markdown = res.markdown;
+                if (res.usage) {
+                    sawUsage = true;
+                    usageIn += res.usage.inputTokens;
+                    usageOut += res.usage.outputTokens;
+                }
+                validation = validateAgentOutput(markdown);
+                if (validation.ok || attempt >= maxRegen)
+                    break;
+                attempt++;
+                feedback =
+                    `직전 출력에 필수 섹션 헤더가 누락되었다: ${validation.missing.join(", ")}. ` +
+                        `누락된 "## <헤더>"를 정확한 이름으로 포함하여 문서 전체를 다시 작성하라. 문서 외 텍스트는 출력하지 마라.`;
+                const msg = `  ↻ ${agent.agent_id}: 필수 섹션 누락(${validation.missing.join(", ")}) — 재생성 ${attempt}/${maxRegen}`;
+                if (reporter)
+                    reporter.note(msg);
+                else
+                    console.warn(msg);
             }
-            validation = validateAgentOutput(markdown);
-            if (validation.ok || attempt >= maxRegen)
-                break;
-            attempt++;
-            feedback =
-                `직전 출력에 필수 섹션 헤더가 누락되었다: ${validation.missing.join(", ")}. ` +
-                    `누락된 "## <헤더>"를 정확한 이름으로 포함하여 문서 전체를 다시 작성하라. 문서 외 텍스트는 출력하지 마라.`;
-            console.warn(`  ↻ ${agent.agent_id}: 필수 섹션 누락(${validation.missing.join(", ")}) — 재생성 ${attempt}/${maxRegen}`);
         }
-        return { markdown, validation, attempt, usageIn, usageOut, sawUsage };
+        finally {
+            reporter?.stop();
+        }
+        return { markdown, validation, attempt, usageIn, usageOut, sawUsage, elapsedMs: Date.now() - startedAt };
     }
     // step 결과를 저장하고 run_state 누산기에 반영한다.
     function commitOutcome(agent, o) {
@@ -222,9 +242,12 @@ export async function runWorkflow(args) {
                             `SPAWN id=<영문소문자_id> | name=<이름> | focus=<한 줄 담당 범위>\n` +
                             `분화가 불필요하면 정확히 "SPAWN none" 한 줄만 출력하라.`;
                 }
-                const o = await runStepWithRegen(agent, nextHint(workflow.steps, i), { spawnRequest });
+                const o = await runStepWithRegen(agent, nextHint(workflow.steps, i), {
+                    spawnRequest,
+                    progressLabel: `[${i + 1}/${total}] ${agent.agent_id}`,
+                });
                 const saved = commitOutcome(agent, o);
-                console.log(`  ✓ ${agent.agent_id} → ${saved}`);
+                console.log(`  [${i + 1}/${total}] ✓ ${agent.agent_id} → ${saved} (${fmtElapsed(o.elapsedMs)})`);
                 continue;
             }
             if (isGate(step)) {
@@ -290,10 +313,13 @@ export async function runWorkflow(args) {
                     const brief = `너는 '${spec.name}' 전문 에이전트다. 담당 범위: ${spec.focus}.\n` +
                         `아래는 상위 '${planner}'의 전체 계획이다. 이 중 네 담당 범위에 해당하는 부분을 구체화하라.\n\n` +
                         `--- 상위 계획 시작 ---\n${plannerPlan}\n--- 상위 계획 끝 ---`;
-                    const so = await runStepWithRegen(subAgent, undefined, { agentPromptText: brief });
+                    const so = await runStepWithRegen(subAgent, undefined, {
+                        agentPromptText: brief,
+                        progressLabel: `[${i + 1}/${total}] ${spec.name} (하위)`,
+                    });
                     const saved = commitOutcome(subAgent, so);
                     spawned_agents.push({ parent: planner, id: spec.id, name: spec.name, focus: spec.focus, executed: true, output: saved });
-                    console.log(`  ⑂ 하위 실행: ${spec.id} (${spec.name}) → ${saved}`);
+                    console.log(`  ⑂ 하위 실행: ${spec.id} (${spec.name}) → ${saved} (${fmtElapsed(so.elapsedMs)})`);
                 }
                 if (!allowSpawn) {
                     console.log(`  ⑂ 계획만 기록 (실행하려면 --allow-spawn) — 사람 승인 게이트`);
@@ -352,9 +378,10 @@ export async function runWorkflow(args) {
                 const co = await runStepWithRegen(criticAgent, target, {
                     contextMode: "conclusion_only",
                     priorFindingsOverride: targetFinding ? [targetFinding] : [],
+                    progressLabel: `[${i + 1}/${total}] ${critic} (비평 R${round})`,
                 });
                 const criticSaved = commitOutcome(criticAgent, co);
-                console.log(`  ✓ ${critic} → ${criticSaved}`);
+                console.log(`  ✓ ${critic} → ${criticSaved} (${fmtElapsed(co.elapsedMs)})`);
                 // 2) Critical 리스크 추출
                 const critical = extractCriticalRisks(co.markdown);
                 console.log(`  ⚖ ${critic} 라운드 ${round}/${maxRounds}: Critical ${critical.length}건`);
@@ -369,9 +396,12 @@ export async function runWorkflow(args) {
                     critical.map((c, idx) => `${idx + 1}. ${c}`).join("\n") +
                     `\n이 리스크들을 정면으로 반영해 이전 판단을 수정하고 문서 전체를 다시 작성하라. ` +
                     `각 리스크에 대한 대응·완화책을 Decisions / Assumptions / Risks에 반영하라.`;
-                const to = await runStepWithRegen(targetAgent, critic, { revisionRequest });
+                const to = await runStepWithRegen(targetAgent, critic, {
+                    revisionRequest,
+                    progressLabel: `[${i + 1}/${total}] ${target} (수정 R${round})`,
+                });
                 const targetSaved = commitOutcome(targetAgent, to);
-                console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved}`);
+                console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved} (${fmtElapsed(to.elapsedMs)})`);
             }
             critique_rounds.push({ target, critic, rounds: round, resolved });
             console.log(`  ⚖ 비평 루프 종료: ${critic}⟲${target} ${round}라운드, ${resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);

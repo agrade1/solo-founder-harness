@@ -2,6 +2,7 @@ import { createInterface } from "node:readline";
 import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
+import { createProgressReporter } from "./progress.js";
 
 /** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
 function stdinApprover(message: string): Promise<boolean> {
@@ -55,6 +56,7 @@ export async function runRun(
     resume,
     maxTokens,
     approve,
+    reporter: createProgressReporter(),
   });
 
   console.log("");

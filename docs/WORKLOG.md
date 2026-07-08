@@ -1,5 +1,12 @@
 # WORKLOG.md
 
+## 2026-07-08 (진행 표시 UX + 실행 계층 설계 핸드오프)
+
+- **진행 표시자(ProgressReporter) 추가.** run 중 각 agent LLM 호출이 침묵하던 문제 해결. TTY면 한 줄 스피너(`⠹ [2/5] research 실행 중… 0:42`) + 경과시간 제자리 갱신, 비TTY(파이프/로그)면 `▶ 시작` 줄만 폴백. 완료 라인에 `[i/N]` 카운터 + 경과시간(`[2/5] ✓ research → ... (42s)`).
+  - core는 순수 유지: `runWorkflow.ts`에 `ProgressReporter` 인터페이스 + `reporter?` 주입, 스피너 구현은 CLI 계층(`src/commands/progress.ts`). 외부 패키지 0. 재생성 경고는 `reporter.note`로 스피너 훼손 없이 출력.
+  - mock `npm test` 57/57 유지, tsc 통과, dist 재빌드.
+- **실행 계층 설계 브리핑 문서 작성** (`docs/reference/EXECUTION_LAYER_DESIGN_BRIEF.md`). 창업자 비전("문서→자동 Claude Code 실행→병행/다중 라이브 세션→라이브 분화, 큰 이슈만 예/아니요")과 현재 v2.6.0(앞쪽 절반=문서 생성만) 갭 정리 + 재사용 뼈대(승인게이트/fanout/claude-code provider/ProgressReporter) + 설계 세션이 답할 질문. **설계 자체는 별도 Fable 모드 세션에서 진행 예정.**
+
 ## 2026-07-06
 
 - 레포 구조 정리, registry JSON 생성, spec 불일치 수정
