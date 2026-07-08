@@ -85,9 +85,11 @@
 ## 5. 다음 작업 (ARCH §9 순서 기준)
 
 - [x] §9-1 CLI 플래그 실측 (이 문서 §1·§2)
-- [x] stream-json 이벤트 스키마 프로브 (이 문서 §3) — **완료, §9-2 선행 조건 해소**
-- [ ] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서(§3 스키마 기반) + 단일 세션 수명 ← **다음**
-- [ ] §9-3 권한 컴파일러(티어→플래그+훅)
+- [x] stream-json 이벤트 스키마 프로브 (이 문서 §3)
+- [x] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서 + 단일 세션 수명 (`src/exec/`, 단위 10/10) — **단, 세션 수명 모델 확정은 설계 Q1 대기** (DESIGN_QUESTIONS §Q1)
+- [ ] §9-3 권한 컴파일러(티어→플래그+훅) ← **다음**
+
+**§9-2 산출물**: `src/exec/{types,streamParser,eventQueue,mockExecProvider,claudeCliProvider}.ts` + 파서/mock 단위 테스트(`streamParser.test.ts`, `npm run test:exec`) + 실측 fixture(`__fixtures__/probe.ndjson`). claudeCliProvider는 Model A 잠정형(Q1 대기). 실호출 end-to-end는 오케스트레이터/게이트 후 승인하 검증.
 
 호출 인자 확정형(§9-2 착수 기준):
 ```

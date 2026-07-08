@@ -1,5 +1,13 @@
 # WORKLOG.md
 
+## 2026-07-08 (실행 계층 구현 착수 — §9-1·§9-2)
+
+- 역할 분담 확정: **구현은 이 세션, 설계는 Fable 세션.** 설계 필요 지점은 `docs/reference/EXECUTION_DESIGN_QUESTIONS.md`에 정리만.
+- **§9-1 CLI 실측**(`EXECUTION_CLI_RECON.md`): claude 2.1.204 플래그 매칭 — stream-json/resume/session-id/permission-mode(acceptEdits)/allowedTools/append-system-prompt/model/fallback-model/add-dir/agents 전부 존재. 어긋난 전제: `--max-turns` 부재 → 오케스트레이터 이벤트 카운팅. print+stream-json은 `--verbose` 필수.
+- **stream-json 스키마 프로브**(승인 후 실호출 1회, $0.06): 이벤트 타입별 필드 박제. rate_limit_event(resetsAt/rateLimitType) 실존 → 강등·체크포인트 실데이터 구동. hook_response로 T3 거부 실시간 관측. 구독에서도 total_cost_usd/modelUsage 채워짐.
+- **§9-2 ExecutionProvider 골격**(`src/exec/`): types(SessionEvent 정규화·SessionSpec·ExecutionProvider) + streamParser(NDJSON→이벤트, 청크 버퍼링) + eventQueue(async 스트림) + mockExecProvider(무과금 재생) + claudeCliProvider(Model A 잠정, --resume 체이닝). 단위 테스트 10/10(`npm run test:exec`, 실측 fixture 기반). `npm test`=exec 10 + acceptance 57. build/dist 정리(테스트·fixture 제외).
+- **설계 미결**: 세션 수명 모델 A(one-shot+resume) vs B(지속형 stdin) = DESIGN_QUESTIONS Q1(블로킹). initialPrompt 조립(Q2), turn 예산 초과 동작(Q3).
+
 ## 2026-07-08 (진행 표시 UX + 실행 계층 설계 핸드오프)
 
 - **진행 표시자(ProgressReporter) 추가.** run 중 각 agent LLM 호출이 침묵하던 문제 해결. TTY면 한 줄 스피너(`⠹ [2/5] research 실행 중… 0:42`) + 경과시간 제자리 갱신, 비TTY(파이프/로그)면 `▶ 시작` 줄만 폴백. 완료 라인에 `[i/N]` 카운터 + 경과시간(`[2/5] ✓ research → ... (42s)`).

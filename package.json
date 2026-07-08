@@ -24,7 +24,8 @@
     "build": "tsc && chmod +x dist/cli.js",
     "harness": "tsx src/cli.ts",
     "acceptance": "bash scripts/acceptance.sh",
-    "test": "bash scripts/acceptance.sh",
+    "test:exec": "tsx --test src/exec/*.test.ts",
+    "test": "npm run test:exec && bash scripts/acceptance.sh",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
