@@ -103,8 +103,8 @@ npx harness task-prompt --project <프로젝트명>
 > dist는 레포에 커밋되므로, 소스 수정 후에는 `npm run build`로 dist를 갱신해 커밋한다.
 
 ```bash
-npm install          # 최초 1회 (prepare로 자동 빌드됨)
-npm run build        # 소스 수정 후 dist 갱신 (커밋 전 필수)
+npm install          # 최초 1회 (의존성 설치)
+npm run build        # 소스 수정 후 dist 갱신 (dist는 커밋되므로 커밋 전 필수)
 
 # 개발 중에는 tsx로 바로 실행
 npm run harness -- list
