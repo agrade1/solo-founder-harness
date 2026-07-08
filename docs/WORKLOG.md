@@ -104,3 +104,13 @@
 - **[v2.5 0-4] Red Team 편향 분리.** AgentRunInput.contextMode(full|conclusion_only). critique_loop critic은 target 결론만 격리 검토(전체 findings 체인 anchoring 방지 — priorFindings를 target 결론만으로 제한 + 프롬프트 격리 문구). 일반 step은 full 유지. acceptance Test 10.
 - 검증: mock `npm test` → **57/57 통과**.
 - **남음(0-5, 사용자 액션)**: ① anthropic provider 유료 1회 실검증(ANTHROPIC_API_KEY + --max-tokens 상한), ② v2.5.0 태그(develop→main). 이후 Phase 1 도그푸딩(실제 아이디어 2개 full-predev 검증).
+
+## 2026-07-08 (v2.5.0 릴리스 + Phase 1 도그푸딩)
+
+- **v2.5.0 릴리스**: develop push → main 병합(--no-ff "Merge develop: v2.5 안정화 Phase 0") → v2.5.0 태그 + push. acceptance 57/57.
+- **Phase 1 도그푸딩(claude-code 실제 LLM)**:
+  - 아이디어 A(증적엔진)·B(폐쇄망) full-predev → **CEO 게이트 두 분기 실발화**(A 축소→pm, B 검증→research), max_jumps 가드 작동, 스키마 경고 0.
+  - A dev-preflight(--allow-spawn --yes) → tech_lead 하위 3개 SPAWN 실제 실행 + approval gate 통과 + task-prompt 병렬 handoff 생성.
+  - 하네스 self-review(mvp-planning) → critique_loop 2R 되먹임 + 0-4 편향분리(conclusion_only) 실전 검증. **red_team이 "결론만 받았다" 명시.**
+  - 관찰·결론은 `docs/backlog/V3_FIELD_NOTES.md`. 아이디어 원문/결과는 gitignore된 projects/dogfood-*.
+- **self-review 판정**: 하네스가 자신을 검토해 "v3 착수 조건(개발 착수 1건) 미충족 → 지금 v3.0 코딩 시작 말라"고 결론. 다음 코딩은 하네스가 아니라 실제 서비스 아이디어 쪽에서 나와야 함.
