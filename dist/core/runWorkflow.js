@@ -164,7 +164,7 @@ export async function runWorkflow(args) {
                     usageIn += res.usage.inputTokens;
                     usageOut += res.usage.outputTokens;
                 }
-                validation = validateAgentOutput(markdown);
+                validation = validateAgentOutput(markdown, agent.required_headers ?? []);
                 if (validation.ok || attempt >= maxRegen)
                     break;
                 attempt++;

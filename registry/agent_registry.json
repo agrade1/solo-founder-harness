@@ -20,7 +20,16 @@
       "name": "PM / Product Strategy Agent",
       "role": "MVP 범위 축소, 기능 우선순위, PRD, 사용자 흐름",
       "prompt_path": "agents/pm_product_strategy_agent.md",
-      "default_output": "docs/02_PRD.md"
+      "default_output": "docs/02_PRD.md",
+      "required_headers": [
+        "문제 정의",
+        "목표와 성공 지표",
+        "사용자와 시나리오",
+        "기능 요구사항",
+        "비범위 (Out of Scope)",
+        "제약과 가정",
+        "오픈 퀘스천"
+      ]
     },
     {
       "agent_id": "ux_ui",
@@ -34,7 +43,16 @@
       "name": "Tech Lead Agent",
       "role": "기술 판단, 최소 아키텍처, 구현 순서, Preflight",
       "prompt_path": "agents/tech_lead_agent.md",
-      "default_output": "docs/04_TECH_PLAN.md"
+      "default_output": "docs/04_TECH_PLAN.md",
+      "required_headers": [
+        "아키텍처 개요",
+        "기술 스택과 선정 근거",
+        "데이터 모델",
+        "API 계약",
+        "구현 순서",
+        "리스크와 완화책",
+        "비기능 요구사항"
+      ]
     },
     {
       "agent_id": "red_team",

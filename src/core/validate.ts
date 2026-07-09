@@ -21,14 +21,26 @@ export interface ValidationResult {
   missing: string[];
 }
 
-/** 필수 헤더 누락 여부를 검사한다. 비어있는 결과도 실패로 본다. */
-export function validateAgentOutput(markdown: string): ValidationResult {
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * 필수 헤더 누락 여부를 검사한다. 비어있는 결과도 실패로 본다.
+ * @param extraHeaders 에이전트별 추가 필수 헤더(정확한 "## <이름>" 매칭). 공용 4개에 더해 검사.
+ *   (agent_registry.json의 required_headers — PM=PRD, tech_lead=Tech Spec, design=DESIGN.md 헤더)
+ */
+export function validateAgentOutput(markdown: string, extraHeaders: string[] = []): ValidationResult {
   const missing: string[] = [];
   if (markdown.trim().length === 0) {
-    return { ok: false, missing: REQUIRED.map((r) => r.label) };
+    return { ok: false, missing: [...REQUIRED.map((r) => r.label), ...extraHeaders] };
   }
   for (const r of REQUIRED) {
     if (!r.pattern.test(markdown)) missing.push(r.label);
+  }
+  for (const h of extraHeaders) {
+    const pattern = new RegExp(`^##\\s+${escapeRegex(h)}\\s*$`, "m");
+    if (!pattern.test(markdown)) missing.push(h);
   }
   return { ok: missing.length === 0, missing };
 }

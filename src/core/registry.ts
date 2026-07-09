@@ -7,6 +7,8 @@ export interface AgentDef {
   role: string;
   prompt_path: string;
   default_output: string;
+  /** 에이전트별 추가 필수 헤더(공용 4개 외). 스키마 검증 재생성 루프가 검사. 미지정 시 공용 4개만. */
+  required_headers?: string[];
 }
 
 export interface AgentRegistry {
