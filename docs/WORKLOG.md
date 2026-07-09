@@ -1,5 +1,15 @@
 # WORKLOG.md
 
+## 2026-07-09 (실행 계층 v4 — 병행 오케스트레이션)
+
+- **mergeCoordinator.ts**: 직렬 안전 병합(ARCH §2) — 브랜치마다 base 머지→L1 재게이트→ff 푸시, 충돌/게이트실패는 그 항목만 보류. 성공 시 worktree 정리.
+- **parallelMission.ts**: `runParallelMission` — 의존 없는 태스크를 웨이브로 묶어 concurrency 한도 내 **병렬 실행**(runPool), 각자 worktree/ownership 격리, merge:false·keepWorktree로 브랜치에 커밋만 → 웨이브 끝나면 코디네이터가 직렬 병합 → 다음 웨이브. 강등/rate limit 대기 재사용.
+- **harness mission --parallel [--concurrency N]**.
+- **실세션 2 코더 동시 스모크 PASS**: 독립 유틸 2개(strutil/numutil) 동시 구현→리뷰→둘 다 develop 병합(최대 동시 세션 2 확인).
+- **버그 2건 수정(스모크·flaky 테스트가 잡음)**: ① STATUS.md(세션 내부 통신, ARCH §3.3)가 병렬 병합 시 add/add 충돌 → 공용 git exclude로 커밋·병합·diff에서 제외. ② 동시 `git worktree add`가 .git 락 경합으로 flaky → worktree 생성/제거를 뮤텍스로 직렬화(세션 작업은 병렬 유지).
+- 테스트: exec 단위 **71/71**(mergeCoordinator 2·parallelMission 3 추가, 3회 반복 안정) + acceptance 57/57.
+- 남은 v4: Mailbox·tell·SPLIT·StatusBoard 고도화(병렬 코어는 완성). 설계 미결 Q4·Q5는 필드 튜닝.
+
 ## 2026-07-09 (실행 계층 §9-7·§9-8 — v3.5 미션 모드 완성)
 
 - **modelPolicy.ts**: 강등 사다리 B(전부 Opus)/C(난이도 라우팅)/A(구현 Sonnet), 리뷰·계획은 Opus 고정. shouldDegrade(누적 대기 임계).

@@ -90,7 +90,9 @@ program
     .option("--yes", "브리프 자동 승인 (비대화)", false)
     .option("--max-tasks <n>", "브리프 태스크 상한", (v) => parseInt(v, 10))
     .option("--review-rounds <n>", "태스크당 L3 리뷰 최대 라운드", (v) => parseInt(v, 10))
+    .option("--parallel", "[v4] 의존 없는 태스크를 병렬 세션으로 동시 실행 (직렬 병합)", false)
+    .option("--concurrency <n>", "병렬 모드 동시 세션 상한 (기본 3)", (v) => parseInt(v, 10))
     .action(async (opts) => {
-    await runMissionCommand({ goal: opts.goal, base: opts.base, yes: opts.yes, maxTasks: opts.maxTasks, reviewRounds: opts.reviewRounds });
+    await runMissionCommand({ goal: opts.goal, base: opts.base, yes: opts.yes, maxTasks: opts.maxTasks, reviewRounds: opts.reviewRounds, parallel: opts.parallel, concurrency: opts.concurrency });
 });
 program.parse();

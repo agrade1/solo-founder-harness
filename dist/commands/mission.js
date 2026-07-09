@@ -6,6 +6,7 @@ import { WORKSPACE_ROOT } from "../core/paths.js";
 import { ClaudeCliProvider } from "../exec/claudeCliProvider.js";
 import { generateBrief } from "../exec/briefGenerator.js";
 import { runMission, renderMissionReport } from "../exec/mission.js";
+import { runParallelMission } from "../exec/parallelMission.js";
 function askYes(message) {
     return new Promise((resolve) => {
         const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -36,23 +37,28 @@ export async function runMissionCommand(opts) {
             return;
         }
     }
-    console.log("\n자율 실행 시작 (사람 개입 없음, 게이트 통과 시 develop 자동 병합)...\n");
-    const report = await runMission({
+    const mode = opts.parallel ? `병렬(최대 ${opts.concurrency ?? 3} 세션 동시)` : "순차";
+    console.log(`\n자율 실행 시작 [${mode}] (사람 개입 없음, 게이트 통과 시 develop 자동 병합)...\n`);
+    const onEvent = (id, e) => {
+        if (e.kind === "init")
+            console.log(`  [${id}] 시작 (${e.model})`);
+        else if (e.kind === "result")
+            console.log(`  [${id}] 종료 turns=${e.numTurns} in=${e.usage.inputTokens}/out=${e.usage.outputTokens}`);
+        else if (e.kind === "rateLimit" && e.status !== "allowed")
+            console.log(`  [${id}] ⚠ rate limit ${e.status} (resetsAt ${e.resetsAt})`);
+    };
+    const common = {
         repoRoot: WORKSPACE_ROOT,
         brief,
         coderProvider: new ClaudeCliProvider(),
         reviewProvider: new ClaudeCliProvider(),
         baseBranch: opts.base,
         reviewRounds: opts.reviewRounds,
-        onEvent: (id, e) => {
-            if (e.kind === "init")
-                console.log(`  [${id}] 시작 (${e.model})`);
-            else if (e.kind === "result")
-                console.log(`  [${id}] 종료 turns=${e.numTurns} in=${e.usage.inputTokens}/out=${e.usage.outputTokens}`);
-            else if (e.kind === "rateLimit" && e.status !== "allowed")
-                console.log(`  [${id}] ⚠ rate limit ${e.status} (resetsAt ${e.resetsAt})`);
-        },
-    });
+        onEvent,
+    };
+    const report = opts.parallel
+        ? await runParallelMission({ ...common, concurrency: opts.concurrency })
+        : await runMission(common);
     const md = renderMissionReport(report);
     const outDir = join(WORKSPACE_ROOT, "outputs");
     mkdirSync(outDir, { recursive: true });

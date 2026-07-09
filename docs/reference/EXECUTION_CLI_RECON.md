@@ -95,6 +95,10 @@
 - [x] §9-8 develop 자동 병합(SessionRunner merge) + rate limit 체크포인트/재개 + MISSION_REPORT + `harness mission` — **실세션 미션 e2e PASS**
 
 **§9-7·§9-8 (= v3.5 미션 모드 완성)**: `harness mission --goal`이 플래너(Opus)로 목표를 태스크 분해 → 사람 브리프 승인(유일 게이트) → 자율 루프(태스크마다 코더→L1 게이트→L3 리뷰→develop 자동 병합) → MISSION_REPORT. 모델 강등 사다리(B/C/A, rate_limit_event 기반 auto 강등), dep 순서, turn 예산 가드, rate limit 체크포인트(다음 태스크 직전 resetsAt까지 대기·재개). 실세션 스모크: 목표→분해→코더(math.js+test)→리뷰(Critical0)→develop 병합, 실제 rate_limit로 B→C 강등까지 실증. exec 단위 66/66.
+
+- [x] **v4 병행 오케스트레이션 (ARCH §7)**: `harness mission --parallel [--concurrency N]` — 의존 없는 태스크를 **웨이브 병렬 실행**(각자 worktree/ownership 격리) → mergeCoordinator가 **직렬 병합**(base 머지→L1 재게이트→ff 푸시, 충돌은 그 항목만 보류). `parallelMission.ts`·`mergeCoordinator.ts`. **실세션 2 코더 동시 스모크 PASS**(strutil/numutil 병렬 구현→둘 다 develop). exec 단위 **71/71**.
+  - 발견·수정: STATUS.md(세션 내부 통신)를 공용 git exclude로 제외(병렬 add/add 충돌 방지). worktree 생성/제거는 뮤텍스로 직렬화(동시 `git worktree add` .git 락 경합 방지) — 세션 작업은 병렬 유지.
+  - 남은 v4 항목: Mailbox(QUESTION/BLOCKED 자동 라우팅)·`harness tell`·SPLIT 라이브 분화·StatusBoard 고도화 — 병렬 실행 코어는 완성, 이들은 후속.
 - ⚠ 남은 설계 판단은 DESIGN_QUESTIONS Q4(병합 전략)·Q5(rate limit 의미론) — 필드 관측 후 튜닝.
 
 **§9-6**: 신선 컨텍스트 리뷰어(Opus 고정, plan 모드 읽기전용, --fork 금지)가 diff+SPEC+계약만 보고 `### Critical` 추출(extractCriticalRisks 재사용) → Critical이면 코더에 --resume revise 주입 → 재게이트·재리뷰(max 2R) → 소진 시 review_deferred(병합 차단).

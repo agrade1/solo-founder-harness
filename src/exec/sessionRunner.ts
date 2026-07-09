@@ -8,7 +8,7 @@
  *   거부될 수 있음. 견고한 병합 전략은 DESIGN_QUESTIONS Q4.
  */
 import { join, basename } from "node:path";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { createWorktree, removeWorktree, type WorktreeInfo } from "./worktree.js";
 import { compilePermissions, materializeSettings } from "./permissionCompiler.js";
 import { compilePrompt } from "./promptCompiler.js";
@@ -110,6 +110,15 @@ export async function runSession(opts: RunSessionOpts): Promise<SessionOutcome> 
     wt = await createWorktree({ repoRoot: opts.repoRoot, runId: opts.runId, sessionId: opts.spec.sessionId, baseBranch: base });
     outcome.branch = wt.branch;
     outcome.worktreePath = wt.path;
+
+    // STATUS.md는 세션 내부 통신 파일(ARCH §3.3) — 산출물 아님. 공용 git exclude에 넣어
+    // 커밋·병합·diff에서 제외한다(병렬 세션 간 STATUS.md add/add 충돌 방지).
+    try {
+      const ex = join(opts.repoRoot, ".git", "info", "exclude");
+      if (existsSync(ex) && !readFileSync(ex, "utf8").split("\n").includes("STATUS.md")) appendFileSync(ex, "STATUS.md\n");
+    } catch {
+      /* best-effort */
+    }
 
     // 2) 권한 컴파일 → settings materialize(worktree 밖, gitignore) + 확정 spec
     const compiled = compilePermissions({ ...opts.spec, cwd: wt.path });

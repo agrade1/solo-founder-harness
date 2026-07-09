@@ -35,6 +35,18 @@ async function git(repoRoot: string, args: string[]): Promise<string> {
   return r.stdout.trim();
 }
 
+// worktree add/remove/prune는 repo의 .git 락을 잡으므로 병행 세션에서 동시 실행 시 경합한다.
+// 세션 "작업"은 병렬로 두되 worktree 생성·제거만 이 뮤텍스로 직렬화한다(각 호출은 짧음).
+let worktreeLock: Promise<unknown> = Promise.resolve();
+function withWorktreeLock<T>(fn: () => Promise<T>): Promise<T> {
+  const run = worktreeLock.then(fn, fn);
+  worktreeLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 export interface CreateWorktreeOpts {
   repoRoot: string;
   runId: string;
@@ -52,7 +64,7 @@ export async function createWorktree(opts: CreateWorktreeOpts): Promise<Worktree
   const branch = worktreeBranch(runId, sessionId);
   const args = ["worktree", "add", "-b", branch, path];
   if (opts.baseBranch) args.push(opts.baseBranch);
-  await git(repoRoot, args);
+  await withWorktreeLock(() => git(repoRoot, args));
   return { runId, sessionId, path, branch };
 }
 
@@ -68,12 +80,11 @@ export async function removeWorktree(opts: RemoveWorktreeOpts): Promise<void> {
   const { repoRoot, info } = opts;
   const args = ["worktree", "remove", info.path];
   if (opts.force !== false) args.push("--force");
-  await git(repoRoot, args);
-  await git(repoRoot, ["worktree", "prune"]);
-  if (opts.deleteBranch) {
-    // 병합 안 된 브랜치도 지우려면 -D
-    await git(repoRoot, ["branch", "-D", info.branch]);
-  }
+  await withWorktreeLock(async () => {
+    await git(repoRoot, args);
+    await git(repoRoot, ["worktree", "prune"]);
+    if (opts.deleteBranch) await git(repoRoot, ["branch", "-D", info.branch]); // 병합 안 된 브랜치도 지우려면 -D
+  });
 }
 
 /** 현재 등록된 worktree 경로 목록 (`git worktree list --porcelain`). */

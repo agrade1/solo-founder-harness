@@ -36,7 +36,8 @@ export interface MissionBrief {
 
 export interface TaskResult {
   taskId: string;
-  status: SessionStatus | "dep_unmet";
+  status: SessionStatus | "dep_unmet" | "merge_conflict"; // merge_conflict = 병렬 병합 시 충돌(병렬 모드)
+
   branch?: string;
   turns: number;
   usage: SessionUsage | null;
