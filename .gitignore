@@ -8,3 +8,6 @@ projects/idea-discovery/IDEA_*.md
 # Phase 1 도그푸딩 프로젝트 — 실제 아이디어 내용 포함, 로컬 전용 (푸시 금지)
 projects/dogfood-*/
 *.tgz
+
+# 실행 계층 세션 worktree (ARCH §2) — 커밋 금지
+.harness/

@@ -1,5 +1,13 @@
 # WORKLOG.md
 
+## 2026-07-09 (실행 계층 §9-3·§9-4 + ARCH v0.3 결정 반영)
+
+- **ARCH v0.3 확정 반영**(페이블): Q1=Model A(one-shot+resume, B기각), Q2=하이브리드 프롬프트, Q3=그레이스1턴→DEFERRED. claudeCliProvider 잠정 딱지 제거, DESIGN_QUESTIONS 해소 마킹.
+- **§9-3 권한 컴파일러**: `registry/permission_policy.json`(PERMISSION_POLICY §7 기계본) + `permissionCompiler.ts`(SessionSpec+정책→allow/ask/deny 규칙 + Claude Code settings + T3 hookDenyPatterns + materializeSettings). claudeCliProvider `--settings` 연결. SessionSpec에 ownership/forbidden/settingsPath 추가.
+- **§9-4 worktree + L1 게이트**: `worktree.ts`(세션당 git worktree/브랜치 생성·제거·조회, develop 기준) + `machineGate.ts`(typecheck/lint/test/build 탐지·실행, 없으면 skip) + `runProcess.ts`(버퍼링 헬퍼). `.harness/` gitignore.
+- 테스트: exec 단위 **29/29**(파서/mock/권한/worktree(실git 임시레포)/게이트) + acceptance 57/57. `npm test`=exec+acceptance. dist 재빌드(테스트·fixture 제외).
+- 다음: §9-5 대화형 게이트(ApprovalQueue)+diff 미리보기+tell+PromptCompiler → v3 acceptance.
+
 ## 2026-07-08 (실행 계층 구현 착수 — §9-1·§9-2)
 
 - 역할 분담 확정: **구현은 이 세션, 설계는 Fable 세션.** 설계 필요 지점은 `docs/reference/EXECUTION_DESIGN_QUESTIONS.md`에 정리만.

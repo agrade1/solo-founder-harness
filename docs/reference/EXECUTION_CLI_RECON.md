@@ -88,7 +88,10 @@
 - [x] stream-json 이벤트 스키마 프로브 (이 문서 §3)
 - [x] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서 + 단일 세션 수명 (`src/exec/`) — **마감 확정** (Q1=Model A 결정, ARCH §1.0)
 - [x] §9-3 권한 컴파일러(티어→규칙+훅패턴) (`src/exec/permissionCompiler.ts` + `registry/permission_policy.json`, 단위 포함 19/19)
-- [ ] §9-4 worktree 수명 + L1 기계 게이트 파이프라인 ← **다음**
+- [x] §9-4 worktree 수명 + L1 기계 게이트 (`src/exec/{worktree,machineGate,runProcess}.ts`, 단위 포함 29/29)
+- [ ] §9-5 대화형 게이트(ApprovalQueue) + diff 미리보기 + tell + PromptCompiler(§3.1.1) → v3 acceptance ← **다음**
+
+**§9-4 산출물**: `worktree.ts`(세션당 `.harness/worktrees/<run>/<sid>` + 브랜치 `harness/<run>/<sid>`, develop 기준, 생성/제거/조회 — 병합·푸시는 게이트 몫) + `machineGate.ts`(L1: package.json scripts에서 typecheck/lint/test/build 탐지·실행, 없으면 skip, 하나라도 실패=passed:false) + `runProcess.ts`(버퍼링 실행 헬퍼). `.harness/`는 gitignore. worktree 테스트는 실제 git 임시레포로 검증.
 
 **§9-2 산출물**: `src/exec/{types,streamParser,eventQueue,mockExecProvider,claudeCliProvider}.ts` + 단위 테스트 + 실측 fixture. Model A 확정.
 **§9-3 산출물**: `registry/permission_policy.json`(PERMISSION_POLICY.md §7 → 기계본) + `permissionCompiler.ts`(SessionSpec+정책 → allow/ask/deny 규칙 + Claude Code settings + T3 hookDenyPatterns) + `materializeSettings`. claudeCliProvider가 `--settings`로 소비.
