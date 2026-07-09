@@ -5,6 +5,7 @@ import { runInit } from "./commands/init.js";
 import { runRun } from "./commands/run.js";
 import { runSummary } from "./commands/summary.js";
 import { runTaskPrompt } from "./commands/taskPrompt.js";
+import { runExec } from "./commands/exec.js";
 
 const program = new Command();
 
@@ -59,6 +60,30 @@ program
   .description("Claude Code 작업 지시문을 생성한다")
   .action((opts: { project: string }) => {
     runTaskPrompt(opts.project);
+  });
+
+program
+  .command("exec")
+  .description("[v3] 실행 세션 1개를 worktree에서 돌려 게이트·승인 후 base에 병합한다 (실제 claude 구독 토큰 사용)")
+  .requiredOption("--task <task>", "세션이 완수할 작업")
+  .option("--role <role>", "세션 역할 설명")
+  .option("--base <branch>", "병합 기준 브랜치", "develop")
+  .option("--session-id <uuid>", "세션 ID 사전 지정 (기본 자동 생성)")
+  .option("--input <path...>", "참고 문서 경로 (API_CONTRACT는 인라인)")
+  .option("--yes", "모든 승인 자동 통과 (비대화)", false)
+  .option("--keep-worktree", "종료 후 worktree 보존", false)
+  .option("--no-merge", "승인해도 병합하지 않음 (diff까지만)")
+  .action(async (opts: { task: string; role?: string; base: string; sessionId?: string; input?: string[]; yes: boolean; keepWorktree: boolean; merge: boolean }) => {
+    await runExec({
+      task: opts.task,
+      role: opts.role,
+      base: opts.base,
+      sessionId: opts.sessionId,
+      inputs: opts.input,
+      yes: opts.yes,
+      keepWorktree: opts.keepWorktree,
+      merge: opts.merge,
+    });
   });
 
 program.parse();

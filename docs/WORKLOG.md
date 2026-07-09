@@ -1,5 +1,14 @@
 # WORKLOG.md
 
+## 2026-07-09 (실행 계층 §9-5 — v3 대화형 단일 실행 완주)
+
+- **§9-5 독립 조각**: `promptCompiler.ts`(SessionSpec→착수 프롬프트, 하이브리드) + `diffPreview.ts`(base 대비 변경 수집·요약) + `approvalQueue.ts`(승인 직렬화 FIFO + approve/reject/defer). SessionSpec에 task/inputs/contractPaths/dod 추가.
+- **§9-5 통합**: `sessionRunner.ts`(worktree→권한컴파일→프롬프트→세션실행→L1게이트→자기브랜치 커밋→diff→승인→base 병합) + `harness exec` CLI(--task/--role/--base/--yes/--no-merge 등, stdin 승인 y/d/N, 이벤트 마일스톤 출력).
+- **실제 세션 e2e 스모크 PASS** (임시 repo, 구독 토큰): 진짜 claude 세션이 hello.txt 생성 → 게이트 통과 → develop 병합, `develop:hello.txt="harness\n"` 검증. → **권한 컴파일러 `--settings` 실 CLI 수용 확인**(§9-3 미검증 항목 해소).
+- settings는 worktree 밖(repoRoot/.harness/sessions)에 써서 세션 diff 미오염(테스트가 잡은 버그 수정).
+- 테스트: exec 단위 **45/45**(promptCompiler·diff·queue·SessionRunner 오케스트레이션 4경로 mock+실git) + acceptance 57/57.
+- 다음: §9-6 Opus 리뷰어 세션(L3) + revise 루프.
+
 ## 2026-07-09 (실행 계층 §9-3·§9-4 + ARCH v0.3 결정 반영)
 
 - **ARCH v0.3 확정 반영**(페이블): Q1=Model A(one-shot+resume, B기각), Q2=하이브리드 프롬프트, Q3=그레이스1턴→DEFERRED. claudeCliProvider 잠정 딱지 제거, DESIGN_QUESTIONS 해소 마킹.

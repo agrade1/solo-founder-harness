@@ -89,7 +89,10 @@
 - [x] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서 + 단일 세션 수명 (`src/exec/`) — **마감 확정** (Q1=Model A 결정, ARCH §1.0)
 - [x] §9-3 권한 컴파일러(티어→규칙+훅패턴) (`src/exec/permissionCompiler.ts` + `registry/permission_policy.json`, 단위 포함 19/19)
 - [x] §9-4 worktree 수명 + L1 기계 게이트 (`src/exec/{worktree,machineGate,runProcess}.ts`, 단위 포함 29/29)
-- [ ] §9-5 대화형 게이트(ApprovalQueue) + diff 미리보기 + tell + PromptCompiler(§3.1.1) → v3 acceptance ← **다음**
+- [x] §9-5 PromptCompiler + diff 미리보기 + ApprovalQueue + **SessionRunner + `harness exec`** — **실제 세션 e2e 스모크 PASS** (worktree→게이트→커밋→diff→승인→develop 병합, `develop:hello.txt` 검증). exec 단위 45/45
+- [ ] §9-6 Opus 리뷰어 세션(L3) + revise 루프 ← **다음**
+
+**§9-5 검증으로 해소**: 권한 컴파일러의 `--settings`(permissions.allow/ask/deny)가 실제 claude 2.1.204에 **수용됨**(위 §9-3 e2e 대기 항목 해소). acceptEdits+allowedTools, stream-json 파싱, worktree 격리, `git push .` 병합 전부 실동작. `tell`은 다중 세션(v4) 맥락이라 §9-5에서 제외(단일 세션엔 불필요).
 
 **§9-4 산출물**: `worktree.ts`(세션당 `.harness/worktrees/<run>/<sid>` + 브랜치 `harness/<run>/<sid>`, develop 기준, 생성/제거/조회 — 병합·푸시는 게이트 몫) + `machineGate.ts`(L1: package.json scripts에서 typecheck/lint/test/build 탐지·실행, 없으면 skip, 하나라도 실패=passed:false) + `runProcess.ts`(버퍼링 실행 헬퍼). `.harness/`는 gitignore. worktree 테스트는 실제 git 임시레포로 검증.
 
