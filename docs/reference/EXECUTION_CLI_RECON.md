@@ -86,10 +86,13 @@
 
 - [x] §9-1 CLI 플래그 실측 (이 문서 §1·§2)
 - [x] stream-json 이벤트 스키마 프로브 (이 문서 §3)
-- [x] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서 + 단일 세션 수명 (`src/exec/`, 단위 10/10) — **단, 세션 수명 모델 확정은 설계 Q1 대기** (DESIGN_QUESTIONS §Q1)
-- [ ] §9-3 권한 컴파일러(티어→플래그+훅) ← **다음**
+- [x] §9-2 ExecutionProvider(CLI) 골격 + 이벤트 파서 + 단일 세션 수명 (`src/exec/`) — **마감 확정** (Q1=Model A 결정, ARCH §1.0)
+- [x] §9-3 권한 컴파일러(티어→규칙+훅패턴) (`src/exec/permissionCompiler.ts` + `registry/permission_policy.json`, 단위 포함 19/19)
+- [ ] §9-4 worktree 수명 + L1 기계 게이트 파이프라인 ← **다음**
 
-**§9-2 산출물**: `src/exec/{types,streamParser,eventQueue,mockExecProvider,claudeCliProvider}.ts` + 파서/mock 단위 테스트(`streamParser.test.ts`, `npm run test:exec`) + 실측 fixture(`__fixtures__/probe.ndjson`). claudeCliProvider는 Model A 잠정형(Q1 대기). 실호출 end-to-end는 오케스트레이터/게이트 후 승인하 검증.
+**§9-2 산출물**: `src/exec/{types,streamParser,eventQueue,mockExecProvider,claudeCliProvider}.ts` + 단위 테스트 + 실측 fixture. Model A 확정.
+**§9-3 산출물**: `registry/permission_policy.json`(PERMISSION_POLICY.md §7 → 기계본) + `permissionCompiler.ts`(SessionSpec+정책 → allow/ask/deny 규칙 + Claude Code settings + T3 hookDenyPatterns) + `materializeSettings`. claudeCliProvider가 `--settings`로 소비.
+⚠ **e2e 실측 대기**: `--settings`가 `permissions.allow/ask/deny`를 이 형태로 수용하는지, 규칙 문자열 문법(`Bash(cmd:*)`/`Read(glob)`) 정확성은 세션 실호출 시 확인.
 
 호출 인자 확정형(§9-2 착수 기준):
 ```

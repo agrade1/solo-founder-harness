@@ -1,11 +1,11 @@
 /**
  * claude CLI 헤드리스 실행 provider (ARCH §1, RECON §5 확정 인자형).
  *
- * ⚠ 잠정 구현 (Model A): `claude -p`는 호출당 1회성이라, 한 "세션"은
- * --session-id로 시작한 첫 invocation + 이후 --resume <id> invocation들의 논리적 묶음이다.
- * 매 turn 새 프로세스가 뜬다(컨텍스트는 --resume로 복원). 지속형 단일 프로세스
- * (Model B, --input-format stream-json으로 stdin 상주)와의 선택은 설계 미결
- * → docs/reference/EXECUTION_DESIGN_QUESTIONS.md Q1. 이 파일은 그 결정 후 재작성 가능.
+ * 세션 수명 = Model A 확정 (ARCH v0.3 §1.0, DESIGN_QUESTIONS Q1). `claude -p`는 호출당
+ * 1회성이라, 한 "세션"은 --session-id로 시작한 첫 invocation + 이후 --resume <id>
+ * invocation들의 논리적 묶음이다. 매 turn 새 프로세스(컨텍스트는 --resume로 복원).
+ * 지속형 stdin 단일 프로세스(Model B)는 기각 — 행/좀비 리스크 제거 + 복구경로 단일화.
+ * events()는 turn 단위 스트림(§1.0); 세션 논리 스트림은 상위 SessionRunner가 합성.
  *
  * 실제 claude 호출 = 구독 토큰 소모. 단위 검증은 MockExecProvider + 파서 fixture로 하고,
  * 이 provider의 end-to-end 실행은 오케스트레이터·게이트가 붙은 뒤 승인하에 검증한다.
@@ -18,6 +18,8 @@ const CLAUDE_BIN = process.env.HARNESS_CLAUDE_BIN ?? "claude";
 function baseArgs(spec) {
     const args = ["-p", "--output-format", "stream-json", "--include-partial-messages", "--verbose"];
     args.push("--permission-mode", spec.permissionMode ?? "acceptEdits");
+    if (spec.settingsPath)
+        args.push("--settings", spec.settingsPath); // 권한 컴파일 결과(allow/ask/deny)
     if (spec.model)
         args.push("--model", spec.model);
     if (spec.fallbackModel)

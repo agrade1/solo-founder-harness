@@ -5,6 +5,12 @@
 - 작성 시작: 2026-07-08 (§9-2 ExecutionProvider 구현 중)
 - 규칙: 각 항목 = 배경 / 선택지 / 잠정 구현 상태 / 결정 시 영향 범위.
 
+> **전부 해소됨 (2026-07-09, ARCH v0.3 §11 결정 로그).**
+> - **Q1 → A 확정** (Model A one-shot+resume, B 기각). ARCH §1.0. claudeCliProvider 잠정 딱지 제거·확정 승격.
+> - **Q2 → 하이브리드** (SPEC·API_CONTRACT 인라인 + 배경문서 경로+Read). ARCH §3.1.1. PromptCompiler는 §9-5.
+> - **Q3 → 그레이스 1턴(WIP 커밋+STATUS)→stop→DEFERRED**. ARCH §3.1.2. 상태머신 BUDGET_GRACE, 강제는 §9-7.
+> 아래 원문은 결정 근거 추적용으로 보존.
+
 ---
 
 ## Q1. 세션 수명 모델 — one-shot+resume(A) vs 지속형 stdin(B) ⭐블로킹

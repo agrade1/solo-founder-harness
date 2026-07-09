@@ -57,10 +57,13 @@ export interface SessionSpec {
   model?: string; // --model (기본 정책 B: opus). 미지정 시 provider 기본
   fallbackModel?: string; // --fallback-model (강등 사다리 CLI 자동 폴백)
   cwd: string; // 세션 작업 디렉토리 (worktree). 절대경로
-  allowedTools?: string[]; // --allowedTools 화이트리스트 (권한 컴파일러 산출)
-  disallowedTools?: string[]; // --disallowedTools
+  ownership?: string[]; // 담당 경로 glob (ARCH §2 충돌 예방 경계). 권한 컴파일러/향후 훅이 참조
+  forbidden?: string[]; // 금지 행동 서술 (예: "API_CONTRACT 변경"). 프롬프트/리뷰 참조
+  allowedTools?: string[]; // spec-레벨 추가 허용 (권한 컴파일러 결과에 합쳐짐)
+  disallowedTools?: string[]; // spec-레벨 추가 거부
   addDirs?: string[]; // --add-dir (worktree 밖 읽기 허용 경로)
   permissionMode?: string; // --permission-mode (기본 acceptEdits)
+  settingsPath?: string; // --settings 파일 경로 (권한 컴파일 결과를 materialize한 것)
   budget?: { maxTurns?: number }; // max_turns = 오케스트레이터가 assistant 이벤트로 강제 (CLI 플래그 아님, RECON §2.1)
 }
 

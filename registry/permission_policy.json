@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "_source": "PERMISSION_POLICY.md §7 Allow/Ask/Deny + EXECUTION_LAYER_ARCH.md §4.2 T0~T3. 사람 문서가 진실, 이 파일은 기계용 병행본.",
+  "permissionMode": "acceptEdits",
+  "tiers": {
+    "T0_read": {
+      "desc": "읽기·검증. 자동 허용(allow).",
+      "tools": ["Read", "Glob", "Grep"],
+      "bash": ["git status", "git diff", "git log", "git branch", "git show", "ls", "cat", "pwd", "npm run lint", "npm run typecheck", "npm test", "npm run build"]
+    },
+    "T1_bounded": {
+      "desc": "경계 내 작업. worktree cwd 안에서 자동 허용(allow). 자기 브랜치 커밋 포함.",
+      "tools": ["Edit", "Write", "MultiEdit", "NotebookEdit"],
+      "bash": ["git add", "git commit", "git switch", "git checkout -b", "git stash"]
+    },
+    "T2_policy": {
+      "desc": "경계·환경 변경. 미션 사전승인 범위면 자동, 아니면 defer(오케스트레이터). 대화형은 ask.",
+      "tools": ["WebFetch", "WebSearch"],
+      "bash": ["npm install", "npm i", "npm uninstall", "npm update", "pnpm add", "yarn add", "npx", "docker", "curl", "wget", "git clone", "git merge", "git rebase"]
+    },
+    "T3_forbidden": {
+      "desc": "파괴·유출·최종 반영. PreToolUse deny 무조건. develop push는 여기가 아니라 게이트 파이프라인으로만.",
+      "bash": ["git push origin main", "git push --force", "git push -f", "git push --force-with-lease", "git reset --hard", "git clean", "rm -rf", "sudo", "chmod 777", "printenv", "env", "cat .env"],
+      "read_deny": ["**/.env", "**/.env.*", "**/*secret*", "**/secrets/**", "**/*.pem", "**/id_rsa*", "**/.aws/**", "**/.ssh/**"],
+      "hook_deny_patterns": ["curl\\s+[^|]*\\|\\s*(sh|bash)", "wget\\s+[^|]*\\|\\s*(sh|bash)", "git\\s+push\\s+.*\\bmain\\b", "rm\\s+-rf\\s+/"]
+    }
+  }
+}
