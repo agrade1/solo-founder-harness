@@ -61,6 +61,8 @@ export function buildTaskPrompt(project: string, today: string): string {
     "docs/05_RED_TEAM.md",
     "docs/06_CEO_DECISION.md",
     "docs/API_CONTRACT.md",
+    "docs/DESIGN.md",
+    "docs/tokens.json",
   ].filter((rel) => existsSync(join(paths.root, rel)));
 
   const lines: string[] = [];
@@ -126,6 +128,22 @@ export function buildTaskPrompt(project: string, today: string): string {
     lines.push(
       "3. **검증(MVP-lean)** — 레퍼런스는 명확성·속도용이며 과장/과설계 금지. 모바일·접근성 기본을 지킨다. 저작권 자산을 그대로 복제하지 않는다.",
     );
+    lines.push("");
+  }
+
+  // DESIGN.md + tokens.json이 모두 있으면 토큰 기반 구현 규칙을 주입한다 (디자인 레이어 §5).
+  // FE/UI 담당 코드에 적용. (위 "디자인 실행"은 시안 생성, 이건 코드화 규칙 — 상호 보완)
+  if (existsSync(join(paths.root, "docs/DESIGN.md")) && existsSync(join(paths.root, "docs/tokens.json"))) {
+    lines.push("## 디자인 구현 규칙 (필수 — FE/UI 담당 코드)");
+    lines.push("- 구현 전 `docs/DESIGN.md`와 `docs/tokens.json`을 읽을 것.");
+    lines.push(
+      "- 모든 컬러/스페이싱/타이포/radius/shadow 값은 tokens.json의 토큰을 참조할 것. " +
+        "CSS 변수 또는 Tailwind config 매핑으로 소비하고, raw 값(hex, px) 하드코딩 금지.",
+    );
+    lines.push("- primitive 토큰을 컴포넌트에서 직접 사용 금지. semantic 또는 component 토큰만 사용.");
+    lines.push("- DESIGN.md 컴포넌트 인벤토리에 없는 컴포넌트가 필요하면 임의 생성하지 말고 인벤토리 추가를 먼저 제안할 것.");
+    lines.push("- 상태(hover/focus/disabled/error) 처리는 DESIGN.md 인터랙션 원칙을 따를 것.");
+    lines.push("- 구현 완료 후 `scripts/token-lint`를 실행해 위반 0건을 확인할 것.");
     lines.push("");
   }
 
