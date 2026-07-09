@@ -65,6 +65,8 @@ program
     .option("--yes", "모든 승인 자동 통과 (비대화)", false)
     .option("--keep-worktree", "종료 후 worktree 보존", false)
     .option("--no-merge", "승인해도 병합하지 않음 (diff까지만)")
+    .option("--review", "L3 Opus 리뷰어 세션 실행 (Critical 시 revise 루프)", false)
+    .option("--review-rounds <n>", "리뷰 최대 라운드 (기본 2)", (v) => parseInt(v, 10))
     .action(async (opts) => {
     await runExec({
         task: opts.task,
@@ -75,6 +77,8 @@ program
         yes: opts.yes,
         keepWorktree: opts.keepWorktree,
         merge: opts.merge,
+        review: opts.review,
+        reviewRounds: opts.reviewRounds,
     });
 });
 program.parse();

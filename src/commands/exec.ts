@@ -43,6 +43,8 @@ export async function runExec(opts: {
   yes?: boolean;
   keepWorktree?: boolean;
   merge?: boolean;
+  review?: boolean;
+  reviewRounds?: number;
 }): Promise<void> {
   const sessionId = opts.sessionId ?? randomUUID();
   const runId = `exec-${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -66,6 +68,7 @@ export async function runExec(opts: {
     merge: opts.merge,
     keepWorktree: opts.keepWorktree,
     onEvent: printEvent,
+    review: opts.review ? { provider: new ClaudeCliProvider(), maxRounds: opts.reviewRounds } : undefined,
   });
 
   console.log("");
@@ -74,6 +77,9 @@ export async function runExec(opts: {
   if (outcome.gate) {
     const g = outcome.gate.checks.map((c) => `${c.name}:${c.ok ? "ok" : "FAIL"}`).join(" ");
     console.log(`게이트: ${outcome.gate.passed ? "통과" : "실패"}${g ? ` (${g})` : " (체크 없음)"}`);
+  }
+  for (const r of outcome.reviews) {
+    console.log(`L3 리뷰 R${r.round}: Critical ${r.critical.length}건${r.critical.length ? ` — ${r.critical.join("; ")}` : " (통과)"}`);
   }
   if (outcome.diff) console.log(`변경: ${outcome.diff.files.length}개 파일, 새 파일 ${outcome.diff.untracked.length}개`);
   if (outcome.usage) console.log(`토큰: in ${outcome.usage.inputTokens} / out ${outcome.usage.outputTokens}`);

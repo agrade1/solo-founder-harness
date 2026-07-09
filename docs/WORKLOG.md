@@ -1,5 +1,14 @@
 # WORKLOG.md
 
+## 2026-07-09 (실행 계층 §9-6 — L3 리뷰어 + revise 루프)
+
+- **reviewer.ts**: 신선 컨텍스트 L3 리뷰어(Opus 고정, plan 모드 읽기전용, --fork 금지). diff+SPEC+계약 인라인 → `### Critical` 스키마(red_team과 동일) → extractCriticalRisks 재사용.
+- **SessionRunner 통합**: L1 게이트·커밋·diff 후 리뷰 루프 — Critical이면 코더에 --resume revise 주입 → 재게이트·재리뷰(max 2R) → 소진 시 review_deferred(병합 차단). `finalize()`/`consumeTurn()` 헬퍼로 재사용. SessionOutcome.reviews 기록.
+- **harness exec --review [--review-rounds n]**.
+- **실세션 e2e PASS**: 코더가 sum.js+sum.test.js 생성 → plan 모드 리뷰어 정상 판정(Critical 0) → develop 병합. plan 모드 리뷰어가 파싱 가능한 판정 텍스트를 냄을 실검증.
+- 테스트: exec 단위 **51/51**(reviewer 3 + review 루프 3경로: 통과/revise후통과/라운드소진) + acceptance 57/57.
+- 다음: §9-7 미션 모드(브리프·사전승인·defer·강등·turn 예산) → §9-8(자동 병합·rate limit 재개·MISSION_REPORT).
+
 ## 2026-07-09 (실행 계층 §9-5 — v3 대화형 단일 실행 완주)
 
 - **§9-5 독립 조각**: `promptCompiler.ts`(SessionSpec→착수 프롬프트, 하이브리드) + `diffPreview.ts`(base 대비 변경 수집·요약) + `approvalQueue.ts`(승인 직렬화 FIFO + approve/reject/defer). SessionSpec에 task/inputs/contractPaths/dod 추가.

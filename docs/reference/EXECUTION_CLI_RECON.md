@@ -90,7 +90,11 @@
 - [x] §9-3 권한 컴파일러(티어→규칙+훅패턴) (`src/exec/permissionCompiler.ts` + `registry/permission_policy.json`, 단위 포함 19/19)
 - [x] §9-4 worktree 수명 + L1 기계 게이트 (`src/exec/{worktree,machineGate,runProcess}.ts`, 단위 포함 29/29)
 - [x] §9-5 PromptCompiler + diff 미리보기 + ApprovalQueue + **SessionRunner + `harness exec`** — **실제 세션 e2e 스모크 PASS** (worktree→게이트→커밋→diff→승인→develop 병합, `develop:hello.txt` 검증). exec 단위 45/45
-- [ ] §9-6 Opus 리뷰어 세션(L3) + revise 루프 ← **다음**
+- [x] §9-6 Opus 리뷰어 세션(L3) + revise 루프 (`reviewer.ts` + SessionRunner 통합, `harness exec --review`) — **실세션 e2e PASS** (plan 모드 리뷰어 정상 판정·스키마 파싱·루프 통합). exec 단위 51/51
+- [ ] §9-7 미션 브리프 생성기 + 사전승인 + defer + 모델 강등 + turn 예산 강제 ← **다음(v3.5)**
+- [ ] §9-8 develop 자동 병합·푸시 + rate limit 체크포인트/재개 + MISSION_REPORT
+
+**§9-6**: 신선 컨텍스트 리뷰어(Opus 고정, plan 모드 읽기전용, --fork 금지)가 diff+SPEC+계약만 보고 `### Critical` 추출(extractCriticalRisks 재사용) → Critical이면 코더에 --resume revise 주입 → 재게이트·재리뷰(max 2R) → 소진 시 review_deferred(병합 차단).
 
 **§9-5 검증으로 해소**: 권한 컴파일러의 `--settings`(permissions.allow/ask/deny)가 실제 claude 2.1.204에 **수용됨**(위 §9-3 e2e 대기 항목 해소). acceptEdits+allowedTools, stream-json 파싱, worktree 격리, `git push .` 병합 전부 실동작. `tell`은 다중 세션(v4) 맥락이라 §9-5에서 제외(단일 세션엔 불필요).
 
