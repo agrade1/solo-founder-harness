@@ -1,5 +1,13 @@
 # WORKLOG.md
 
+## 2026-07-09 (v4 후속 — StatusBoard, 나머지는 검증 후 보류)
+
+- **필요성 검증 먼저**: 남은 v4 4개(Mailbox/tell/SPLIT/StatusBoard)를 냉정히 평가 → one-shot(Model A)엔 mid-session 상호작용이 없고 hub-spoke 설계가 세션 간 통신을 최소화하므로 Mailbox/tell/SPLIT은 근거 없는 선투자로 판단 → **보류(필드 관측 후)**. StatusBoard만 관측성 실통증(병렬 로그 뒤섞임)이라 착수.
+- **statusBoard.ts**: 세션당 한 줄 상태판(코딩/게이트/리뷰/병합/완료/보류/실패), TTY 제자리 갱신·비TTY 전이 로그. ProgressReporter 일반화.
+- **onPhase 훅**: SessionRunner에 단계 전이 훅 추가(coding/gate/review/merging/done) → 병렬·순차 미션에 threading → 미션 CLI가 StatusBoard로 렌더.
+- 테스트: exec 단위 **74/74**(StatusBoard 3 추가) + acceptance 57/57. 실토큰 스모크는 생략(표시 계층, 병렬 실행은 기검증).
+- 실행 계층 상태: v3·v3.5·v4(병렬 코어+상태판) 완료. Mailbox/tell/SPLIT만 필드 관측 후 판단.
+
 ## 2026-07-09 (실행 계층 v4 — 병행 오케스트레이션)
 
 - **mergeCoordinator.ts**: 직렬 안전 병합(ARCH §2) — 브랜치마다 base 머지→L1 재게이트→ff 푸시, 충돌/게이트실패는 그 항목만 보류. 성공 시 worktree 정리.

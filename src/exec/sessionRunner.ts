@@ -27,12 +27,14 @@ export interface RunSessionOpts {
   approver: Approver;
   baseBranch?: string; // 기본 develop
   onEvent?: (e: SessionEvent) => void;
+  onPhase?: (phase: SessionPhase) => void; // StatusBoard용 단계 전이 훅
   merge?: boolean; // 승인 시 base 병합 (기본 true)
   keepWorktree?: boolean; // 기본 false (제거, 브랜치 보존)
   review?: { provider: ExecutionProvider; maxRounds?: number; model?: string }; // L3 리뷰어(있으면 실행)
 }
 
 export type SessionStatus = "merged" | "rejected" | "deferred" | "gate_failed" | "review_deferred" | "no_changes" | "error";
+export type SessionPhase = "coding" | "gate" | "review" | "merging" | "done";
 
 export interface SessionOutcome {
   sessionId: string;
@@ -129,16 +131,19 @@ export async function runSession(opts: RunSessionOpts): Promise<SessionOutcome> 
     const prompt = compilePrompt(spec, { projectRoot: wt.path });
 
     // 4) 코더 세션 실행
+    opts.onPhase?.("coding");
     const handle = await opts.provider.start(spec, prompt);
     await consumeTurn(handle);
 
     // 5) L1 게이트 + 커밋 + diff
+    opts.onPhase?.("gate");
     let fin = await finalize();
     if (!fin.gatePassed) return ((outcome.status = "gate_failed"), outcome);
     if (!fin.hasChanges) return ((outcome.status = "no_changes"), outcome);
 
     // 6) L3 리뷰어 루프 (critique_loop 이식) — 있을 때만
     if (opts.review) {
+      opts.onPhase?.("review");
       const maxRounds = Math.max(1, opts.review.maxRounds ?? 2);
       const contract = readContract(wt.path, spec);
       let passed = false;
@@ -187,6 +192,7 @@ export async function runSession(opts: RunSessionOpts): Promise<SessionOutcome> 
 
     // 8) 병합
     if (merge) {
+      opts.onPhase?.("merging");
       const push = await git(opts.repoRoot, ["push", ".", `${wt.branch}:${base}`]);
       if (push.code !== 0) {
         outcome.status = "error";
@@ -201,6 +207,7 @@ export async function runSession(opts: RunSessionOpts): Promise<SessionOutcome> 
     outcome.error = (err as Error).message;
     return outcome;
   } finally {
+    opts.onPhase?.("done");
     if (wt && !opts.keepWorktree) {
       try {
         await removeWorktree({ repoRoot: opts.repoRoot, info: wt });

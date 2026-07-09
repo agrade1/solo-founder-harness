@@ -93,9 +93,11 @@ export async function runSession(opts) {
         // 3) 착수 프롬프트 (worktree 내용 기준)
         const prompt = compilePrompt(spec, { projectRoot: wt.path });
         // 4) 코더 세션 실행
+        opts.onPhase?.("coding");
         const handle = await opts.provider.start(spec, prompt);
         await consumeTurn(handle);
         // 5) L1 게이트 + 커밋 + diff
+        opts.onPhase?.("gate");
         let fin = await finalize();
         if (!fin.gatePassed)
             return ((outcome.status = "gate_failed"), outcome);
@@ -103,6 +105,7 @@ export async function runSession(opts) {
             return ((outcome.status = "no_changes"), outcome);
         // 6) L3 리뷰어 루프 (critique_loop 이식) — 있을 때만
         if (opts.review) {
+            opts.onPhase?.("review");
             const maxRounds = Math.max(1, opts.review.maxRounds ?? 2);
             const contract = readContract(wt.path, spec);
             let passed = false;
@@ -153,6 +156,7 @@ export async function runSession(opts) {
             return ((outcome.status = "deferred"), outcome);
         // 8) 병합
         if (merge) {
+            opts.onPhase?.("merging");
             const push = await git(opts.repoRoot, ["push", ".", `${wt.branch}:${base}`]);
             if (push.code !== 0) {
                 outcome.status = "error";
@@ -169,6 +173,7 @@ export async function runSession(opts) {
         return outcome;
     }
     finally {
+        opts.onPhase?.("done");
         if (wt && !opts.keepWorktree) {
             try {
                 await removeWorktree({ repoRoot: opts.repoRoot, info: wt });

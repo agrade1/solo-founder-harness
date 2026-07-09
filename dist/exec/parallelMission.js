@@ -47,8 +47,10 @@ export async function runParallelMission(opts) {
         const wave = [...remaining.values()].filter((t) => (t.deps ?? []).every((d) => mergedIds.has(d)));
         if (wave.length === 0) {
             // 진행 불가(선행 실패) — 남은 전부 dep_unmet 보류
-            for (const t of remaining.values())
+            for (const t of remaining.values()) {
                 results.set(t.id, { taskId: t.id, status: "dep_unmet", turns: 0, usage: null, reviews: [] });
+                opts.onPhase?.(t.id, "deferred");
+            }
             break;
         }
         for (const t of wave)
@@ -67,6 +69,10 @@ export async function runParallelMission(opts) {
                 merge: false, // 병합은 코디네이터가 직렬로
                 keepWorktree: true, // 병합까지 worktree 유지
                 review: { provider: opts.reviewProvider, maxRounds: opts.reviewRounds, model: "opus" },
+                onPhase: (p) => {
+                    if (p === "coding" || p === "gate" || p === "review")
+                        opts.onPhase?.(task.id, p);
+                },
                 onEvent: (e) => {
                     if (e.kind === "rateLimit" && e.status !== "allowed") {
                         const w = Math.max(0, e.resetsAt * 1000 - now());
@@ -83,8 +89,13 @@ export async function runParallelMission(opts) {
         const ready = [];
         for (const { task, outcome } of outcomes) {
             results.set(task.id, { taskId: task.id, status: outcome.status, branch: outcome.branch, turns: outcome.turns, usage: outcome.usage, reviews: outcome.reviews, error: outcome.error });
-            if (outcome.status === "merged")
+            if (outcome.status === "merged") {
                 ready.push({ taskId: task.id, branch: outcome.branch, worktreePath: outcome.worktreePath });
+                opts.onPhase?.(task.id, "merging");
+            }
+            else {
+                opts.onPhase?.(task.id, outcome.status === "error" ? "failed" : "deferred");
+            }
         }
         const merges = await mergeSerial({ repoRoot: opts.repoRoot, base, items: ready });
         for (const m of merges) {
@@ -92,10 +103,12 @@ export async function runParallelMission(opts) {
             if (m.status === "merged") {
                 mergedIds.add(m.taskId);
                 results.set(m.taskId, { ...prev, status: "merged" });
+                opts.onPhase?.(m.taskId, "merged");
             }
             else {
                 // 병합 단계 실패 → 보류로 표기
                 results.set(m.taskId, { ...prev, status: m.status === "conflict" ? "merge_conflict" : m.status === "gate_failed" ? "gate_failed" : "error", error: m.error });
+                opts.onPhase?.(m.taskId, m.status === "error" ? "failed" : "deferred");
             }
         }
         // 자동 강등

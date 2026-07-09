@@ -7,6 +7,7 @@ import { ClaudeCliProvider } from "../exec/claudeCliProvider.js";
 import { generateBrief } from "../exec/briefGenerator.js";
 import { runMission, renderMissionReport } from "../exec/mission.js";
 import { runParallelMission } from "../exec/parallelMission.js";
+import { StatusBoard } from "../exec/statusBoard.js";
 
 function askYes(message: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -44,10 +45,11 @@ export async function runMissionCommand(opts: { goal: string; base?: string; yes
 
   const mode = opts.parallel ? `병렬(최대 ${opts.concurrency ?? 3} 세션 동시)` : "순차";
   console.log(`\n자율 실행 시작 [${mode}] (사람 개입 없음, 게이트 통과 시 develop 자동 병합)...\n`);
+
+  const board = new StatusBoard(brief.tasks.map((t) => t.id));
+  const onPhase = (id: string, phase: import("../exec/statusBoard.js").BoardPhase) => board.update(id, phase);
   const onEvent = (id: string, e: import("../exec/types.js").SessionEvent) => {
-    if (e.kind === "init") console.log(`  [${id}] 시작 (${e.model})`);
-    else if (e.kind === "result") console.log(`  [${id}] 종료 turns=${e.numTurns} in=${e.usage.inputTokens}/out=${e.usage.outputTokens}`);
-    else if (e.kind === "rateLimit" && e.status !== "allowed") console.log(`  [${id}] ⚠ rate limit ${e.status} (resetsAt ${e.resetsAt})`);
+    if (e.kind === "rateLimit" && e.status !== "allowed") board.note(`  [${id}] ⚠ rate limit ${e.status} (resetsAt ${e.resetsAt})`);
   };
   const common = {
     repoRoot: WORKSPACE_ROOT,
@@ -57,10 +59,12 @@ export async function runMissionCommand(opts: { goal: string; base?: string; yes
     baseBranch: opts.base,
     reviewRounds: opts.reviewRounds,
     onEvent,
+    onPhase,
   };
   const report = opts.parallel
     ? await runParallelMission({ ...common, concurrency: opts.concurrency })
     : await runMission(common);
+  board.done();
 
   const md = renderMissionReport(report);
   const outDir = join(WORKSPACE_ROOT, "outputs");

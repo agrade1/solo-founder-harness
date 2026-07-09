@@ -30,6 +30,7 @@ export async function runMission(opts) {
         // 선행 태스크 미충족이면 보류
         if (task.deps?.some((d) => !mergedIds.has(d))) {
             tasks.push({ taskId: task.id, status: "dep_unmet", turns: 0, usage: null, reviews: [] });
+            opts.onPhase?.(task.id, "deferred");
             continue;
         }
         // rate limit 체크포인트: 직전 태스크가 한도에 걸렸다면 resetsAt까지 대기 후 재개
@@ -60,6 +61,10 @@ export async function runMission(opts) {
             approver: autoApprove, // 사전승인 — 미션 중 사람 개입 없음
             merge: true, // 게이트·리뷰 통과 시 develop 자동 병합 (ARCH §4.3)
             review: { provider: opts.reviewProvider, maxRounds: opts.reviewRounds, model: "opus" },
+            onPhase: (p) => {
+                if (p !== "done")
+                    opts.onPhase?.(task.id, p);
+            },
             onEvent: (e) => {
                 // rate limit 신호 수집 (강등·체크포인트 근거, RECON §4)
                 if (e.kind === "rateLimit" && e.status !== "allowed") {
@@ -82,6 +87,7 @@ export async function runMission(opts) {
         });
         if (outcome.status === "merged")
             mergedIds.add(task.id);
+        opts.onPhase?.(task.id, outcome.status === "merged" ? "merged" : outcome.status === "error" ? "failed" : "deferred");
         // 자동 강등 판단 (auto일 때만, A가 바닥)
         if (degradeOnLimit === "auto" && stage !== "A" && shouldDegrade(waits, opts.threshold)) {
             const to = nextStage(stage);

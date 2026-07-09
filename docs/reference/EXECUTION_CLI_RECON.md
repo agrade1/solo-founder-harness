@@ -98,7 +98,8 @@
 
 - [x] **v4 병행 오케스트레이션 (ARCH §7)**: `harness mission --parallel [--concurrency N]` — 의존 없는 태스크를 **웨이브 병렬 실행**(각자 worktree/ownership 격리) → mergeCoordinator가 **직렬 병합**(base 머지→L1 재게이트→ff 푸시, 충돌은 그 항목만 보류). `parallelMission.ts`·`mergeCoordinator.ts`. **실세션 2 코더 동시 스모크 PASS**(strutil/numutil 병렬 구현→둘 다 develop). exec 단위 **71/71**.
   - 발견·수정: STATUS.md(세션 내부 통신)를 공용 git exclude로 제외(병렬 add/add 충돌 방지). worktree 생성/제거는 뮤텍스로 직렬화(동시 `git worktree add` .git 락 경합 방지) — 세션 작업은 병렬 유지.
-  - 남은 v4 항목: Mailbox(QUESTION/BLOCKED 자동 라우팅)·`harness tell`·SPLIT 라이브 분화·StatusBoard 고도화 — 병렬 실행 코어는 완성, 이들은 후속.
+  - [x] **StatusBoard** (`statusBoard.ts`): 병렬 세션 상태판 — 세션당 한 줄(코딩/게이트/리뷰/병합/완료/보류/실패), TTY 제자리 갱신·비TTY 전이 로그. SessionRunner `onPhase` 훅 + 미션 CLI 연결. 병렬 로그 뒤섞임 해소. exec 74/74.
+  - **의도적 보류(검증 결과, 지금 불필요)**: Mailbox(세션↔세션 QUESTION 라우팅)·`harness tell`·SPLIT 라이브 분화. 근거: one-shot(Model A)엔 mid-session 상호작용 지점이 없고, hub-spoke 설계 자체가 "세션끼리 안 물어보게" 하는 것이라 예외 경로. **필드에서 세션이 실제 BLOCKED되거나 태스크가 너무 커지는 게 관측되면** 그때 착수(YAGNI). 병렬 실행 코어는 완성.
 - ⚠ 남은 설계 판단은 DESIGN_QUESTIONS Q4(병합 전략)·Q5(rate limit 의미론) — 필드 관측 후 튜닝.
 
 **§9-6**: 신선 컨텍스트 리뷰어(Opus 고정, plan 모드 읽기전용, --fork 금지)가 diff+SPEC+계약만 보고 `### Critical` 추출(extractCriticalRisks 재사용) → Critical이면 코더에 --resume revise 주입 → 재게이트·재리뷰(max 2R) → 소진 시 review_deferred(병합 차단).
