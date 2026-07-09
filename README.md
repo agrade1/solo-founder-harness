@@ -28,6 +28,7 @@
 - **Obsidian export**: `run --vault <경로>`(또는 `HARNESS_VAULT`) 지정 시 실행 결과를 Obsidian vault로 read-only export. agent별 노트(YAML frontmatter + 이전/다음/인덱스 `[[wikilink]]`) + run MOC 인덱스(실행 순서 링크 + 메타). 미지정 시 동작 안 함(기존 파이프라인 무영향). 원본 `projects/` 파일은 비파괴.
 - **안전장치 (v2.5)**: `run --resume`(실패 지점부터 재개), `--max-tokens`(토큰 상한, 초과 시 중단→재개, 80% 경고), `{approval}` step(진행 전 y/n 승인, `--yes`로 비대화), Red Team 편향 분리(critic은 대상의 결론만 격리 검토).
 - **디자인 레퍼런스 (v2.6)**: `ux_ui` 에이전트가 레퍼런스 리서치 방향(Pinterest/Dribbble/Mobbin/경쟁사·유사서비스 + 검색 키워드) + 비주얼 방향 + 디자인 실행 handoff 산출. `03_UX_FLOW.md`가 있으면 `task-prompt`에 "디자인 실행(화면 시안)" 섹션 자동 추가 → Claude Code에서 레퍼런스 검색 + Claude 아티팩트로 시안 생성. (ux_ui는 방향만 지시, 픽셀은 Claude Code가.)
+- **디자인 시스템 레이어**: `design` 에이전트가 `DESIGN.md`(디자인 시스템 명세) + `tokens.json`(3계층 디자인 토큰: primitive→semantic→component)을 산출(source of truth). `mvp-planning`·`full-predev`는 UX 다음에 design → **디자인 승인 게이트**({approval}, 시안 검증 후 md/json에 역반영)를 거쳐 tech_lead로 이어진다. 게이트 승인 시 `run_state.design_gate`에 tokens.json 해시 기록. PM=PRD·tech_lead=Tech Spec·design=DESIGN.md는 에이전트별 필수 헤더가 스키마 재생성 루프에 등록됨. DESIGN.md+tokens.json이 있으면 `task-prompt`에 토큰 기반 구현 규칙(하드코딩 금지 등) 주입. `scripts/token-lint.mjs`가 raw hex·primitive 직접참조·토큰 구조 위반을 정적 검사(LLM 없음, exit 0/1).
 - token usage를 `run_state.json`에 집계.
 - 상세: `docs/reference/PROVIDER_ARCHITECTURE_V2.md`, `docs/backlog/V2_KICKOFF.md`, `docs/backlog/V3_KICKOFF.md`.
 
@@ -91,8 +92,8 @@ npx harness task-prompt --project <프로젝트명>
 | 워크플로우 | 언제 | 특징 |
 |---|---|---|
 | `idea-validation` | 아이디어 go/no-go 빠른 검증 | 5단계, 게이트 없음 |
-| `mvp-planning` | MVP 범위 잡기 | red_team 비평 루프 내장 |
-| `full-predev` | **제품 아이디어 종합 사전검토(가장 많이 씀)** | research→pm→ux→tech→red→ceo + CEO 게이트 |
+| `mvp-planning` | MVP 범위 잡기 | pm→ux→**design→[디자인 게이트]**→tech + red_team 비평 루프 |
+| `full-predev` | **제품 아이디어 종합 사전검토(가장 많이 씀)** | research→pm→ux→**design→[디자인 게이트]**→tech→red→ceo + CEO 게이트 |
 | `dev-preflight` | 개발 직전 | 에이전트 분화 + 승인게이트 + 병렬 task-prompt |
 
 ### 주의
