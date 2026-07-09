@@ -39,6 +39,25 @@
       "default_output": "docs/03_UX_FLOW.md"
     },
     {
+      "agent_id": "design",
+      "name": "Design Agent (디자인 시스템)",
+      "role": "디자인 시스템 수립 — 3계층 토큰, 컴포넌트 인벤토리, 레이아웃/접근성 규칙",
+      "prompt_path": "agents/design_agent.md",
+      "default_output": "docs/DESIGN.md",
+      "token_output": "docs/tokens.json",
+      "required_headers": [
+        "디자인 방향",
+        "디자인 토큰 개요",
+        "컴포넌트 인벤토리",
+        "레이아웃 규칙",
+        "인터랙션 원칙",
+        "접근성 기준",
+        "비시각 가이드",
+        "시안 검증 절차",
+        "디자인 토큰"
+      ]
+    },
+    {
       "agent_id": "tech_lead",
       "name": "Tech Lead Agent",
       "role": "기술 판단, 최소 아키텍처, 구현 순서, Preflight",

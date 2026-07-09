@@ -4,7 +4,7 @@ import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent, isCritiqueLo
 import { projectPaths, projectExists } from "./project.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
-import { validateAgentOutput, extractMainJudgment, extractCriticalRisks, extractDecision, extractSpawnDeclarations, } from "./validate.js";
+import { validateAgentOutput, extractTokensJson, extractMainJudgment, extractCriticalRisks, extractDecision, extractSpawnDeclarations, } from "./validate.js";
 const RUN_STATE_REL = "outputs/run_state.json";
 /** ms를 사람이 읽는 경과시간으로. 60초 미만은 "12s", 이상은 "1:23". */
 function fmtElapsed(ms) {
@@ -197,6 +197,18 @@ export async function runWorkflow(args) {
         }
         const saved = saveArtifact(project, agent.default_output, o.markdown);
         savedFiles.push(saved);
+        // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
+        if (agent.token_output) {
+            const tokens = extractTokensJson(o.markdown);
+            if (tokens) {
+                const tSaved = saveArtifact(project, agent.token_output, tokens);
+                savedFiles.push(tSaved);
+                console.log(`  ⿻ ${agent.agent_id}: 토큰 추출 → ${tSaved}`);
+            }
+            else {
+                console.warn(`  ⚠ ${agent.agent_id}: ${agent.token_output} 추출 실패 — 산출물에 \`\`\`json 블록 없음`);
+            }
+        }
         if (!completed_steps.includes(agent.agent_id))
             completed_steps.push(agent.agent_id);
         findings.set(agent.agent_id, `${agent.agent_id}: ${extractMainJudgment(o.markdown)}`);

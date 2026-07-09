@@ -9,6 +9,8 @@ export interface AgentDef {
   default_output: string;
   /** 에이전트별 추가 필수 헤더(공용 4개 외). 스키마 검증 재생성 루프가 검사. 미지정 시 공용 4개만. */
   required_headers?: string[];
+  /** 산출 markdown 안의 ```json 블록을 이 경로로 추출·저장(예: docs/tokens.json). design 에이전트용. */
+  token_output?: string;
 }
 
 export interface AgentRegistry {

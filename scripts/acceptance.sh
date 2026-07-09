@@ -35,7 +35,7 @@ done
 echo ""
 echo "== Test 2: list =="
 OUT="$($HARNESS list)"
-echo "$OUT" | grep -q "Core Agents (7)";            check "7 core agents" $?
+echo "$OUT" | grep -q "Core Agents (8)";            check "8 core agents" $?
 echo "$OUT" | grep -q "Common Prompt:.*(존재)";      check "common prompt 존재" $?
 echo "$OUT" | grep -q "Workflows (4)";              check "workflows 출력" $?
 
