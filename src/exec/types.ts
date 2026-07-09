@@ -54,6 +54,10 @@ export function isTerminal(e: SessionEvent): e is Extract<SessionEvent, { kind: 
 export interface SessionSpec {
   sessionId: string; // 사전 할당 UUID (--session-id). 미지정 시 provider가 init에서 취득
   role: string; // 역할 설명 → --append-system-prompt
+  task?: string; // 이번 세션이 완수할 구체 작업 (PromptCompiler 헌법 첫머리)
+  inputs?: string[]; // 참고 문서 경로 (projectRoot 상대). API_CONTRACT는 인라인, 나머지는 경로+Read (§3.1.1)
+  contractPaths?: string[]; // inputs 중 전문 인라인할 계약 문서 (미지정 시 basename에 API_CONTRACT 포함분 자동)
+  dod?: string[]; // Definition of Done — 완료 기준(테스트 포함, ARCH §4.1 L2)
   model?: string; // --model (기본 정책 B: opus). 미지정 시 provider 기본
   fallbackModel?: string; // --fallback-model (강등 사다리 CLI 자동 폴백)
   cwd: string; // 세션 작업 디렉토리 (worktree). 절대경로
