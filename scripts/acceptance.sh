@@ -123,8 +123,8 @@ grep -q '"status": "completed"' "$RS";            check "--yes resume → 승인
 
 echo ""
 echo "== Test 10: Red Team 편향 분리 (critic 격리) =="
-# mvp-planning: pm→ux_ui→tech_lead→[red_team⟲tech_lead]→founder_ceo
-$HARNESS run mvp-planning --project "$PROJ" >/dev/null 2>&1
+# mvp-planning: pm→ux_ui→design→[디자인 게이트]→tech_lead→[red_team⟲tech_lead]→founder_ceo
+$HARNESS run mvp-planning --project "$PROJ" --yes >/dev/null 2>&1
 RT="$PDIR/docs/05_RED_TEAM.md"
 CEO="$PDIR/docs/06_CEO_DECISION.md"
 grep -q "tech_lead:" "$RT";                 check "critic가 target(tech_lead) 결론은 봄" $?

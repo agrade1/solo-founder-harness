@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent, isCritiqueLoop, isGate, isFanout, isApproval, } from "./registry.js";
 import { projectPaths, projectExists } from "./project.js";
@@ -69,6 +70,7 @@ export async function runWorkflow(args) {
     const critique_rounds = [];
     const gate_jumps = [];
     const spawned_agents = [];
+    let design_gate = null;
     const savedFiles = [];
     const usagePerAgent = [];
     const findings = new Map(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
@@ -109,6 +111,7 @@ export async function runWorkflow(args) {
         critique_rounds.push(...prior.critique_rounds);
         gate_jumps.push(...prior.gate_jumps);
         spawned_agents.push(...prior.spawned_agents);
+        design_gate = prior.design_gate ?? null;
         usagePerAgent.push(...prior.usage.per_agent);
         for (const id of prior.completed_steps) {
             const rel = resolveOutputRel(id, registry, prior);
@@ -347,15 +350,27 @@ export async function runWorkflow(args) {
                         console.log(`\n--- 승인 검토 문서: ${show} ---\n${readFileSync(abs, "utf8")}\n--- (문서 끝) ---`);
                     }
                 }
+                const isDesignGate = Boolean(step.approval.tokens_path);
                 const ok = approve ? await approve(message, show) : true; // approver 없으면 자동 승인(프로그램 호출 기본)
                 if (!ok) {
+                    if (isDesignGate)
+                        design_gate = { status: "pending", tokens_hash: null };
                     failed_reason = "user_rejected";
                     failedIndex = i; // 승인 step 자체 — resume 시 다시 묻는다
                     rejected = true;
                     console.error(`  ✗ 승인 거부: "${message}" — 중단 (--resume으로 재개)`);
                     break;
                 }
-                console.log(`  ✔ 승인: "${message}"`);
+                if (isDesignGate) {
+                    // 승인 시점 tokens.json 해시 기록 — 이후 코드화 단계에서 토큰 변경 감지용 (§4.3)
+                    const tp = join(projectPaths(project).root, step.approval.tokens_path);
+                    const hash = existsSync(tp) ? createHash("sha256").update(readFileSync(tp)).digest("hex") : null;
+                    design_gate = { status: "approved", tokens_hash: hash };
+                    console.log(`  ✔ 디자인 게이트 승인 — tokens_hash: ${hash ? hash.slice(0, 12) + "…" : "(tokens.json 없음)"}`);
+                }
+                else {
+                    console.log(`  ✔ 승인: "${message}"`);
+                }
                 continue;
             }
             if (!isCritiqueLoop(step))
@@ -448,6 +463,7 @@ export async function runWorkflow(args) {
         critique_rounds,
         gate_jumps,
         spawned_agents,
+        design_gate,
         usage,
         started_at,
         finished_at,

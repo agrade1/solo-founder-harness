@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   loadAgentRegistry,
@@ -50,6 +51,12 @@ export interface GateJumpEntry {
   jumped_to: string | null; // 되돌아간 agent (점프 안 했으면 null)
 }
 
+/** 디자인 승인 게이트 결과 (design_gate). tokens_hash는 승인 시점 tokens.json 해시 — 코드화 단계 변경 감지용. */
+export interface DesignGateEntry {
+  status: "pending" | "approved";
+  tokens_hash: string | null;
+}
+
 export interface SpawnEntry {
   parent: string; // 분화를 선언한 planner
   id: string;
@@ -92,6 +99,7 @@ export interface RunState {
   critique_rounds: CritiqueRoundEntry[];
   gate_jumps: GateJumpEntry[];
   spawned_agents: SpawnEntry[];
+  design_gate: DesignGateEntry | null; // 디자인 게이트 결과 (없으면 null)
   usage: UsageSummary;
   started_at: string;
   finished_at: string;
@@ -201,6 +209,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const critique_rounds: CritiqueRoundEntry[] = [];
   const gate_jumps: GateJumpEntry[] = [];
   const spawned_agents: SpawnEntry[] = [];
+  let design_gate: DesignGateEntry | null = null;
   const savedFiles: string[] = [];
   const usagePerAgent: UsageEntry[] = [];
   const findings = new Map<string, string>(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
@@ -243,6 +252,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     critique_rounds.push(...prior.critique_rounds);
     gate_jumps.push(...prior.gate_jumps);
     spawned_agents.push(...prior.spawned_agents);
+    design_gate = prior.design_gate ?? null;
     usagePerAgent.push(...prior.usage.per_agent);
     for (const id of prior.completed_steps) {
       const rel = resolveOutputRel(id, registry, prior);
@@ -501,15 +511,25 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             console.log(`\n--- 승인 검토 문서: ${show} ---\n${readFileSync(abs, "utf8")}\n--- (문서 끝) ---`);
           }
         }
+        const isDesignGate = Boolean(step.approval.tokens_path);
         const ok = approve ? await approve(message, show) : true; // approver 없으면 자동 승인(프로그램 호출 기본)
         if (!ok) {
+          if (isDesignGate) design_gate = { status: "pending", tokens_hash: null };
           failed_reason = "user_rejected";
           failedIndex = i; // 승인 step 자체 — resume 시 다시 묻는다
           rejected = true;
           console.error(`  ✗ 승인 거부: "${message}" — 중단 (--resume으로 재개)`);
           break;
         }
-        console.log(`  ✔ 승인: "${message}"`);
+        if (isDesignGate) {
+          // 승인 시점 tokens.json 해시 기록 — 이후 코드화 단계에서 토큰 변경 감지용 (§4.3)
+          const tp = join(projectPaths(project).root, step.approval.tokens_path as string);
+          const hash = existsSync(tp) ? createHash("sha256").update(readFileSync(tp)).digest("hex") : null;
+          design_gate = { status: "approved", tokens_hash: hash };
+          console.log(`  ✔ 디자인 게이트 승인 — tokens_hash: ${hash ? hash.slice(0, 12) + "…" : "(tokens.json 없음)"}`);
+        } else {
+          console.log(`  ✔ 승인: "${message}"`);
+        }
         continue;
       }
 
@@ -608,6 +628,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     critique_rounds,
     gate_jumps,
     spawned_agents,
+    design_gate,
     usage,
     started_at,
     finished_at,
