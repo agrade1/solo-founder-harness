@@ -113,6 +113,9 @@ export async function runSession(opts) {
                 }
                 if (round >= maxRounds)
                     break; // 라운드 소진 — 미해결
+                // turn 예산 소진이면 더 이상 revise하지 않음 (ARCH §3.1.2 — 그레이스 주입은 미션 모드 단순화)
+                if (spec.budget?.maxTurns && outcome.turns >= spec.budget.maxTurns)
+                    break;
                 // Critical을 코더에 되먹여 revise (--resume)
                 const revise = `리뷰어가 다음 Critical 이슈를 제기했다:\n` +
                     verdict.critical.map((c, i) => `${i + 1}. ${c}`).join("\n") +

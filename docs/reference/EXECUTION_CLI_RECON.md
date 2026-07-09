@@ -91,8 +91,11 @@
 - [x] §9-4 worktree 수명 + L1 기계 게이트 (`src/exec/{worktree,machineGate,runProcess}.ts`, 단위 포함 29/29)
 - [x] §9-5 PromptCompiler + diff 미리보기 + ApprovalQueue + **SessionRunner + `harness exec`** — **실제 세션 e2e 스모크 PASS** (worktree→게이트→커밋→diff→승인→develop 병합, `develop:hello.txt` 검증). exec 단위 45/45
 - [x] §9-6 Opus 리뷰어 세션(L3) + revise 루프 (`reviewer.ts` + SessionRunner 통합, `harness exec --review`) — **실세션 e2e PASS** (plan 모드 리뷰어 정상 판정·스키마 파싱·루프 통합). exec 단위 51/51
-- [ ] §9-7 미션 브리프 생성기 + 사전승인 + defer + 모델 강등 + turn 예산 강제 ← **다음(v3.5)**
-- [ ] §9-8 develop 자동 병합·푸시 + rate limit 체크포인트/재개 + MISSION_REPORT
+- [x] §9-7 미션 브리프 생성기 + 모델 강등 사다리 + defer + turn 예산 가드 (`mission.ts`·`modelPolicy.ts`·`briefGenerator.ts`)
+- [x] §9-8 develop 자동 병합(SessionRunner merge) + rate limit 체크포인트/재개 + MISSION_REPORT + `harness mission` — **실세션 미션 e2e PASS**
+
+**§9-7·§9-8 (= v3.5 미션 모드 완성)**: `harness mission --goal`이 플래너(Opus)로 목표를 태스크 분해 → 사람 브리프 승인(유일 게이트) → 자율 루프(태스크마다 코더→L1 게이트→L3 리뷰→develop 자동 병합) → MISSION_REPORT. 모델 강등 사다리(B/C/A, rate_limit_event 기반 auto 강등), dep 순서, turn 예산 가드, rate limit 체크포인트(다음 태스크 직전 resetsAt까지 대기·재개). 실세션 스모크: 목표→분해→코더(math.js+test)→리뷰(Critical0)→develop 병합, 실제 rate_limit로 B→C 강등까지 실증. exec 단위 66/66.
+- ⚠ 남은 설계 판단은 DESIGN_QUESTIONS Q4(병합 전략)·Q5(rate limit 의미론) — 필드 관측 후 튜닝.
 
 **§9-6**: 신선 컨텍스트 리뷰어(Opus 고정, plan 모드 읽기전용, --fork 금지)가 diff+SPEC+계약만 보고 `### Critical` 추출(extractCriticalRisks 재사용) → Critical이면 코더에 --resume revise 주입 → 재게이트·재리뷰(max 2R) → 소진 시 review_deferred(병합 차단).
 

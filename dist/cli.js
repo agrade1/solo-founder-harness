@@ -6,6 +6,7 @@ import { runRun } from "./commands/run.js";
 import { runSummary } from "./commands/summary.js";
 import { runTaskPrompt } from "./commands/taskPrompt.js";
 import { runExec } from "./commands/exec.js";
+import { runMissionCommand } from "./commands/mission.js";
 const program = new Command();
 program
     .name("harness")
@@ -80,5 +81,16 @@ program
         review: opts.review,
         reviewRounds: opts.reviewRounds,
     });
+});
+program
+    .command("mission")
+    .description("[v3.5] 목표를 태스크로 분해→승인→자율 완주(게이트·리뷰·develop 자동 병합)→MISSION_REPORT")
+    .requiredOption("--goal <goal>", "미션 목표")
+    .option("--base <branch>", "병합 기준 브랜치", "develop")
+    .option("--yes", "브리프 자동 승인 (비대화)", false)
+    .option("--max-tasks <n>", "브리프 태스크 상한", (v) => parseInt(v, 10))
+    .option("--review-rounds <n>", "태스크당 L3 리뷰 최대 라운드", (v) => parseInt(v, 10))
+    .action(async (opts) => {
+    await runMissionCommand({ goal: opts.goal, base: opts.base, yes: opts.yes, maxTasks: opts.maxTasks, reviewRounds: opts.reviewRounds });
 });
 program.parse();

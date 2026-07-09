@@ -1,5 +1,16 @@
 # WORKLOG.md
 
+## 2026-07-09 (실행 계층 §9-7·§9-8 — v3.5 미션 모드 완성)
+
+- **modelPolicy.ts**: 강등 사다리 B(전부 Opus)/C(난이도 라우팅)/A(구현 Sonnet), 리뷰·계획은 Opus 고정. shouldDegrade(누적 대기 임계).
+- **mission.ts**: runMission — 브리프 태스크 루프(dep 순서, 사전승인=autoApprove, 코더→L1→L3→develop 자동 병합), rate_limit_event 기반 auto 강등, rate limit 체크포인트(다음 태스크 직전 resetsAt까지 대기), MISSION_REPORT 렌더. turn 예산 가드는 SessionRunner 리뷰 루프에 추가.
+- **briefGenerator.ts**: 목표→태스크 분해(플래너 Opus, JSON 파싱, maxTasks 가드).
+- **harness mission --goal**: 브리프 생성→승인(유일 게이트)→자율 실행→outputs/MISSION_REPORT.md.
+- **실세션 미션 e2e PASS**: 목표 분해(1태스크)→코더(math.js+math.test.js+package.json)→L3 리뷰(Critical0)→develop 병합, 실제 rate_limit로 B→C 강등 실증. **버그 수정**: 미션 기본 sessionId가 비-UUID라 코더 세션 실패(no_changes)→randomUUID로. 마지막 태스크 뒤 불필요 대기→다음 태스크 직전으로 이월.
+- 테스트: exec 단위 **66/66**(modelPolicy 4·mission 5·briefGenerator 6 추가) + acceptance 57/57.
+- 남은 설계 판단: DESIGN_QUESTIONS Q4(병합 전략)·Q5(rate limit 의미론) — 필드 튜닝.
+- **→ 실행 계층 v3(대화형)+v3.5(미션 모드) 구현 완료.** 남은 §9 항목 없음(v4 병행은 별도 tier).
+
 ## 2026-07-09 (실행 계층 §9-6 — L3 리뷰어 + revise 루프)
 
 - **reviewer.ts**: 신선 컨텍스트 L3 리뷰어(Opus 고정, plan 모드 읽기전용, --fork 금지). diff+SPEC+계약 인라인 → `### Critical` 스키마(red_team과 동일) → extractCriticalRisks 재사용.

@@ -51,6 +51,26 @@
 
 ---
 
+## Q4. develop 병합 전략 (구현: `git push . <branch>:<base>`)
+
+**배경**: SessionRunner/미션은 게이트·리뷰 통과 후 세션 브랜치를 base(develop)에 `git push . <branch>:<base>`(ff)로 병합한다. base가 **메인 작업트리에 체크아웃돼 있으면** git이 거부(`refusing to update checked out branch`). 세션은 worktree를 쓰므로 보통 메인 트리는 develop이 아닐 수 있으나, 사용자가 develop에 있으면 미션이 병합 못 함.
+
+**선택지**: (a) 전용 병합 worktree에서 `merge --ff-only` (항상 동작, 무겁다) / (b) `receive.denyCurrentBranch=updateInstead` 설정 요구 / (c) 미션 시작 시 메인 트리를 스크래치로 이동. **미결** — 필드에서 실제 운영 형태 보고 결정.
+
+**잠정**: `git push . :` 그대로. 스모크는 스크래치 브랜치 체크아웃으로 회피.
+
+---
+
+## Q5. rate limit 의미론 — 언제 실제로 대기하나 (구현: status != "allowed" → 대기)
+
+**배경**: `rate_limit_event.rate_limit_info.status`의 정확한 값 집합(allowed / warning / exceeded / rejected 등)과 "세션이 성공했는데도 대기해야 하는가"가 미확정. 현재는 `status !== "allowed"`면 대기·강등 카운트. 그러나 스모크에서 세션이 **성공 완주했는데도** 큰 대기(7107s)가 기록됨 → 성공한 세션 뒤 불필요 대기 위험(다음 태스크 직전으로 이월해 마지막 뒤 대기는 제거함).
+
+**선택지**: (a) 세션이 rate limit로 **실패**했을 때만 대기 / (b) `overageStatus`/`status` 특정 값에서만 대기 / (c) resetsAt이 임계 이내일 때만. **미결** — 실제 한도 도달 시 이벤트 값을 관측해 튜닝 필요.
+
+**잠정**: 대기는 다음 태스크 직전에만(마지막 태스크 뒤엔 안 함). 강등 카운트는 그대로.
+
+---
+
 ## (해소됨, 참고) 실측으로 결정된 것 — RECON 참조
 
 - `--max-turns` 부재 → 오케스트레이터 이벤트 카운팅 (RECON §2.1). *동작*만 Q3로 남음.
