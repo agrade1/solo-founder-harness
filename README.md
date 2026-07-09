@@ -46,6 +46,37 @@ projects/<name>  → 사용자 프로젝트 (docs + outputs)
 
 경로는 둘로 분리된다(`src/core/paths.ts`): **자산**은 설치된 패키지 위치에서, **projects 데이터**는 실행한 디렉토리(CWD)에서. `HARNESS_WORKSPACE`로 데이터 위치 오버라이드 가능.
 
+## 빠른 시작 (실전)
+
+```bash
+# 1. 설치 (서비스 레포에서 1회)
+npm install github:agrade1/solo-founder-harness
+
+# 2. 프로젝트 만들고 아이디어 작성
+npx harness init my-idea
+#   → projects/my-idea/docs/00_IDEA.md 에 아이디어 적기
+
+# 3. 기획 (실제 LLM) — PRD·UX·DESIGN.md/tokens.json·Tech Spec·CEO 판정 생성
+npx harness run full-predev --project my-idea --provider claude-code
+#   → 중간 디자인 게이트에서 멈추면 DESIGN.md 확인 후 진행(승인)
+
+# 4. 코딩 — 아래 셋 중 하나
+#   A) 대화형 한 세션: 격리 worktree에서 구현→게이트→리뷰→develop 병합
+npx harness exec --task "신호등 리포트 화면 구현" --review
+
+#   B) 자율 미션: 목표를 태스크로 쪼개 알아서 완주 → 아침에 MISSION_REPORT
+npx harness mission --goal "MVP 화면 3개 구현"
+
+#   C) 병렬 자율: 독립 태스크를 여러 세션 동시에
+npx harness mission --goal "..." --parallel
+
+#   D) 수동: 기획만 받고 코딩은 직접
+npx harness task-prompt --project my-idea   # → 지시문을 Claude Code에 붙여넣기
+```
+
+- **기획만 필요하면 3번까지**, **코딩까지 자동으로 하려면 4번**. main 병합·배포만 사람이, develop까지는 게이트(lint/test/build + Opus 리뷰) 통과 조건으로 자율.
+- 실행 계층(`exec`/`mission`) 상세는 `docs/reference/EXECUTION_LAYER_ARCH_v1.md`.
+
 ## 사용 가이드 — 새 레포에서 작업 시작 순서
 
 하네스 하나에 서비스를 쌓지 말고, **서비스 레포마다 하네스를 설치**해서 쓴다.
@@ -83,8 +114,10 @@ npx harness run full-predev --project <프로젝트명> --provider claude-code
 # ⑤ 개발 지시문 생성 → outputs/claude_code_task_prompt.md
 npx harness task-prompt --project <프로젝트명>
 
-# ⑥ 실제 개발: ⑤ 지시문을 근거로 Claude Code(또는 사람)가 코딩
-#    ← 하네스는 여기서 코드를 짜지 않는다. 판단·기획·지시문(handoff)까지가 하네스 몫.
+# ⑥ 실제 개발 — 둘 중 하나:
+#    (자동) npx harness exec --task "..." --review   ← 격리 worktree에서 구현→게이트→리뷰→develop 병합
+#           npx harness mission --goal "..."          ← 목표 자율 완주(+--parallel 병렬)
+#    (수동) ⑤ 지시문을 Claude Code에 붙여넣어 사람이 진행
 ```
 
 ### 2. 워크플로우 선택
@@ -128,8 +161,11 @@ npm run harness -- task-prompt --project my-project
 | `run <workflow> --project <name> [--provider <id>] [--max-regen <n>] [--allow-spawn] [--vault <경로>]` | workflow 순서 실행, 결과 저장 (기본 provider=mock). `--vault` 시 Obsidian export | `docs/0N_*.md`, `outputs/run_state.json`, (`--vault` 시) `<vault>/<project>/*.md` |
 | `summary --project <name>` | 상태 요약 갱신 | `docs/CONTEXT_SUMMARY.md` |
 | `task-prompt --project <name>` | Claude Code 작업 지시문 생성 | `outputs/claude_code_task_prompt.md` |
+| `exec --task <t> [--review] [--yes]` | 실행 세션 1개: worktree에서 구현→게이트→(리뷰)→승인→develop 병합 | 코드 커밋(develop) |
+| `mission --goal <g> [--parallel] [--concurrency <n>] [--yes]` | 목표 분해→승인→자율 완주(태스크마다 게이트·리뷰·병합) | develop 커밋들 + `outputs/MISSION_REPORT.md` |
 
 기본 workflow: `idea-validation`, `mvp-planning`, `dev-preflight`, `full-predev`.
+실행 계층(`exec`/`mission`)은 실제 claude 구독 세션으로 코드를 짜고 develop까지 자율 병합(main·배포만 사람).
 
 ## 테스트
 
