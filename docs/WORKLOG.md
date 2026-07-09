@@ -1,5 +1,16 @@
 # WORKLOG.md
 
+## 2026-07-09 (디자인 레이어 킥오프 — P1~P5)
+
+Phase 0 탐색 보고 → 승인(4개 결정: 별도 design 에이전트 / DESIGN.md에 tokens 펀치+추출 / node·tsx 린트 / {approval}+design_gate) 후 Phase별 커밋.
+- **P1 에이전트별 헤더 스키마**: `validateAgentOutput(md, extra[])`, `AgentDef.required_headers`, pm=PRD·tech_lead=Tech Spec 등록 + 프롬프트 명시. mock에서 누락→재생성 루프 발동 확인.
+- **P2 design 에이전트 신규**: `agents/design_agent.md`(DESIGN.md 9헤더 + 3계층 tokens 규칙), registry 등록(token_output). 산출 md의 ```json→docs/tokens.json 추출(`extractTokensJson`). 카운트 7→8.
+- **P3 워크플로우 통합 + 디자인 게이트**: mvp-planning·full-predev에 design + {approval}(UX→Design→[승인]→Tech). `ApprovalDef.tokens_path`, `RunState.design_gate{status,tokens_hash}`(승인 시 sha256). mock e2e로 흐름·기록 확인.
+- **P4 task-prompt 디자인 규칙**: DESIGN.md+tokens.json 존재 시 토큰 기반 구현 규칙 섹션 주입(부재 시 무영향).
+- **P5 토큰 린트**: `scripts/token-lint.mjs`(node) — raw hex·primitive 직접참조·tokens 계층/참조/순환 정적 검사, ignore 예외, exit 0/1. acceptance Test 11 추가.
+- 검증: acceptance **63/63**(신규 6), exec 74/74. README 갱신.
+- **미완(§7)**: 실 provider e2e 1회(실제 DESIGN.md/tokens.json 산출+token-lint 통과 확인) — 토큰 비용 있어 사용자 승인 대기. 파이프라인 기계 검증은 mock으로 완료.
+
 ## 2026-07-09 (v4 후속 — StatusBoard, 나머지는 검증 후 보류)
 
 - **필요성 검증 먼저**: 남은 v4 4개(Mailbox/tell/SPLIT/StatusBoard)를 냉정히 평가 → one-shot(Model A)엔 mid-session 상호작용이 없고 hub-spoke 설계가 세션 간 통신을 최소화하므로 Mailbox/tell/SPLIT은 근거 없는 선투자로 판단 → **보류(필드 관측 후)**. StatusBoard만 관측성 실통증(병렬 로그 뒤섞임)이라 착수.
