@@ -1,0 +1,30 @@
+{
+  "profiles": [
+    {
+      "id": "planning-none",
+      "capabilities": [],
+      "bindings": {},
+      "servers": [],
+      "preapprovedTools": [],
+      "deniedTools": ["mcp__*"],
+      "permissionMode": "read_only",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 0, "maxResultChars": 0, "maxElapsedMsPerCall": 0 },
+      "secretRefs": []
+    },
+    {
+      "id": "planning-local-readonly",
+      "capabilities": ["repo_read"],
+      "bindings": {
+        "repo_read": { "kind": "builtin", "tools": ["Read", "Glob", "Grep"] }
+      },
+      "servers": [],
+      "preapprovedTools": ["Read", "Glob", "Grep"],
+      "deniedTools": ["mcp__*"],
+      "permissionMode": "read_only",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 6, "maxResultChars": 8000, "maxElapsedMsPerCall": 60000 },
+      "secretRefs": []
+    }
+  ]
+}

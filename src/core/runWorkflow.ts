@@ -27,6 +27,8 @@ import {
 } from "./validate.js";
 import type { Provider } from "../providers/provider.js";
 import type { ProgressReporter, StepKind } from "./progress.js";
+import { loadToolProfiles, compileToolProfile, assertPolicyExecutable } from "../tools/profiles.js";
+import { getProviderCapabilities } from "../providers/capabilities.js";
 
 export type { ProgressReporter } from "./progress.js"; // 하위 호환: 기존 import 경로 유지
 
@@ -135,6 +137,8 @@ export interface RunWorkflowArgs {
   approve?: (message: string, show?: string) => Promise<boolean>; // 승인 게이트 응답자. 미지정 시 자동 승인
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
   reporter?: ProgressReporter; // 진행 상황 표시자 (CLI 주입). 미지정 시 조용히 동작
+  toolProfileId?: string; // [M2] 활성 도구 profile. 지정 시 run 시작 전 fail-fast 검증. 미지정 시 무영향.
+  bare?: boolean; // [M2] planning 격리(--strict-mcp-config + 내장도구 제한) — compile에 전달.
 }
 
 const RUN_STATE_REL = "outputs/run_state.json";
@@ -204,6 +208,18 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const workflow = findWorkflow(loadWorkflows(), workflowId);
   if (!workflow) {
     throw new Error(`알 수 없는 workflow: ${workflowId} ('harness list'로 확인)`);
+  }
+
+  // [M2] 도구 profile fail-fast: 지정 시 첫 모델 호출 전(run 시작 전)에 binding 실행 가능성 검증.
+  // 미충족이면 여기서 throw → run_start/run_state를 만들지 않는다. 미지정이면 완전 무영향.
+  if (args.toolProfileId) {
+    const profiles = loadToolProfiles();
+    const profile = profiles.get(args.toolProfileId);
+    if (!profile) {
+      throw new Error(`알 수 없는 tool profile: ${args.toolProfileId} (registry/tool_profiles.json 확인)`);
+    }
+    const policy = compileToolProfile(profile, { bare: args.bare });
+    assertPolicyExecutable(policy, { provider: getProviderCapabilities(provider.id) });
   }
 
   const completed_steps: string[] = [];

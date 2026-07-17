@@ -1,0 +1,30 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { isValidSecretRef, assertValidSecretRefs, redactSecrets, collectSecretValues } from "./redact.js";
+
+test("isValidSecretRef: 환경변수 이름만 허용", () => {
+  assert.ok(isValidSecretRef("TAVILY_API_KEY"));
+  assert.ok(isValidSecretRef("X"));
+  assert.ok(!isValidSecretRef("sk-live-abc"));
+  assert.ok(!isValidSecretRef("lower_case"));
+  assert.ok(!isValidSecretRef("has space"));
+});
+
+test("assertValidSecretRefs: 값 형태 항목은 throw", () => {
+  assert.doesNotThrow(() => assertValidSecretRefs(["A_KEY", "B_TOKEN"], "p"));
+  assert.throws(() => assertValidSecretRefs(["sk-live-xxxx"], "p"), /secretRefs/);
+});
+
+test("redactSecrets: 값·자격증명 패턴을 가린다", () => {
+  const secret = "supersecretvalue123";
+  const text = `token=${secret} and Authorization: Bearer ${secret} and api_key=${secret}`;
+  const out = redactSecrets(text, [secret]);
+  assert.ok(!out.includes(secret), "원문 secret 값 부재");
+  assert.match(out, /token=\*\*\*/);
+  assert.match(out, /Authorization: Bearer \*\*\*/i);
+});
+
+test("collectSecretValues: env에서 값 수집", () => {
+  const env = { FOO_KEY: "abcd1234", BAR_KEY: undefined } as NodeJS.ProcessEnv;
+  assert.deepEqual(collectSecretValues(["FOO_KEY", "BAR_KEY"], env), ["abcd1234"]);
+});

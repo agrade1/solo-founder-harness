@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "id": "bad-deny",
+      "capabilities": ["production_deploy"],
+      "bindings": { "production_deploy": { "kind": "cli", "command": "deploy" } },
+      "servers": [],
+      "preapprovedTools": [],
+      "deniedTools": [],
+      "permissionMode": "approval_write",
+      "allowedDomains": null,
+      "limits": { "maxCallsPerStep": 1, "maxResultChars": 1000, "maxElapsedMsPerCall": 1000 },
+      "secretRefs": []
+    }
+  ]
+}

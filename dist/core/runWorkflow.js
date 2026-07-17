@@ -6,6 +6,8 @@ import { projectPaths, projectExists } from "./project.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import { validateAgentOutput, extractTokensJson, extractMainJudgment, extractCriticalRisks, extractDecision, extractSpawnDeclarations, } from "./validate.js";
+import { loadToolProfiles, compileToolProfile, assertPolicyExecutable } from "../tools/profiles.js";
+import { getProviderCapabilities } from "../providers/capabilities.js";
 const RUN_STATE_REL = "outputs/run_state.json";
 /** ms를 사람이 읽는 경과시간으로. 60초 미만은 "12s", 이상은 "1:23". */
 function fmtElapsed(ms) {
@@ -63,6 +65,17 @@ export async function runWorkflow(args) {
     const workflow = findWorkflow(loadWorkflows(), workflowId);
     if (!workflow) {
         throw new Error(`알 수 없는 workflow: ${workflowId} ('harness list'로 확인)`);
+    }
+    // [M2] 도구 profile fail-fast: 지정 시 첫 모델 호출 전(run 시작 전)에 binding 실행 가능성 검증.
+    // 미충족이면 여기서 throw → run_start/run_state를 만들지 않는다. 미지정이면 완전 무영향.
+    if (args.toolProfileId) {
+        const profiles = loadToolProfiles();
+        const profile = profiles.get(args.toolProfileId);
+        if (!profile) {
+            throw new Error(`알 수 없는 tool profile: ${args.toolProfileId} (registry/tool_profiles.json 확인)`);
+        }
+        const policy = compileToolProfile(profile, { bare: args.bare });
+        assertPolicyExecutable(policy, { provider: getProviderCapabilities(provider.id) });
     }
     const completed_steps = [];
     const warnings = [];

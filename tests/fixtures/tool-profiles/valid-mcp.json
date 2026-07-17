@@ -1,0 +1,18 @@
+{
+  "profiles": [
+    {
+      "id": "dev-shadcn-readonly",
+      "capabilities": ["component_registry_read"],
+      "bindings": {
+        "component_registry_read": { "kind": "mcp", "server": "shadcn", "tools": ["browse", "search"] }
+      },
+      "servers": [{ "name": "shadcn" }],
+      "preapprovedTools": ["mcp__shadcn__browse", "mcp__shadcn__search"],
+      "deniedTools": [],
+      "permissionMode": "read_only",
+      "allowedDomains": null,
+      "limits": { "maxCallsPerStep": 6, "maxResultChars": 8000, "maxElapsedMsPerCall": 60000 },
+      "secretRefs": []
+    }
+  ]
+}

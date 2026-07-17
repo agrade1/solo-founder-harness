@@ -26,6 +26,8 @@ export async function runRun(
   resume = false,
   maxTokens = 0,
   yes = false,
+  toolProfileId?: string,
+  bare = false,
 ): Promise<void> {
   const provider = getProvider(providerId);
   const approve = yes ? async () => true : stdinApprover;
@@ -57,6 +59,8 @@ export async function runRun(
     maxTokens,
     approve,
     reporter: createProgressReporter(),
+    toolProfileId,
+    bare,
   });
 
   console.log("");

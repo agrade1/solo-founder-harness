@@ -38,10 +38,22 @@ function stripFences(text: string): string {
   return m ? m[1].trim() : t;
 }
 
-function runClaude(prompt: string): Promise<string> {
+/**
+ * claude -p argv를 조립한다. base(-p/--output-format/--model)에 compiled policy의
+ * claudeArgs(--strict-mcp-config/--tools/--permission-mode/--allowedTools/--disallowedTools 등)를
+ * 이어붙인다. policyArgs 미지정 시 기존 동작과 동일(회귀 없음).
+ * (M2: argv 조립·검증까지. 실제 policy 배선은 M3 handoff/run에서.)
+ */
+export function buildClaudeArgs(policyArgs: string[] = [], model: string | undefined = CLAUDE_MODEL): string[] {
+  const args = ["-p", "--output-format", "json"];
+  if (model) args.push("--model", model);
+  args.push(...policyArgs);
+  return args;
+}
+
+function runClaude(prompt: string, policyArgs: string[] = []): Promise<string> {
   return new Promise((resolve, reject) => {
-    const args = ["-p", "--output-format", "json"];
-    if (CLAUDE_MODEL) args.push("--model", CLAUDE_MODEL);
+    const args = buildClaudeArgs(policyArgs);
 
     const child = spawn(CLAUDE_BIN, args, { stdio: ["pipe", "pipe", "pipe"] });
     let out = "";
