@@ -1,5 +1,17 @@
 # WORKLOG.md
 
+## 2026-07-17 (V3 M0 — 문서 동기화 + provider 하드코딩 수정)
+
+V3 착수 전 문서-코드 불일치 해소. 계획 승인 후 최소 수정.
+- **taskPrompt provider 버그 수정**: `taskPrompt.ts:70` 하드코딩 `provider: mock` → `state?.provider ?? "미실행"`. mock/claude-code/미실행 3케이스 실측 확인.
+- **CLI 버전 단일 원본화**: `cli.ts` `--version` `0.1.0` → `package.json` 런타임 읽기(`import.meta.url` 기준). dev·dist 동일, 드리프트 구조상 불가 → 별도 일치 테스트 불필요. 설명도 현 범위로 갱신. `--version`=2.6.0 확인.
+- **CLAUDE.md 교정**: v1 단정 문구 → 현행 범위(문서 자동화 + exec/mission, 승인·권한 게이트 내 실행). `읽지 말 것`에 활성 V3 2문서 예외 추가. V3_KICKOFF_SUPERSEDED 참조 경로 정정.
+- **파일 이동**: `docs/backlog/V3_KICKOFF_SUPERSEDED.md` → `docs/archive/`(과거 기록, 구현 근거 아님).
+- **V3 HANDOFF 문서 각주**: v2.4 전제 → v2.6 구조 동일 각주 추가.
+- 검증: `npm test` → acceptance 63/63 + exec 74/74 전부 통과. 테스트 완화·삭제 없음.
+- **남은 불일치(후속)**: ① README v1/v2.6 범위 서술 낡음 ② V3 두 문서가 이미 구현된 exec/mission 실행 계층 미참조 ③ package.json.files는 M2에서 registry/schemas 추가 시 갱신.
+- M1(V3 F2 + tool 이벤트 골격) 착수 가능. 별도 승인 대기.
+
 ## 2026-07-09 (디자인 레이어 킥오프 — P1~P5)
 
 Phase 0 탐색 보고 → 승인(4개 결정: 별도 design 에이전트 / DESIGN.md에 tokens 펀치+추출 / node·tsx 린트 / {approval}+design_gate) 후 Phase별 커밋.

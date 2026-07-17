@@ -1,6 +1,12 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-08
+최종 갱신: 2026-07-17
+
+## 최신 (2026-07-17 세션 — V3 M0)
+
+- **V3 M0 완료(문서 동기화)**: taskPrompt provider 하드코딩 수정, CLI 버전 package.json 단일 원본화(`--version`=2.6.0), CLAUDE.md v1 문구 교정 + backlog 활성 V3 2문서 예외 규칙, `V3_KICKOFF_SUPERSEDED.md`→archive 이동, HANDOFF 문서 v2.6 각주. 검증: acceptance 63/63 + exec 74/74.
+- **다음**: M1(V3 F2 진행률 이벤트 + tool 이벤트 타입/JSONL trace 골격) — 별도 승인 대기. 활성 기준 문서: `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`, `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`.
+- **후속 정리 항목**: README v1/v2.6 범위 서술 갱신, V3 문서의 exec/mission 실행 계층 미참조, package.json.files(M2에서 registry/schemas 추가).
 
 ## 최신 (2026-07-08 세션)
 
