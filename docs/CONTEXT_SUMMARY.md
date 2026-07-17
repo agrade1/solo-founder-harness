@@ -2,10 +2,11 @@
 
 최종 갱신: 2026-07-17
 
-## 최신 (2026-07-17 세션 — V3 M0)
+## 최신 (2026-07-17 세션 — V3 M0 + M1)
 
-- **V3 M0 완료(문서 동기화)**: taskPrompt provider 하드코딩 수정, CLI 버전 package.json 단일 원본화(`--version`=2.6.0), CLAUDE.md v1 문구 교정 + backlog 활성 V3 2문서 예외 규칙, `V3_KICKOFF_SUPERSEDED.md`→archive 이동, HANDOFF 문서 v2.6 각주. 검증: acceptance 63/63 + exec 74/74.
-- **다음**: M1(V3 F2 진행률 이벤트 + tool 이벤트 타입/JSONL trace 골격) — 별도 승인 대기. 활성 기준 문서: `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`, `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`.
+- **V3 M1 완료(진행 이벤트 모델)**: `src/core/progress.ts`(RunEvent/ProgressReporter) — run_start/step_start/step_end/gate_jump/run_end + tool_*(타입 골격) + note{level}. runWorkflow가 모든 top-level step에 이벤트 방출(index 1-based, kind/round, 실제 jump만 gate_jump), try/finally로 예외에도 run_end{failed} 보장. RunState.step_timings 저장. 렌더러(`commands/progress.ts`) 이벤트 소비형 재작성(출력 계약 보존, gate/approval 스피너 없음). `src/tools/trace.ts` 범용 JSONL writer 골격(runWorkflow 미배선). 테스트: core 8 신규(`test:core`). 검증: exec 74 + core 8 + acceptance 63.
+- **V3 M0 완료(문서 동기화)**: taskPrompt provider 수정, CLI 버전 package.json 단일 원본, CLAUDE.md 교정, SUPERSEDED→archive, HANDOFF v2.6 각주.
+- **다음**: M2(Capability/Profile 기반) — 별도 승인 대기. M3에서 handoff+shadcn read+stream-json 파싱(여기서 tool 이벤트 실 방출·trace 배선). 활성 기준: `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`, `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`.
 - **후속 정리 항목**: README v1/v2.6 범위 서술 갱신, V3 문서의 exec/mission 실행 계층 미참조, package.json.files(M2에서 registry/schemas 추가).
 
 ## 최신 (2026-07-08 세션)

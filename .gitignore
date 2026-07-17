@@ -11,3 +11,6 @@ projects/dogfood-*/
 
 # 실행 계층 세션 worktree (ARCH §2) — 커밋 금지
 .harness/
+
+# 테스트용 임시 워크스페이스 (test:core)
+.tmp-test-workspace/

@@ -1,5 +1,17 @@
 # WORKLOG.md
 
+## 2026-07-17 (V3 M1 — 진행 이벤트 모델 + tool 이벤트 골격 + JSONL trace 골격)
+
+F2(진행 가시성) + MCP M1(tool 이벤트 타입/trace 골격). 실 MCP/ToolProfile/stream-json/Hooks/Tavily/shadcn 미구현.
+- **RunEvent/ProgressReporter 이벤트 모델**(`src/core/progress.ts` 신규): run_start/step_start/step_end/gate_jump/run_end + tool_start/tool_end/tool_denied(타입 골격, 방출 없음) + note{level}. 기존 `start/note/stop` 인터페이스를 이벤트 모델로 교체.
+- **runWorkflow 배선**: 모든 top-level step(agent/critic/revise/spawn/gate/approval)에 step_start/step_end. index 1-based, total=top-level step 수. critique 내부는 kind(critic/revise)+round로 구분. 실제 jump일 때만 gate_jump. run_start에 resumeFrom. **run_start→…→run_end를 try/finally로 감싸 예외에도 step_end{ok:false}+run_end{failed}+렌더러 정리 보장.**
+- **step_timings 저장**(RunState 신규 필드): agent_id/kind/started_at/elapsed_ms/ok. resume 시 완료 step 타이밍 보존, 재실행 없음.
+- **렌더러 재작성**(`src/commands/progress.ts`): 이벤트 소비형. 현 CLI 출력 계약 보존(TTY 스피너/비-TTY 라인/✓ 라인 동일). gate/approval은 스피너 미가동(stdin 충돌 방지, F2.2).
+- **범용 JSONL writer 골격**(`src/tools/trace.ts` 신규): ToolTrace 스키마 미고정·runWorkflow 미배선(M3+). 임의 레코드 append/read만.
+- **테스트**: `src/core/progress.test.ts`(이벤트 순서·critique·gate jump·실패/resume·TTY/non-TTY 렌더러 계약) + `src/tools/trace.test.ts`(JSONL 왕복). `test:core` 스크립트 추가(HARNESS_WORKSPACE 격리).
+- 검증: exec 74 + core 8 + acceptance 63 = **전부 통과**. 기존 mock 출력 계약 회귀 없음.
+- **미구현(다음)**: M2 Capability/Profile 기반, M3 handoff+shadcn read+stream-json 배선(tool 이벤트 실 방출·trace 배선은 여기서).
+
 ## 2026-07-17 (V3 M0 — 문서 동기화 + provider 하드코딩 수정)
 
 V3 착수 전 문서-코드 불일치 해소. 계획 승인 후 최소 수정.
