@@ -14,6 +14,21 @@ function toUsage(u) {
         cacheReadInputTokens: num(o.cache_read_input_tokens),
     };
 }
+/** system/init의 mcp_servers 배열을 정규화한다. connected는 status==="connected"에서만 true. */
+function toMcpServers(v) {
+    if (!Array.isArray(v))
+        return [];
+    const out = [];
+    for (const item of v) {
+        const o = (item ?? {});
+        const name = str(o.name);
+        if (!name)
+            continue;
+        const status = str(o.status);
+        out.push({ name, status, connected: status === "connected" });
+    }
+    return out;
+}
 /** assistant.message.content 배열에서 text 이어붙이기 + tool_use 추출. */
 function readContent(message) {
     const m = (message ?? {});
@@ -43,6 +58,7 @@ export function normalize(raw) {
                     cwd: str(raw.cwd),
                     permissionMode: str(raw.permissionMode),
                     tools: Array.isArray(raw.tools) ? raw.tools.map((t) => str(t)) : [],
+                    mcpServers: toMcpServers(raw.mcp_servers),
                     raw,
                 };
             }

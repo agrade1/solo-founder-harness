@@ -1,5 +1,20 @@
 # DECISIONS.md
 
+## 2026-07-19 (V3 M3a — live 전 보안 보완)
+
+- **npx만 정확 고정 버전 강제.** 임의 dist-tag(`@latest`/`@next`)·범위(`@^`/`@~`/`@*`)·무버전을 npx에서 거부(재현성·공급망). node/local executable엔 미적용(오탐 방지).
+- **preflight child env는 allowlist + 선언 secret만.** `process.env` 전체 전달은 미선언 토큰/키 유출 경로 — 폐지. 테스트용 env 주입은 production allowlist와 섞지 않는 명시적 `testEnv` seam으로 분리(프로덕션 경로 오염 방지).
+- **반환 snapshot도 redacted, 저장본과 동일.** 호출자가 받는 객체와 파일이 달라 redaction이 우회되는 구멍 제거. 실패 시 성공 snapshot 미생성(fail-closed 일관).
+- **중복 파생 도구는 조용히 dedupe하지 않고 거부.** 노출 표면 착오를 감추지 않기 위함. transport 혼합·credential 형태·secret 실값 포함도 기록 전 거부.
+
+## 2026-07-19 (V3 M3a — Headless MCP preflight)
+
+- **격리는 snapshot 실측으로만 판정.** `--strict-mcp-config`/`--mcp-config` 플래그 존재를 격리로 신뢰하지 않고, `system/init`의 실제 mcp_servers·tools를 기대치와 정확 비교(canary 자동 실패). 실패 시 typed error로 fail-closed — 성공 result를 절대 반환하지 않음.
+- **preflight는 M2.1 fail-closed와 별도 경로.** runWorkflow의 MCP profile 거부는 유지하고, preflight는 M3에서 MCP를 여는 유일한 검증 관문으로 독립 배선. (해제는 preflight 통과가 전제.)
+- **config는 참조된 서버만·secret 값 미기록.** binding이 참조하는 서버만 mcp-config에 포함, `@latest` 금지, secret은 이름만(값은 config·snapshot·error에 redaction). runtime 산출물은 gitignore.
+- **init 수집 후 의도적 종료는 실패가 아니다.** headless preflight는 init만 필요하므로 수집 즉시 kill하고, 그 종료 코드를 성공/실패 판정에 쓰지 않음(오판 방지). timeout·비정상 종료(무 init)만 실패.
+- **파서는 exec/streamParser 재사용.** 신규 파서를 만들지 않고 init 이벤트에 mcpServers 정규화만 추가(connected는 "connected"만).
+
 ## 2026-07-19 (V3 M2.1 — P0 보완)
 
 - **secret 값은 provider context로 전달하지 않는다.** execContext에는 이름(redactNames)만 담고, 값은 claude-code provider가 내부에서 `collectSecretValues(process.env)`로 조회 → redaction 표면 축소.

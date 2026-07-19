@@ -34,7 +34,7 @@ test("generateBrief: mock 플래너 → 브리프", async () => {
     const raw = { type: "mock", session_id: spec.sessionId };
     const md = '```json\n[{"id":"t1","role":"BE","task":"API","dod":["테스트"]},{"id":"t2","role":"FE","task":"화면","deps":["t1"]}]\n```';
     return [
-      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], raw },
+      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: md, numTurns: 1, usage: { inputTokens: 7, outputTokens: 4, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };
@@ -50,7 +50,7 @@ test("generateBrief: maxTasks로 잘림", async () => {
     const raw = { type: "mock", session_id: spec.sessionId };
     const many = Array.from({ length: 5 }, (_, i) => `{"id":"t${i}","role":"r","task":"x"}`).join(",");
     return [
-      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], raw },
+      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: `[${many}]`, numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };

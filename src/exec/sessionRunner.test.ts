@@ -23,7 +23,7 @@ function reviewerProvider(perRound: string[][]): ExecutionProvider {
     const md = `## Risks\n### Critical\n${critical.length ? critical.map((c) => `- ${c}`).join("\n") : "- 없음"}\n### Notes\n- n`;
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
-      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], raw },
+      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: md, numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };
@@ -40,7 +40,7 @@ class FileWriteProvider implements ExecutionProvider {
     const queue = new AsyncEventQueue<SessionEvent>();
     this.q.set(spec.sessionId, queue);
     const raw = { type: "fw", session_id: spec.sessionId };
-    queue.push({ kind: "init", sessionId: spec.sessionId, model: "fw", cwd: spec.cwd, permissionMode: "acceptEdits", tools: [], raw });
+    queue.push({ kind: "init", sessionId: spec.sessionId, model: "fw", cwd: spec.cwd, permissionMode: "acceptEdits", tools: [], mcpServers: [], raw });
     queue.push({ kind: "assistant", sessionId: spec.sessionId, text: "done", toolUses: [], stopReason: "end_turn", raw });
     queue.push({ kind: "result", sessionId: spec.sessionId, isError: false, text: "ok", numTurns: 1, usage: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw });
     queue.close();

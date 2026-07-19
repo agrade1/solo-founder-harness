@@ -3,7 +3,7 @@
  * 순수 함수 위주 — 실제 프로세스와 무관하게 단위 테스트 가능 (fixture: __fixtures__/probe.ndjson).
  * 스키마 근거: EXECUTION_CLI_RECON.md §3.
  */
-import type { RawEvent, SessionEvent, SessionUsage, ToolUse } from "./types.js";
+import type { RawEvent, SessionEvent, SessionUsage, ToolUse, McpServerStatus } from "./types.js";
 
 function num(v: unknown, d = 0): number {
   return typeof v === "number" && Number.isFinite(v) ? v : d;
@@ -21,6 +21,20 @@ function toUsage(u: unknown): SessionUsage {
     cacheCreationInputTokens: num(o.cache_creation_input_tokens),
     cacheReadInputTokens: num(o.cache_read_input_tokens),
   };
+}
+
+/** system/init의 mcp_servers 배열을 정규화한다. connected는 status==="connected"에서만 true. */
+function toMcpServers(v: unknown): McpServerStatus[] {
+  if (!Array.isArray(v)) return [];
+  const out: McpServerStatus[] = [];
+  for (const item of v) {
+    const o = (item ?? {}) as Record<string, unknown>;
+    const name = str(o.name);
+    if (!name) continue;
+    const status = str(o.status);
+    out.push({ name, status, connected: status === "connected" });
+  }
+  return out;
 }
 
 /** assistant.message.content 배열에서 text 이어붙이기 + tool_use 추출. */
@@ -52,6 +66,7 @@ export function normalize(raw: RawEvent): SessionEvent {
           cwd: str(raw.cwd),
           permissionMode: str(raw.permissionMode),
           tools: Array.isArray(raw.tools) ? (raw.tools as unknown[]).map((t) => str(t)) : [],
+          mcpServers: toMcpServers(raw.mcp_servers),
           raw,
         };
       }

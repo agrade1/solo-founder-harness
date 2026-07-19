@@ -128,7 +128,7 @@
 
 ### 최신 전체 테스트 결과 (이번 세션 실측)
 
-`npm test` → **exec 74 pass / core(=test:core: core+tools+providers) 52 pass / acceptance 63 PASS**, 실패 0. (M2.1 반영)
+`npm test` → **exec 75 pass / core(=test:core: core+tools+providers) 94 pass / acceptance 63 PASS**, 실패 0. (M3a offline+보안 반영)
 
 ### ProviderCapabilities 값 (검증, `src/providers/capabilities.ts`)
 
@@ -169,13 +169,12 @@
 
 ## 5. 다음 마일스톤 M3 (분리 기록)
 
-### M3a — Headless preflight
-- 짧은 `claude -p` 실행.
-- `--output-format stream-json` (+ `미확인`: `--verbose` 동반 필요 여부는 현재 claude 버전에서 재확인).
-- `system/init` 이벤트에서 실제 MCP 서버·도구 snapshot 수집.
-- expected snapshot(profile compile 결과)과 비교.
-- 전역 canary MCP(오염 fixture) 격리 확인 — canary 부재로 판정(§7.4).
-- preflight 실패 시 **interactive handoff 시작 금지**.
+### M3a — Headless preflight — **offline 구현 완료** (실제 claude 호출은 미검증)
+구현: `src/exec/{types,streamParser}.ts`(init.mcpServers 정규화), `src/providers/claudeCodeMcpAdapter.ts`(mcp-config 생성·검증), `src/tools/preflight.ts`(`runPreflight` — argv/env 강제, hard timeout, init 후 의도적 종료, snapshot 검증, fail-closed `PreflightError`). 테스트는 fake claude stub + NDJSON fixture.
+- `claude -p --output-format stream-json --verbose --no-session-persistence --strict-mcp-config --mcp-config <gen> --tools "" --permission-mode plan`, env `MCP_CONNECTION_NONBLOCKING=0`·`ENABLE_TOOL_SEARCH=false`.
+- `system/init`의 실제 mcp_servers·mcp__* 도구를 기대치와 정확 비교(전부 connected, canary/누락/중복 자동 실패).
+- 성공 시 tools-snapshot.json(profileId/cwd/timestamp/configHash/servers/tools) 저장, 실패 시 성공 result 미반환.
+- **남은 것(live)**: 실제 claude 구독 호출로 argv 수용·`system/init` 실제 payload·strict 격리·전역 canary 부재 실측(§7.4), `--verbose` 동반·`alwaysLoad`/env 강제의 실제 동작. preflight 통과 전 interactive handoff 시작 금지(M3b 배선 시).
 
 ### M3b — Interactive handoff trace
 - Claude Code 대화형 TUI 유지(stdio inherit). **대화형 세션 자체를 stream-json으로 파싱하지 않는다.**
@@ -234,7 +233,7 @@
 
 - 브랜치 `develop`, 작업 트리 CLEAN, package.json `2.6.0`.
 - 커밋: M0 `582f6e0` / M1 `5cbdbcb` / M2 `b359bfc`.
-- 명령: build=`npm run build`, 테스트=`npm test`(=`test:exec` 74 + `test:core` 52 + `acceptance` 63),
+- 명령: build=`npm run build`, 테스트=`npm test`(=`test:exec` 75 + `test:core` 94 + `acceptance` 63),
   `test:core`는 `HARNESS_WORKSPACE=.tmp-test-workspace tsx --test src/core/*.test.ts src/tools/*.test.ts
   src/providers/*.test.ts`.
 - npm pack: 69 files. 포함=dist/·agents/·registry/·schemas/·README.md. 제외=tests/·src/·*.test.*.
