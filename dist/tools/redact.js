@@ -9,12 +9,19 @@ const ENV_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
 export function isValidSecretRef(name) {
     return ENV_NAME_RE.test(name);
 }
-/** secretRefs 배열을 검증한다. 이름 형식이 아니면 throw (값이 잘못 들어간 경우 차단). */
+/**
+ * secretRefs 배열을 검증한다. 이름 형식이 아니면 throw (값이 잘못 들어간 경우 차단).
+ * 오류 메시지에는 입력값을 절대 포함하지 않는다 — 위반이 secret 값일 수 있으므로 index만 알린다.
+ */
 export function assertValidSecretRefs(refs, profileId) {
-    for (const r of refs) {
-        if (!isValidSecretRef(r)) {
-            throw new Error(`profile '${profileId}': secretRefs는 환경변수 이름만 허용한다(값 금지). 잘못된 항목: ${JSON.stringify(r)}`);
-        }
+    const badIndexes = [];
+    refs.forEach((r, i) => {
+        if (!isValidSecretRef(r))
+            badIndexes.push(i);
+    });
+    if (badIndexes.length > 0) {
+        throw new Error(`profile '${profileId}': secretRefs는 환경변수 이름(^[A-Z][A-Z0-9_]*$)만 허용한다(값 금지). ` +
+            `형식 위반 index: [${badIndexes.join(", ")}] (값은 노출하지 않음)`);
     }
 }
 const REDACTED = "***";
@@ -29,8 +36,8 @@ function escapeRegex(s) {
 export function redactSecrets(text, values = []) {
     let out = text;
     for (const v of values) {
-        if (v && v.length >= 4)
-            out = out.split(v).join(REDACTED); // 정확 문자열 치환 (regex 특수문자 안전)
+        if (v)
+            out = out.split(v).join(REDACTED); // 비어있지 않은 값은 길이와 무관하게 치환 (1~3자 포함)
     }
     // Authorization: Bearer xxx  /  Authorization: xxx
     out = out.replace(/(authorization"?\s*[:=]\s*"?)(bearer\s+)?[^\s"',}]+/gi, `$1$2${REDACTED}`);

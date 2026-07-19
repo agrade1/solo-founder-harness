@@ -217,6 +217,14 @@ export function parseToolProfiles(raw: unknown): ToolProfile[] {
   return out;
 }
 
+/**
+ * profile이 MCP binding을 포함하는지. (loader/compile은 MCP를 거부하지 않는다 — M3가 로드해야 함.
+ * 단 현재 runWorkflow 실행 경로는 MCP per-tool 강제가 없어 이 술어로 fail-closed 한다.)
+ */
+export function hasMcpBinding(profile: ToolProfile): boolean {
+  return Object.values(profile.bindings).some((b) => b?.kind === "mcp");
+}
+
 const DEFAULT_PROFILES_PATH = () => fromPackage("registry", "tool_profiles.json");
 
 /** 파일에서 profile을 로드·검증해 Map<id, ToolProfile>로 반환한다. */

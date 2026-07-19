@@ -6,6 +6,7 @@ import {
   loadToolProfiles,
   compileToolProfile,
   assertPolicyExecutable,
+  hasMcpBinding,
   ToolProfileError,
 } from "./profiles.js";
 import { getProviderCapabilities } from "../providers/capabilities.js";
@@ -106,6 +107,21 @@ test("fail-fast(internal_adapter): 미등록 어댑터 → 거부", () => {
   assert.doesNotThrow(() =>
     assertPolicyExecutable(c, { provider: getProviderCapabilities("claude-code"), adapters: new Set(["tavily"]) }),
   );
+});
+
+// ── [M2.1] MCP fail-closed 술어 (loader/compile은 성공) ──────────
+test("[M2.1] hasMcpBinding: mcp profile은 true, builtin profile은 false", () => {
+  const mcp = loadToolProfiles(FIX("valid-mcp.json")).get("dev-shadcn-readonly")!;
+  const builtin = loadToolProfiles().get("planning-local-readonly")!;
+  assert.equal(hasMcpBinding(mcp), true);
+  assert.equal(hasMcpBinding(builtin), false);
+});
+
+test("[M2.1] MCP profile은 loader/compile에서 거부되지 않는다 (M3가 로드해야 함)", () => {
+  assert.doesNotThrow(() => {
+    const p = loadToolProfiles(FIX("valid-mcp.json")).get("dev-shadcn-readonly")!;
+    compileToolProfile(p);
+  });
 });
 
 test("fail-fast(cli): 명령 미존재 → 거부", () => {

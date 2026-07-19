@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { fromPackage } from "./paths.js";
 import { projectPaths } from "./project.js";
 import type { AgentDef, AgentRegistry } from "./registry.js";
-import type { Provider, TokenUsage } from "../providers/provider.js";
+import type { Provider, TokenUsage, ProviderExecContext } from "../providers/provider.js";
 
 export interface RunAgentArgs {
   agent: AgentDef;
@@ -20,6 +20,8 @@ export interface RunAgentArgs {
   spawnRequest?: string;
   /** 있으면 prompt_path 파일 대신 이 텍스트를 agent prompt로 사용 (동적 분화된 하위 에이전트용). */
   agentPromptText?: string;
+  /** [M2.1] 도구 정책 실행 context. --tool-profile 지정 시에만 전달된다. */
+  execContext?: ProviderExecContext;
 }
 
 export interface RunAgentResult {
@@ -43,7 +45,7 @@ function loadPrompt(relPath: string, label: string): string {
  * prompt 파일이 없으면 throw → 호출자(runWorkflow)가 failed_agent로 기록한다.
  */
 export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
-  const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, agentPromptText } = args;
+  const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, agentPromptText, execContext } = args;
 
   const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
   // 동적 분화된 하위 에이전트는 파일 대신 런타임 생성 프롬프트를 쓴다.
@@ -67,6 +69,7 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
     retryFeedback,
     revisionRequest,
     spawnRequest,
+    execContext,
   });
 
   return { agentId: agent.agent_id, markdown, usage };

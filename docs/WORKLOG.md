@@ -1,5 +1,15 @@
 # WORKLOG.md
 
+## 2026-07-19 (V3 M2.1 — P0 보완: 정책 전달 배선 + secret redaction + MCP fail-closed)
+
+M3 이전 선행 보완 3건. M3a/b/c·MCP config 생성·stream-json·Hook·shadcn 미구현.
+- **정책 실제 전달**: `ProviderExecContext{claudeArgs, redactNames}`(`provider.ts`). runWorkflow가 compile된 policy를 보존 → runAgent → `provider.generate(input.execContext)`. claudeCodeProvider가 `execContext.claudeArgs`를 실제 spawn argv에 병합. mock/anthropic 무시, 미지정 시 argv·경로 완전 불변(회귀 테스트).
+- **MCP fail-closed**: `hasMcpBinding(profile)`(`profiles.ts`). runWorkflow가 MCP binding profile을 run_start·run_state 이전에 거부(M3 preflight/snapshot 이후 사용). loader/compile은 거부 안 함(M3가 로드 가능). 테스트용 `toolProfilesPath` seam 추가.
+- **secret redaction**: invalid secretRef 오류가 값 대신 index만 출력(`redact.ts`). secret 값은 execContext로 전달 안 함 — 이름(redactNames)만 넘기고 claudeCodeProvider가 내부에서 `collectSecretValues` 조회. spawn/non-zero 오류의 stderr/stdout을 `redactSecrets` 통과(이름 없어도 Authorization/token/password 패턴 적용). `HARNESS_CLAUDE_BIN`/timeout 호출 시점 읽기로 전환(스텁 테스트 가능).
+- **JSONL writer**: `createJsonlWriter(path, {redact, redactValues})` — record의 모든 문자열 재귀 sanitize 후 stringify, 원본 record 불변. 기존 호출 호환(기본 raw). M3 ToolTrace 스키마·Hook 미배선.
+- **테스트**(+11): 실제 spawn argv 포함/미지정 회귀(스텁), 오류 redaction, invalid secretRef sentinel 부재, JSONL 중첩·배열 redaction+원본 불변, MCP run-level 거부(loader/compile 성공), golden snapshot 유지.
+- 검증: exec 74 + core 52 + acceptance 63 전부 통과.
+
 ## 2026-07-17 (V3 M2 — Capability/ToolProfile 정책 계층)
 
 types+loader+compile+fail-fast+redaction+`--bare` argv. 실 MCP/shadcn/Tavily/stream-json/Hooks/Research Adapter 미구현.

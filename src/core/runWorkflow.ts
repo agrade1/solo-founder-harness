@@ -25,9 +25,9 @@ import {
   extractDecision,
   extractSpawnDeclarations,
 } from "./validate.js";
-import type { Provider } from "../providers/provider.js";
+import type { Provider, ProviderExecContext } from "../providers/provider.js";
 import type { ProgressReporter, StepKind } from "./progress.js";
-import { loadToolProfiles, compileToolProfile, assertPolicyExecutable } from "../tools/profiles.js";
+import { loadToolProfiles, compileToolProfile, assertPolicyExecutable, hasMcpBinding } from "../tools/profiles.js";
 import { getProviderCapabilities } from "../providers/capabilities.js";
 
 export type { ProgressReporter } from "./progress.js"; // 하위 호환: 기존 import 경로 유지
@@ -139,6 +139,7 @@ export interface RunWorkflowArgs {
   reporter?: ProgressReporter; // 진행 상황 표시자 (CLI 주입). 미지정 시 조용히 동작
   toolProfileId?: string; // [M2] 활성 도구 profile. 지정 시 run 시작 전 fail-fast 검증. 미지정 시 무영향.
   bare?: boolean; // [M2] planning 격리(--strict-mcp-config + 내장도구 제한) — compile에 전달.
+  toolProfilesPath?: string; // [M2.1] profile 파일 경로 override (기본: registry/tool_profiles.json). 테스트/M3용.
 }
 
 const RUN_STATE_REL = "outputs/run_state.json";
@@ -210,16 +211,27 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     throw new Error(`알 수 없는 workflow: ${workflowId} ('harness list'로 확인)`);
   }
 
-  // [M2] 도구 profile fail-fast: 지정 시 첫 모델 호출 전(run 시작 전)에 binding 실행 가능성 검증.
-  // 미충족이면 여기서 throw → run_start/run_state를 만들지 않는다. 미지정이면 완전 무영향.
+  // [M2/M2.1] 도구 profile: 지정 시 첫 모델 호출 전(run 시작 전)에 검증하고, compile된 정책을
+  // execContext로 보존해 provider 실행에 전달한다. 미충족/불가면 throw → run_start·run_state 미생성.
+  // 미지정이면 execContext=undefined → 기존 실행 경로·argv 완전 불변.
+  let execContext: ProviderExecContext | undefined;
   if (args.toolProfileId) {
-    const profiles = loadToolProfiles();
+    const profiles = loadToolProfiles(args.toolProfilesPath);
     const profile = profiles.get(args.toolProfileId);
     if (!profile) {
       throw new Error(`알 수 없는 tool profile: ${args.toolProfileId} (registry/tool_profiles.json 확인)`);
     }
+    // [M2.1] MCP profile fail-closed: MCP per-tool 노출 강제는 M3 preflight/snapshot enforcement가
+    // 필요하다. 현재 실행 경로는 그 강제가 없으므로 run_start 이전에 거부한다.
+    // (loader/compileToolProfile은 거부하지 않는다 — M3가 동일 profile을 로드할 수 있어야 함.)
+    if (hasMcpBinding(profile)) {
+      throw new Error(
+        `tool profile '${args.toolProfileId}'는 MCP binding을 포함한다 — M3 preflight/snapshot enforcement 이후 사용 가능 (현재 실행 경로에서 거부).`,
+      );
+    }
     const policy = compileToolProfile(profile, { bare: args.bare });
     assertPolicyExecutable(policy, { provider: getProviderCapabilities(provider.id) });
+    execContext = { claudeArgs: policy.claudeArgs, redactNames: policy.redactNames };
   }
 
   const completed_steps: string[] = [];
@@ -356,6 +368,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           revisionRequest: opts.revisionRequest,
           spawnRequest: opts.spawnRequest,
           agentPromptText: opts.agentPromptText,
+          execContext,
         });
         markdown = res.markdown;
         if (res.usage) {
