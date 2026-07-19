@@ -169,12 +169,13 @@
 
 ## 5. 다음 마일스톤 M3 (분리 기록)
 
-### M3a — Headless preflight — **offline 구현 완료** (실제 claude 호출은 미검증)
-구현: `src/exec/{types,streamParser}.ts`(init.mcpServers 정규화), `src/providers/claudeCodeMcpAdapter.ts`(mcp-config 생성·검증), `src/tools/preflight.ts`(`runPreflight` — argv/env 강제, hard timeout, init 후 의도적 종료, snapshot 검증, fail-closed `PreflightError`). 테스트는 fake claude stub + NDJSON fixture.
+### M3a — Headless preflight — **offline+live 완료** (Claude Code 2.1.215 실측 PASS)
+구현: `src/exec/{types,streamParser}.ts`(init.mcpServers 정규화), `src/providers/claudeCodeMcpAdapter.ts`(mcp-config 생성·검증), `src/tools/preflight.ts`(`runPreflight` — argv/env 강제, hard timeout, init 후 의도적 종료, snapshot 검증, fail-closed `PreflightError`). offline 테스트는 fake claude stub + NDJSON fixture. **live acceptance는 수동 runner `scripts/m3a-live-preflight.mjs`(+`fixtures/m3a/minimal-stdio-mcp.mjs`), `HARNESS_LIVE_M3A=1` 필수, npm test/CI 비대상.**
 - `claude -p --output-format stream-json --verbose --no-session-persistence --strict-mcp-config --mcp-config <gen> --tools "" --permission-mode plan`, env `MCP_CONNECTION_NONBLOCKING=0`·`ENABLE_TOOL_SEARCH=false`.
 - `system/init`의 실제 mcp_servers·mcp__* 도구를 기대치와 정확 비교(전부 connected, canary/누락/중복 자동 실패).
 - 성공 시 tools-snapshot.json(profileId/cwd/timestamp/configHash/servers/tools) 저장, 실패 시 성공 result 미반환.
-- **남은 것(live)**: 실제 claude 구독 호출로 argv 수용·`system/init` 실제 payload·strict 격리·전역 canary 부재 실측(§7.4), `--verbose` 동반·`alwaysLoad`/env 강제의 실제 동작. preflight 통과 전 interactive handoff 시작 금지(M3b 배선 시).
+- **live 실측(2026-07-19, Claude Code 2.1.215)**: expected server `connected`, `mcp__expected__read_thing` 정확 일치, ambient `.mcp.json` canary **미기동**(strict 격리 확인), sentinel/config/snapshot redaction 통과, fixture·임시 디렉터리 잔존 없음. **버전 종속 실측 — CLI 변경 시 재검증**("플래그=격리" 금지 유지).
+- 실행: `npm run build && HARNESS_LIVE_M3A=1 node scripts/m3a-live-preflight.mjs`. preflight 통과 전 interactive handoff 시작 금지(M3b 배선 시).
 
 ### M3b — Interactive handoff trace
 - Claude Code 대화형 TUI 유지(stdio inherit). **대화형 세션 자체를 stream-json으로 파싱하지 않는다.**

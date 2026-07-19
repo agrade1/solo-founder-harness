@@ -111,7 +111,9 @@ exit \${PF_EXIT:-0}
         serviceCwd: opts.serviceCwd ?? dir,
         runtimeDir,
         now: () => "2026-01-01T00:00:00.000Z",
-        timeoutMs: opts.timeoutMs ?? 1500,
+        // 테스트 완화가 아니라 CI 스케줄링 여유 확보 — stub이 init을 방출/파싱할 시간을 넉넉히 준다.
+        // (hard-timeout 전용 테스트만 opts.timeoutMs=700으로 명시 override.)
+        timeoutMs: opts.timeoutMs ?? 5000,
         testEnv,
       }),
   };

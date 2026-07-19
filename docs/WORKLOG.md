@@ -1,5 +1,19 @@
 # WORKLOG.md
 
+## 2026-07-19 (V3 M3a — live acceptance 실측 PASS)
+
+수동 live runner(`scripts/m3a-live-preflight.mjs`, `HARNESS_LIVE_M3A=1` 필수)로 실제 Claude 1회 실측.
+- **환경**: Claude Code **2.1.215**. headless preflight(`claude -p --output-format stream-json --strict-mcp-config ...`), interactive 미실행.
+- **결과 (PASS, exit 0)**:
+  - `system/init` expected server `connected`.
+  - 도구 `mcp__expected__read_thing` **정확 일치**(누락·추가·중복 없음).
+  - 임시 service cwd의 ambient `.mcp.json` canary 서버/도구 **미기동**(strict-mcp-config 격리 확인, canary pid-file 부재).
+  - sentinel(전용 env + cwd 경로)·config·반환/저장 snapshot **redaction 통과**(cwd `svc-***`, 평문 노출 0).
+  - expected fixture 5초 내 종료, fixture·임시 디렉터리 **잔존 없음**.
+- **범위**: 이 결과는 **Claude Code 2.1.215 실측**이며, CLI 버전 변경 시 재검증 필요(플래그·`system/init` 스키마·strict 격리 동작이 버전 의존).
+- runner/fixture는 수동 live acceptance 전용(CI·자동 파이프라인 비대상). flaky 완화로 offline preflight 테스트 기본 timeout 1500→5000ms(hard-timeout 전용 700ms 유지).
+- 다음: **M3b 계획 검토**.
+
 ## 2026-07-19 (V3 M3a — live 전 보안 보완)
 
 실제 claude 미실행. M3a offline 위에 보안 5건 강화.

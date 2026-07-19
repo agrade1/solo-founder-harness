@@ -1,5 +1,11 @@
 # DECISIONS.md
 
+## 2026-07-19 (V3 M3a — live acceptance)
+
+- **live acceptance는 수동 전용, 명시 opt-in.** `scripts/m3a-live-preflight.mjs`는 `HARNESS_LIVE_M3A=1` 없이는 거부하고 npm test/CI에서 실행하지 않는다. 실제 Claude를 호출하므로 자동 파이프라인에 편입하지 않음.
+- **격리 통과는 CLI 버전에 종속.** 2026-07-19 실측(Claude Code 2.1.215)에서 strict-mcp-config가 ambient canary를 차단함을 확인했으나, 이는 해당 버전의 실측이다. CLI 버전 변경 시 flag/`system/init`/격리 동작을 재검증한다("플래그 존재=격리" 금지 원칙 유지).
+- **live runner/fixture를 저장소에 커밋한다.** 재현 가능한 수동 acceptance 자산으로 유지(이전의 "커밋 금지"는 검토 단계 한정이었음). 단 production MCP 구현이 아니라 canary acceptance 더블임을 헤더에 명시.
+
 ## 2026-07-19 (V3 M3a — live 전 보안 보완)
 
 - **npx만 정확 고정 버전 강제.** 임의 dist-tag(`@latest`/`@next`)·범위(`@^`/`@~`/`@*`)·무버전을 npx에서 거부(재현성·공급망). node/local executable엔 미적용(오탐 방지).
