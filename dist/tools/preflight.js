@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { NdjsonParser } from "../exec/streamParser.js";
-import { writeMcpConfig, McpConfigError } from "../providers/claudeCodeMcpAdapter.js";
+import { writeMcpConfig, writeEmptyMcpConfig, McpConfigError } from "../providers/claudeCodeMcpAdapter.js";
 import { redactSecrets, collectSecretValues } from "./redact.js";
 /**
  * [M3a] Headless MCP preflight.
@@ -45,6 +45,7 @@ function buildChildEnv(profile, testEnv) {
     }
     env.MCP_CONNECTION_NONBLOCKING = "0";
     env.ENABLE_TOOL_SEARCH = "false";
+    env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1"; // [M3b.2] auto-memory 격리 (project/user memory 상속 방지)
     if (testEnv)
         for (const [k, v] of Object.entries(testEnv))
             env[k] = v;
@@ -68,6 +69,8 @@ const PREFLIGHT_ARGS_BASE = [
     "--verbose",
     "--no-session-persistence",
     "--strict-mcp-config",
+    "--setting-sources",
+    "", // [M3b.2] user/project/local settings(및 Hook) 격리 — 명시적 빈 소스
 ];
 /** init.mcpServers를 name 기준 정렬 + 중복 검출. */
 function collectServers(mcp) {
@@ -120,12 +123,14 @@ function verifySnapshot(init, expectedServers, expectedTools) {
 export async function runPreflight(opts) {
     const { profile, serviceCwd, runtimeDir, now } = opts;
     const timeoutMs = opts.timeoutMs ?? 60_000;
-    const secretValues = collectSecretValues(profile.secretRefs);
+    // scrub 값 = 선언 secret(child로 전달) + redactNames(scrub 전용, child 미전달).
+    const secretValues = [...collectSecretValues(profile.secretRefs), ...collectSecretValues(opts.redactNames ?? [])];
     const scrub = (s) => redactSecrets(s, secretValues);
     // 1) mcp-config 생성 (검증 포함). config 오류도 fail-closed.
+    //    emptyConfig=true면 빈 config(expected 서버/도구=[]) — ambient MCP 격리 실측용.
     let written;
     try {
-        written = writeMcpConfig(profile, runtimeDir);
+        written = opts.emptyConfig ? writeEmptyMcpConfig(runtimeDir) : writeMcpConfig(profile, runtimeDir);
     }
     catch (e) {
         if (e instanceof McpConfigError)
@@ -207,9 +212,10 @@ export async function runPreflight(opts) {
         void intentionalKill; // close 핸들러 가독성용 플래그
     });
     // 2) 성공 시에만 snapshot 기록. 반환 객체와 저장 파일 모두 redacted·동일해야 한다.
+    //    최소 권한(0600) + exclusive-create(wx): 기존 파일·symlink 조용한 덮어쓰기 금지.
     const redacted = redactSnapshot(snapshot, scrub);
-    mkdirSync(dirname(join(runtimeDir, "tools-snapshot.json")), { recursive: true });
+    mkdirSync(dirname(join(runtimeDir, "tools-snapshot.json")), { recursive: true, mode: 0o700 });
     const snapshotPath = join(runtimeDir, "tools-snapshot.json");
-    writeFileSync(snapshotPath, JSON.stringify(redacted, null, 2) + "\n", "utf8");
+    writeFileSync(snapshotPath, JSON.stringify(redacted, null, 2) + "\n", { encoding: "utf8", mode: 0o600, flag: "wx" });
     return { ok: true, snapshotPath, snapshot: redacted };
 }

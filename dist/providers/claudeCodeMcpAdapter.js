@@ -176,10 +176,30 @@ export function buildMcpConfig(profile, secretValues = collectSecretValues(profi
 /** buildMcpConfig 결과를 runtimeDir/mcp-config.json에 기록하고 sha256 해시를 계산한다. */
 export function writeMcpConfig(profile, runtimeDir) {
     const built = buildMcpConfig(profile);
-    mkdirSync(runtimeDir, { recursive: true });
+    return persistMcpConfig(built, runtimeDir);
+}
+/**
+ * [M3b.2] 명시적 allow-empty 경로: MCP 서버가 하나도 없는 빈 config `{mcpServers:{}}`.
+ * profile 기반 buildMcpConfig의 no_mcp_binding 기본 거부와 분리된 별도 경로다
+ * (handoff 대화형 세션은 MCP 0개 + `--strict-mcp-config`로 ambient 격리를 실측한다).
+ * expected 서버/도구는 모두 빈 배열 — preflight가 ambient 서버/도구를 하나라도 보면 실패한다.
+ */
+export function buildEmptyMcpConfig() {
+    return { config: { mcpServers: {} }, expectedServers: [], expectedTools: [] };
+}
+/** buildEmptyMcpConfig 결과를 최소 권한(dir 0700 / file 0600)으로 기록한다. */
+export function writeEmptyMcpConfig(runtimeDir) {
+    return persistMcpConfig(buildEmptyMcpConfig(), runtimeDir);
+}
+/**
+ * McpConfigResult를 runtimeDir/mcp-config.json에 최소 권한으로 기록하고 sha256을 계산한다.
+ * exclusive-create(`wx`): 기존 파일·symlink를 조용히 덮어쓰지 않고 EEXIST로 fail-closed한다.
+ */
+function persistMcpConfig(built, runtimeDir) {
+    mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
     const configPath = join(runtimeDir, "mcp-config.json");
     const bytes = JSON.stringify(built.config, null, 2) + "\n";
-    writeFileSync(configPath, bytes, "utf8");
+    writeFileSync(configPath, bytes, { encoding: "utf8", mode: 0o600, flag: "wx" });
     const configHash = createHash("sha256").update(bytes).digest("hex");
     return { ...built, configPath, configHash };
 }

@@ -10,6 +10,7 @@ import { runSummary } from "./commands/summary.js";
 import { runTaskPrompt } from "./commands/taskPrompt.js";
 import { runExec } from "./commands/exec.js";
 import { runMissionCommand } from "./commands/mission.js";
+import { runHandoffCommand } from "./commands/handoff.js";
 // 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
 // import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
 const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
@@ -44,10 +45,22 @@ program
     .option("--yes", "승인 게이트를 비대화로 전부 승인 (CI/스크립트)", false)
     .option("--tool-profile <id>", "[v3-M2] 활성 도구 profile (registry/tool_profiles.json). 지정 시 run 시작 전 fail-fast 검증")
     .option("--bare", "[v3-M2] planning 격리(--strict-mcp-config + 내장도구 제한) 정책으로 컴파일", false)
+    .option("--handoff", "[v3-M3b.2] run 완료(completed) 후 서비스 레포에서 Claude Code 대화형 세션을 연다 (승인 게이트·headless preflight 통과 후)", false)
+    .option("--cwd <serviceRepo>", "[v3-M3b.2] --handoff 대상 서비스 레포 경로 (기본: 현재 디렉터리)")
     .description("workflow를 순서대로 실행하고 결과를 저장한다")
     .action(async (workflowName, opts) => {
     const maxTokens = Number(opts.maxTokens ?? process.env.HARNESS_MAX_TOKENS ?? 0) || 0;
-    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes, opts.toolProfile, opts.bare);
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes, opts.toolProfile, opts.bare, opts.handoff, opts.cwd);
+});
+program
+    .command("handoff")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .option("--cwd <serviceRepo>", "핸드오프할 서비스 레포 경로 (기본: 현재 디렉터리)")
+    .option("--print", "실행·preflight·상태 변경 없이 셸 재진입 명령만 출력 (원격/tmux 탈출구)", false)
+    .option("--yes", "승인 게이트를 스킵하고 바로 세션을 연다", false)
+    .description("[v3-M3b.2] 완료된 판단 문서를 근거로 Claude Code 대화형 세션을 연다 (headless preflight 통과 후)")
+    .action(async (opts) => {
+    await runHandoffCommand({ project: opts.project, cwd: opts.cwd, print: opts.print, yes: opts.yes });
 });
 program
     .command("summary")

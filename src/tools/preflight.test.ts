@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runPreflight, PreflightError } from "./preflight.js";
@@ -47,7 +47,7 @@ interface CaseEnv {
 /** 스텁 claude를 만들고 preflight를 실행한다. dir/자원 정리는 호출측 finally. */
 async function runCase(
   env: CaseEnv,
-  opts: { profile?: ToolProfile; serviceCwd?: string; timeoutMs?: number; extraEnv?: Record<string, string> } = {},
+  opts: { profile?: ToolProfile; serviceCwd?: string; timeoutMs?: number; extraEnv?: Record<string, string>; emptyConfig?: boolean; redactNames?: string[] } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "harness-pf-"));
   const stub = join(dir, "claude-stub.sh");
@@ -114,6 +114,8 @@ exit \${PF_EXIT:-0}
         // 테스트 완화가 아니라 CI 스케줄링 여유 확보 — stub이 init을 방출/파싱할 시간을 넉넉히 준다.
         // (hard-timeout 전용 테스트만 opts.timeoutMs=700으로 명시 override.)
         timeoutMs: opts.timeoutMs ?? 5000,
+        emptyConfig: opts.emptyConfig,
+        redactNames: opts.redactNames,
         testEnv,
       }),
   };
@@ -291,6 +293,91 @@ test("[M3a] 실패 시 tools-snapshot.json이 생성되지 않는다", async () 
   try {
     await assert.rejects(c.run(), PreflightError);
     assert.ok(!existsSync(join(c.runtimeDir, "tools-snapshot.json")), "실패 시 snapshot 미생성");
+  } finally {
+    c.cleanup();
+  }
+});
+
+test("[M3a] argv에 --setting-sources \"\" (settings/Hook 격리) + env에 CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", async () => {
+  const c = await runCase({ stdout: GOOD_INIT, hang: true, argvOut: true, envOut: true });
+  try {
+    await c.run();
+    const argv = readFileSync(c.argvOut, "utf8").split("\n");
+    const si = argv.indexOf("--setting-sources");
+    assert.ok(si >= 0, "--setting-sources 포함");
+    assert.equal(argv[si + 1], "", "--setting-sources 다음은 빈 문자열");
+    // --tools 짝은 여전히 정확
+    assert.equal(argv[argv.indexOf("--tools") + 1], "");
+    const childEnv = readFileSync(c.envOut, "utf8");
+    assert.match(childEnv, /^CLAUDE_CODE_DISABLE_AUTO_MEMORY=1$/m);
+  } finally {
+    c.cleanup();
+  }
+});
+
+test("[M3b.2] 산출물 최소 권한: mcp-config·tools-snapshot 0600, runtime dir 0700", async () => {
+  const c = await runCase({ stdout: GOOD_INIT, hang: true });
+  try {
+    const res = await c.run();
+    assert.equal(res.ok, true);
+    const m = (p: string) => statSync(p).mode & 0o777;
+    assert.equal(m(join(c.runtimeDir, "mcp-config.json")), 0o600, "mcp-config 0600");
+    assert.equal(m(res.snapshotPath), 0o600, "tools-snapshot 0600");
+    assert.equal(m(c.runtimeDir), 0o700, "runtime dir 0700");
+  } finally {
+    c.cleanup();
+  }
+});
+
+test("[M3b.2] redactNames: 오류 scrub에만 사용, child env로는 미전달", async () => {
+  const c = await runCase(
+    { stderr: `boom leak=${"amb-secret-XYZ"}`, exit: 1, envOut: true },
+    { redactNames: ["AMBIENT_TOKEN"], extraEnv: { AMBIENT_TOKEN: "amb-secret-XYZ" } },
+  );
+  try {
+    await assert.rejects(c.run(), (e: PreflightError) => {
+      assert.equal(e.code, "nonzero_exit");
+      assert.ok(!e.message.includes("amb-secret-XYZ"), "redactNames 값이 오류에서 scrub됨");
+      return true;
+    });
+    // redactNames는 child env로 전달되지 않는다 (profile.secretRefs만 통과).
+    // (값 문자열은 test seam PF_STDERR로 child에 실리므로 변수명 부재로 검증한다.)
+    const childEnv = readFileSync(c.envOut, "utf8");
+    assert.ok(!/^AMBIENT_TOKEN=/m.test(childEnv), "AMBIENT_TOKEN 변수 미전달");
+  } finally {
+    c.cleanup();
+  }
+});
+
+// ── [M3b.2] allow-empty 경로: 빈 MCP config로 ambient 격리 실측 ──
+test("[M3b.2] emptyConfig: ambient MCP 0개면 성공 (servers/tools = [])", async () => {
+  const init = initLine([], ["Read", "Glob"]); // mcp__* 없음
+  const c = await runCase({ stdout: init, hang: true }, { emptyConfig: true });
+  try {
+    const res = await c.run();
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.snapshot.servers, []);
+    assert.deepEqual(res.snapshot.tools, []);
+  } finally {
+    c.cleanup();
+  }
+});
+
+test("[M3b.2] emptyConfig: ambient canary server 감지 시 차단(server_mismatch)", async () => {
+  const init = initLine([{ name: "ambient", status: "connected" }], ["Read"]);
+  const c = await runCase({ stdout: init, hang: true }, { emptyConfig: true });
+  try {
+    await assert.rejects(c.run(), (e: PreflightError) => e.code === "server_mismatch");
+  } finally {
+    c.cleanup();
+  }
+});
+
+test("[M3b.2] emptyConfig: ambient canary tool 감지 시 차단(tool_mismatch)", async () => {
+  const init = initLine([], ["Read", "mcp__ambient__leak"]);
+  const c = await runCase({ stdout: init, hang: true }, { emptyConfig: true });
+  try {
+    await assert.rejects(c.run(), (e: PreflightError) => e.code === "tool_mismatch");
   } finally {
     c.cleanup();
   }

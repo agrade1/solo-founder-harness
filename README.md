@@ -161,6 +161,7 @@ npm run harness -- task-prompt --project my-project
 | `run <workflow> --project <name> [--provider <id>] [--max-regen <n>] [--allow-spawn] [--vault <경로>]` | workflow 순서 실행, 결과 저장 (기본 provider=mock). `--vault` 시 Obsidian export | `docs/0N_*.md`, `outputs/run_state.json`, (`--vault` 시) `<vault>/<project>/*.md` |
 | `summary --project <name>` | 상태 요약 갱신 | `docs/CONTEXT_SUMMARY.md` |
 | `task-prompt --project <name>` | Claude Code 작업 지시문 생성 | `outputs/claude_code_task_prompt.md` |
+| `handoff --project <name> [--cwd <serviceRepo>] [--print] [--yes]` | [v3-M3b.2] 완료된 판단 문서 → 서비스 레포에서 Claude Code 대화형 세션을 연다(승인 게이트·headless preflight 통과 후, `-p` 아님·`stdio:inherit`). `--print`는 재진입 명령만 출력. `run ... --handoff`로도 이어붙임 | 대화형 세션 (+ `outputs/tool-trace/<id>.jsonl`) |
 | `exec --task <t> [--review] [--yes]` | 실행 세션 1개: worktree에서 구현→게이트→(리뷰)→승인→develop 병합 | 코드 커밋(develop) |
 | `mission --goal <g> [--parallel] [--concurrency <n>] [--yes]` | 목표 분해→승인→자율 완주(태스크마다 게이트·리뷰·병합) | develop 커밋들 + `outputs/MISSION_REPORT.md` |
 

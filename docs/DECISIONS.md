@@ -1,5 +1,21 @@
 # DECISIONS.md
 
+## 2026-07-19 (V3 M3b.2 — Interactive handoff, offline)
+
+- **handoff는 대화형 TUI를 "여는" 것까지만.** `claude <initialPrompt>` + `stdio:"inherit"`. 코드 수정 권한은 Claude Code 자체 permission이 게이트한다. `-p`/stream-json/stdout 파싱은 대화형에 쓰지 않는다(그건 M3a headless preflight 전용).
+- **spawn 전 fail-closed preflight 필수.** 빈 MCP config(`{mcpServers:{}}`) + `--strict-mcp-config`로 헤드리스 preflight를 돌려 ambient MCP 서버/도구가 하나라도 보이면 차단하고 spawn하지 않는다. "플래그=격리"가 아니라 snapshot 실측으로만 판정(M3a 원칙 계승). expected 서버/도구는 모두 빈 배열.
+- **allow-empty는 별도 명시 경로.** profile 기반 `buildMcpConfig`의 `no_mcp_binding` 기본 거부는 유지하고, handoff용 빈 config는 `buildEmptyMcpConfig`/`writeEmptyMcpConfig`로 분리한다.
+- **격리는 CLI 인자로만, managed policy 우회 없음.** `--setting-sources ""`(user/project/local settings·Hook 격리), `--mcp-config`(빈), `--settings`(런타임 hook settings), `--permission-mode default`, `--tools default`, `--disallowedTools mcp__*`, env `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`.
+- **Hook settings는 공식 exec form.** shell 문자열 조합 대신 `command`=node 실행 파일 + `args`=[collectorPath, hookKind]. shell 파싱/이스케이프 경유가 없고 argv가 collector parseArgs와 정확히 일치한다. collector는 배포 가능한 `dist/tools/hookCollector.js` 절대경로.
+- **run_state.handoff는 실제 spawn된 경우에만.** print/reject/preflight 실패/spawn 실패/non-TTY/missing binary에서는 기록하지 않는다. 대화형 종료코드는 기록하지 않고 completed 상태도 바꾸지 않는다.
+- **비-TTY·바이너리 부재는 실패가 아니라 폴백.** 비-TTY는 대화형 세션을 열지 않고(--yes와 조합돼도 백그라운드 TUI 금지), 바이너리 부재는 설치 안내 + 재진입 명령. `--print`는 실행·preflight·상태 변경 없이 재진입 명령(`harness handoff ... --yes`)만 출력하며, 실제 실행 시 preflight를 다시 거친다.
+- **runtime 산출물은 최소 권한·gitignore.** `outputs/runtime/`(기존)·`outputs/tool-trace/`(추가) 커밋 금지. mcp-config/hook-settings는 dir 0700/file 0600. raw Hook payload·transcript는 저장하지 않는다.
+- **[P0] collector는 배포 산출물 절대경로만.** `PACKAGE_ROOT/dist/tools/hookCollector.js`(dev tsx·prod 동일). import.meta.url 상대 계산은 dev에서 존재하지 않는 src/*.js를 가리키므로 쓰지 않는다. spawn/preflight 전 존재·일반 파일 검증, 없으면 `setup_failed`.
+- **[P0] 산출물 파일은 최소 권한 + exclusive-create.** ToolTrace JSONL은 spawn 전 빈 0600 파일로 사전 생성하고 collector가 append(모드 불변). hook-settings/mcp-config/tools-snapshot 0600, dir 0700. 기존 파일·symlink는 `wx`로 fail-closed(조용한 덮어쓰기·symlink 공격 방지). 기본 handoff id는 randomUUID 포함(충돌·예측 방지).
+- **[P1] redaction refs는 env 이름에서 파생, 값은 절대 기록 안 함.** `process.env`에서 이름이 secret 형태(TOKEN/KEY/SECRET/PASSWORD/CREDENTIAL/AUTH)이고 값이 있는 항목의 **이름만** refs로 파생 → `HARNESS_TOOL_SECRET_REFS`(이름) + collector가 값 마스킹. preflight `redactNames`는 오류 scrub 전용이며 그 secret 값을 preflight child env로 전달하지 않는다. spawn/setup/preflight 오류·로그·outcome은 `redactSecrets` 통과. raw process.env·secret 값 자체는 출력하지 않는다.
+- **[P1] `--setting-sources ""`가 서비스 레포 CLAUDE.md를 로드하지 않으므로 프롬프트로 보완.** initialPrompt에 "서비스 레포 AGENTS.md·CLAUDE.md 존재 시 먼저 읽고 준수" 명시. managed policy 우회는 계속 금지.
+- **M3b.2는 offline 기반 완료.** 다음은 M3c가 아니라 **M3b.2 actual Claude Hook live acceptance**(수동): `--setting-sources ""` 실제 수용, exec-form Hook 6종 실제 등록, 6 payload(PreToolUse/PostToolUse/PostToolUseFailure/PermissionRequest/PermissionDenied/SessionEnd), trace redaction·0600, TUI 유지·stream-json 미사용. **M3c(shadcn read)는 live 통과 후.**
+
 ## 2026-07-19 (V3 M3b.1 — HookTrace 기반, offline)
 
 - **Hook은 관측만, 승인 결과를 유추하지 않는다.** PermissionRequest→요청 사실만, PermissionDenied→auto-mode denial만. **PermissionRequest 공식 payload에는 correlation ID(tool_use_id)가 없다** → callId=null이며 synthetic ID를 만들지 않는다. Hook만으로 수동 승인/거부 결과를 정확히 연결할 수 없음을 `permissionOutcomeObservable:false`로 명시하고 denied로 추측 금지(타입·테스트·문서에 한계 명시).

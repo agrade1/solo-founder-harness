@@ -109,6 +109,19 @@ export interface RunState {
   usage: UsageSummary;
   started_at: string;
   finished_at: string;
+  handoff?: HandoffRecord; // [M3b.2] interactive handoff가 실제 spawn된 경우에만 기록 (그 외 부재)
+}
+
+/**
+ * [M3b.2] interactive handoff 기록. **interactive child가 실제 spawn된 경우에만** 기록한다.
+ * print/reject/preflight 실패/spawn 실패에서는 기록하지 않는다. 대화형 종료코드는 담지 않는다.
+ */
+export interface HandoffRecord {
+  launched_at: string;
+  cwd: string;
+  prompt_bytes: number;
+  trace_path: string;
+  runtime_dir: string;
 }
 
 export interface RunWorkflowResult {
