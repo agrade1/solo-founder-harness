@@ -1,5 +1,18 @@
 # DECISIONS.md
 
+## 2026-07-19 (V3 M3b.1 — HookTrace 기반, offline)
+
+- **Hook은 관측만, 승인 결과를 유추하지 않는다.** PermissionRequest→요청 사실만, PermissionDenied→auto-mode denial만. **PermissionRequest 공식 payload에는 correlation ID(tool_use_id)가 없다** → callId=null이며 synthetic ID를 만들지 않는다. Hook만으로 수동 승인/거부 결과를 정확히 연결할 수 없음을 `permissionOutcomeObservable:false`로 명시하고 denied로 추측 금지(타입·테스트·문서에 한계 명시).
+- **MCP server는 전달된 exact tool map으로만 판정.** 이름(`mcp__srv__t`)에서 추측하지 않는다(미매핑→null).
+- **원문 미저장 원칙.** transcript_path·raw tool_response는 기록하지 않고 tool_response는 byte 수만. 입력/오류는 크기 상한 절삭.
+- **secret은 이름만 설정·argv에.** 값은 collector가 hook 실행 시점 process.env에서 조회해 redaction. 민감 key는 값 통째 마스킹.
+- **collector 종료코드로 실행 게이팅.** PreToolUse audit/deny 실패·거부는 exit 2(차단), 사후 Hook 실패는 exit 1(경고, 원 실행 왜곡 금지), 정상은 stdout 미사용(Claude Hook JSON 해석 비간섭).
+- **RunEvent 매핑(`toRunEvent`)은 post-session/테스트용.** TUI 중 실시간 emit하지 않는다.
+- **대화형은 `stdio:inherit` + Hooks만.** stream-json 파싱은 M3a headless preflight 전용이며 대화형 세션에 쓰지 않는다(설계 정정).
+- **collector fail-closed 강화(P0/P1).** env는 엄격 검증(JSON fallback 금지), payload 계약(hook_event_name/session_id/tool 필드·deny=PreToolUse 전용) 위반은 blocking Hook에서 exit 2. 오류에 stack/env/secret 미출력.
+- **SessionEnd는 종료 사실만 기록.** 승인 결과나 unresolved permission 목록을 추측·계산하지 않는다(공식 payload에 correlation ID가 없어 수동 승인/거부를 정확히 연결할 수 없기 때문).
+- **크기·깊이는 UTF-8 byte·재귀 depth 상한으로 실제 강제.** 병렬 append 라인이 작게 유지되어 원자성 확보.
+
 ## 2026-07-19 (V3 M3a — live acceptance)
 
 - **live acceptance는 수동 전용, 명시 opt-in.** `scripts/m3a-live-preflight.mjs`는 `HARNESS_LIVE_M3A=1` 없이는 거부하고 npm test/CI에서 실행하지 않는다. 실제 Claude를 호출하므로 자동 파이프라인에 편입하지 않음.

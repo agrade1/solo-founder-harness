@@ -1,5 +1,19 @@
 # WORKLOG.md
 
+## 2026-07-19 (V3 M3b.1 — Interactive HookTrace 기반, offline)
+
+Hook payload→공통 ToolTrace JSONL 변환 기반. 실제 Claude/TUI/handoff/stream-json 미실행·미구현(M3b.2).
+- **ToolTrace 모델**(`src/tools/toolTrace.ts` 신규): 6 이벤트(tool_requested/permission_requested/tool_succeeded/tool_failed/tool_denied/session_end) + 필수 필드(version/timestamp/source/profileId/sessionId/callId/event/status/toolName/server/durationMs/resultBytes/sanitizedInput/inputTruncated/error/reason/denialMode/sessionEndReason). `normalizeHook`(6 Hook 정규화) + `toRunEvent` 매핑(tool_start/tool_end/tool_denied; permission_requested·session_end→없음). **RunEvent reporter 실시간 emit 안 함**.
+- **collector**(`src/tools/hookCollector.ts` 신규): stdin payload→정규화→JSONL. PreToolUse deny→tool_denied+exit2, PreToolUse audit 기록 실패→exit2(차단), 사후 Hook 실패→exit1(경고), 정상 stdout 미사용. env 계약 `HARNESS_TOOL_TRACE_PATH/PROFILE_ID/SECRET_REFS(이름 JSON)/MAP(exact)`.
+- **settings**(`src/tools/hookSettings.ts` 신규): 6 Hook 정확 등록 + deny matcher 선택. argv/env에 secret **이름만**.
+- **trace.ts 강화**: `sanitizeValue` — 민감 key(authorization/cookie/token/key/secret/password/credential) 재귀 마스킹 + secret 값/credential 패턴(URL query 포함). 병렬 append 라인 원자성 주석.
+- **규칙**: transcript_path·raw tool_response 미저장(byte 수만), 입력/오류 크기 상한, MCP server는 exact tool map으로만 판정(추측 금지), secretRefs 실제 환경값 redaction.
+- **승인 의미(한계 명시)**: PermissionRequest는 permission_requested만, PermissionDenied는 auto-mode denial만. PermissionRequest 공식 payload에는 correlation ID(tool_use_id)가 없어 callId=null·synthetic ID 미생성, `permissionOutcomeObservable:false`로 수동 승인/거부 관측 불가 명시. SessionEnd는 종료 사실만 기록(unresolved·승인 결과 추측 금지). 타입·테스트·문서 반영.
+- **테스트**(+24): 각 Hook 정규화, 민감 key/secret/URL query/중첩 배열 redaction, 크기 상한, malformed/oversized stdin, deny exit2, 승인 오판 금지, PermissionDenied auto 의미, 병렬 collector append 유효성, settings 6 Hook·secret 평문 부재, 기존 trace/RunEvent 회귀 없음.
+- **P0/P1 하드닝**: collector fail-closed(`parseConfig` 엄격 검증·JSON fallback 금지, PreToolUse/PermissionRequest 실패 exit2·사후 exit1, 전 경로 catch, stack/raw env/secret 미출력), payload 계약 검증(hook_event_name 일치·session_id 필수, PermissionRequest=tool_name+tool_input 필수·tool_use_id 없음, tool hook=tool_use_id 필수, deny는 PreToolUse만), **SessionEnd는 종료 사실만 기록**(공식 payload에 correlation ID 부재로 unresolved·승인 결과 추측 금지), UTF-8 byte 상한(멀티바이트 경계 보존)·재귀 depth 상한, settings `nodePath/collectorPath` shell-safe quoting + `denyMatchers[]` dedupe.
+- 검증: exec 75 + core 131 + acceptance 63 전부 통과.
+- **남은 M3b.2**: handoff command/spawn, settings 파일 write·claude 실행, 실제 Claude Hook 이름 대응 실측. 대화형은 `stdio:inherit`+Hooks만(stream-json은 M3a preflight 전용, 대화형 미사용). `toRunEvent`는 post-session/테스트용(실시간 emit 없음).
+
 ## 2026-07-19 (V3 M3a — live acceptance 실측 PASS)
 
 수동 live runner(`scripts/m3a-live-preflight.mjs`, `HARNESS_LIVE_M3A=1` 필수)로 실제 Claude 1회 실측.

@@ -69,6 +69,37 @@ test("[M2.1] redact 옵션: 중첩 객체·배열 문자열 sanitize, 원본 rec
   }
 });
 
+test("[M3b.1] redact: 민감 key(authorization/token/...)의 값은 통째로 마스킹", () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-trace-"));
+  try {
+    const path = join(dir, "keymask.jsonl");
+    const w = createJsonlWriter(path, { redact: true });
+    w.append({ Authorization: "Bearer keepnot", nested: { API_KEY: "xyz", plain: "keep" }, cookie: "c=1", list: [{ password: "pw" }] });
+    const rec = JSON.parse(readFileSync(path, "utf8").trim());
+    assert.equal(rec.Authorization, "***");
+    assert.equal(rec.nested.API_KEY, "***");
+    assert.equal(rec.nested.plain, "keep");
+    assert.equal(rec.cookie, "***");
+    assert.equal(rec.list[0].password, "***");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("[M3b.1] 병렬 append: 같은 파일에 다중 writer 기록 후 모든 라인 유효", () => {
+  const dir = mkdtempSync(join(tmpdir(), "harness-trace-"));
+  try {
+    const path = join(dir, "par.jsonl");
+    const N = 20;
+    for (let i = 0; i < N; i++) createJsonlWriter(path).append({ i, msg: `line-${i}` });
+    const lines = readFileSync(path, "utf8").trim().split("\n");
+    assert.equal(lines.length, N);
+    lines.forEach((l, i) => assert.equal(JSON.parse(l).i, i));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("[M2.1] JSONL redact: 짧은 secret(1~3자)도 평문이 남지 않는다", () => {
   const dir = mkdtempSync(join(tmpdir(), "harness-trace-"));
   try {
