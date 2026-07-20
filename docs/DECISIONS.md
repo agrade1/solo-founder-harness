@@ -1,5 +1,26 @@
 # DECISIONS.md
 
+## 2026-07-20 (V3 M3b.2 — actual live acceptance 완료(PASS))
+
+- **M3b.2를 offline + actual live 완료로 확정한다.** 실제 Claude Code 2.1.215에서 live runner가 exit 0/PASS. 검증 항목: exact Hook 6종, empty MCP snapshot(servers=[]/tools=[])·config({}), planning contextRoot 접근(00_IDEA/06_CEO_DECISION Read 성공·serviceCwd docs 미생성), Read 성공/실패 callId correlation, Bash 승인(permission_requested callId=null + tool_requested/succeeded 동일 callId, sentinel 비출력), Write 수동 거부(requested+permission·marker 부재, denied 미합성), SessionEnd 1건, ambient MCP/Hook canary 미기동, trace redaction·권한·원문 미저장, run_state 불변, argv `-p`/stream-json 없음.
+- **격리·Hook 계약 통과는 이 CLI 버전(2.1.215) 실측이다.** M3a 원칙 계승 — CLI 버전 변경 시 재검증한다("플래그=격리/계약" 금지). runner는 재현 가능한 수동 acceptance 자산으로 유지(`HARNESS_LIVE_M3B2=1`, npm test/CI 비대상).
+- **앞선 실패 시도는 역사 기록으로 남긴다.** 1차 argv P0(무효), 2차 P0-1 planning 경로·P0-2 sentinel 출력. 삭제하지 않는다(재발 방지 근거).
+- **다음은 M3c(shadcn read) 파일럿 계획 검토.** 구현 착수가 아니라 계획·acceptance 설계부터. 활성 설계 문서 기준 유지.
+
+## 2026-07-20 (V3 M3b.2 — 두 번째 live P0 2건: planning 경로·sentinel 출력)
+
+- **두 번째 live도 전체 PASS로 기록하지 않는다.** argv `--` 꼬리는 통과했으나 planning context 경로 단절(P0-1)과 sentinel TUI 평문 출력(P0-2)이 드러났다. 상태는 **M3b.2 live 재검증 대기**.
+- **planning contextRoot ↔ serviceCwd를 명시적으로 분리한다(P0-1).** task prompt의 `Include`는 `docs/*.md` 상대경로인데 대화형 cwd는 serviceCwd다. handoff는 `contextRoot=projectPaths(project).root`를 argv `--add-dir`로 열고, initialPrompt에 "Include의 docs/…는 contextRoot 절대경로, serviceCwd 아래 docs 생성 금지, WORKLOG 대상=contextRoot/docs/WORKLOG.md" 계약을 명시한다. 승인 preview에도 두 경로를 별도 표시한다. `--disallowedTools mcp__* -- <initialPrompt>` 꼬리는 유지.
+- **live 검증용 fake sentinel은 값을 출력하지 않는 방식으로만 다룬다(P0-2).** Bash 검증을 `printf '%s' "$TOKEN"`(값 출력) → `node -e 'if (!process.env.M3B2_LIVE_TOKEN) process.exit(1)'`(존재만 확인)로 바꾼다. 실제 sentinel 값은 terminal/settings/config/snapshot/trace/outcome 어디에도 출력하지 않는다. 이번에 출력된 것은 runner가 심은 fake sentinel로 **실제 credential이 아니다**. collector redaction 단위 테스트는 유지.
+- **경로 계약도 회귀 테스트로 고정한다.** `--add-dir`=contextRoot, prompt의 절대 contextRoot·WORKLOG 경로, serviceCwd에 docs 미생성을 core 단위 테스트와 runner 사후 검증 양쪽에서 강제한다(실제 Claude 없이도 구조 회귀 포착).
+
+## 2026-07-20 (V3 M3b.2 — 첫 live 시도 무효(argv P0))
+
+- **첫 live acceptance 시도는 무효로 확정한다.** Claude Code 2.1.215에서 대화형 argv `--disallowedTools mcp__* <initialPrompt>`가 `--disallowedTools`(가변 인자) 값으로 프롬프트를 소비해 `Permission deny rule "..." matches no known tool` 경고가 폭주했다. 세션이 acceptance 절차를 받지 못했으므로 **Hook 검증은 수행되지 않았고 PASS로 기록하지 않는다.**
+- **대화형 argv는 옵션 종료 구분자 `--`로 프롬프트를 격리한다.** 꼬리를 `--disallowedTools`, `mcp__*`, `--`, `initialPrompt`로 고정한다. 가변 옵션 뒤 positional은 항상 `--` 뒤에 둔다(향후 옵션 추가 시에도 이 규칙 유지). 대화형 TUI·stdio inherit·`-p`/stream-json 미사용은 불변.
+- **argv 계약은 회귀 테스트로 고정한다.** 프롬프트가 deny 값 영역에 들어가지 않음을 core 단위 테스트와 runner 사후 검증 양쪽에서 강제한다. 실제 Claude 없이도 argv 구조 회귀를 잡는다("플래그 존재=정상" 금지, 실측 P0 방지).
+- **상태는 "M3b.2 live acceptance 재실행 대기"로 유지한다.** 수정은 offline 검증까지만. 실제 Hook 검증은 사람이 runner를 재실행해야 성립한다.
+
 ## 2026-07-19 (V3 M3b.2 — Interactive handoff, offline)
 
 - **handoff는 대화형 TUI를 "여는" 것까지만.** `claude <initialPrompt>` + `stdio:"inherit"`. 코드 수정 권한은 Claude Code 자체 permission이 게이트한다. `-p`/stream-json/stdout 파싱은 대화형에 쓰지 않는다(그건 M3a headless preflight 전용).

@@ -66,8 +66,34 @@ function deriveSecretRefs(env) {
 function buildReentryCommand(project, serviceCwd) {
     return ["harness", "handoff", "--project", shellQuote(project), "--cwd", shellQuote(serviceCwd), "--yes"].join(" ");
 }
-/** 대화형 TUI spawn argv. -p/stream-json 없음. MCP는 빈 config + strict + mcp__* deny로 이중 차단. */
-function buildSpawnArgv(mcpConfigPath, settingsPath, initialPrompt) {
+/**
+ * [P0-1] planning contextRoot ↔ serviceCwd 경로 계약.
+ * task prompt의 `Include`는 `docs/*.md` **상대경로**이고, 대화형 Claude의 cwd는 serviceCwd다.
+ * 두 경로가 다르면 Claude가 serviceCwd/docs를 찾다 실패하고 serviceCwd에 엉뚱한 docs/WORKLOG.md를 만든다.
+ * (Claude Code live 실측 P0.) 따라서 프롬프트에 절대 contextRoot 기준 경로 해석 계약을 명시하고,
+ * argv에는 `--add-dir <contextRoot>`로 접근 권한을 준다.
+ */
+function buildContextContract(contextRoot, serviceCwd) {
+    return ("\n\n[경로 계약 — 반드시 준수]\n" +
+        `- 작업 디렉터리(cwd, 서비스 레포): ${serviceCwd}\n` +
+        `- planning contextRoot(판단 문서 루트): ${contextRoot}\n` +
+        `- 위 지시문 'Include'의 docs/… 상대경로는 **contextRoot 기준**이다. 반드시 contextRoot의 절대경로로 읽어라 (예: ${join(contextRoot, "docs", "00_IDEA.md")}).\n` +
+        "- serviceCwd와 planning contextRoot는 서로 다른 디렉터리다. serviceCwd 아래에서 docs/ 를 찾지 마라.\n" +
+        `- 작업 기록(WORKLOG) 대상은 ${join(contextRoot, "docs", "WORKLOG.md")} 이다. serviceCwd 아래에 별도의 docs/ 나 docs/WORKLOG.md 를 만들지 마라.\n`);
+}
+/**
+ * 대화형 TUI spawn argv. -p/stream-json 없음. MCP는 빈 config + strict + mcp__* deny로 이중 차단.
+ *
+ * [P0] `--disallowedTools <tools...>`는 가변 인자다. `--` 옵션 종료 구분자 없이 initialPrompt를
+ * 뒤에 붙이면 CLI가 프롬프트(및 그 안의 모든 단어)를 deny 규칙으로 소비한다(Claude Code 2.1.215
+ * 실측: `Permission deny rule "..." matches no known tool` 경고 폭주 → Hook acceptance 무효).
+ * 따라서 `--disallowedTools mcp__*` 뒤에 `--`를 넣어 옵션 파싱을 종료하고 initialPrompt를
+ * 순수 positional로 전달한다. 최종 꼬리 = `--disallowedTools`, `mcp__*`, `--`, initialPrompt.
+ *
+ * [P0-1] planning 문서(docs/*.md)는 contextRoot에 있으므로 `--add-dir <contextRoot>`로 접근 권한을 준다
+ * (serviceCwd와 별개 디렉터리). 경로 해석 계약은 initialPrompt(buildContextContract)에 명시된다.
+ */
+function buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt) {
     return [
         "--strict-mcp-config",
         "--mcp-config",
@@ -76,12 +102,15 @@ function buildSpawnArgv(mcpConfigPath, settingsPath, initialPrompt) {
         settingsPath,
         "--setting-sources",
         "",
+        "--add-dir",
+        contextRoot, // planning contextRoot 접근 허용(cwd=serviceCwd와 별개)
         "--permission-mode",
         "default",
         "--tools",
         "default",
         "--disallowedTools",
         "mcp__*",
+        "--", // 옵션 파싱 종료: 이후 initialPrompt를 --disallowedTools 값으로 소비하지 않도록.
         initialPrompt,
     ];
 }
@@ -119,7 +148,8 @@ function buildPreview(o) {
         "── task prompt (앞 40줄) ──",
         head,
         "───────────────────────────",
-        `cwd: ${o.serviceCwd}`,
+        `serviceCwd (cwd, 서비스 레포): ${o.serviceCwd}`,
+        `planning contextRoot (판단 문서 루트, --add-dir): ${o.contextRoot}`,
         "권한: --permission-mode default · --tools default · --disallowedTools mcp__*",
         `Hook: ${SUPPORTED_HOOKS.join(", ")} (${SUPPORTED_HOOKS.length}개, exec form)`,
         `trace: ${o.tracePath}`,
@@ -163,16 +193,20 @@ export async function runHandoff(opts) {
         };
     }
     // 3) summary + task-prompt 자동 갱신.
+    //    [P0-1] contextRoot = planning 문서(docs/*.md)·task prompt의 기준 루트. 대화형 cwd(serviceCwd)와 별개.
     const today = now().slice(0, 10);
     updateContextSummary(project, today);
     const taskPromptRel = generateTaskPrompt(project, today);
-    const taskPromptAbs = join(projectPaths(project).root, taskPromptRel);
+    const contextRoot = projectPaths(project).root;
+    const taskPromptAbs = join(contextRoot, taskPromptRel);
     const taskPromptContent = readFileSync(taskPromptAbs, "utf8");
-    // 4) initialPrompt (128KB 초과 시 절대경로 읽기 지시로 대체).
+    // 4) initialPrompt (128KB 초과 시 절대경로 읽기 지시로 대체). 경로 계약(contextRoot)을 항상 덧붙인다.
+    //    128KB fallback도 taskPromptAbs가 contextRoot 아래이고 argv --add-dir로 접근 가능하다.
+    const contextContract = buildContextContract(contextRoot, serviceCwd);
     const maxBytes = opts.maxPromptBytes ?? DEFAULT_MAX_PROMPT_BYTES;
-    const full = taskPromptContent + PLAN_FIRST_SUFFIX;
+    const full = taskPromptContent + PLAN_FIRST_SUFFIX + contextContract;
     const initialPrompt = Buffer.byteLength(full, "utf8") > maxBytes
-        ? `작업 지시문이 큽니다. 아래 절대경로 파일을 열어 전체를 읽어라: ${taskPromptAbs}${PLAN_FIRST_SUFFIX}`
+        ? `작업 지시문이 큽니다. 아래 절대경로 파일을 열어 전체를 읽어라: ${taskPromptAbs}${PLAN_FIRST_SUFFIX}${contextContract}`
         : full;
     const promptBytes = Buffer.byteLength(initialPrompt, "utf8");
     // 하네스 설치 경로로의 handoff는 경고 (패키지 경로 read-only 전제).
@@ -216,7 +250,7 @@ export async function runHandoff(opts) {
     // 8) 승인 게이트 (--yes면 스킵).
     if (!opts.yes) {
         const approve = opts.approve ?? defaultStdinApprove;
-        const preview = buildPreview({ taskPromptContent, serviceCwd, tracePath, redactCount: redactRefs.length, scrub });
+        const preview = buildPreview({ taskPromptContent, serviceCwd, contextRoot, tracePath, redactCount: redactRefs.length, scrub });
         const ok = await approve(APPROVE_MESSAGE, preview);
         if (!ok) {
             log("handoff 취소됨 — Claude Code 세션을 열지 않았습니다.");
@@ -253,7 +287,7 @@ export async function runHandoff(opts) {
         return { action: "setup_failed", message: msg };
     }
     // 11) spawn argv + env (HARNESS_TOOL_*: secret 이름만 + auto-memory 격리; secret 값은 미포함).
-    const argv = buildSpawnArgv(mcpConfigPath, settingsPath, initialPrompt);
+    const argv = buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt);
     const env = {
         ...process.env,
         ...buildHookEnv({ tracePath, profileId: HANDOFF_PROFILE_ID, secretRefs: redactRefs, toolMap: {} }),

@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync, chmodSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, chmodSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runHandoff, type HandoffOptions } from "./handoff.js";
@@ -91,10 +91,26 @@ test("[M3b.2] standalone handoff 성공 → spawned + argv 계약 + collector di
   assert.equal(argv[argv.indexOf("--permission-mode") + 1], "default");
   assert.equal(argv[argv.indexOf("--tools") + 1], "default");
   assert.equal(argv[argv.indexOf("--disallowedTools") + 1], "mcp__*");
-  // initialPrompt(마지막): plan-first + AGENTS.md/CLAUDE.md 준수 지시
+  // [P0] --disallowedTools 값은 정확히 mcp__* 하나이고 그 뒤 "--"로 옵션 파싱을 종료해야 한다
+  //      (없으면 가변 인자 --disallowedTools가 initialPrompt를 deny 규칙으로 소비함 — 2.1.215 실측 P0).
+  assert.equal(argv[argv.indexOf("--disallowedTools") + 2], "--", "--disallowedTools mcp__* 뒤 옵션 종료 구분자 --");
+  assert.equal(argv.at(-2), "--", "끝에서 두 번째는 정확히 --");
+  // [P0-1] planning contextRoot 접근: --add-dir 값이 projectPaths(project).root 와 정확히 일치(serviceCwd와 별개)
+  const contextRoot = projectPaths(name).root;
+  assert.equal(argv[argv.indexOf("--add-dir") + 1], contextRoot, "--add-dir 값이 contextRoot");
+  assert.notEqual(contextRoot, cwd, "contextRoot와 serviceCwd(cwd)는 별개");
+  // initialPrompt(마지막, positional): plan-first + AGENTS.md/CLAUDE.md 준수 지시 + 경로 계약(절대 contextRoot)
   const prompt = argv[argv.length - 1];
+  assert.equal(prompt, argv.at(-1), "마지막 인자가 initialPrompt");
   assert.match(prompt, /먼저 구현 계획만 제시/);
   assert.match(prompt, /AGENTS\.md와 CLAUDE\.md/);
+  // 경로 계약: 절대 contextRoot·contextRoot/docs/WORKLOG.md·serviceCwd 아래 docs 금지 명시
+  assert.ok(prompt.includes(contextRoot), "prompt에 절대 contextRoot 포함");
+  assert.ok(prompt.includes(join(contextRoot, "docs", "WORKLOG.md")), "prompt에 WORKLOG 대상 절대경로");
+  assert.match(prompt, /경로 계약/);
+  assert.match(prompt, /serviceCwd 아래에 별도의 docs/);
+  // prompt는 --disallowedTools 값 영역(mcp__* 직후)에 들어가지 않는다.
+  assert.notEqual(argv[argv.indexOf("--disallowedTools") + 2], prompt, "prompt가 disallowedTools 값으로 소비되지 않음");
 
   // collector는 배포 산출물 절대경로 dist/tools/hookCollector.js (실존)
   const settings = JSON.parse(readFileSync(res.settingsPath, "utf8"));
@@ -123,6 +139,69 @@ test("[M3b.2] standalone handoff 성공 → spawned + argv 계약 + collector di
   assert.deepEqual(st.handoff, { launched_at: FIXED, cwd: "/svc/repo", prompt_bytes: res.promptBytes, trace_path: res.tracePath, runtime_dir: res.runtimeDir });
 
   rmSync(projectPaths(name).root, { recursive: true, force: true });
+});
+
+test("[M3b.2][P0] interactive argv 꼬리 = --disallowedTools · mcp__* · -- · initialPrompt (프롬프트 deny 소비 방지)", async () => {
+  const name = "_h_argv_dashdash";
+  await completedProject(name);
+  const sp = captureSpawn();
+  const res = await runHandoff(baseOpts(name, { spawnInteractive: sp.fn }));
+  assert.equal(res.action, "spawned");
+  if (res.action !== "spawned") return;
+  const { argv } = sp.calls[0];
+
+  // 정확한 꼬리 4개 순서: --disallowedTools, mcp__*, --, initialPrompt
+  const tail = argv.slice(-4);
+  assert.equal(tail[0], "--disallowedTools", "꼬리[-4] = --disallowedTools");
+  assert.equal(tail[1], "mcp__*", "꼬리[-3] = mcp__* (deny 값 하나)");
+  assert.equal(tail[2], "--", "꼬리[-2] = 옵션 종료 구분자 --");
+  assert.equal(tail[3], argv.at(-1), "꼬리[-1] = initialPrompt (마지막 positional)");
+  assert.match(tail[3], /먼저 구현 계획만 제시/, "마지막 인자는 initialPrompt");
+
+  // deny 값 영역에는 mcp__* 하나만: --disallowedTools 다음이 mcp__*, 그 다음이 -- 여야 한다.
+  const di = argv.indexOf("--disallowedTools");
+  assert.equal(argv[di + 1], "mcp__*");
+  assert.equal(argv[di + 2], "--");
+  // "--"는 정확히 하나만 존재(중복 종료 구분자 없음).
+  assert.equal(argv.filter((a) => a === "--").length, 1, "-- 구분자는 정확히 1개");
+  // -p / stream-json / output-format 미사용 계약 유지.
+  assert.ok(!argv.includes("-p") && !argv.includes("stream-json") && !argv.includes("--output-format"));
+
+  rmSync(projectPaths(name).root, { recursive: true, force: true });
+});
+
+test("[M3b.2][P0-1] planning contextRoot 계약: --add-dir=contextRoot · prompt 절대경로 · serviceCwd에 docs 미생성", async () => {
+  const name = "_h_ctxroot";
+  await completedProject(name);
+  const svc = mkdtempSync(join(tmpdir(), "h-svc-")); // serviceCwd ≠ contextRoot 인 실 디렉터리
+  const sp = captureSpawn();
+  try {
+    const res = await runHandoff(baseOpts(name, { cwd: svc, spawnInteractive: sp.fn }));
+    assert.equal(res.action, "spawned");
+    if (res.action !== "spawned") return;
+    const { argv, cwd } = sp.calls[0];
+    const contextRoot = projectPaths(name).root;
+
+    // --add-dir = contextRoot (planning), cwd = serviceCwd (별개)
+    assert.equal(argv[argv.indexOf("--add-dir") + 1], contextRoot, "--add-dir=contextRoot");
+    assert.notEqual(contextRoot, cwd, "contextRoot ≠ serviceCwd");
+
+    // argv -- 꼬리 회귀 없음: -- 정확히 1개, 마지막=prompt
+    assert.equal(argv.filter((a) => a === "--").length, 1, "-- 정확히 1개");
+    assert.equal(argv.at(-2), "--");
+    const prompt = argv[argv.length - 1];
+    assert.ok(prompt.includes(contextRoot), "prompt에 절대 contextRoot");
+    assert.ok(prompt.includes(join(contextRoot, "docs", "00_IDEA.md")), "prompt에 planning 문서 절대경로 예시");
+    assert.ok(prompt.includes(join(contextRoot, "docs", "WORKLOG.md")), "prompt에 WORKLOG 대상 절대경로");
+    assert.match(prompt, /serviceCwd 아래에 별도의 docs/);
+
+    // runHandoff 산출물은 contextRoot/outputs 아래에만 — serviceCwd에 planning docs/WORKLOG를 만들지 않는다.
+    assert.ok(!existsSync(join(svc, "docs")), "serviceCwd 아래 docs 미생성");
+    assert.ok(!existsSync(join(svc, "docs", "WORKLOG.md")), "serviceCwd 아래 docs/WORKLOG.md 미생성");
+  } finally {
+    rmSync(svc, { recursive: true, force: true });
+    rmSync(projectPaths(name).root, { recursive: true, force: true });
+  }
 });
 
 test("[M3b.2] hook-settings exec form(command=node, args=[collector,kind]) + secret 평문 없음(settings·generated env)", async () => {
@@ -406,10 +485,17 @@ test("[M3b.2] prompt 128KB 경계 초과 → 절대경로 읽기 지시로 대�
   const res = await runHandoff(baseOpts(name, { maxPromptBytes: 10, spawnInteractive: sp.fn }));
   assert.equal(res.action, "spawned");
   if (res.action !== "spawned") return;
-  const prompt = sp.calls[0].argv[sp.calls[0].argv.length - 1];
+  const argv = sp.calls[0].argv;
+  const prompt = argv[argv.length - 1];
   assert.match(prompt, /절대경로 파일을 열어 전체를 읽어라/);
   assert.match(prompt, /claude_code_task_prompt\.md/);
   assert.match(prompt, /AGENTS\.md와 CLAUDE\.md/);
+  // [P0-1] 128KB fallback에도 경로 계약(절대 contextRoot)이 포함되고, contextRoot는 --add-dir로 접근 가능.
+  const contextRoot = projectPaths(name).root;
+  assert.match(prompt, /경로 계약/);
+  assert.ok(prompt.includes(contextRoot), "fallback prompt에 절대 contextRoot 포함");
+  assert.equal(argv[argv.indexOf("--add-dir") + 1], contextRoot, "fallback에도 --add-dir=contextRoot");
+  assert.equal(argv.at(-2), "--", "fallback도 -- 꼬리 유지");
   rmSync(projectPaths(name).root, { recursive: true, force: true });
 });
 
