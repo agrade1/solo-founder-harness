@@ -1,5 +1,30 @@
 # DECISIONS.md
 
+## 2026-07-21 (V3 M3c-0 — 실제 live discovery 1회 실행, discovery offline+live 완료)
+
+- **discovery는 offline+live 완료로 확정하되, 전체 M3c는 미완료로 둔다.** 실제 Claude Code 2.1.216에서 `shadcn@4.13.1` MCP를 strict 격리로 1회 discovery(exit 0/OK) → server `shadcn` connected + 도구 7개 실측. 격리·권한·redaction·cleanup·잔존 프로세스 검사 통과.
+- **발견된 도구명을 권한으로 해석하지 않는다.** `get_*`/`list_*`/`search_*`/`view_*`/`get_add_command_*` 같은 이름은 read/write 성격의 근거가 아니다. `tools/list`의 inputSchema·실제 동작(semantics)을 실측하기 전까지 browse/search/install/add 등으로 매핑하거나 permissionMode를 부여하지 않는다. (M3a "플래그=격리 금지" 원칙의 연장 — "이름=권한 금지".)
+- **버전 종속 실측(2.1.216)이며 도구 셋은 shadcn 버전에 종속된다.** shadcn@4.13.1·CLI 2.1.216 조합의 스냅샷이다. 버전 변경 시 재-discovery로 재확인한다.
+- **다음은 M3c-1 `tools/list` schema·semantics 검증 계획.** 도구별 inputSchema·read/write 성격을 확정한 뒤에야 권한 등급 매핑·registry profile 등록·handoff 연결로 진행한다. 이번 단계에서는 profile 등록·handoff 연결·MCP 도구 호출을 하지 않았다.
+
+## 2026-07-21 (V3 M3c-0 — offline hardening: 보안 경계는 핵심 API)
+
+- **보안 경계는 runner가 아니라 핵심 API(`runShadcnDiscovery`)에 둔다.** 표준 registry 검사·package 고정·빈 도구 거부를 API가 강제하고, runner의 사전 검사는 보조로만 둔다(Codex가 API 직접 호출로 custom registry·빈 도구·foreign pin package를 통과시킨 재현을 근거로 승격). registry 검사는 config/runtime/spawn보다 **먼저** 실행해 실패 시 부작용(spawn·산출물) 0.
+- **discovery package는 우회 불가로 고정한다.** `RunShadcnDiscoveryOpts.package`·`shadcnDiscoveryProfile(pkg)` 인자를 제거하고 항상 `shadcn@4.13.1`을 쓴다. 다른 exact-pin package도 주입할 수 없다(generic npx pin 검증은 adapter 계층에 유지).
+- **빈 discovery는 실패다.** system/init에 shadcn MCP 도구가 0개면 `no_tools`로 fail-closed(성공은 1~64개). "연결됐지만 도구 없음"을 성공 스냅샷으로 저장하지 않는다.
+- **오류·반환은 전 경로 scrub.** typed 오류를 그대로 rethrow하지 않고 code 보존 + message scrub으로 정규화한다(도구명/서버/stderr에 섞인 credential·sentinel 평문 노출 재현 차단). 성공 snapshot의 외부 문자열도 scrub하고 반환==저장(deepEqual)을 보장한다. `redactNames`는 scrub 전용이며 그 값을 discovery child env로 전달하지 않는다.
+- **파일/스트림은 TOCTOU·무한 증가에 대비한다.** components.json은 `O_NOFOLLOW` fd로 열어 같은 fd로 fstat/read(경로 재오픈 없음), 64KiB+1 초과 미판독. stdout 1MiB·stderr 64KiB 상한으로 무개행 stdout·거대 stderr에 의한 메모리 폭증을 막는다. 강제 env(MCP 격리 변수)는 testEnv가 덮어쓸 수 없다.
+- **snapshot 기록은 exclusive-create로 부분 성공을 남기지 않는다.** wx 충돌·기록 실패도 typed+redacted `persist` 오류로 반환하고 기존 파일/symlink를 덮어쓰지 않는다.
+- **여전히 M3c 완료가 아니다.** 실제 도구명·profile 등록·handoff 연결·result-size enforcement는 미확정. live discovery는 별도 승인 후 수동 실행.
+
+## 2026-07-20 (V3 M3c-0 — shadcn discovery scaffold, offline)
+
+- **M3c는 "도구명 발견 기반"부터 offline로만 착수한다.** 실제 shadcn MCP 도구명을 모르는 상태에서 profile을 먼저 등록하거나 browse/search/install/add를 expected 도구로 추측하지 않는다. discovery 산출물로 실측한 뒤에 profile·handoff를 붙인다. **M3c 완료로 문서화하지 않는다**(discovery scaffold offline 완료까지).
+- **discovery는 runPreflight와 타입·API로 분리한다.** runPreflight의 exact-profile 검증(정확 서버·도구 일치)을 완화하지 않는다. discovery는 도구명이 미지이므로 별도 `runShadcnDiscovery`로 "shadcn 단일 서버·shadcn prefix 도구만" 수집한다. 산출물은 `mcp-discovery.json`(mode:"discovery"·usableForHandoff:false, `ShadcnDiscoveryResult{discovery:true}`)로 `PreflightSuccess{ok:true}`와 섞이지 않게 하여 handoff/preflight 승인 근거로 오용될 수 없게 한다.
+- **표준 registry만 허용, 나머지는 fail-closed.** components.json이 custom/private/third-party registry(항목 있음·plain object 아님)를 선언하면 거부. malformed·symlink·비일반 파일·64KiB 초과도 거부. 오류에 파일 내용·credential을 담지 않고 .env·환경 secret을 읽지 않는다.
+- **shadcn 실행은 고정 pin(shadcn@4.13.1)만.** `@latest`/무버전/범위는 기존 npx pin 규칙(compileServer)으로 거부. discovery도 이 경로를 재사용한다.
+- **live discovery는 수동 opt-in 전용.** `HARNESS_LIVE_M3C_DISCOVERY=1` 없이는 거부(Claude/npx 미호출), npm test/CI 비대상. 실제 실행 시 package download·네트워크·구독 사용량이 발생하므로 자동화하지 않는다. 이번 세션에서 실행하지 않았다.
+
 ## 2026-07-20 (V3 M3b.2 — actual live acceptance 완료(PASS))
 
 - **M3b.2를 offline + actual live 완료로 확정한다.** 실제 Claude Code 2.1.215에서 live runner가 exit 0/PASS. 검증 항목: exact Hook 6종, empty MCP snapshot(servers=[]/tools=[])·config({}), planning contextRoot 접근(00_IDEA/06_CEO_DECISION Read 성공·serviceCwd docs 미생성), Read 성공/실패 callId correlation, Bash 승인(permission_requested callId=null + tool_requested/succeeded 동일 callId, sentinel 비출력), Write 수동 거부(requested+permission·marker 부재, denied 미합성), SessionEnd 1건, ambient MCP/Hook canary 미기동, trace redaction·권한·원문 미저장, run_state 불변, argv `-p`/stream-json 없음.

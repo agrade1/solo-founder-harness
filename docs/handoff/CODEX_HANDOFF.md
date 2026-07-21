@@ -128,7 +128,7 @@
 
 ### 최신 전체 테스트 결과 (이번 세션 실측)
 
-`npm test` → **exec 75 pass / core(=test:core: core+tools+providers+commands) 159 pass / acceptance 71 PASS**, 실패 0. (M3b.2 argv/planning/sentinel P0 회귀 반영, 2026-07-20)
+`npm test` → **exec 75 pass / core(=test:core: core+tools+providers+commands) 176 pass / acceptance 71 PASS**, 실패 0. (M3c-0 shadcn discovery scaffold + P0/P1 하드닝 반영, 2026-07-21)
 
 ### ProviderCapabilities 값 (검증, `src/providers/capabilities.ts`)
 
@@ -196,6 +196,9 @@
 - `browse`/`search`(read) 도구만 exposed. `install`/`add`/write 도구 미노출.
 - 실제 snapshot(도구명)·결과 크기 검증. (`미확인`: shadcn 실제 MCP 도구명은 M3 착수 시 확인 필요.)
 
+- **M3c-0 discovery offline+live 완료(2026-07-21). 전체 M3c는 미완료(profile 등록·handoff 미연결).** 실제 Claude Code **2.1.216**에서 `shadcn@4.13.1` MCP discovery **1회 실행 → exit 0/OK, server `shadcn` connected**, strict 격리(ambient canary 미기동)·권한(dir700/file600)·redaction·cleanup·잔존 프로세스 검사 통과. **발견된 실제 도구 7개(원문, 이름으로 권한 분류·browse/search/install/add 추측 매핑 금지)**: `mcp__shadcn__get_add_command_for_items`, `mcp__shadcn__get_audit_checklist`, `mcp__shadcn__get_item_examples_from_registries`, `mcp__shadcn__get_project_registries`, `mcp__shadcn__list_items_in_registries`, `mcp__shadcn__search_items_in_registries`, `mcp__shadcn__view_items_in_registries`. **다음: M3c-1 `tools/list` schema·semantics 검증 계획**(inputSchema·read/write 성격 실측 → 권한 매핑·profile 등록·handoff 연결). 이번 단계 profile 등록·handoff 연결·MCP 도구 호출 없음.
+- **M3c-0 discovery scaffold + offline hardening(2026-07-21).** P0/P1 하드닝: 표준 registry 검사를 `runShadcnDiscovery` 핵심 API가 config/spawn 이전에 강제(`registry_<code>`, 부작용 0), discovery package 우회 인자 제거(항상 `shadcn@4.13.1`), 빈 도구 `no_tools` 거부(1~64), 전 경로 typed 오류 code 보존+message scrub·성공 snapshot scrub(반환==저장)·`redactNames`(child 미전달), components.json `O_NOFOLLOW` fstat/read(TOCTOU), stdout 1MiB/stderr 64KiB 상한, 강제 env testEnv 우회 불가, snapshot persist wx 충돌 typed·부분성공 미반환, runner `claude --version`·config/권한/snapshot/canary/sentinel 검사. (이하 초기 scaffold 설명) `src/tools/shadcnPilot.ts`(+`.test.ts`)·`scripts/m3c-live-discovery.mjs` 신규. shadcn 파일럿 정책(`shadcn@4.13.1` pin, `npx --yes shadcn@4.13.1 mcp`, server=shadcn), 표준 registry 검사(`checkComponentsJson` — custom/private/malformed/symlink/oversized/non-regular fail-closed), **runPreflight와 분리된** `runShadcnDiscovery`(단일 shadcn strict config + headless `claude -p` system/init 도구명 수집, foreign/duplicate/empty/too-long/too-many/no-init/non-zero/timeout 거부, ≤64도구·≤256B·≤64KiB, raw init 미저장, 오류 redaction). 산출물 `mcp-discovery.json`(mode:"discovery"·usableForHandoff:false, `ShadcnDiscoveryResult{discovery:true}`)로 `PreflightSuccess`와 타입 분리 → preflight/handoff 승인 근거 불가. **registry/tool_profiles.json 미등록·handoff 미연결·실제 Claude/npx 미실행.** live discovery는 수동 `HARNESS_LIVE_M3C_DISCOVERY=1` runner(npm test/CI 비대상). **shadcn 실제 도구명(browse/search/install/add 등)은 여전히 `미확인` — 사람이 runner 실행 후 확정 → profile 등록·handoff 연결이 후속.**
+
 ---
 
 ## 6. M3에서 하지 않을 것
@@ -217,7 +220,7 @@
 - **strict MCP config의 claude 버전별 동작**: 플래그 무시(#10787)·`disabledMcpServers` 미차단(#14490) 이슈가
   보고된 바 있음(설계 문서 §2.4). "플래그 존재=격리"로 신뢰 금지 — snapshot 실측으로만 판정. 현재 버전 동작 `미확인`.
 - **Hook payload 민감 정보 redaction**: **적용됨(M3b.1)** — collector가 민감 key 재귀 마스킹 + secretRefs 실제 값 + credential 패턴을 ToolTrace JSONL에 적용. (실 Claude Hook 배선·이름 대응은 M3b.2 실측 대상.)
-- **shadcn 실제 도구명**: `미확인` — M3c 착수 시 확인.
+- **shadcn 실제 도구명**: 2026-07-21 discovery로 확인(Claude Code 2.1.216 · shadcn@4.13.1) — 7개: `get_add_command_for_items`/`get_audit_checklist`/`get_item_examples_from_registries`/`get_project_registries`/`list_items_in_registries`/`search_items_in_registries`/`view_items_in_registries`(모두 `mcp__shadcn__` prefix). read/write 권한 성격은 `미확정` — M3c-1 `tools/list` schema·semantics 실측 필요(이름=권한 금지). 도구 셋은 버전 종속.
 - **README 문서 불일치**: `README.md`에 v1/v2.6 범위 서술 잔재(예: "현재 진행 중인 개발 항목 없음",
   삭제된 `V3_KICKOFF.md` 참조). M0~M2에서 손대지 않음 — 후속 정리 항목.
 - **package 배포 파일 후속 검증**: 현재 npm pack에 dist/tools·registry/tool_profiles.json·schemas 포함 확인.
