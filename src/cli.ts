@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { runList } from "./commands/list.js";
 import { runInit } from "./commands/init.js";
@@ -8,12 +11,18 @@ import { runTaskPrompt } from "./commands/taskPrompt.js";
 import { runExec } from "./commands/exec.js";
 import { runMissionCommand } from "./commands/mission.js";
 
+// 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
+// import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
+const pkg = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+) as { version: string };
+
 const program = new Command();
 
 program
   .name("harness")
-  .description("Solo Founder AI Harness v1 (mock provider CLI)")
-  .version("0.1.0");
+  .description("Solo Founder AI Harness (문서 자동화 + 실행 계층 exec/mission)")
+  .version(pkg.version);
 
 program
   .command("list")

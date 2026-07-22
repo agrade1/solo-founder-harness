@@ -60,7 +60,7 @@ export function buildTaskPrompt(project, today) {
     ].filter((rel) => existsSync(join(paths.root, rel)));
     const lines = [];
     lines.push(`# Claude Code 작업 지시문 — ${project}`, "");
-    lines.push(`생성: ${today} (harness task-prompt, provider: mock)`, "");
+    lines.push(`생성: ${today} (harness task-prompt, provider: ${state?.provider ?? "미실행"})`, "");
     lines.push("## Context");
     lines.push(`- 프로젝트: ${project}`);
     if (state) {

@@ -1,5 +1,29 @@
 # WORKLOG.md
 
+## 2026-07-17 (V3 M1 — 진행 이벤트 모델 + tool 이벤트 골격 + JSONL trace 골격)
+
+F2(진행 가시성) + MCP M1(tool 이벤트 타입/trace 골격). 실 MCP/ToolProfile/stream-json/Hooks/Tavily/shadcn 미구현.
+- **RunEvent/ProgressReporter 이벤트 모델**(`src/core/progress.ts` 신규): run_start/step_start/step_end/gate_jump/run_end + tool_start/tool_end/tool_denied(타입 골격, 방출 없음) + note{level}. 기존 `start/note/stop` 인터페이스를 이벤트 모델로 교체.
+- **runWorkflow 배선**: 모든 top-level step(agent/critic/revise/spawn/gate/approval)에 step_start/step_end. index 1-based, total=top-level step 수. critique 내부는 kind(critic/revise)+round로 구분. 실제 jump일 때만 gate_jump. run_start에 resumeFrom. **run_start→…→run_end를 try/finally로 감싸 예외에도 step_end{ok:false}+run_end{failed}+렌더러 정리 보장.**
+- **step_timings 저장**(RunState 신규 필드): agent_id/kind/started_at/elapsed_ms/ok. resume 시 완료 step 타이밍 보존, 재실행 없음.
+- **렌더러 재작성**(`src/commands/progress.ts`): 이벤트 소비형. 현 CLI 출력 계약 보존(TTY 스피너/비-TTY 라인/✓ 라인 동일). gate/approval은 스피너 미가동(stdin 충돌 방지, F2.2).
+- **범용 JSONL writer 골격**(`src/tools/trace.ts` 신규): ToolTrace 스키마 미고정·runWorkflow 미배선(M3+). 임의 레코드 append/read만.
+- **테스트**: `src/core/progress.test.ts`(이벤트 순서·critique·gate jump·실패/resume·TTY/non-TTY 렌더러 계약) + `src/tools/trace.test.ts`(JSONL 왕복). `test:core` 스크립트 추가(HARNESS_WORKSPACE 격리).
+- 검증: exec 74 + core 8 + acceptance 63 = **전부 통과**. 기존 mock 출력 계약 회귀 없음.
+- **미구현(다음)**: M2 Capability/Profile 기반, M3 handoff+shadcn read+stream-json 배선(tool 이벤트 실 방출·trace 배선은 여기서).
+
+## 2026-07-17 (V3 M0 — 문서 동기화 + provider 하드코딩 수정)
+
+V3 착수 전 문서-코드 불일치 해소. 계획 승인 후 최소 수정.
+- **taskPrompt provider 버그 수정**: `taskPrompt.ts:70` 하드코딩 `provider: mock` → `state?.provider ?? "미실행"`. mock/claude-code/미실행 3케이스 실측 확인.
+- **CLI 버전 단일 원본화**: `cli.ts` `--version` `0.1.0` → `package.json` 런타임 읽기(`import.meta.url` 기준). dev·dist 동일, 드리프트 구조상 불가 → 별도 일치 테스트 불필요. 설명도 현 범위로 갱신. `--version`=2.6.0 확인.
+- **CLAUDE.md 교정**: v1 단정 문구 → 현행 범위(문서 자동화 + exec/mission, 승인·권한 게이트 내 실행). `읽지 말 것`에 활성 V3 2문서 예외 추가. V3_KICKOFF_SUPERSEDED 참조 경로 정정.
+- **파일 이동**: `docs/backlog/V3_KICKOFF_SUPERSEDED.md` → `docs/archive/`(과거 기록, 구현 근거 아님).
+- **V3 HANDOFF 문서 각주**: v2.4 전제 → v2.6 구조 동일 각주 추가.
+- 검증: `npm test` → acceptance 63/63 + exec 74/74 전부 통과. 테스트 완화·삭제 없음.
+- **남은 불일치(후속)**: ① README v1/v2.6 범위 서술 낡음 ② V3 두 문서가 이미 구현된 exec/mission 실행 계층 미참조 ③ package.json.files는 M2에서 registry/schemas 추가 시 갱신.
+- M1(V3 F2 + tool 이벤트 골격) 착수 가능. 별도 승인 대기.
+
 ## 2026-07-09 (디자인 레이어 킥오프 — P1~P5)
 
 Phase 0 탐색 보고 → 승인(4개 결정: 별도 design 에이전트 / DESIGN.md에 tokens 펀치+추출 / node·tsx 린트 / {approval}+design_gate) 후 Phase별 커밋.

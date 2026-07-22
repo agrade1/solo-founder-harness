@@ -25,7 +25,8 @@
     "harness": "tsx src/cli.ts",
     "acceptance": "bash scripts/acceptance.sh",
     "test:exec": "tsx --test src/exec/*.test.ts",
-    "test": "npm run test:exec && bash scripts/acceptance.sh",
+    "test:core": "HARNESS_WORKSPACE=.tmp-test-workspace tsx --test src/core/*.test.ts src/tools/*.test.ts",
+    "test": "npm run test:exec && npm run test:core && bash scripts/acceptance.sh",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
