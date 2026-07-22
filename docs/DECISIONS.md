@@ -1,5 +1,22 @@
 # DECISIONS.md
 
+## 2026-07-19 (V3 M2.1 — P0 보완)
+
+- **secret 값은 provider context로 전달하지 않는다.** execContext에는 이름(redactNames)만 담고, 값은 claude-code provider가 내부에서 `collectSecretValues(process.env)`로 조회 → redaction 표면 축소.
+- **MCP profile은 loader/compile이 아니라 run 경로에서 fail-closed.** per-tool 강제(M3 snapshot) 없이 실행하면 exposedTools가 거짓 강제가 되므로 run_start 이전 거부. 단 loader/compile은 성공시켜 M3가 동일 profile을 로드·검증할 수 있게 한다.
+- **claude 실행 파일/타임아웃을 호출 시점에 읽는다.** 모듈 로드 시 고정 → 스텁 주입 불가였음. 동작 중립적 변경으로 실제 spawn argv 테스트 가능.
+- **`toolProfilesPath` seam 추가.** registry에 MCP profile을 넣지 않고도 run-level 거부를 테스트하기 위한 최소 override(테스트/M3 겸용).
+
+## 2026-07-17 (V3 M2 — Capability/ToolProfile 정책 계층)
+
+- **`exposedTools`는 입력이 아니라 compile이 bindings에서 파생.** 노출 도구를 손으로 나열하지 않고 builtin/mcp binding에서 계산 → binding tools ⊆ exposed가 구조적으로 보장. preapproved/denied만 명시 입력.
+- **`repo_write_direct` 폐기, 쓰기 권한을 세분화.** reserved(local_workspace_write, pull_request_create) vs deny(remote_repository_write, pull_request_merge, ...). "로컬 쓰기/PR 생성"과 "원격 쓰기/머지"의 위험도가 달라 계층을 분리.
+- **fail-fast는 capability 이름이 아니라 compiled policy의 binding 실행 주체로 검증.** builtin→provider, mcp→provider MCP, internal_adapter→Adapter Registry, cli→실행 환경. `assertProviderSupports(ids)` 폐기 — 이름만 보면 "어떻게 실행되는가"를 놓친다.
+- **JSON Schema는 런타임 미실행.** 신규 의존성(ajv 등) 추가 없이 수동 structural+semantic validator 사용. `schemas/*.json`은 계약 문서 + 향후 정식 validator용.
+- **`--bare`는 argv 생성·검증까지만(M2).** planning 격리 = `--strict-mcp-config` + 내장도구 제한(`--tools`). snapshot 기반 회귀 판정·strict empty fallback 자동 강등은 실제 claude 실행이 필요하므로 M3.
+- **회귀는 byte 동일 대신 golden snapshot.** 가변 메타데이터(project/타임스탬프/elapsed_ms) 제거 후 정규화 비교 + 시맨틱 assertion.
+- **registry에는 실행 가능한 profile만.** planning-none/planning-local-readonly만 등록. Tavily/shadcn 등은 실행기(어댑터/MCP 배선)가 붙는 M3·M4까지 미등록 — 등록 즉시 fail-fast로 걸릴 profile을 배포하지 않음.
+
 ## 2026-07-17 (V3 M1 — 진행 이벤트 모델)
 
 - **기존 `ProgressReporter`(start/note/stop)를 이벤트 모델(emit(RunEvent))로 교체.** 병존 대신 교체 — 두 진행 시스템은 부채. 렌더러가 이벤트 소비자가 되고 CLI 출력 계약은 보존.

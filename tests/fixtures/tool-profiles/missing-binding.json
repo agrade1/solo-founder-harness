@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "id": "bad-missing-binding",
+      "capabilities": ["repo_read"],
+      "bindings": {},
+      "servers": [],
+      "preapprovedTools": [],
+      "deniedTools": [],
+      "permissionMode": "read_only",
+      "allowedDomains": null,
+      "limits": { "maxCallsPerStep": 1, "maxResultChars": 1000, "maxElapsedMsPerCall": 1000 },
+      "secretRefs": []
+    }
+  ]
+}

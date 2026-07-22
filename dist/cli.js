@@ -42,10 +42,12 @@ program
     .option("--resume", "이전 실패 지점부터 재개 (outputs/run_state.json status=failed일 때)", false)
     .option("--max-tokens <n>", "누적 토큰(input+output) 상한. 초과 시 step 경계에서 중단(--resume 재개 가능). 미지정 시 HARNESS_MAX_TOKENS, 기본 무제한")
     .option("--yes", "승인 게이트를 비대화로 전부 승인 (CI/스크립트)", false)
+    .option("--tool-profile <id>", "[v3-M2] 활성 도구 profile (registry/tool_profiles.json). 지정 시 run 시작 전 fail-fast 검증")
+    .option("--bare", "[v3-M2] planning 격리(--strict-mcp-config + 내장도구 제한) 정책으로 컴파일", false)
     .description("workflow를 순서대로 실행하고 결과를 저장한다")
     .action(async (workflowName, opts) => {
     const maxTokens = Number(opts.maxTokens ?? process.env.HARNESS_MAX_TOKENS ?? 0) || 0;
-    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes);
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes, opts.toolProfile, opts.bare);
 });
 program
     .command("summary")

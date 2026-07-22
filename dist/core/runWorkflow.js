@@ -6,6 +6,8 @@ import { projectPaths, projectExists } from "./project.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import { validateAgentOutput, extractTokensJson, extractMainJudgment, extractCriticalRisks, extractDecision, extractSpawnDeclarations, } from "./validate.js";
+import { loadToolProfiles, compileToolProfile, assertPolicyExecutable, hasMcpBinding } from "../tools/profiles.js";
+import { getProviderCapabilities } from "../providers/capabilities.js";
 const RUN_STATE_REL = "outputs/run_state.json";
 /** ms를 사람이 읽는 경과시간으로. 60초 미만은 "12s", 이상은 "1:23". */
 function fmtElapsed(ms) {
@@ -63,6 +65,26 @@ export async function runWorkflow(args) {
     const workflow = findWorkflow(loadWorkflows(), workflowId);
     if (!workflow) {
         throw new Error(`알 수 없는 workflow: ${workflowId} ('harness list'로 확인)`);
+    }
+    // [M2/M2.1] 도구 profile: 지정 시 첫 모델 호출 전(run 시작 전)에 검증하고, compile된 정책을
+    // execContext로 보존해 provider 실행에 전달한다. 미충족/불가면 throw → run_start·run_state 미생성.
+    // 미지정이면 execContext=undefined → 기존 실행 경로·argv 완전 불변.
+    let execContext;
+    if (args.toolProfileId) {
+        const profiles = loadToolProfiles(args.toolProfilesPath);
+        const profile = profiles.get(args.toolProfileId);
+        if (!profile) {
+            throw new Error(`알 수 없는 tool profile: ${args.toolProfileId} (registry/tool_profiles.json 확인)`);
+        }
+        // [M2.1] MCP profile fail-closed: MCP per-tool 노출 강제는 M3 preflight/snapshot enforcement가
+        // 필요하다. 현재 실행 경로는 그 강제가 없으므로 run_start 이전에 거부한다.
+        // (loader/compileToolProfile은 거부하지 않는다 — M3가 동일 profile을 로드할 수 있어야 함.)
+        if (hasMcpBinding(profile)) {
+            throw new Error(`tool profile '${args.toolProfileId}'는 MCP binding을 포함한다 — M3 preflight/snapshot enforcement 이후 사용 가능 (현재 실행 경로에서 거부).`);
+        }
+        const policy = compileToolProfile(profile, { bare: args.bare });
+        assertPolicyExecutable(policy, { provider: getProviderCapabilities(provider.id) });
+        execContext = { claudeArgs: policy.claudeArgs, redactNames: policy.redactNames };
     }
     const completed_steps = [];
     const warnings = [];
@@ -179,6 +201,7 @@ export async function runWorkflow(args) {
                     revisionRequest: opts.revisionRequest,
                     spawnRequest: opts.spawnRequest,
                     agentPromptText: opts.agentPromptText,
+                    execContext,
                 });
                 markdown = res.markdown;
                 if (res.usage) {

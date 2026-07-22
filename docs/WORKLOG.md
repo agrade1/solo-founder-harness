@@ -1,5 +1,32 @@
 # WORKLOG.md
 
+## 2026-07-19 (V3 M2.1 — P0 보완: 정책 전달 배선 + secret redaction + MCP fail-closed)
+
+M3 이전 선행 보완 3건. M3a/b/c·MCP config 생성·stream-json·Hook·shadcn 미구현.
+- **정책 실제 전달**: `ProviderExecContext{claudeArgs, redactNames}`(`provider.ts`). runWorkflow가 compile된 policy를 보존 → runAgent → `provider.generate(input.execContext)`. claudeCodeProvider가 `execContext.claudeArgs`를 실제 spawn argv에 병합. mock/anthropic 무시, 미지정 시 argv·경로 완전 불변(회귀 테스트).
+- **MCP fail-closed**: `hasMcpBinding(profile)`(`profiles.ts`). runWorkflow가 MCP binding profile을 run_start·run_state 이전에 거부(M3 preflight/snapshot 이후 사용). loader/compile은 거부 안 함(M3가 로드 가능). 테스트용 `toolProfilesPath` seam 추가.
+- **secret redaction**: invalid secretRef 오류가 값 대신 index만 출력(`redact.ts`). secret 값은 execContext로 전달 안 함 — 이름(redactNames)만 넘기고 claudeCodeProvider가 내부에서 `collectSecretValues` 조회. spawn/non-zero 오류의 stderr/stdout을 `redactSecrets` 통과(이름 없어도 Authorization/token/password 패턴 적용). `HARNESS_CLAUDE_BIN`/timeout 호출 시점 읽기로 전환(스텁 테스트 가능).
+- **JSONL writer**: `createJsonlWriter(path, {redact, redactValues})` — record의 모든 문자열 재귀 sanitize 후 stringify, 원본 record 불변. 기존 호출 호환(기본 raw). M3 ToolTrace 스키마·Hook 미배선.
+- **테스트**(+11): 실제 spawn argv 포함/미지정 회귀(스텁), 오류 redaction, invalid secretRef sentinel 부재, JSONL 중첩·배열 redaction+원본 불변, MCP run-level 거부(loader/compile 성공), golden snapshot 유지.
+- 검증: exec 74 + core 52 + acceptance 63 전부 통과.
+
+## 2026-07-17 (V3 M2 — Capability/ToolProfile 정책 계층)
+
+types+loader+compile+fail-fast+redaction+`--bare` argv. 실 MCP/shadcn/Tavily/stream-json/Hooks/Research Adapter 미구현.
+- **Capability 3계층**(`src/tools/capabilities.ts`): active(7)/reserved/deny. `repo_write_direct` 제거 → reserved(`local_workspace_write`,`pull_request_create`) / deny(`remote_repository_write`,`pull_request_merge`,`production_deploy`,`billing_live`,`design_write`) 분리.
+- **ToolBinding 4종**: builtin{tools[]}/internal_adapter{adapter,operations[]}/mcp{server,tools[]}/cli{command,operations?}. profile만 보고 실행 주체 판별.
+- **ToolProfile + loader**(`src/tools/profiles.ts`): `bindings` 필드 추가. `exposedTools`는 입력이 아니라 compile이 bindings에서 파생(builtin ∪ mcp__server__tool). 수동 구조+시맨틱 validator(신규 런타임 의존성 0). deny/reserved/unknown capability·binding 누락·orphan·preapproved⊄exposed·exposed∩denied·secretRef 값형태 → 로드 거부.
+- **compileToolProfile**: profile→CLI 플래그(exposed내장=`--tools`, preapproved=`--allowedTools`, denied=`--disallowedTools`, permissionMode=`--permission-mode`, bare=`--strict-mcp-config`)/생성 mcp-config/내부 어댑터·Hook 정책/redact 목록 4버킷. 인자 조건부 deny=PreToolUse Hook(산출만).
+- **Binding 기반 fail-fast**(`assertPolicyExecutable`): builtin→provider 내장도구, mcp→provider MCP, internal_adapter→Adapter Registry(`src/tools/adapters.ts`, M2 빈 목록), cli→실행 환경. `runWorkflow` 최상단(run_start·run_state 이전)에서 `--tool-profile` 지정 시 검증. `assertProviderSupports` 폐기.
+- **ProviderCapabilities**(`src/providers/capabilities.ts`): mock/claude-code/anthropic 능력 테이블.
+- **secret**: `src/tools/redact.ts` — secretRef 이름 형식 검증 + Authorization/key= 패턴 redaction.
+- **Planning `--bare`**: `claudeCodeProvider.buildClaudeArgs` 추출(정책 args 병합, 기본 동작 보존). 일반 문서=`--tools ""`, 로컬읽기=`--tools "Read,Glob,Grep"`+`--permission-mode plan`, strict empty fallback=`--mcp-config <path>`. argv 생성·검증까지(snapshot fallback 판정은 M3).
+- **registry**: `registry/tool_profiles.json`에 `planning-none`, `planning-local-readonly`만. Tavily/shadcn은 실행기 붙는 M3·M4까지 미등록. `schemas/tool_profile.schema.json`(계약 문서, 런타임 미실행). `package.json.files`에 `schemas` 추가.
+- **테스트**: `tests/fixtures/tool-profiles/`(배포 제외) + `src/tools/{capabilities,redact,profiles}.test.ts`, `src/providers/claudeCodeBare.test.ts`, `src/core/toolProfile.test.ts`(run fail-fast + **golden snapshot 회귀**: 가변 메타 제거 후 비교).
+- **M1 영향 없음**: RunEvent/step_timings/trace 골격·RunState 무변경. profile 미지정 시 전 경로 no-op → mock 출력 불변(golden 확인).
+- 검증: exec 74 + core 37 + acceptance 63 전부 통과.
+- **다음 M3**: handoff + shadcn read + stream-json 파싱(tool 이벤트 실 방출·trace 배선) + mcp-config write·claude 전달 + `system/init` snapshot 격리 실측.
+
 ## 2026-07-17 (V3 M1 — 진행 이벤트 모델 + tool 이벤트 골격 + JSONL trace 골격)
 
 F2(진행 가시성) + MCP M1(tool 이벤트 타입/trace 골격). 실 MCP/ToolProfile/stream-json/Hooks/Tavily/shadcn 미구현.

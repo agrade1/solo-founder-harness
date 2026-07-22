@@ -14,7 +14,7 @@ function stdinApprover(message) {
     });
 }
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
-export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false) {
+export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false) {
     const provider = getProvider(providerId);
     const approve = yes ? async () => true : stdinApprover;
     if (resume) {
@@ -44,6 +44,8 @@ export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDE
         maxTokens,
         approve,
         reporter: createProgressReporter(),
+        toolProfileId,
+        bare,
     });
     console.log("");
     console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
