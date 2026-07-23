@@ -14,3 +14,6 @@ projects/dogfood-*/
 
 # 테스트용 임시 워크스페이스 (test:core)
 .tmp-test-workspace/
+
+# [M3a] 실행별 preflight 산출물 (mcp-config.json, tools-snapshot.json) — 커밋 금지
+projects/*/outputs/runtime/

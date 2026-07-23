@@ -28,7 +28,7 @@ class ParallelCoder implements ExecutionProvider {
     const queue = new AsyncEventQueue<SessionEvent>();
     this.q.set(spec.sessionId, queue);
     const raw = { type: "pc", session_id: spec.sessionId };
-    queue.push({ kind: "init", sessionId: spec.sessionId, model: spec.model ?? "?", cwd: spec.cwd, permissionMode: "acceptEdits", tools: [], raw });
+    queue.push({ kind: "init", sessionId: spec.sessionId, model: spec.model ?? "?", cwd: spec.cwd, permissionMode: "acceptEdits", tools: [], mcpServers: [], raw });
     queue.push({ kind: "assistant", sessionId: spec.sessionId, text: "done", toolUses: [], stopReason: "end_turn", raw });
     queue.push({ kind: "result", sessionId: spec.sessionId, isError: false, text: "ok", numTurns: 1, usage: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw });
     queue.close();
@@ -45,7 +45,7 @@ function cleanReviewer(): MockExecProvider {
   const script: EventScript = (spec): SessionEvent[] => {
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
-      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], raw },
+      { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: "## Risks\n### Critical\n- 없음", numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };

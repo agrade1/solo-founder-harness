@@ -26,6 +26,25 @@ test("init 이벤트: session_id·model·cwd 추출", () => {
     assert.match(init.sessionId, /^[0-9a-f-]{36}$/);
     assert.ok(init.model.startsWith("claude-opus"));
     assert.ok(init.tools.length > 0);
+    assert.ok(Array.isArray(init.mcpServers)); // 기존 probe fixture는 mcp_servers:[]
+    assert.deepEqual(init.mcpServers, []);
+  }
+});
+
+test("[M3a] init.mcpServers 정규화: connected만 true, pending/failed/needs-auth는 false", () => {
+  const nd =
+    '{"type":"system","subtype":"init","session_id":"s","mcp_servers":' +
+    '[{"name":"a","status":"connected"},{"name":"b","status":"pending"},' +
+    '{"name":"c","status":"failed"},{"name":"d","status":"needs-auth"}]}';
+  const e = parseLine(nd);
+  assert.equal(e?.kind, "init");
+  if (e?.kind === "init") {
+    assert.deepEqual(e.mcpServers, [
+      { name: "a", status: "connected", connected: true },
+      { name: "b", status: "pending", connected: false },
+      { name: "c", status: "failed", connected: false },
+      { name: "d", status: "needs-auth", connected: false },
+    ]);
   }
 });
 

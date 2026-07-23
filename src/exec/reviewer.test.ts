@@ -12,7 +12,7 @@ function reviewerWith(markdown: string): MockExecProvider {
   const script: EventScript = (spec): SessionEvent[] => {
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
-      { kind: "init", sessionId: spec.sessionId, model: spec.model ?? "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], raw },
+      { kind: "init", sessionId: spec.sessionId, model: spec.model ?? "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: markdown, numTurns: 1, usage: { inputTokens: 5, outputTokens: 3, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };

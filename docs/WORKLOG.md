@@ -1,5 +1,40 @@
 # WORKLOG.md
 
+## 2026-07-19 (V3 M3a — live acceptance 실측 PASS)
+
+수동 live runner(`scripts/m3a-live-preflight.mjs`, `HARNESS_LIVE_M3A=1` 필수)로 실제 Claude 1회 실측.
+- **환경**: Claude Code **2.1.215**. headless preflight(`claude -p --output-format stream-json --strict-mcp-config ...`), interactive 미실행.
+- **결과 (PASS, exit 0)**:
+  - `system/init` expected server `connected`.
+  - 도구 `mcp__expected__read_thing` **정확 일치**(누락·추가·중복 없음).
+  - 임시 service cwd의 ambient `.mcp.json` canary 서버/도구 **미기동**(strict-mcp-config 격리 확인, canary pid-file 부재).
+  - sentinel(전용 env + cwd 경로)·config·반환/저장 snapshot **redaction 통과**(cwd `svc-***`, 평문 노출 0).
+  - expected fixture 5초 내 종료, fixture·임시 디렉터리 **잔존 없음**.
+- **범위**: 이 결과는 **Claude Code 2.1.215 실측**이며, CLI 버전 변경 시 재검증 필요(플래그·`system/init` 스키마·strict 격리 동작이 버전 의존).
+- runner/fixture는 수동 live acceptance 전용(CI·자동 파이프라인 비대상). flaky 완화로 offline preflight 테스트 기본 timeout 1500→5000ms(hard-timeout 전용 700ms 유지).
+- 다음: **M3b 계획 검토**.
+
+## 2026-07-19 (V3 M3a — live 전 보안 보완)
+
+실제 claude 미실행. M3a offline 위에 보안 5건 강화.
+- **npx 고정 버전 검증**: npx 실행 package는 정확한 `pkg@X.Y.Z`(scoped 포함)만 허용. `package`/`@next`/`@^`/`@~`/`@*`/`@1`/`@1.2` → `unpinned_npx`, `@latest` → `latest_forbidden`(유지). 절대경로 npx 동일 적용. 일반 node/local executable엔 pin 규칙 미적용.
+- **config 검증 강화**: 중복 파생 `mcp__server__tool` 거부(dedupe 금지, `duplicate_tool`), transport는 stdio/http만(`bad_transport`), 혼합(stdio+url / http+command) 거부(`mixed_transport`), secretRefs 실제 값이 command/args/url에 있으면 기록 전 거부(`secret_in_config`, 값 미노출), credential 형태 URL query/arg 거부(`credential_in_config`).
+- **preflight env 격리**: `process.env` 전체 전달 폐지 → allowlist(PATH/HOME/USER/SHELL/TMPDIR/LANG 등) + `profile.secretRefs` 선언분만 + `MCP_CONNECTION_NONBLOCKING=0`·`ENABLE_TOOL_SEARCH=false` 강제. 스텁 통신은 production allowlist와 분리된 명시적 `testEnv` seam으로만. 미선언 token/key/secret/password 형태 변수 미전달 테스트 추가.
+- **snapshot redaction 정합**: 반환 `PreflightSuccess.snapshot`도 redacted(저장 파일과 동일). 실패 시 tools-snapshot.json 미생성 테스트 추가.
+- **타입 정합성**: init을 직접 만드는 exec 테스트 fixture 9곳에 `mcpServers: []` 추가.
+- 검증: exec 75 + core 94(+20) + acceptance 63 전부 통과.
+
+## 2026-07-19 (V3 M3a — Headless MCP preflight, offline)
+
+실제 claude 미실행, stub 기반 offline acceptance까지. M3b(Hook/TUI)·M3c(shadcn) 미구현.
+- **system/init 파서 확장**: `types.ts`에 `McpServerStatus{name,status,connected}` + init 이벤트에 `mcpServers` 추가. `streamParser.ts`가 `mcp_servers` 정규화(connected는 status==="connected"만; pending/failed/needs-auth는 false). 기존 exec/mockExecProvider init에 `mcpServers:[]` 보강. raw는 SessionEvent에만, snapshot 미저장.
+- **MCP config 생성**(`src/providers/claudeCodeMcpAdapter.ts` 신규): profile MCP binding·servers 검증 → `buildMcpConfig`/`writeMcpConfig`. binding server가 servers에 없음/중복 거부, stdio=command 필수·http=HTTPS url 필수, `@latest` 거부, 참조된 서버만 포함, 각 서버 `alwaysLoad:true`, secret 값 미기록, runtime에 mcp-config.json + SHA-256. `.gitignore`에 `projects/*/outputs/runtime/`.
+- **Headless preflight**(`src/tools/preflight.ts` 신규): `HARNESS_CLAUDE_BIN` 호출시점 읽기. argv `-p/--output-format stream-json/--verbose/--no-session-persistence/--strict-mcp-config/--mcp-config/--tools ""/--permission-mode plan`, cwd=서비스경로, env `MCP_CONNECTION_NONBLOCKING=0`·`ENABLE_TOOL_SEARCH=false`, hard timeout, TUI 미실행. init 수집 후 의도적 종료(실패 오판 안 함).
+- **Snapshot 검증**(fail-closed): expected 서버명 정확 비교 + 전부 connected, binding 파생 mcp 도구명 정확 비교. 누락·추가(canary)·중복 → typed `PreflightError`. 성공 시 tools-snapshot.json에 `profileId/cwd/timestamp/configHash/servers(status)/정렬 tools`만 저장, 오류·snapshot redaction. 실패 시 성공 result 미반환.
+- **테스트**(+23): streamParser mcpServers 정규화, adapter 검증 9, preflight offline 13(exact 성공·canary server/tool·missing/duplicate tool·pending/failed/needs-auth·no-init/malformed/non-zero/timeout·argv strict/config/tools-empty/plan·@latest·snapshot secret redaction). 기존 stream parser 테스트 회귀 없음.
+- 검증: exec 75 + core 74 + acceptance 63 전부 통과. M2.1 MCP fail-closed 유지(preflight는 별도 경로).
+- **live 전 남음**: 실제 claude 구독 호출로 argv·`system/init`·strict 격리·canary 실측, alwaysLoad/env 강제의 실제 동작 확인.
+
 ## 2026-07-19 (V3 M2.1 — P0 보완: 정책 전달 배선 + secret redaction + MCP fail-closed)
 
 M3 이전 선행 보완 3건. M3a/b/c·MCP config 생성·stream-json·Hook·shadcn 미구현.

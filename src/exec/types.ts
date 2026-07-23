@@ -29,11 +29,21 @@ export interface ToolUse {
 }
 
 /**
+ * system/init의 mcp_servers 항목을 정규화한 상태 (M3a preflight).
+ * connected는 status가 정확히 "connected"일 때만 true — pending/failed/needs-auth는 미연결로 본다.
+ */
+export interface McpServerStatus {
+  name: string;
+  status: string;
+  connected: boolean;
+}
+
+/**
  * 정규화된 세션 이벤트. RECON §3 이벤트 타입을 오케스트레이터 관심사로 매핑.
  * 모든 변형은 원본 접근용 `raw`를 들고 있다.
  */
 export type SessionEvent =
-  | { kind: "init"; sessionId: string; model: string; cwd: string; permissionMode: string; tools: string[]; raw: RawEvent }
+  | { kind: "init"; sessionId: string; model: string; cwd: string; permissionMode: string; tools: string[]; mcpServers: McpServerStatus[]; raw: RawEvent }
   | { kind: "assistant"; sessionId: string; text: string; toolUses: ToolUse[]; stopReason: string | null; raw: RawEvent }
   | { kind: "delta"; sessionId: string; event: unknown; raw: RawEvent } // stream_event (Anthropic SSE 델타)
   | { kind: "status"; sessionId: string; status: string; raw: RawEvent }

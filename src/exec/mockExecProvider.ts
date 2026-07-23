@@ -14,7 +14,7 @@ const defaultScript: EventScript = (spec, prompt) => {
   const sid = spec.sessionId;
   const raw = { type: "mock", session_id: sid } as const;
   return [
-    { kind: "init", sessionId: sid, model: spec.model ?? "mock", cwd: spec.cwd, permissionMode: spec.permissionMode ?? "acceptEdits", tools: [], raw: { ...raw } },
+    { kind: "init", sessionId: sid, model: spec.model ?? "mock", cwd: spec.cwd, permissionMode: spec.permissionMode ?? "acceptEdits", tools: [], mcpServers: [], raw: { ...raw } },
     { kind: "assistant", sessionId: sid, text: `mock 응답: ${prompt.slice(0, 40)}`, toolUses: [], stopReason: "end_turn", raw: { ...raw } },
     {
       kind: "result",
