@@ -1,5 +1,68 @@
 # WORKLOG.md
 
+## 2026-07-21 (V3 M3c-0 — 실제 live discovery 1회 실행, discovery offline+live 완료)
+
+**M3c-0 discovery offline+live 완료.** 사용자 승인 하에 `HARNESS_LIVE_M3C_DISCOVERY=1 node scripts/m3c-live-discovery.mjs`를 **정확히 1회** 실행. 코드·문서·git 상태는 실행으로 바뀌지 않았다(runner는 임시 경로만 사용·자체 정리).
+- **환경/결과**: Claude Code **2.1.216**, package `shadcn@4.13.1`(`npx --yes shadcn@4.13.1 mcp`). runner **exit 0 / discovery OK**. server `shadcn` **connected**.
+- **strict 격리·ambient canary**: ambient `.mcp.json` canary 서버는 strict(shadcn 단일) config로 배제 — canary 미기동(pid-file 부재), init 도구 전부 `mcp__shadcn__*` prefix, 서버 목록에 canary 없음. 실행 후 독립 `/bin/ps`에서도 canary·shadcn MCP 프로세스 잔존 없음.
+- **검사 통과(exit 0 근거)**: generated mcp-config = 서버 1개(shadcn)·`npx --yes shadcn@4.13.1 mcp`, dir 0700·config/snapshot 0600, snapshot `mode="discovery"`·`usableForHandoff=false`·tools non-empty·raw init 필드 부재, config/snapshot/result에 sentinel 평문 부재, 잔존 프로세스 없음(5초 polling), 임시 디렉터리 cleanup 완료.
+- **system/init에서 발견된 실제 MCP 도구 7개(원문 그대로, 권한 분류·browse/search/install/add 추측 매핑 금지)**:
+  - `mcp__shadcn__get_add_command_for_items`
+  - `mcp__shadcn__get_audit_checklist`
+  - `mcp__shadcn__get_item_examples_from_registries`
+  - `mcp__shadcn__get_project_registries`
+  - `mcp__shadcn__list_items_in_registries`
+  - `mcp__shadcn__search_items_in_registries`
+  - `mcp__shadcn__view_items_in_registries`
+- **미착수(규칙)**: profile 등록·handoff 연결·MCP 도구 호출·권한 등급 분류 없음. **전체 M3c는 미완료.**
+- **다음 단계: M3c-1 — `tools/list` schema·semantics 검증 계획**(각 도구의 inputSchema·read/write 성격을 실측·문서로 확정한 뒤에야 권한 매핑·profile 등록으로 진행). 이름만으로 권한을 추정하지 않는다.
+
+## 2026-07-21 (V3 M3c-0 — live runner 런타임 결함 2건 수정, 실제 live discovery 승인 대기)
+
+`scripts/m3c-live-discovery.mjs`만 수정(src/dist 불변). 실제 Claude/npx/network 미실행 — 임시 stub으로만 실측.
+- **`sleep` 미정의(ReferenceError) 수정**: 잔존 프로세스 polling의 `await sleep(500)`가 정의 없이 호출되던 것을 inline `const sleep = (ms) => new Promise((r) => setTimeout(r, ms))`로 정의. 잔존 검출 경로에서 ReferenceError 없이 5초 polling 후 FAIL 확인.
+- **`LC_*` wildcard 제거**: versionEnv가 모든 `LC_*`를 전달해 `LC_SECRET_TOKEN`/`LC_API_KEY`도 새던 것을 제거. 표준 POSIX LC 카테고리(LC_ALL/LC_CTYPE/LC_MESSAGES/LC_NUMERIC/LC_TIME/LC_COLLATE/LC_MONETARY)만 명시 allowlist.
+- **`/bin/ps` 실패 fail-closed**: `matchingShadcnPids`가 실패 시 빈 Map으로 성공 처리하던 것을 `{ok:false,error}`로 변경. baseline ps 실패=discovery 전 exit 2, polling 중 ps 실패=problems 기록·FAIL. 오류는 redact.
+- offline 강제 실패-path 실측: 잔존 `shadcn@4.13.1 … mcp` 프로세스 생성 stub → polling 진입·ReferenceError 없음·**exit 1**, 테스트 PID는 ownership 확인 후 정리. LC_SECRET_TOKEN/LC_API_KEY 주입해도 version env dump 부재. 정상 stub exit 0·opt-in 없음 exit 2 유지.
+- 검증: node --check·build·npm test(exec 75/core 176/acceptance 71)·tsc noEmit·git diff --check 클린.
+
+## 2026-07-21 (V3 M3c-0 — live runner 최종 보안 보완 완료, 실제 live discovery 승인 대기)
+
+`scripts/m3c-live-discovery.mjs`만 보완(src/dist 불변). 실제 Claude/npx/network 미실행 — 임시 stub으로만 실측.
+- `claude --version`을 **allowlist env(PATH/HOME/USER/SHELL/TMPDIR/TMP/TEMP/LANG/LC_*)만** 전달·timeout 10s·maxBuffer 64KiB로 실행(초과/오류 fail-closed). sentinel·ambient TOKEN/KEY/SECRET/PASSWORD/AUTH 미전달. claudeBin 출력도 redact.
+- discovery 오류는 **rawMessage로 sentinel 노출 여부 먼저 검사** 후 사용자 출력에만 redact(이전 always-false 버그 정정).
+- discovery 전/후 `/bin/ps`로 `shadcn@4.13.1 … mcp` PID 집합 비교(최대 5초 polling) — 이전에 없던 잔존 PID는 **자동 kill 없이** PID/command redact 보고·FAIL. canary PID ownership cleanup 유지.
+- offline stub 실측: runner exit 0, version env = allowlist만(sentinel/ambient secret 부재 확인). opt-in 없음 exit 2 유지.
+- 검증: node --check·build·npm test(exec 75/core 176/acceptance 71 유지)·tsc noEmit·git diff --check 클린.
+- **실제 live discovery는 승인 대기.** 실제 도구명·profile·handoff·result-size enforcement 미확정, M3c 완료 아님.
+
+## 2026-07-21 (V3 M3c-0 — offline hardening, live discovery 미실행)
+
+**M3c-0 offline hardening 완료. live discovery 미실행.** Codex 재현(customRegistryAccepted/emptyToolsAccepted/foreignPinnedPackage + duplicate 도구명 평문 노출)을 반영한 P0/P1 보완. 실제 Claude/npx/shadcn/네트워크 미실행.
+- **P0-1 registry 검사를 핵심 API에서 강제**: `runShadcnDiscovery` 시작 직후 `checkComponentsJson(serviceCwd)` — config/runtime/spawn보다 먼저. 실패 시 `registry_<code>` ShadcnDiscoveryError, runtimeDir·mcp-config·discovery snapshot 미생성·spawn 없음. runner 사전 검사는 보조.
+- **P0-2 package 고정 우회 제거**: `RunShadcnDiscoveryOpts.package`·`shadcnDiscoveryProfile(pkg)` 인자 제거. production API는 무조건 `SHADCN_PACKAGE="shadcn@4.13.1"`. 다른 exact-pin package도 주입 불가. generic npx pin 검증은 `claudeCodeMcpAdapter` 테스트 유지. shadcnPilot 테스트는 생성 config가 정확히 `npx --yes shadcn@4.13.1 mcp`인지 검증.
+- **P0-3 빈 discovery 거부**: system/init에 shadcn MCP 도구 0개면 `no_tools` 실패(성공 1~64개). snapshot 미생성. runner도 tools.length>0 독립 검증.
+- **P0-4 전 경로 redaction**: typed ShadcnDiscoveryError를 그대로 rethrow하지 않고 **code 보존 + message scrub**한 새 오류로 정규화(duplicate server/tool·status·spawn/stderr·persistence 공통). 성공 snapshot의 status/tools/package/timestamp도 scrub 후 반환·저장(반환==저장 deepEqual). `redactNames?`(scrub 전용, child env 미전달) 추가. credential 형태·redactNames sentinel 평문 부재 테스트.
+- **P1-5 components.json TOCTOU 방지**: `O_NOFOLLOW`로 fd를 열고 같은 fd로 fstat/read(경로 재오픈 없음). ENOENT만 허용, symlink(ELOOP)/non-regular/read error/64KiB 초과 fail-closed, 64KiB+1 byte 초과 미판독.
+- **P1-6 stream 출력 상한**: stdout 누적 1MiB(수신 시 byte 검사 후 push → NdjsonParser buffer 무한 증가 방지)·stderr 64KiB 초과 시 child kill + `stdout_too_large`/`stderr_too_large`.
+- **P1-7 강제 env 우선순위**: `MCP_CONNECTION_NONBLOCKING`/`ENABLE_TOOL_SEARCH`/`CLAUDE_CODE_DISABLE_AUTO_MEMORY`는 testEnv 병합 후 **마지막에 강제** — testEnv가 덮어쓸 수 없음(테스트로 env 덤프 검증).
+- **P1-8 snapshot persistence 정규화**: mkdir/write/wx 충돌도 typed+redacted `persist` 오류로 반환. 기존 mcp-discovery.json·symlink는 `wx`로 덮어쓰지 않고 부분 성공 미반환.
+- **P1-9 live runner 강화**: 동일 `HARNESS_CLAUDE_BIN` `claude --version` 검증·기록(실패 시 미실행), generated mcp-config가 서버 1개(shadcn)·`npx --yes shadcn@4.13.1 mcp` 검사, canary config/snapshot 부재, dir 0700·config/snapshot 0600, snapshot mode/usableForHandoff=false/tools non-empty·raw init 부재, random sentinel parent-only(config/snapshot/result/error 평문 부재·child 미전달), 출력은 scrub된 snapshot 값만. **이번 작업 미실행.**
+- 검증: build/tsc noEmit 클린, exec 75 + core 176 + acceptance 71, node --check·opt-in 게이트 exit 2, git diff --check 클린.
+- **실제 도구명·profile·handoff·result-size enforcement는 여전히 미확정.** M3c 완료 아님.
+
+## 2026-07-20 (V3 M3c-0 — shadcn MCP discovery scaffold, offline)
+
+**M3c discovery scaffold offline 완료. 실제 discovery 및 profile 활성화는 미완료(미실행).** 실제 Claude/npx/shadcn/네트워크·MCP 도구 호출은 하지 않았다. registry 미등록·handoff 미연결.
+- **shadcn 파일럿 정책**(`src/tools/shadcnPilot.ts` 신규): `SHADCN_PACKAGE="shadcn@4.13.1"`(고정 pin), 실행 선언 `npx --yes shadcn@4.13.1 mcp`, server=`shadcn`, secretRefs=[]. `shadcnDiscoveryProfile(pkg)` — in-code profile(bindings.component_registry_read=mcp, **tools=[]** 발견 대상). `@latest`/무버전/범위는 기존 `buildMcpConfig`(compileServer) 규칙대로 거부.
+- **표준 registry 검사** `checkComponentsJson(serviceCwd)`: 파일 없음→허용, registries 없음/빈 plain object→허용, 항목 있음/plain object 아님→`custom_registry_forbidden`, malformed·root 비객체·symlink·일반 파일 아님·64KiB 초과→fail-closed(코드만, 파일 내용·credential·env secret 미포함).
+- **전용 MCP discovery** `runShadcnDiscovery(...)`: runPreflight의 exact-profile 검증을 **완화하지 않고 별도 API**로 구현. 단일 shadcn 서버 strict config, headless `claude -p --output-format stream-json --strict-mcp-config --setting-sources "" --mcp-config <gen> --tools "" --permission-mode plan`(env MCP_CONNECTION_NONBLOCKING=0·ENABLE_TOOL_SEARCH=false·auto-memory 차단), system/init에서 실제 도구명 수집. 서버 정확 `["shadcn"]`+connected 필수, 다른 서버/다른 prefix 도구·중복·빈이름·malformed·non-zero·no-init·timeout(기본 60s) 거부. 도구 ≤64개·각 ≤256B·snapshot ≤64KiB. raw init 미저장, 오류·반환 redaction.
+- **discovery 산출물 분리**: `mcp-discovery.json`(mode:"discovery"·usableForHandoff:false·package·server·status·tools·configHash·timestamp, dir700/file600/wx). 타입 `ShadcnDiscoveryResult{discovery:true}`·`ShadcnDiscoveryError`로 `PreflightSuccess{ok:true}`와 분리 → 정상 preflight·handoff 승인 근거로 사용 불가.
+- **수동 live discovery runner**(`scripts/m3c-live-discovery.mjs` 신규): `HARNESS_LIVE_M3C_DISCOVERY=1` 없으면 exit 2(Claude/npx 미호출), npm test/CI 비대상, package download·네트워크·구독 사용량 명시, 임시 serviceCwd·components.json(registries:{})·ambient .mcp.json canary(strict 격리 확인), 실제 도구명 출력·snapshot, 도구 호출·interactive TUI 미실행, signal/finally cleanup + canary PID ownership(`/bin/ps`) 검사. **이번 작업에서 실제 실행하지 않음.**
+- **테스트**(`src/tools/shadcnPilot.test.ts` 신규, +21): components.json 없음/없는 registries/빈 객체 허용, custom/private/third-party·배열 registries 거부, malformed/symlink/oversized/non-regular 거부, 정확한 shadcn@4.13.1 pin·비pin 거부, discovery 성공(generic fixture)·PreflightSuccess와 분리, extra server/foreign tool/duplicate/empty/too-long/too-many/not-connected/no-init/non-zero/timeout 거부, 산출물 권한·raw init 미저장·오류 redaction, registry/tool_profiles.json 불변. 일반 runPreflight·handoff argv·M3b.2 테스트 불변(코드 미수정).
+- 검증(하드닝 후): build/tsc noEmit 클린, exec 75 + core 176 + acceptance 71, node --check·opt-in 게이트 exit 2, git diff --check 클린.
+- **실제 shadcn 도구명(browse/search/install/add 등)은 아직 미확인** — 위 runner를 사람이 실행해야 발견된다. **다음: M3c 파일럿 계획 검토(실제 discovery 실행 → 도구명 확정 → profile 등록·handoff 연결).**
+
 ## 2026-07-20 (V3 M3b.2 — offline + actual live acceptance 완료, PASS)
 
 **M3b.2 interactive handoff가 실제 Claude Code 2.1.215에서 live acceptance PASS(runner exit 0)로 완료됐다.** 앞선 argv P0(1차 무효)·planning 경로 P0-1·sentinel 출력 P0-2를 모두 수정한 뒤의 재검증 결과다(아래 실패 시도들은 역사 기록으로 유지).
