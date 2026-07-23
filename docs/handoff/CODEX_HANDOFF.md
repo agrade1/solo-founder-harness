@@ -128,7 +128,7 @@
 
 ### 최신 전체 테스트 결과 (이번 세션 실측)
 
-`npm test` → **exec 75 pass / core(=test:core: core+tools+providers) 94 pass / acceptance 63 PASS**, 실패 0. (M3a offline+보안 반영)
+`npm test` → **exec 75 pass / core(=test:core: core+tools+providers) 118 pass / acceptance 63 PASS**, 실패 0. (M3b.1 offline 반영)
 
 ### ProviderCapabilities 값 (검증, `src/providers/capabilities.ts`)
 
@@ -178,10 +178,9 @@
 - 실행: `npm run build && HARNESS_LIVE_M3A=1 node scripts/m3a-live-preflight.mjs`. preflight 통과 전 interactive handoff 시작 금지(M3b 배선 시).
 
 ### M3b — Interactive handoff trace
-- Claude Code 대화형 TUI 유지(stdio inherit). **대화형 세션 자체를 stream-json으로 파싱하지 않는다.**
-- Hook 이벤트 수집: PreToolUse / PostToolUse / PostToolUseFailure / PermissionRequest / SessionEnd.
-- Hook 이벤트를 **M1 ToolTrace JSONL 형식으로 정규화**(`src/tools/trace.ts` writer 재사용, RunEvent
-  tool_start/tool_end/tool_denied 매핑).
+- **M3b.1 완료(offline 기반)**: `src/tools/{toolTrace,hookCollector,hookSettings}.ts`(+test), `trace.ts` sanitizeValue(민감 key 재귀 마스킹). Hook payload(PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PermissionDenied/SessionEnd)→공통 ToolTrace JSONL 정규화, 6 이벤트/필수 필드, exit code 게이팅(deny·audit실패 exit2/사후 exit1/stdout 미사용), env 계약 `HARNESS_TOOL_*`(secret 이름만), 원문 미저장(tool_response byte만)·크기 상한, MCP server=exact tool map 판정(추측 금지). `toRunEvent` 매핑 정의(실시간 emit 없음). **승인 의미 한계**: PermissionRequest=요청만·PermissionDenied=auto denial만. PermissionRequest 공식 payload에는 correlation ID(tool_use_id)가 없음→callId=null·synthetic ID 미생성·`permissionOutcomeObservable:false`. Hook만으로 수동 승인/거부를 정확히 연결 불가. SessionEnd는 종료 사실만 기록(unresolved·승인 결과 추측 금지).
+- **M3b.1 P0/P1 하드닝(완료)**: collector fail-closed(`parseConfig` 엄격·JSON fallback 금지, PreToolUse/PermissionRequest 실패 exit2·사후 exit1, stack/secret 미출력), payload 계약 검증(hook_event_name 일치·session_id 필수, PermissionRequest=tool_name+tool_input·tool_use_id 없음, tool hook=tool_use_id 필수, deny는 PreToolUse만), **SessionEnd는 종료 사실만 기록**(공식 payload에 correlation ID 부재로 unresolved·승인 결과 추측 금지), UTF-8 byte 상한(멀티바이트 경계 보존)·재귀 depth 상한, settings shell-safe quoting·`denyMatchers[]` dedupe.
+- **M3b.2(남음)**: handoff command/spawn, settings 파일 write·claude 실행, 실제 Claude Hook 이름 대응 실측. **대화형은 `stdio:inherit` + Hooks만 사용한다 — stream-json 파싱은 M3a headless preflight 전용이며 대화형 세션에는 쓰지 않는다.** `toRunEvent` 매핑은 **post-session/테스트용**이며 TUI 중 RunEvent 실시간 출력은 하지 않는다.
 
 ### M3c — 제한된 shadcn read 파일럿
 - **검증한 고정 버전** 사용(`@latest` 금지).
@@ -209,7 +208,7 @@
 - **`--bare` 실제 snapshot 검증 미완료**: argv 생성·검증만 완료. 격리 효과는 미검증.
 - **strict MCP config의 claude 버전별 동작**: 플래그 무시(#10787)·`disabledMcpServers` 미차단(#14490) 이슈가
   보고된 바 있음(설계 문서 §2.4). "플래그 존재=격리"로 신뢰 금지 — snapshot 실측으로만 판정. 현재 버전 동작 `미확인`.
-- **Hook payload 민감 정보 redaction**: `redactSecrets`는 존재하나 Hook payload에 아직 미적용(M3b).
+- **Hook payload 민감 정보 redaction**: **적용됨(M3b.1)** — collector가 민감 key 재귀 마스킹 + secretRefs 실제 값 + credential 패턴을 ToolTrace JSONL에 적용. (실 Claude Hook 배선·이름 대응은 M3b.2 실측 대상.)
 - **shadcn 실제 도구명**: `미확인` — M3c 착수 시 확인.
 - **README 문서 불일치**: `README.md`에 v1/v2.6 범위 서술 잔재(예: "현재 진행 중인 개발 항목 없음",
   삭제된 `V3_KICKOFF.md` 참조). M0~M2에서 손대지 않음 — 후속 정리 항목.
@@ -234,7 +233,7 @@
 
 - 브랜치 `develop`, 작업 트리 CLEAN, package.json `2.6.0`.
 - 커밋: M0 `582f6e0` / M1 `5cbdbcb` / M2 `b359bfc`.
-- 명령: build=`npm run build`, 테스트=`npm test`(=`test:exec` 75 + `test:core` 94 + `acceptance` 63),
+- 명령: build=`npm run build`, 테스트=`npm test`(=`test:exec` 75 + `test:core` 118 + `acceptance` 63),
   `test:core`는 `HARNESS_WORKSPACE=.tmp-test-workspace tsx --test src/core/*.test.ts src/tools/*.test.ts
   src/providers/*.test.ts`.
 - npm pack: 69 files. 포함=dist/·agents/·registry/·schemas/·README.md. 제외=tests/·src/·*.test.*.
