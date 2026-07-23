@@ -1,5 +1,28 @@
 # DECISIONS.md
 
+## 2026-07-22 (V3 M3c-3a — signal 즉시 종료 계약, downstream 위반 fatal 분류)
+
+- **AbortSignal은 downstream spawn 직후부터 연결한다.** startup 완료 후 등록하면 startup/in-flight signal이 timeout까지 대기하므로, spawn 직후(이미 aborted면 즉시) 연결하고 signal 수신 즉시 process group을 죽여 pending을 해제한다(startupTimeout 30s·perCallTimeout 60s 대기 금지).
+- **signal은 signal exit로만 종료한다.** `main`은 SIGINT=130·SIGTERM=143로 종료하고 이를 proxy_error/exit 1로 바꾸지 않는다. 종료 후 stdout에는 불완전 JSON/진단 문자열을 쓰지 않는다.
+- **cleanup은 정확히 한 번, listener는 완료 시 제거.** signal과 child close가 경합해도 settled 가드로 cleanup 1회. markDead가 pending timer를 clear해 signal 뒤 timeout 콜백이 재실행되지 않는다.
+- **downstream 응답 계약 위반은 fatal, 일반 tool error/정책 거부는 세션 유지.** malformed·bad jsonrpc·id mismatch·result 비객체(ds_bad_result)·cap·timeout·조기 close는 group 종료 fatal. downstream이 정상 JSON-RPC error를 돌려준 "일반 tool error"와 result budget·입력 정책 거부는 그 호출만 거부하고 downstream을 유지한다.
+- **테스트 백도어는 함수 seam으로만.** cleanup 실패 검증은 `cleanupFaultForTest` 인자로만 하고, production `main`은 환경변수(HARNESS_M3C3_TEST_CLEANUP_FAIL)를 해석하지 않는다.
+
+## 2026-07-22 (V3 M3c-3a — proxy P0/P1 보완, M3c-3b 착수 보류)
+
+- **M3c-3b 착수는 이 P0 보완 이후로 보류한다.** 프록시가 (1) 실제 실행 진입점이 없어 dist 실행 시 즉시 종료, (2) MCP tool name을 host prefix로 잘못 반환(double namespace), (3) fatal downstream 후 열린 채 대기 — 세 P0가 있어 아직 실제 MCP 서버 경계로 쓸 수 없었다. 이를 고치기 전 profile/handoff 배선은 위험하므로 M3c-3b는 "계획 검토 후 착수(보류)"로 둔다.
+- **MCP 서버는 bare tool name만 반환한다.** `mcp__<server>__` prefix는 Claude host가 server name으로 붙이는 것이므로 MCP 서버(프록시)가 반환하면 안 된다. tools/call도 bare만 허용하고 prefix 입력은 거부한다. host-namespaced 이름은 내부 보고(ProxyResult/trace)에서만 파생한다.
+- **fatal downstream은 즉시 그룹 종료 + finalize, 정책 거부는 유지.** timeout/cap/malformed/id-mismatch/조기종료는 `terminateProcessGroup()`로 그룹을 죽이고 안전 오류 응답 후 세션을 finalize한다(열린 채 대기 금지). result_too_large·isError·형태 위반 등 정상 정책 거부는 downstream을 죽이지 않고 그 호출만 거부한다.
+- **exit code 계약**: stdin 정상 종료 + cleanup 성공만 exit 0. startup 실패·cleanup 실패·signal은 non-zero. cleanupOk:false를 성공으로 보고하지 않는다. stdout은 JSON-RPC 전용, 오류는 짧은 code만 stderr(원문·secret·stack 없음).
+
+## 2026-07-22 (V3 M3c-3a — read-only filtering MCP proxy가 보안 경계)
+
+- **원본 shadcn MCP를 profile에 직접 연결하지 않는다.** 7개를 모두 노출하므로, deniedTools/Hook만으로는 "미노출"과 "응답 전달 전 크기 제한"을 보장하지 못한다. profile/handoff 연결 전에 **로컬 필터 MCP 프록시**가 실제 경계를 제공한다 — upstream엔 5개만·로컬 제한 schema만 노출하고, downstream 원본 description/schema는 신뢰·전달하지 않는다.
+- **downstream은 고정 명령·override seam 없음.** 항상 `npx --yes shadcn@4.13.1 mcp`. startup에서 표준 registry 검사(child/config 이전) → downstream tools/list가 실측 7개와 정확 일치해야 serve. 불일치·custom registry는 spawn 전/직후 fail-closed.
+- **결과 크기 초과는 pointer가 아니라 hard reject.** contextRoot에서 runtime을 읽을 수 있어 "oversized 원문을 파일에 저장하고 pointer를 반환"하면 상한이 우회된다. 그래서 M3 파일럿은 resultChars > 8,000을 **원문·pointer 미반환**으로 hard reject한다. isError/빈/structuredContent/non-text 등 현재 실측 계약 밖 응답도 fail-closed.
+- **종료는 그룹 단위.** downstream을 detached로 spawn하고 `process.kill(-pid)`로 그룹을 종료해 npx가 띄운 descendant를 방치하지 않는다. 성공/실패/timeout 모두 close 확인 후 임시 HOME/cache 정리.
+- **이 5개는 아직 "노출 승인"이 아니다.** 프록시는 경계를 제공할 뿐, registry profile 등록·handoff 연결·result-size enforcement의 정식 배선은 M3c-3b에서 별도로 다룬다. 이번 단계는 profile/registry/handoff/CLI를 수정하지 않았다.
+
 ## 2026-07-22 (V3 M3c-2 — actual live read semantics acceptance PASS)
 
 - **M3c-2를 offline+actual live 완료로 확정하되, 5개를 노출 승인으로 승격하지 않는다.** 실제 shadcn MCP에서 읽기 후보 5개를 고정 인자·정확 순서로 1회 호출(exit 0), 5회 모두 serviceCwd unchanged, 금지 2개 미호출, 전 결과 text-only·budget 이내를 실측했다. 그러나 이는 **read semantics 검증 후보**의 통과일 뿐 노출·권한 부여 근거로 확정하지 않는다.

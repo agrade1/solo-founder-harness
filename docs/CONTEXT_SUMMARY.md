@@ -2,6 +2,31 @@
 
 최종 갱신: 2026-07-21
 
+## 최신 (2026-07-22 세션 — V3 M3c-3a signal P0 보완, M3c-3b 계획 검토 전)
+
+- **startup/in-flight signal 즉시 종료 결함 보완.** fake `npx` fixture만.
+- **원인**: AbortSignal이 serve(startup 완료 후)에만 붙어 startup/in-flight signal이 timeout(30s/60s)까지 대기.
+- **보완**: 단일 관리 Promise로 재구성, **downstream spawn 직후부터** abort 연결(이미 aborted면 즉시). signal ⇒ 즉시 group 종료+pending reject+queue 폐기, child close 후 HOME 삭제. main SIGINT=130/SIGTERM=143(그대로), settled 후 stdout 미기록. listener 완료 시 제거, cleanup 정확히 1회(경합 안전), markDead가 timer clear.
+- **downstream 응답 계약 위반(malformed/bad jsonrpc/id mismatch/result 비객체/cap/timeout/조기 close)=fatal group 종료. 일반 JSON-RPC tool error·result budget·입력 정책 거부=세션 유지**(그 호출만 거부).
+- **P1**: main에서 env 백도어 제거, cleanup 실패는 `cleanupFaultForTest` 함수 seam으로만.
+- 테스트 21→26(+5: exec SIGINT 130/SIGTERM 143 3초 내·descendant·HOME, env 무시 exit 0, downstream malformed/bad-result fatal, 정책거부/tool error 뒤 정상호출). 검증: exec 75 + core 234 + acceptance 71.
+- **M3c-3b = 계획 검토 전 유지. 5개는 아직 노출 승인 아님. 전체 M3c 미완료.**
+
+## 최신 (2026-07-22 세션 — V3 M3c-3a proxy P0/P1 보완, M3c-3b 착수 보류)
+
+- **M3c-3a 프록시 P0 3건+P1 보완. M3c-3b(profile/handoff 배선)는 보류. 전체 M3c 미완료.** fake PATH `npx` fixture만.
+- **P0-1** `main()`+ESM 가드(실행 진입점) — stdin/stdout 구동, stdout JSON-RPC 전용, stdin 정상종료+cleanup 성공만 exit 0, cleanup 실패/startup 실패/signal non-zero, SIGINT/SIGTERM에서 group 종료+HOME cleanup. **P0-2** tools/list/tools/call은 **bare name**만(`mcp__shadcn__` prefix는 host가 생성 — 서버 반환 금지), prefix 입력 거부, host-namespaced는 내부 보고만. **P0-3** `terminateProcessGroup()` 공용, fatal downstream(timeout/cap/malformed/id-mismatch/조기종료)은 즉시 그룹 종료+안전 오류 응답 후 finalize; 정책 거부(result_too_large 등)는 downstream 유지.
+- **P1**: negotiated protocolVersion 저장→upstream init 응답 사용, initialize→initialized→tools/* 상태 머신, notification 무응답, id string/number 구분(1≠"1"), buffer/queue(≤64) 상한, constructor/spawn 실패 cleanup, cleanup_failed 표면화.
+- 테스트: 기존 13개 공식 MCP 계약으로 교정(bare·순서) + 8 추가 = 21. 검증: exec 75 + core 229 + acceptance 71.
+- **M3c-3b = 계획 검토 후 착수(보류). 5개는 아직 노출 승인 아님.**
+
+## 최신 (2026-07-22 세션 — V3 M3c-3a shadcn read-only filtering MCP proxy, offline)
+
+- **M3c-3a offline proxy 완료. profile 등록·노출 승인 아님. 전체 M3c 미완료.** fake PATH `npx` fixture만(실제 shadcn/network/Claude 없음). registry/tool_profiles.json·handoff·profiles·CLI 미수정.
+- **`src/tools/shadcnReadMcpProxy.ts`(+`.test.ts`)·`src/tools/shadcnReadPolicy.ts`(신규)**: 원본 7개 전부 노출 문제 → 로컬 필터 MCP 프록시가 경계 제공. upstream엔 5개만·**로컬 제한 schema**(downstream desc/schema 미노출), downstream 고정 `npx --yes shadcn@4.13.1 mcp`(seam 없음). startup: components.json 검사(child 이전)→downstream init(허용 protocol·caps.tools·serverInfo)→tools/list **실측 7개 정확 일치** 아니면 fail-closed. 금지 2개 tools/list 미노출+call fail-closed(downstream 미전달), unknown/dup id/malformed fail-closed. 입력 정책(additionalProperties:false, registries=["@shadcn"]·types=["ui"]·limit1-20·offset0-1000·query1-200·view items 1-10 @shadcn/ prefix·traversal/URL/제어문자 금지). 상한: call≤6·60s·단일 256KiB·stdout2MiB·stderr64KiB, **resultChars>8000 hard reject(원문·pointer 미전달)**, isError/빈/structured/non-text fail-closed. child env allowlist+임시 HOME(ambient secret 미전달). 종료는 그룹 kill(detached, descendant 방치 없음)→close 확인→temp 정리.
+- 테스트(+13, core 221). 검증: exec 75 + core 221 + acceptance 71.
+- **미완료**: profile 등록·노출 승인·handoff 연결·result-size enforcement 정식 배선 = M3c-3b. 5개는 아직 노출 승인 아님.
+
 ## 최신 (2026-07-22 세션 — V3 M3c-2 actual live read semantics acceptance PASS)
 
 - **M3c-2 offline+actual live 완료(PASS). 전체 M3c 미완료.** live runner 1회 exit 0, Claude 미사용(shadcn@4.13.1 stdio), 실행으로 코드·git 불변.

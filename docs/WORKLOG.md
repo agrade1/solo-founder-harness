@@ -1,5 +1,43 @@
 # WORKLOG.md
 
+## 2026-07-22 (V3 M3c-3a — signal P0 보완, M3c-3b 계획 검토 전 유지)
+
+**startup/in-flight signal 즉시 종료 결함 보완.** fake PATH `npx` fixture만(실제 shadcn/network/Claude 미실행).
+- **원인**: AbortSignal 리스너가 serve Promise 내부(startup 완료 후)에만 붙어, startup(initialize/tools/list) 또는 in-flight tools/call 중 signal이 오면 startupTimeout(30s)·perCallTimeout(60s)까지 대기해야 종료됐다. in-flight 종료도 processing 완료를 수동 대기했다.
+- **보완**: runShadcnReadProxy를 단일 관리 Promise로 재구성해 **downstream spawn 직후부터** AbortSignal을 연결(이미 aborted면 즉시 처리). signal 수신 즉시 `ds.markDead("aborted")`로 downstream **process group 전체 종료 + pending 즉시 reject**(timeout 대기 없음), queue 폐기, child close 확인 후에만 HOME/cache 삭제. `main`은 SIGINT=130·SIGTERM=143로 종료(proxy_error/exit 1로 바꾸지 않음), 종료 후 stdout에 불완전 JSON/진단 미기록(writeMsg가 settled 후 무시).
+- **리스너 수명/idempotent**: 완료 시 AbortSignal listener 제거, doResolve/cleanup은 settled 가드로 정확히 한 번(signal과 child close 경합에도 cleanup 1회). markDead가 pending timer를 clear → signal 뒤 timeout 콜백 재실행 없음.
+- **downstream 응답 계약 위반 fatal 분류**: malformed line·bad jsonrpc·id mismatch·**result 비객체(ds_bad_result)**·stdout/stderr cap·timeout·조기 close → group 종료 fatal. 반면 **일반 JSON-RPC tool error(downstream error 응답)와 result budget/입력 정책 거부는 세션 유지**(그 호출만 거부, downstream 생존).
+- **P1**: production `main`에서 `HARNESS_M3C3_TEST_CLEANUP_FAIL` env 백도어 제거. cleanup 실패는 `cleanupFaultForTest` 함수 인자 seam으로만 검증(직접 실행 경로에 env override 없음).
+- **재현 테스트(추가 5, 총 26)**: [exec] startup initialize 무한 대기 → SIGINT ⇒ 3초 내 exit 130·child/grandchild 없음·`m3c3-home-*` 없음(실측 ~8ms). [exec] in-flight tools/call 무한 대기 → SIGTERM ⇒ 3초 내 exit 143·descendant 없음·HOME 없음(실측 ~16ms). [exec] env 백도어 무시 → exit 0. downstream malformed/bad-result → 즉시 fatal finalize. 정책 거부/일반 tool error 뒤 다음 정상 호출 성공(세션 유지). cleanup seam → cleanupOk:false.
+- 검증: build/tsc noEmit 클린, exec 75 + core 234 + acceptance 71, git diff --check 클린.
+- **M3c-3b(profile/handoff/result-enforcement 배선)은 계획 검토 전 상태 유지. 전체 M3c 미완료. 5개는 아직 노출 승인 아님.**
+
+## 2026-07-22 (V3 M3c-3a — proxy P0/P1 보완, M3c-3b 착수 보류)
+
+**M3c-3a 프록시에서 발견된 P0 3건 + P1 보완. 이 보완 전에는 M3c-3b(profile/handoff 배선) 착수 불가 → 착수 판정을 "보류"로 정정.** 실제 shadcn/network/Claude 미실행(fake PATH `npx` fixture).
+- **P0-1 실행 진입점 부재**: 프록시에 `main()` + ESM 직접 실행 가드 추가. 실행 시 serviceCwd=cwd, stdin/stdout으로 구동, stdout은 JSON-RPC 전용. 오류는 짧은 code만 stderr + non-zero, **stdin 정상 종료 + cleanup 성공만 exit 0**, cleanup 실패는 non-zero, SIGINT/SIGTERM에서도 downstream group 종료 + HOME/cache cleanup. (원인: dist 실행 시 바로 exit 0 회귀 — 실제 MCP 서버로 못 씀.)
+- **P0-2 MCP tool name 계층 오류**: tools/list Tool.name을 **bare 5개**로 수정(`mcp__shadcn__*` prefix는 Claude host가 server name으로 생성 — MCP 서버가 반환하면 안 됨). tools/call도 bare만 허용, 이미 prefix 붙은 입력은 unknown/invalid 거부. host-namespaced(`mcp__shadcn__<bare>`)는 ProxyResult.calledTools 등 **내부 보고에서만** 파생. (원인: 이전 구현이 namespaced 이름을 반환 → double namespace.)
+- **P0-3 fatal downstream 처리**: `terminateProcessGroup()` 단일 함수를 markDead()·shutdown()이 공용. timeout/stdout·stderr cap/malformed/id mismatch/조기 종료는 즉시 그룹 종료 + **안전 오류 응답 후 finalize**(열린 채 대기 금지). result_too_large 등 정상 정책 거부는 downstream을 죽이지 않고 호출만 거부. descendant 종료 확인 후에만 HOME/cache 삭제.
+- **P1**: downstream negotiated protocolVersion 저장 → upstream initialize 응답에 사용. initialize→notifications/initialized→tools/list·tools/call **상태 머신** 강제(순서 위반 -32600). notification엔 error 응답 안 함. request id는 string/number만, number 1과 string "1" 구분. upstream 개행 없는 buffer·queue(≤64)·총 요청 상한. childHome 생성 후 constructor/spawn 실패도 cleanup. startup/serve cleanup 실패를 `cleanup_failed`로 표면화, **cleanupOk:false를 성공으로 보고 안 함**.
+- **테스트**: 기존 13개를 공식 MCP 계약으로 교정(bare name·initialize→initialized 순서), +8 추가(executable 왕복·startup 실패 non-zero·cleanup 실패 non-zero·SIGINT group cleanup·lifecycle 위반·unknown notification 무응답·numeric/string id 구분·buffer/queue 상한·fatal→finalize+descendant 종료). 총 21개.
+- 기존 입력 정책·5개 필터·6회·60s·256KiB·8,000 resultChars hard reject 유지.
+- 검증: build/tsc noEmit 클린, exec 75 + core 229 + acceptance 71, git diff --check 클린.
+- **M3c-3b(profile 등록·노출 승인·handoff 연결·result-size enforcement 정식 배선) = 계획 검토 후 착수(현재 보류). 전체 M3c 미완료. 5개는 아직 노출 승인 아님.**
+
+## 2026-07-22 (V3 M3c-3a — shadcn read-only filtering MCP proxy, offline)
+
+**M3c-3a offline proxy 구현·검증 완료.** 실제 shadcn/network/Claude 미실행(fake PATH `npx` fixture만). profile 등록·registry 변경·handoff 연결 없음. **이 5개는 아직 profile에 등록·노출된 것이 아니다** — 로컬 필터 프록시가 보안 경계를 제공하는 단계일 뿐이다.
+- **이유**: 원본 shadcn MCP는 7개를 모두 노출하므로 직접 profile 연결 금지. deniedTools/Hook만으로는 "미노출"과 "응답 전달 전 크기 제한"을 보장 못 함 → 로컬 필터 MCP 프록시가 실제 경계를 제공.
+- **신규**: `src/tools/shadcnReadMcpProxy.ts`(+`.test.ts`, dist), `src/tools/shadcnReadPolicy.ts`(정책 상수 전용). registry/tool_profiles.json·handoff.ts·profiles.ts·schema·CLI **미수정**.
+- **프록시 계약**: upstream엔 MCP 서버로 동작(읽기 후보 5개만 노출, **로컬 제한 schema**·downstream description/schema 미노출), downstream은 고정 `npx --yes shadcn@4.13.1 mcp`(override seam 없음). startup에서 표준 components.json 검사(child/config 이전) → downstream initialize(허용 protocol·capabilities.tools·non-empty serverInfo) → downstream tools/list가 **실측 7개와 정확 일치**해야 serve 시작(불일치·custom registry는 spawn 전/직후 fail-closed). child env는 allowlist + 임시 HOME/npm cache(ambient secret 미전달).
+- **노출/차단**: 노출 5개 = get_project_registries·list_items_in_registries·search_items_in_registries·view_items_in_registries·get_item_examples_from_registries. 금지 2개(get_add_command_for_items·get_audit_checklist)는 tools/list 미노출 + tools/call fail-closed(downstream 미전달). 알 수 없는 method/tool·중복 JSON-RPC id·malformed는 fail-closed.
+- **입력 정책(additionalProperties:false)**: get_project_registries=빈 객체만 · list=registries 정확히 ["@shadcn"]·types 정확히 ["ui"]·limit 1~20·offset 0~1000 · search=list+query 1~200자 · view=items 1~10개·전부 @shadcn/ prefix·traversal(..)/URL(://)/제어문자 금지 · examples=registries ["@shadcn"]+query 1~200자. custom/private registry·추가 인자 거부(child 호출 전 차단).
+- **실행 상한**: 세션당 tools/call ≤ 6, 호출당 timeout 60s, 단일 raw 응답 256KiB, downstream stdout 2MiB·stderr 64KiB, upstream line 256KiB. CallToolResult 전체 canonical resultChars > 8,000이면 **모델에 원문 미전달·pointer 미반환**(hard reject) — contextRoot runtime 읽기로 pointer가 상한 우회가 되므로 M3 파일럿은 hard reject. isError=true·빈 content·structuredContent 존재·text 이외 block은 현재 실측 계약 밖이라 fail-closed. 원문·secret·stack은 stdout(JSON-RPC 전용)/stderr/artifact에 미기록.
+- **수명주기**: 성공/실패/timeout/malformed 모두 downstream **그룹 종료**(detached spawn + `process.kill(-pid)`)로 descendant 방치 없이 kill→bounded close 확인 후 임시 HOME/cache 정리(startup 실패 포함).
+- **테스트**(`shadcnReadMcpProxy.test.ts`, +13): 정상 왕복, tools/list 정확히 5개(금지/extra 부재·downstream desc 미노출), 허용 5개 인자 전달, downstream 7 불일치·init 계약 위반 startup 거부, forbidden/unknown child 미호출, 도구별 잘못된 registry/추가 key/범위/traversal/URL/제어문자 거부, 7번째 차단, timeout·256KiB·8,000 resultChars·isError·빈·structured·non-text 안전 error(원문 미노출), ambient secret child env 부재·출력 평문 부재, custom registry child spawn 전 차단, malformed/dup id/unknown method fail-closed, **descendant 그룹 종료**, 실패 경로 임시 HOME 잔존 없음. M3c-0/1/2 회귀 없음.
+- 검증: build/tsc noEmit 클린, exec 75 + core 221 + acceptance 71, git diff --check 클린.
+- **미완료**: profile 등록·노출 승인·handoff 연결·result-size enforcement의 정식 배선은 여전히 별도 단계(M3c-3b). **전체 M3c 미완료.**
+
 ## 2026-07-22 (V3 M3c-2 — actual live read semantics acceptance PASS)
 
 **M3c-2 controlled read semantics live acceptance 1회 실행 — runner exit 0 / PASS.** `HARNESS_LIVE_M3C2_SEMANTICS=1 node scripts/m3c2-live-read-semantics.mjs`. **Claude CLI/구독 미사용**(shadcn MCP stdio 직접, `shadcn@4.13.1`). 실행으로 코드·git 상태 불변(runner는 임시 경로만 사용·자체 정리).
