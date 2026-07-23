@@ -1,5 +1,28 @@
 # DECISIONS.md
 
+## 2026-07-21 (V3 M3c-1 — actual live schema probe PASS)
+
+- **M3c-1은 offline+actual live 완료로 확정하되, schema를 권한 근거로 승격하지 않는다.** 실제 shadcn MCP(protocolVersion 2025-11-25, serverInfo shadcn 1.0.0)에서 7개 도구 schema를 1회 실측(runner exit 0). **annotations/outputSchema는 전 도구에 없음** — read/write hint가 서버에서 제공되지 않았다.
+- **description은 서버 제공 untrusted 정보다.** 이름과 마찬가지로 description·inputSchema 필드명만으로 read/write를 분류하지 않는다. 권한 분류는 실제 동작(semantics)을 통제된 방식으로 확인한 뒤에만 한다(M3a "플래그=격리 금지"의 연장).
+- **버전 종속 실측.** shadcn@4.13.1 · protocolVersion 2025-11-25 조합의 스냅샷이며 버전 변경 시 재-probe로 재확인한다.
+- **다음은 M3c-2 controlled read semantics 검증 계획.** 승인·격리 하에서 각 도구의 read-only 성격·결과 크기를 통제 확인한 근거로만 권한 등급 매핑·registry profile 등록·handoff 연결·result-size enforcement로 진행한다. 이번 단계에서는 profile 등록·handoff 연결·MCP 도구 호출·registry 변경을 하지 않았다.
+
+## 2026-07-21 (V3 M3c-1 — schema probe P0 보완: 보안 경계·공식 계약·lifecycle)
+
+- **실행 명령 우회 seam을 코드에서 완전히 제거한다.** `HARNESS_SHADCN_NPX_BIN` 지원 삭제 — `runShadcnSchemaProbe`는 항상 `npx --yes shadcn@4.13.1 mcp`만 실행한다. 테스트는 임시 PATH에 `npx` 이름 fixture를 두는 방식으로 격리(문서의 "주입 seam 없음" 주장과 코드 일치). runner import는 export 위치(`shadcnPilot.js`의 `checkComponentsJson`)와 정확히 일치시키고 offline smoke로 재발을 막는다.
+- **schema object key는 마스킹 대상이 아니라 fail-closed 대상이다.** value는 scrub하지만 key가 secret/credential 형태면 이름을 바꿔 잘못된 schema를 저장하지 않고 `secret_in_schema_key`로 실패한다(원 key 미노출).
+- **공식 MCP 계약을 근거로 검증한다.** protocolVersion은 stable `2025-11-25`를 요청하고 allowlist 내 이전 revision negotiation을 인정한다("특정 버전이 최신"이라는 문서 단정은 제거). initialize의 capabilities(.tools)·serverInfo(name/version)를 검증하고, Tool.description은 optional·title 수집·inputSchema/outputSchema root `type:"object"` 강제. **annotations는 untrusted hint** — 형식만 검증하고 권한 판정 근거로 쓰지 않는다.
+- **성공은 child close 확인 이후에만 확정한다.** 수집 후 stdin을 닫고 bounded wait로 close를 기다리며(grace 후 SIGKILL), close 확인 전에는 result 반환·snapshot 저장을 하지 않는다. 미종료·잔존 가능성은 typed fail-closed. stdout byte 상한은 raw Buffer로 계산하고 StringDecoder로 멀티바이트 경계를 보존한다.
+- **tools/call 부재는 로그 추측이 아니라 고정 operationSummary로 증명한다.** 결과에 `{initialize,initialized,toolsListPages,toolCalls:0}`를 반환하고 runner가 검사한다. snapshot에는 raw JSON-RPC payload를 저장하지 않으며 tools/call 생성 경로는 계속 없다.
+
+## 2026-07-21 (V3 M3c-1 — tools/list schema discovery scaffold, offline)
+
+- **schema probe는 shadcn 전용의 좁은 stdio JSON-RPC 경로로 구현한다.** 범용 MCP client를 만들지 않는다. `initialize → notifications/initialized → tools/list`까지만 허용하고 **tools/call 코드 경로 자체를 두지 않는다**(도구 실행 불가가 구조적으로 보장). MCP protocolVersion은 공식 stable spec 상수(`2025-06-18`)로 요청하고 허용 버전 집합 내에서만 negotiation을 인정한다.
+- **실행 명령은 우회 불가로 고정한다.** `npx --yes shadcn@4.13.1 mcp`를 `shadcnDiscoveryProfile()`+`buildMcpConfig`로 pin 검증해 얻고, 외부에서 package/command/args를 주입하는 seam을 두지 않는다. 테스트는 launcher 실행 파일(`HARNESS_SHADCN_NPX_BIN`)만 교체하며 pinned args는 불변(M3c-0 HARNESS_CLAUDE_BIN과 동형).
+- **직접 서버는 bare 도구명을 반환한다 — host가 namespacing한다.** claude 경유(M3c-0)는 `mcp__shadcn__*`를, 직접 stdio는 bare 이름을 준다. probe가 `mcp__<server>__`를 붙여 M3c-0 확정 7개와 정확 비교(누락/추가/중복/pagination 루프/상한 fail-closed).
+- **schema 산출물은 raw protocol이 아니라 추출 schema만 저장한다.** `mcp-schema-discovery.json`(mode:`schema-discovery`·usableForHandoff:false)은 JSON-RPC envelope를 담지 않고 name/description/inputSchema(+outputSchema/annotations)만 담으며, 깊이·크기 상한·deep-scrub·wx·0600으로 보호한다. 타입은 PreflightSuccess/discovery와 분리해 승인 근거 오용을 막는다.
+- **이름·schema를 권한으로 해석하지 않는다.** description·annotations를 봐도 read/write·browse/search/install/add로 분류하지 않는다. 권한 등급 매핑·registry profile 등록·handoff 연결·result-size enforcement는 **미착수**이며, 실제 schema 실측(runner 승인 실행) 이후 별도 단계(M3c-2+)에서 근거를 갖춰 진행한다.
+
 ## 2026-07-21 (V3 M3c-0 — 실제 live discovery 1회 실행, discovery offline+live 완료)
 
 - **discovery는 offline+live 완료로 확정하되, 전체 M3c는 미완료로 둔다.** 실제 Claude Code 2.1.216에서 `shadcn@4.13.1` MCP를 strict 격리로 1회 discovery(exit 0/OK) → server `shadcn` connected + 도구 7개 실측. 격리·권한·redaction·cleanup·잔존 프로세스 검사 통과.

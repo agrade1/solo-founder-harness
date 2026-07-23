@@ -2,6 +2,28 @@
 
 최종 갱신: 2026-07-21
 
+## 최신 (2026-07-21 세션 — V3 M3c-1 actual live schema probe PASS, offline+live 완료)
+
+- **M3c-1 offline+actual live 완료(PASS). 전체 M3c 미완료.** live runner 1회 실행 exit 0/OK, Claude 미사용, tools/call 없음, cleanup·잔존 프로세스 통과.
+- 실측: package `shadcn@4.13.1`, protocolVersion **2025-11-25**, serverInfo `shadcn 1.0.0`, 도구 7개 정확. **annotations·outputSchema 전 도구 없음.** inputSchema 요약 — items(get_add_command_for_items·view_items_in_registries required), query required(get_item_examples/search), get_audit_checklist·get_project_registries 입력 없음, list/search에 registries?/types?/limit?/offset?.
+- **schema/description 실측됐으나 annotations/outputSchema 증거 없음. description은 서버 제공 untrusted → 권한 분류 근거로 미확정.** profile 등록·handoff 연결·도구 호출·result-size enforcement 미완료.
+- **다음: M3c-2 controlled read semantics 검증 계획.** 검증: exec 75 + core 192 + acceptance 71.
+
+## 최신 (2026-07-21 세션 — V3 M3c-1 schema probe P0 보완, live 전, offline)
+
+- **M3c-1 P0 6건 보완. 실제 live schema probe 미실행·승인 대기. 전체 M3c 미완료.** fake stdio MCP fixture만 사용(실제 claude/npx/network 없음).
+- P0-1 runner `checkComponentsJson` import를 `shadcnPilot.js`로 정정 + offline smoke(exit 0). P0-2 `HARNESS_SHADCN_NPX_BIN` 제거(항상 `npx --yes shadcn@4.13.1 mcp`, 테스트는 PATH의 `npx` fixture). P0-3 schema **key** scrub 대상이면 `secret_in_schema_key` fail-closed(원 key 미노출). P0-4 protocolVersion `2025-11-25`+revision allowlist, capabilities(.tools)·serverInfo(name/version) 검증, description optional·title 수집·inputSchema/outputSchema root type:object 강제·annotations untrusted hint. P0-5 raw Buffer byte 상한+StringDecoder, 수집 후 child close bounded wait(미종료 `child_did_not_close`). P0-6 결과 `operationSummary{...,toolCalls:0}`·raw payload 미저장.
+- 테스트(core 192). 검증: exec 75 + core 192 + acceptance 71, runner offline smoke·opt-in exit 2.
+- **미확정(주장 금지)**: 권한 분류·profile 활성화·handoff 연결·result-size enforcement. 실제 schema는 runner 승인 실행 후.
+
+## 최신 (2026-07-21 세션 — V3 M3c-1 tools/list schema discovery scaffold, offline)
+
+- **M3c-1 schema scaffold offline 완료. actual live schema probe 승인 대기. 전체 M3c 미완료.** 실제 claude/npx/shadcn/네트워크 미실행(fake stdio MCP fixture 검증). tools/call 미구현·미전송, profile 등록·handoff 연결·권한 분류 없음.
+- **`src/tools/shadcnSchemaProbe.ts`(신규)**: shadcn 전용 좁은 stdio JSON-RPC probe. `initialize→notifications/initialized→tools/list`만(tools/call 코드 경로 없음). 명령 정확히 `npx --yes shadcn@4.13.1 mcp`(주입 seam 없음, 테스트는 `HARNESS_SHADCN_NPX_BIN` launcher만 교체). protocolVersion `2025-06-18` 엄격 negotiation. registry 검사를 config/spawn 이전 강제. bare 도구명→`mcp__shadcn__` namespacing→M3c-0 7개 정확 일치. pagination(반복 cursor·페이지8·64개 상한), name/description/inputSchema 필수·outputSchema/annotations plain object, 깊이/키/크기 상한, JSON-RPC/malformed/no-init/timeout/non-zero/stdout(1MiB)/stderr(64KiB) 거부. 산출물 `mcp-schema-discovery.json`(mode:schema-discovery·usableForHandoff:false, raw payload 미저장, 반환==저장, dir700/file600/wx, deep-scrub, `ShadcnSchemaResult{schemaDiscovery:true}` 타입 분리).
+- **`scripts/m3c-live-schema-probe.mjs`(신규)**: `HARNESS_LIVE_M3C_SCHEMA=1` 없으면 exit 2. shadcn MCP stdio 직접 실행(claude 미사용), 잔존 프로세스·tools/call 미전송 검증. **이번 세션 미실행.**
+- 테스트(+12, core 188). 검증: exec 75 + core 188 + acceptance 71, npm pack 78(`shadcnSchemaProbe.js` 포함).
+- **미확정(주장 금지)**: 권한 분류·profile 활성화·handoff 연결·result-size enforcement. 실제 schema는 runner 승인 실행 후 확정.
+
 ## 최신 (2026-07-21 세션 — V3 M3c-0 실제 live discovery 1회 실행, discovery offline+live 완료)
 
 - **M3c-0 discovery offline+live 완료. 전체 M3c는 미완료.** Claude Code **2.1.216**에서 `shadcn@4.13.1` MCP discovery 1회 실행 — runner **exit 0/OK**, server `shadcn` **connected**, strict 격리(ambient canary 미기동), 권한(dir700/file600)·redaction·cleanup·잔존 프로세스 검사 통과. 실행으로 코드·git 상태 불변.
