@@ -3,6 +3,7 @@ import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
+import { runHandoffCommand } from "./handoff.js";
 /** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
 function stdinApprover(message) {
     return new Promise((resolve) => {
@@ -14,7 +15,7 @@ function stdinApprover(message) {
     });
 }
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
-export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false) {
+export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffRunner = runHandoffCommand) {
     const provider = getProvider(providerId);
     const approve = yes ? async () => true : stdinApprover;
     if (resume) {
@@ -99,6 +100,14 @@ export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDE
         }
     }
     // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호
-    if (state.status === "failed")
+    if (state.status === "failed") {
         process.exitCode = 1;
+        return;
+    }
+    // [M3b.2] --handoff: run이 completed일 때만 대화형 Claude Code 핸드오프로 이어붙인다.
+    // (failed면 위에서 return — 핸드오프하지 않고 resume 안내만 남는다.)
+    if (handoff) {
+        console.log("");
+        await handoffRunner({ project, cwd: handoffCwd, yes });
+    }
 }

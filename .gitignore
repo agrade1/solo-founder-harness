@@ -17,3 +17,6 @@ projects/dogfood-*/
 
 # [M3a] 실행별 preflight 산출물 (mcp-config.json, tools-snapshot.json) — 커밋 금지
 projects/*/outputs/runtime/
+
+# [M3b.2] handoff tool-trace JSONL (정규화 trace, raw payload 미포함) — 커밋 금지
+projects/*/outputs/tool-trace/

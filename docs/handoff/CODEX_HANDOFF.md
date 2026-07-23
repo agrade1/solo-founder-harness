@@ -128,7 +128,7 @@
 
 ### 최신 전체 테스트 결과 (이번 세션 실측)
 
-`npm test` → **exec 75 pass / core(=test:core: core+tools+providers) 118 pass / acceptance 63 PASS**, 실패 0. (M3b.1 offline 반영)
+`npm test` → **exec 75 pass / core(=test:core: core+tools+providers+commands) 159 pass / acceptance 71 PASS**, 실패 0. (M3b.2 argv/planning/sentinel P0 회귀 반영, 2026-07-20)
 
 ### ProviderCapabilities 값 (검증, `src/providers/capabilities.ts`)
 
@@ -169,7 +169,10 @@
 
 ## 5. 다음 마일스톤 M3 (분리 기록)
 
-### M3a — Headless preflight — **offline+live 완료** (Claude Code 2.1.215 실측 PASS)
+### M3a — Headless preflight — **offline+live 완료** (Claude Code 2.1.215 non-empty MCP strict 격리 live 통과)
+
+> **live 검증 범위 구분**: M3a는 **non-empty MCP profile**(expected 서버 1개 + `mcp__expected__read_thing`)로 headless preflight의 strict 격리·canary 차단을 **실제 Claude 2.1.215에서 실측 통과**했다. **M3b.2의 empty MCP config + hook-settings + 대화형(TUI) Hook 경로도 2026-07-20 실제 Claude 2.1.215에서 live acceptance PASS**(아래 M3b.2 live acceptance 완료 참조).
+
 구현: `src/exec/{types,streamParser}.ts`(init.mcpServers 정규화), `src/providers/claudeCodeMcpAdapter.ts`(mcp-config 생성·검증), `src/tools/preflight.ts`(`runPreflight` — argv/env 강제, hard timeout, init 후 의도적 종료, snapshot 검증, fail-closed `PreflightError`). offline 테스트는 fake claude stub + NDJSON fixture. **live acceptance는 수동 runner `scripts/m3a-live-preflight.mjs`(+`fixtures/m3a/minimal-stdio-mcp.mjs`), `HARNESS_LIVE_M3A=1` 필수, npm test/CI 비대상.**
 - `claude -p --output-format stream-json --verbose --no-session-persistence --strict-mcp-config --mcp-config <gen> --tools "" --permission-mode plan`, env `MCP_CONNECTION_NONBLOCKING=0`·`ENABLE_TOOL_SEARCH=false`.
 - `system/init`의 실제 mcp_servers·mcp__* 도구를 기대치와 정확 비교(전부 connected, canary/누락/중복 자동 실패).
@@ -180,7 +183,12 @@
 ### M3b — Interactive handoff trace
 - **M3b.1 완료(offline 기반)**: `src/tools/{toolTrace,hookCollector,hookSettings}.ts`(+test), `trace.ts` sanitizeValue(민감 key 재귀 마스킹). Hook payload(PreToolUse/PermissionRequest/PostToolUse/PostToolUseFailure/PermissionDenied/SessionEnd)→공통 ToolTrace JSONL 정규화, 6 이벤트/필수 필드, exit code 게이팅(deny·audit실패 exit2/사후 exit1/stdout 미사용), env 계약 `HARNESS_TOOL_*`(secret 이름만), 원문 미저장(tool_response byte만)·크기 상한, MCP server=exact tool map 판정(추측 금지). `toRunEvent` 매핑 정의(실시간 emit 없음). **승인 의미 한계**: PermissionRequest=요청만·PermissionDenied=auto denial만. PermissionRequest 공식 payload에는 correlation ID(tool_use_id)가 없음→callId=null·synthetic ID 미생성·`permissionOutcomeObservable:false`. Hook만으로 수동 승인/거부를 정확히 연결 불가. SessionEnd는 종료 사실만 기록(unresolved·승인 결과 추측 금지).
 - **M3b.1 P0/P1 하드닝(완료)**: collector fail-closed(`parseConfig` 엄격·JSON fallback 금지, PreToolUse/PermissionRequest 실패 exit2·사후 exit1, stack/secret 미출력), payload 계약 검증(hook_event_name 일치·session_id 필수, PermissionRequest=tool_name+tool_input·tool_use_id 없음, tool hook=tool_use_id 필수, deny는 PreToolUse만), **SessionEnd는 종료 사실만 기록**(공식 payload에 correlation ID 부재로 unresolved·승인 결과 추측 금지), UTF-8 byte 상한(멀티바이트 경계 보존)·재귀 depth 상한, settings shell-safe quoting·`denyMatchers[]` dedupe.
-- **M3b.2(남음)**: handoff command/spawn, settings 파일 write·claude 실행, 실제 Claude Hook 이름 대응 실측. **대화형은 `stdio:inherit` + Hooks만 사용한다 — stream-json 파싱은 M3a headless preflight 전용이며 대화형 세션에는 쓰지 않는다.** `toRunEvent` 매핑은 **post-session/테스트용**이며 TUI 중 RunEvent 실시간 출력은 하지 않는다.
+- **M3b.2 완료(offline)**: handoff CLI·승인·headless preflight 게이트·격리 Hook settings·stub interactive spawn. `src/core/handoff.ts`(신규 `runHandoff` — outcome union, seam 주입)·`src/commands/handoff.ts`(신규)·`src/cli.ts`·`src/commands/run.ts`(`--handoff`/`--cwd`). 대화형 spawn argv `--strict-mcp-config --mcp-config <빈> --settings <hook-settings> --setting-sources "" --add-dir <contextRoot> --permission-mode default --tools default --disallowedTools mcp__* -- <initialPrompt>` (가변 인자 `--disallowedTools`가 프롬프트를 deny 값으로 소비하지 않도록 `--`로 옵션 파싱 종료 후 initialPrompt를 positional로 전달; `--add-dir <contextRoot>`는 planning 문서(docs/*.md) 접근용 — P0-1 수정 반영). **`-p`/stream-json 없음, `stdio:"inherit"`.** env `HARNESS_TOOL_*`(이름만)+`CLAUDE_CODE_DISABLE_AUTO_MEMORY=1`. **spawn 전 fail-closed preflight**(빈 MCP config, `emptyConfig`, ambient 서버/도구 하나라도 감지 시 차단; `--setting-sources ""`·auto-memory 격리 추가). Hook settings 공식 exec form(`command`=node, `args`=[collectorPath, hookKind]; deny는 args 마지막 "deny"). run_state.handoff는 **실제 spawn된 경우에만**(print/reject/preflight 실패/spawn 실패/non-TTY/missing binary 미기록, 종료코드·completed 불변). 산출물 `outputs/runtime/<id>/{mcp-config,hook-settings}.json`·`outputs/tool-trace/<id>.jsonl`(gitignore·dir700/file600, raw payload/transcript 미저장). **대화형은 `stdio:inherit`+Hooks만 — stream-json은 M3a preflight 전용.** 실제 Claude/TUI/live Hook 미실행(seam 주입).
+- **M3b.2 P0/P1 보완(완료)**: (P0) collector는 `PACKAGE_ROOT/dist/tools/hookCollector.js` 절대경로만(import.meta.url 상대 제거), spawn/preflight 전 존재·일반 파일 검증→없으면 `setup_failed`. (P0) trace JSONL은 spawn 전 빈 0600 사전 생성(append 후 0600 유지), hook-settings/mcp-config/tools-snapshot 0600·dir 0700, 기존 파일·symlink는 `wx`로 fail-closed, 기본 handoff id는 randomUUID. (P1) redaction refs는 env 이름(TOKEN/KEY/SECRET/PASSWORD/CREDENTIAL/AUTH·값 존재)에서 **이름만** 파생→`HARNESS_TOOL_SECRET_REFS`+collector 값 마스킹, preflight `redactNames`는 scrub 전용(child env 미전달), spawn/setup/preflight 오류·outcome `redactSecrets`. (P1) initialPrompt에 "서비스 레포 AGENTS.md·CLAUDE.md 준수" 명시(`--setting-sources ""` 보완). `runHandoff`는 명시적 outcome union. 검증: exec 75 + core 154 + acceptance 71.
+- **M3b.2 offline 최종 보완(2026-07-20)**: (1) 승인 preview 전체 redaction — `buildPreview`가 task prompt head만이 아니라 **cwd·trace 등 모든 동적 문자열을 포함한 최종 결과 전체**를 scrub(승인 화면 secret 평문 부재). (2) collector 검증 예외 정규화 — stat/readability 검증을 try/catch로 감싸 **부재·디렉터리·stat/access 오류를 예외 없이 scrub된 `setup_failed`로 반환**(preflight/spawn/handoff 기록 없음). production 경로 `PACKAGE_ROOT/dist/tools/hookCollector.js` 유지 + 테스트용 `collectorPath` seam, 일반 파일이며 읽기 가능할 때만 통과. (3) 테스트 정합성 — wx 충돌 테스트를 "trace 파일 exclusive-create 충돌"로 개명, collector 부재/디렉터리 setup_failed 테스트 추가, preview 전체 scrub 테스트 추가. 검증: exec 75 + core 157 + acceptance 71.
+- **M3b.2 두 번째 live 부분 통과 + P0 2건(2026-07-20, 전체 PASS 아님)**: argv `--` 꼬리로 초기 프롬프트는 정상 전달됐으나 **① planning context 경로 단절(P0-1)** — task prompt Include는 `docs/*.md` 상대경로인데 대화형 cwd는 serviceCwd, 실제 planning 문서는 `projectPaths(project).root/docs` → Claude가 docs 못 찾고 serviceCwd에 잘못된 `docs/WORKLOG.md` 생성. **② sentinel TUI 평문 출력(P0-2)** — Bash 검증 `printf '%s' "$M3B2_LIVE_TOKEN"`이 fake sentinel 값을 TUI에 출력(실제 credential 아님). 수정: (P0-1) `contextRoot=projectPaths(project).root` + argv `--add-dir <contextRoot>` + initialPrompt 경로 계약 + preview에 serviceCwd·contextRoot 별도 표시 + 128KB fallback contextRoot 접근, `--disallowedTools mcp__* -- <initialPrompt>` 꼬리 유지. (P0-2) Bash 검증을 비출력 `node -e 'if (!process.env.M3B2_LIVE_TOKEN) process.exit(1)'`로 변경. 회귀 테스트·runner 검증 추가(planning Read 성공·serviceCwd docs 미생성·`--add-dir`). (재검증 결과: 아래 live PASS 항목 참조.)
+- **M3b.2 첫 live 시도 무효(argv P0, 2026-07-20)**: Claude Code 2.1.215 첫 실행에서 대화형 argv 꼬리가 `--disallowedTools mcp__* <initialPrompt>`였고, `--disallowedTools`(가변 인자)가 **initialPrompt를 deny 규칙으로 소비**해 프롬프트 전 단어가 `Permission deny rule "..." matches no known tool` 경고로 출력됨. **세션이 acceptance 절차를 받지 못해 무효 — Hook 검증 미수행, PASS 아님.** 수정: argv 꼬리를 `--disallowedTools`, `mcp__*`, `--`, `initialPrompt`로(옵션 종료 구분자 `--`). 회귀 테스트(`handoff.test.ts` 성공 테스트 강화 + 전용 P0 테스트)·runner 사후 argv 검증 추가. offline 검증만 완료(실제 Claude/TUI 미재실행).
+- **M3b.2 actual live acceptance 완료(PASS, 2026-07-20, Claude Code 2.1.215)**: 위 P0(argv/planning 경로/sentinel 출력) 수정 후 수동 runner(`scripts/m3b2-live-handoff.mjs`, `HARNESS_LIVE_M3B2=1`, TTY 필수)를 재실행해 **exit 0/PASS**. 실측 통과: exec-form Hook 6종 exact 계약·`--setting-sources ""` 수용, empty MCP snapshot(servers=[]/tools=[])·config({}), planning contextRoot 접근(`--add-dir`, 00_IDEA/06_CEO_DECISION Read 성공, serviceCwd docs 미생성), Read 성공/실패 callId correlation, Bash 승인(permission_requested callId=null + tool_requested/succeeded, 비출력 sentinel 검사), Write 수동 거부(requested+permission·marker 부재·denied 미합성), SessionEnd 1건, ambient MCP/Hook canary 미기동, trace redaction·권한(dir700/file600)·원문 미저장, run_state 불변, argv `-p`/stream-json 없음(`--` 꼬리). **버전 종속 실측(2.1.215) — CLI 변경 시 재검증.** **다음: M3c(shadcn read) 파일럿 계획 검토(구현 아님).**
 
 ### M3c — 제한된 shadcn read 파일럿
 - **검증한 고정 버전** 사용(`@latest` 금지).
@@ -213,7 +221,7 @@
 - **README 문서 불일치**: `README.md`에 v1/v2.6 범위 서술 잔재(예: "현재 진행 중인 개발 항목 없음",
   삭제된 `V3_KICKOFF.md` 참조). M0~M2에서 손대지 않음 — 후속 정리 항목.
 - **package 배포 파일 후속 검증**: 현재 npm pack에 dist/tools·registry/tool_profiles.json·schemas 포함 확인.
-  M3에서 mcp-config 생성물은 `outputs/runtime/`에 두고 gitignore·배포 제외 필요(현재 gitignore 미포함 — 후속).
+  handoff/preflight 런타임 생성물은 `projects/*/outputs/runtime/`·`projects/*/outputs/tool-trace/`에 두며 **이미 `.gitignore`에 등재됨**(커밋·배포 제외 확인 완료 — 과거 "gitignore 미포함" 문구는 정정).
 
 ---
 
@@ -233,7 +241,7 @@
 
 - 브랜치 `develop`, 작업 트리 CLEAN, package.json `2.6.0`.
 - 커밋: M0 `582f6e0` / M1 `5cbdbcb` / M2 `b359bfc`.
-- 명령: build=`npm run build`, 테스트=`npm test`(=`test:exec` 75 + `test:core` 118 + `acceptance` 63),
+- 명령: build=`npm run build`, 테스트=`npm test`(=`test:exec` 75 + `test:core` 157 + `acceptance` 71),
   `test:core`는 `HARNESS_WORKSPACE=.tmp-test-workspace tsx --test src/core/*.test.ts src/tools/*.test.ts
-  src/providers/*.test.ts`.
-- npm pack: 69 files. 포함=dist/·agents/·registry/·schemas/·README.md. 제외=tests/·src/·*.test.*.
+  src/providers/*.test.ts src/commands/*.test.ts`.
+- npm pack: 76 files. 포함=dist/·agents/·registry/·schemas/·README.md. 제외=tests/·src/·*.test.*.

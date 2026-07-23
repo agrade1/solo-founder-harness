@@ -149,6 +149,26 @@ node scripts/token-lint.mjs --tokens "$TL/broken.json" "$TL/src" >/dev/null 2>&1
 [ $? -eq 1 ]; check "깨진 tokens.json(계층위반/없는참조) → exit 1" $?
 
 echo ""
+echo "== Test 12: handoff (offline — 실제 claude/TUI 미실행) =="
+# 직전 Test 10에서 run_state=completed. 실제 claude/preflight/spawn을 타지 않는 경로만 검증.
+# 12a) --print: preflight/spawn/state 변경 없이 재진입 명령만 출력.
+OUT="$($HARNESS handoff --project "$PROJ" --print 2>&1)"
+echo "$OUT" | grep -q "harness handoff --project '$PROJ'"; check "--print → 재진입 명령 출력" $?
+echo "$OUT" | grep -q -- "--yes";                          check "--print 재진입 명령에 --yes" $?
+if [ -d "$PDIR/outputs/runtime" ]; then false; else true; fi; check "--print → runtime 디렉터리 미생성" $?
+if grep -q '"handoff"' "$RS"; then false; else true; fi;   check "--print → run_state.handoff 미기록" $?
+# 12b) claude 바이너리 부재 → 설치/재진입 안내, spawn·기록 없음(비-TTY보다 먼저 판정).
+OUT="$(HARNESS_CLAUDE_BIN=/nonexistent/claude-xyz $HARNESS handoff --project "$PROJ" --yes 2>&1)"
+echo "$OUT" | grep -q "claude CLI를 찾을 수 없습니다"; check "missing binary → 설치 안내" $?
+if grep -q '"handoff"' "$RS"; then false; else true; fi;  check "missing binary → run_state.handoff 미기록" $?
+grep -q '"status": "completed"' "$RS";                    check "missing binary → completed 상태 불변" $?
+# 12c) run이 completed 아니면 handoff 거부.
+echo n | $HARNESS run dev-preflight --project "$PROJ" >/dev/null 2>&1   # user_rejected → failed
+# 출력을 먼저 캡처한다(handoff는 not_completed에서 exit 1 → pipefail 오판 방지).
+OUT="$($HARNESS handoff --project "$PROJ" 2>&1)"
+echo "$OUT" | grep -q "상태가 아닙니다"; check "not_completed → handoff 거부" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
