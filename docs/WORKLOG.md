@@ -1,5 +1,49 @@
 # WORKLOG.md
 
+## 2026-07-22 (V3 M3c-2 — actual live read semantics acceptance PASS)
+
+**M3c-2 controlled read semantics live acceptance 1회 실행 — runner exit 0 / PASS.** `HARNESS_LIVE_M3C2_SEMANTICS=1 node scripts/m3c2-live-read-semantics.mjs`. **Claude CLI/구독 미사용**(shadcn MCP stdio 직접, `shadcn@4.13.1`). 실행으로 코드·git 상태 불변(runner는 임시 경로만 사용·자체 정리).
+- **고정 5개 도구가 정확한 순서로 호출됨**: `get_project_registries` → `list_items_in_registries` → `search_items_in_registries` → `view_items_in_registries` → `get_item_examples_from_registries`(모두 `mcp__shadcn__` prefix). operationSummary `{initialize:1, initialized:1, toolsListPages:1, toolCalls:5, forbiddenToolCalls:0}`.
+- **금지 도구 2개(get_add_command_for_items, get_audit_checklist) 호출 없음.** 5회 모두 **serviceCwd unchanged=true**(before==after hash). 전 결과 **contentTypes=[text], structuredContentPresent=false**, 전 호출 **withinProposedBudget=true**.
+- **실측 지표(runner 출력값)**:
+  - `get_project_registries`: responseBytes=365, textChars=285
+  - `list_items_in_registries`: responseBytes=274, textChars=194
+  - `search_items_in_registries`: responseBytes=289, textChars=207
+  - `view_items_in_registries`: responseBytes=172, textChars=94
+  - `get_item_examples_from_registries`(**최대 결과**): responseBytes=4441, textChars=4161, withinProposedBudget=true
+- **계약/보안 검사 통과(exit 0 근거)**: mcp-config 정확히 `npx --yes shadcn@4.13.1 mcp`, runtime dir 0700·mcp-config 0600·snapshot 0600, snapshot 구조(허용 key만)·sentinel 평문 부재, 외부 결과 원문 미출력·미저장, cleanup·잔존 프로세스(`shadcn@4.13.1 mcp`) 없음. **protocolVersion은 허용 집합·serverInfo는 non-empty(name/version) 계약 통과로 기록**(정확한 값은 이번 runner 출력에 직접 재출력되지 않음; `2025-11-25`/`shadcn 1.0.0`은 M3c-1 기존 실측값으로만 구분해 언급).
+- **증거 경계**: 이번 출력에는 정확한 `resultChars`/`resultBytes`가 없어 수치는 추측하지 않는다(withinProposedBudget=true만 확인). 단일 실행의 serviceCwd 무변경이 모든 원격 부작용 부재를 증명하지는 않는다.
+- **여전히 미완료**: 5개는 아직 **"노출 승인"이 아니라 read semantics 검증 후보**다. 권한 분류·profile 등록·registry 변경·handoff 연결·result-size enforcement **미착수**. **전체 M3c 미완료.**
+- **다음: M3c-3 권한 매핑·필터링·result-size enforcement 계획 검토(구현 미착수).**
+
+## 2026-07-22 (V3 M3c-2 — read semantics probe P0/P1 보완, live 전, offline)
+
+**M3c-2 P0 2건 + P1 2건 + runner 정합성 보완. actual five read calls는 여전히 승인 대기.** 실제 shadcn/network 미실행(fake stdio MCP fixture만).
+- **P0-1 고정 호출 계획 런타임 불변성**: `SEMANTICS_CALLS`/`FORBIDDEN_CALL_TOOLS`/`MCP_ALLOWED_PROTOCOL_VERSIONS` export를 제거하고 **non-exported 내부 상수 + deep-freeze**로 변경. 외부에는 매번 **deep clone**을 돌려주는 getter(`getSemanticsCalls`/`getForbiddenCallTools`/`getAllowedProtocolVersions`)만 노출. 실행은 내부 frozen 계획만 사용. 시작 시 이름·순서·arguments canonical hash·중복 부재·금지 제외를 **독립 contract와 exact 비교**. M3c-1의 가변 `EXPECTED_SHADCN_TOOLS`에 의존하지 않고 내부 namespaced exact set으로 tools/list 검증. 재현(`SEMANTICS_CALLS[0].arguments=…`·`FORBIDDEN.clear()`·`ALLOWED.add()`)이 getter clone에만 적용되고 실제 호출/인자·금지·allowlist는 불변임을 테스트.
+- **P0-2 전체 결과 budget**: `textChars`는 관측 지표로 유지하고, **CallToolResult 전체 canonical serialization** 기준 `resultChars`/`resultBytes`를 추가. `withinProposedBudget = resultChars <= 8000`. `responseBytes`는 JSON-RPC envelope 포함 raw line bytes로 유지. structuredContent가 8,000자 초과면 text가 작아도 budget=false. hard 256KiB cap 유지, 원문 미저장.
+- **P1-3 filesystem snapshot 강화**: serviceCwd **root 자체 type/mode**를 hash에 포함. baseline symlink는 **spawn 전 fail-closed**(`baseline_symlink`). 파일은 `O_NOFOLLOW` fd로 열어 **같은 fd로 fstat/read**(snapshot 중 symlink 교체 방지, ELOOP→symlink 기록). 파일별(1MiB)·전체(16MiB) read 상한. `MAX_FS_ENTRIES` off-by-one(`>=`) 수정. root chmod·기존 symlink·oversized 파일 테스트 추가.
+- **P1-4 실패 경로 child/HOME cleanup**: 성공뿐 아니라 timeout/malformed/fs-change 등 **모든 실패 경로도 kill→bounded close 확인 후 reject**(settle→closeGrace→SIGKILL→killGrace, close 미확인 시 `child_did_not_close`). child close **전에는 임시 HOME/cache를 삭제하지 않음**. cleanup 실패는 typed `cleanup_failed`로 표면화. 실패 fixture·runner 종료 후 `m3c2-home-*` 잔존 없음 검증.
+- **runner 정합성**: mutable export 대신 clone getter 사용. generated mcp-config가 정확히 `npx --yes shadcn@4.13.1 mcp`인지, mcp-config 0600·runtime 0700·snapshot 0600, snapshot mode/readSemantics/calls.length===5 확인. raw payload 검사를 `"content"` 정규식이 아니라 **허용 top-level/call metric key 구조**로 검증. phase=tools 중복 조건(단일 응답 cap 재검사) 제거. capabilities.tools도 plain object로 검증.
+- 검증: build/tsc noEmit 클린, exec 75 + core 208 + acceptance 71, node --check·opt-in exit 2·runner offline smoke, git diff --check 클린.
+- **미완료(주장 금지)**: 5개는 노출 승인 아닌 검증 후보, add-command/audit-checklist 제외. 권한 분류·profile 등록·handoff 연결·result-size enforcement 미완료. **전체 M3c 미완료. 다음: actual five read calls(승인 후).**
+
+## 2026-07-21 (V3 M3c-2 — controlled read semantics probe scaffold, offline)
+
+**M3c-2 controlled semantics scaffold offline 완료. actual five read calls는 승인 대기.** 실제 shadcn/network 미실행(fake stdio MCP fixture만). profile 등록·handoff 연결·registry 변경·result-size enforcement 없음.
+- **shadcn 전용 semantics probe**(`src/tools/shadcnReadSemanticsProbe.ts` 신규): exact `npx --yes shadcn@4.13.1 mcp`. `initialize → notifications/initialized → tools/list`(M3c-1과 동일 exact 7개 검증) → **읽기 후보 5개만 고정 인자로 순차 tools/call**. 호출 대상·인자는 코드 상수(외부 주입 seam 없음), 범용 MCP client 아님.
+  - **정확한 5개 호출**: `get_project_registries {}`, `list_items_in_registries {registries:["@shadcn"],types:["ui"],limit:1,offset:0}`, `search_items_in_registries {registries:["@shadcn"],query:"button",types:["ui"],limit:1,offset:0}`, `view_items_in_registries {items:["@shadcn/button"]}`, `get_item_examples_from_registries {registries:["@shadcn"],query:"button-demo"}`.
+  - **금지 2개**: `get_add_command_for_items`, `get_audit_checklist` — tools/call 생성 경로 없음(fixture도 미수신).
+- **무변경 검증**: serviceCwd 전체를 호출 전/각 호출 후 재귀 snapshot(상대경로·타입·mode·size·SHA-256) 비교. 생성·수정·삭제·symlink 발생 시 즉시 `filesystem_changed` fail-closed. child HOME/npm cache는 serviceCwd 밖 임시 경로로 분리. custom/private registry는 config/spawn/call 이전 `checkComponentsJson`으로 거부.
+- **결과 검증**: CallToolResult content(배열·비어있지 않음)/structuredContent/isError 계약. isError=true·빈 결과·malformed 거부. **외부 결과 원문은 저장/출력하지 않고** 파생 지표만 기록: toolName·argumentsHash·elapsedMs·responseBytes·textChars·contentTypes·structuredContentPresent·resultHash·filesystemBefore/AfterHash·unchanged·withinProposedBudget.
+- **상한**: 정확히 5회, per-call 60s·overall 5min, 단일 raw response 256KiB(초과 fail-closed), stdout 2MiB·stderr 64KiB, proposed budget 8,000 chars는 **측정만**(초과 시 자르지 않고 `withinProposedBudget:false`). cursor/tool schema 검증은 M3c-1 유지.
+- **artifact**: `mcp-read-semantics.json`(mode:`read-semantics`·usableForHandoff:false·**externalDataUntrusted:true**, package/server/protocolVersion/serverInfo/proposedBudgetChars/calls/configHash/timestamp), dir 0700/file 0600/wx, deep redaction, child close bounded wait·잔존 프로세스 검사.
+- **operationSummary**: `{initialize:1, initialized:1, toolsListPages≥1, toolCalls:5, calledTools:[정확한 5개], forbiddenToolCalls:0}`.
+- **live runner**(`scripts/m3c2-live-read-semantics.mjs` 신규): `HARNESS_LIVE_M3C2_SEMANTICS=1` 없으면 exit 2, 실제 Claude 미사용, metrics만 출력(원문 없음), cleanup·잔존 검사. **이번 작업 미실행.**
+- **테스트**(`src/tools/shadcnReadSemanticsProbe.test.ts` 신규, +14): 정상 5회·순서·금지 부재·무변경·raw 미저장, fs 생성/수정/삭제/symlink 감지, isError/빈/malformed 거부, per-call·response 256KiB·stdout·stderr 상한, 8,000 초과=budget false(hard fail 아님), custom registry 부작용 0, persist wx, tools/list 불일치, redaction, 종료 지연, runner offline smoke(exit 0·원문 미출력)·opt-in exit 2, fixture 수신 method가 tools/list + 정확한 5 tools/call. M3c-0/M3c-1 불변.
+- 검증: build/tsc noEmit 클린, exec 75 + core 206 + acceptance 71, node --check·git diff --check 클린.
+- **미완료(주장 금지)**: 5개는 아직 "노출 승인"이 아닌 **검증 후보**. 권한 분류·profile 등록·handoff 연결·result-size enforcement **미완료**. 실제 5회 호출은 승인 대기. **전체 M3c 미완료.**
+- **다음: actual five read calls(승인 후 1회) → 결과로 노출 승인 여부·result budget enforcement 설계.**
+
 ## 2026-07-21 (V3 M3c-1 — actual live schema probe PASS, offline+live 완료)
 
 **M3c-1 offline+actual live 완료.** 사용자 승인 하에 `HARNESS_LIVE_M3C_SCHEMA=1 node scripts/m3c-live-schema-probe.mjs`를 1회 실행 — **runner exit 0 / schema discovery OK**. Claude CLI/구독 미사용(shadcn MCP stdio 직접), tools/call 없음, cleanup·잔존 프로세스 검사 통과. 실행으로 코드·git 상태 불변.

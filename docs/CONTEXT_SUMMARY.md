@@ -2,6 +2,33 @@
 
 최종 갱신: 2026-07-21
 
+## 최신 (2026-07-22 세션 — V3 M3c-2 actual live read semantics acceptance PASS)
+
+- **M3c-2 offline+actual live 완료(PASS). 전체 M3c 미완료.** live runner 1회 exit 0, Claude 미사용(shadcn@4.13.1 stdio), 실행으로 코드·git 불변.
+- 고정 5개(`get_project_registries`→`list_items_in_registries`→`search_items_in_registries`→`view_items_in_registries`→`get_item_examples_from_registries`) 정확 순서 호출, 금지 2개 미호출, 5회 unchanged=true, 전 결과 contentTypes=[text]·structuredContentPresent=false·withinProposedBudget=true.
+- 실측 responseBytes/textChars: 365/285, 274/194, 289/207, 172/94, **최대 get_item_examples 4441/4161(budget true)**. config 정확·권한(runtime700/config600/snapshot600)·redaction·cleanup·잔존 없음 통과.
+- 증거 경계: resultChars/resultBytes·protocolVersion/serverInfo 정확값은 이번 출력에 없어 추측 안 함(계약 통과로만 기록; 2025-11-25/shadcn 1.0.0은 M3c-1 실측 구분). 단일 무변경≠모든 부작용 부재.
+- **5개는 노출 승인 아닌 검증 후보. 권한 분류·profile·handoff·result-size enforcement 미착수. 다음: M3c-3 권한 매핑·필터링·result-size enforcement 계획 검토(구현 미착수).**
+
+## 최신 (2026-07-22 세션 — V3 M3c-2 read semantics probe P0/P1 보완, live 전)
+
+- **M3c-2 P0 2건+P1 2건+runner 정합성 보완. actual five read calls 승인 대기. 전체 M3c 미완료.** fake stdio MCP fixture만(실제 shadcn/network 없음).
+- **P0-1**: 호출 계획·금지·protocol allowlist를 non-exported 내부 상수 + deep-freeze로. 외부는 clone getter(`getSemanticsCalls`/`getForbiddenCallTools`/`getAllowedProtocolVersions`)만. 시작 시 독립 contract와 exact 비교(이름·순서·args canonical hash·중복·금지). getter clone/set 변조가 실제 호출/인자·금지·allowlist에 영향 없음 테스트.
+- **P0-2**: withinProposedBudget을 text가 아니라 **전체 결과 canonical `resultChars`≤8000**으로 판정(+resultBytes). responseBytes=raw line bytes. structuredContent 큰 경우 budget false(측정만).
+- **P1-3**: fs snapshot에 root type/mode 포함, baseline symlink spawn 전 차단, `O_NOFOLLOW` fd fstat/read(TOCTOU), 파일별 1MiB·전체 16MiB 상한, MAX_FS_ENTRIES off-by-one 수정. root chmod/기존 symlink/oversized 테스트.
+- **P1-4**: 모든 실패 경로 kill→bounded close 후 reject, close 전 HOME/cache 미삭제, cleanup 실패 `cleanup_failed`. 실패/runner 후 `m3c2-home-*` 잔존 없음.
+- **runner**: clone getter 사용, mcp-config 정확·권한(config600/runtime700/snapshot600), snapshot 구조(허용 key)로 raw payload 검사, capabilities.tools plain object.
+- 테스트(+2 net, core 208). 검증: exec 75 + core 208 + acceptance 71.
+- **미완료**: 권한 분류·profile 등록·handoff 연결·result-size enforcement. 5개는 노출 승인 아닌 검증 후보.
+
+## 최신 (2026-07-21 세션 — V3 M3c-2 controlled read semantics probe scaffold, offline)
+
+- **M3c-2 controlled semantics scaffold offline 완료. actual five read calls 승인 대기. 전체 M3c 미완료.** 실제 shadcn/network 미실행(fake stdio MCP fixture). profile/handoff/registry/result-enforcement 없음.
+- **`src/tools/shadcnReadSemanticsProbe.ts`(신규)**: exact `npx --yes shadcn@4.13.1 mcp`. init→initialized→tools/list(7개 exact)→ **읽기 후보 5개만 고정 인자로 순차 tools/call**(코드 상수, 주입 seam 없음). 금지 2개(get_add_command_for_items·get_audit_checklist)는 호출 경로 없음. serviceCwd 호출 전/후 재귀 snapshot(경로·타입·mode·size·SHA-256)로 무변경 검증 — 생성/수정/삭제/symlink 시 `filesystem_changed` fail-closed. HOME/cache는 serviceCwd 밖 임시. CallToolResult(content/structuredContent/isError) 계약·isError/빈/malformed 거부. **외부 결과 원문 미저장** — 파생 지표만(hash/count/type/elapsed/bytes/unchanged/budget). 상한: 5회·per-call 60s·overall 5min·단일 256KiB·stdout 2MiB·stderr 64KiB·budget 8,000 chars **측정만**(초과 `withinProposedBudget:false`, 자르지 않음). artifact `mcp-read-semantics.json`(mode:read-semantics·usableForHandoff:false·externalDataUntrusted:true, dir700/file600/wx). operationSummary{initialize:1,initialized:1,toolsListPages≥1,toolCalls:5,calledTools:[5개],forbiddenToolCalls:0}.
+- **`scripts/m3c2-live-read-semantics.mjs`(신규)**: `HARNESS_LIVE_M3C2_SEMANTICS=1` 없으면 exit 2, Claude 미사용, metrics만 출력·cleanup·잔존 검사. **이번 세션 미실행.**
+- 테스트(+14, core 206). 검증: exec 75 + core 206 + acceptance 71.
+- **미완료(주장 금지)**: 5개는 노출 승인 아닌 검증 후보. 권한 분류·profile 등록·handoff 연결·result-size enforcement 미완료. **다음: actual five read calls(승인 후) → 노출 승인·enforcement 설계.**
+
 ## 최신 (2026-07-21 세션 — V3 M3c-1 actual live schema probe PASS, offline+live 완료)
 
 - **M3c-1 offline+actual live 완료(PASS). 전체 M3c 미완료.** live runner 1회 실행 exit 0/OK, Claude 미사용, tools/call 없음, cleanup·잔존 프로세스 통과.

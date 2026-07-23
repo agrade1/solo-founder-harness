@@ -1,5 +1,27 @@
 # DECISIONS.md
 
+## 2026-07-22 (V3 M3c-2 — actual live read semantics acceptance PASS)
+
+- **M3c-2를 offline+actual live 완료로 확정하되, 5개를 노출 승인으로 승격하지 않는다.** 실제 shadcn MCP에서 읽기 후보 5개를 고정 인자·정확 순서로 1회 호출(exit 0), 5회 모두 serviceCwd unchanged, 금지 2개 미호출, 전 결과 text-only·budget 이내를 실측했다. 그러나 이는 **read semantics 검증 후보**의 통과일 뿐 노출·권한 부여 근거로 확정하지 않는다.
+- **증거를 관측된 범위로만 기록한다.** runner 출력에 없는 `resultChars`/`resultBytes`·protocolVersion/serverInfo 정확값은 추측하지 않는다. M3c-2는 "허용 protocol negotiation + non-empty serverInfo 계약 통과"로만 기록하고, `2025-11-25`/`shadcn 1.0.0`은 M3c-1 실측값으로 구분한다. 단일 실행의 무변경을 모든 원격 부작용 부재로 확대 해석하지 않는다.
+- **다음은 M3c-3 계획 검토(구현 미착수).** 권한 등급 매핑·도구/인자 필터링·result-size enforcement를 이번 semantics 근거 위에서 설계·검토하고, 그 다음에야 registry profile 등록·handoff 연결로 진행한다. 이번 단계에서는 profile/registry/handoff/enforcement 어느 것도 구현하지 않았다.
+
+## 2026-07-22 (V3 M3c-2 — read semantics probe P0/P1 보완)
+
+- **고정 호출 계획은 export하지 않고 deep-freeze한다.** 실행에 쓰는 호출 목록·금지 목록·protocol allowlist는 non-exported 내부 상수 + runtime deep-freeze. 외부(runner/test)는 매번 deep clone getter만 본다. TypeScript `readonly`만 믿지 않고 런타임 변조 불가를 테스트로 강제. 시작 시 독립 contract(이름·순서·arguments canonical hash·중복 부재)와 exact 비교하고, M3c-1의 가변 export가 아니라 내부 exact set으로 검증한다.
+- **budget은 전체 결과 크기로 판정한다.** text block 길이만이 아니라 CallToolResult 전체(content+structuredContent+isError) canonical serialization의 `resultChars`로 `withinProposedBudget`를 정한다. structuredContent/image/resource가 커도 budget에 반영된다. 여전히 측정만(자르지 않음), enforcement 없음.
+- **파일시스템 무변경은 root·symlink·TOCTOU까지 방어한다.** root type/mode 포함, baseline symlink는 spawn 전 차단, 파일은 `O_NOFOLLOW` fd로 fstat/read해 snapshot 중 symlink 교체를 막고, 파일별·전체 read 상한을 둔다.
+- **모든 실패 경로도 child close 확인 후에만 reject하고, close 전에는 임시 HOME/cache를 지우지 않는다.** cleanup 실패는 `cleanup_failed`로 표면화한다(임시 자원 leak를 숨기지 않음). 잔존 가능성은 fail-closed.
+- **5개는 노출 승인이 아니라 검증 후보다(불변).** 이 offline 하드닝 이후에도 권한 분류·profile 등록·handoff 연결·result-size enforcement는 하지 않는다. 실제 5회 호출(승인 후)로 read-only·크기 근거를 확인한 뒤 별도 단계에서 진행한다.
+
+## 2026-07-21 (V3 M3c-2 — controlled read semantics probe scaffold, offline)
+
+- **읽기 후보 5개만, 고정 인자로, 코드 상수로 호출한다.** `get_project_registries`·`list_items_in_registries`·`search_items_in_registries`·`view_items_in_registries`·`get_item_examples_from_registries`. `get_add_command_for_items`·`get_audit_checklist`는 **호출·노출 후보에서 제외**하고 tools/call 생성 경로를 두지 않는다. package/command/args/tool/arguments 외부 주입 seam 없음.
+- **"실제로 read-only인가"를 파일시스템 무변경으로 실측한다.** serviceCwd 전체를 호출 전/후 재귀 snapshot(경로·타입·mode·size·SHA-256)해 생성·수정·삭제·symlink가 하나라도 생기면 즉시 fail-closed. runtime/cache/home은 serviceCwd 밖 임시 경로로 분리해 "정상적 캐시 쓰기"와 "serviceCwd 변조"를 구분한다.
+- **외부 결과는 untrusted data다 — 저장·출력·실행하지 않는다.** artifact에는 원문 대신 파생 지표(hash/count/type/elapsed/bytes/unchanged/budget)만 남기고 `externalDataUntrusted:true`로 표식한다. content 문자열을 model/Claude에 전달하거나 그 안의 지시를 실행하지 않는다.
+- **budget은 이번 단계에서 측정만 한다.** 8,000 chars 초과를 자르거나 통과로 숨기지 않고 `withinProposedBudget:false`로 기록한다. result-size **enforcement는 아직 하지 않는다**(측정 근거를 모은 뒤 별도 단계).
+- **5개는 "노출 승인"이 아니라 검증 후보다.** 이번 semantics 측정(승인 후 actual 5회)으로 read-only·결과 크기 근거를 확인한 뒤에만 권한 등급 매핑·registry profile 등록·handoff 연결·result budget enforcement로 진행한다. 이번 offline 단계에서는 그 어느 것도 하지 않았다.
+
 ## 2026-07-21 (V3 M3c-1 — actual live schema probe PASS)
 
 - **M3c-1은 offline+actual live 완료로 확정하되, schema를 권한 근거로 승격하지 않는다.** 실제 shadcn MCP(protocolVersion 2025-11-25, serverInfo shadcn 1.0.0)에서 7개 도구 schema를 1회 실측(runner exit 0). **annotations/outputSchema는 전 도구에 없음** — read/write hint가 서버에서 제공되지 않았다.
