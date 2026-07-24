@@ -13,13 +13,14 @@ function stdinApprove(message: string, preview: string): Promise<boolean> {
   });
 }
 
-/** harness handoff --project <p> [--cwd <serviceRepo>] [--print] [--yes] */
-export async function runHandoffCommand(opts: { project: string; cwd?: string; print?: boolean; yes?: boolean }): Promise<HandoffOutcome> {
+/** harness handoff --project <p> [--cwd <serviceRepo>] [--print] [--yes] [--tool-profile <id>] */
+export async function runHandoffCommand(opts: { project: string; cwd?: string; print?: boolean; yes?: boolean; toolProfileId?: string }): Promise<HandoffOutcome> {
   const outcome = await runHandoff({
     project: opts.project,
     cwd: opts.cwd,
     print: opts.print,
     yes: opts.yes,
+    toolProfileId: opts.toolProfileId,
     approve: stdinApprove,
   });
 
@@ -27,7 +28,13 @@ export async function runHandoffCommand(opts: { project: string; cwd?: string; p
   if (outcome.action === "not_completed") {
     console.error(outcome.reason);
     process.exitCode = 1;
-  } else if (outcome.action === "setup_failed" || outcome.action === "preflight_failed" || outcome.action === "spawn_failed") {
+  } else if (
+    outcome.action === "setup_failed" ||
+    outcome.action === "profile_rejected" ||
+    outcome.action === "registry_rejected" ||
+    outcome.action === "preflight_failed" ||
+    outcome.action === "spawn_failed"
+  ) {
     process.exitCode = 1;
   }
   return outcome;

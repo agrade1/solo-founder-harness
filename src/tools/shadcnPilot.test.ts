@@ -411,7 +411,10 @@ test("[M3c-0][P1-8] mcp-discovery.json wx 충돌 → persist(typed) + 부분 성
   }
 });
 
-test("[M3c-0] 불변: registry/tool_profiles.json에 shadcn profile 미등록", () => {
+test("[M3c-3b] registry의 shadcn profile은 handoff-shadcn-readonly(launcher) 하나뿐 · 원본 npx 미등록", () => {
   const reg = JSON.parse(readFileSync(join(PACKAGE_ROOT, "registry", "tool_profiles.json"), "utf8"));
-  assert.ok(!/shadcn/i.test(JSON.stringify(reg)), "registry에 shadcn profile 미등록");
+  const shadcnIds = reg.profiles.filter((p: { id: string }) => /shadcn/i.test(p.id)).map((p: { id: string }) => p.id);
+  assert.deepEqual(shadcnIds, ["handoff-shadcn-readonly"], "shadcn profile은 handoff-shadcn-readonly 하나만");
+  // registry에는 신뢰된 launcher만 — 원본 npx shadcn 직접 실행 명령을 registry에 남기지 않는다.
+  assert.ok(!/npx/.test(JSON.stringify(reg)), "registry에 npx 직접 실행 명령 없음(launcher만)");
 });

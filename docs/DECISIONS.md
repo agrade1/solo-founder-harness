@@ -1,5 +1,45 @@
 # DECISIONS.md
 
+## 2026-07-24 (V3 M3 전체 완료 — M3c-3b actual live PASS)
+
+- **M3c-3b는 offline + actual live 완료로 표시한다.** filtered shadcn read handoff가 Claude Code 2.1.218에서 runner exit 0/PASS로 실측됐다(preflight shadcn connected+host 5 exact, 금지 2 미노출, trace records 25/tool_requested 3/session_end 1, config_hash 체인·snapshot_path 일치, serviceCwd 무변경, canary·잔존 프로세스 없음, cleanup 완료).
+- **V3 M3 전체 완료.** M3a(non-empty MCP strict 격리 live) · M3b.2(empty MCP 대화형 Hook live) · M3c-3b(filtered shadcn read handoff live) acceptance가 모두 충족됐다. 다음 단계(활성 read 도구 확대, Tavily/Research adapter M4 등)는 **별도 계획 검토로만** 기록하며 이번 범위에서 구현하지 않는다.
+- **live 실패에서 배운 계약(보존)**: (1) proxy는 upstream/downstream protocolVersion을 분리하고 초기화 응답을 attestation과 독립적으로 즉시 낸다(안 그러면 `server_not_connected`). (2) MCP connect deadline이 기본 5s라 cold npx + attestation을 위해 blocking MCP env(45s)를 강제해야 한다(안 그러면 `status=pending`).
+
+## 2026-07-24 (V3 M3c-3b — blocking MCP 연결 env 단일 출처·마지막 강제)
+
+- **MCP 연결 timeout env는 한 곳(`src/tools/mcpEnv.ts`)에서만 정의한다.** `MCP_CONNECTION_NONBLOCKING=0`·`MCP_CONNECT_TIMEOUT_MS=45000`·`MCP_TIMEOUT=45000`. filtered proxy의 cold npx + exact-7 attestation이 Claude 기본 handshake 5s를 넘겨 pending 되는 것을 막는다. 45s는 proxy startup 30s와 preflight hard timeout 60s 사이에 두어 cleanup 여유를 남긴다.
+- **안전값은 마지막에 강제한다.** preflight child env와 handoff-shadcn interactive spawn env 모두, ambient `process.env`·testEnv를 먼저 깔고 blocking MCP env를 `Object.assign`으로 **가장 마지막에** 덮어써 override를 원천 차단한다.
+- **blocking MCP env는 shadcn profile 경로에만.** 기본 handoff(empty MCP, toolProfile 미지정)는 이 env를 추가하지 않아 기존 동작이 완전히 불변이다. pending/failed/needs-auth를 성공으로 완화하지 않고, connected + exact tools만 성공이라는 계약도 그대로다.
+
+## 2026-07-24 (V3 M3c-3b — MCP proxy: protocol 두 leg 분리 + attestation 게이팅)
+
+- **upstream/downstream protocolVersion은 완전히 분리한다.** proxy는 MCP 서버(upstream)와 MCP 클라이언트(downstream) 두 leg를 갖는다. upstream initialize 응답은 **upstream이 요청한 허용 버전**을 그대로 돌려주고, downstream은 `REQUEST_PROTOCOL_VERSION`으로 별도 협상한다. downstream 버전을 upstream에 복사하면 Claude가 협상 불일치로 연결에 실패할 수 있으므로 금지. upstream pv가 missing/비문자열/미허용이면 initialize를 fail-closed로 거부하고 tools를 노출하지 않는다.
+- **upstream initialize는 downstream 검증과 독립적으로 즉시 응답한다.** downstream attestation(initialize→tools/list exact-7)을 initialize 응답 전제조건으로 두면 downstream 기동 지연이 Claude의 MCP 연결 타임아웃(`server_not_connected`)을 유발한다. 따라서 upstream listener를 downstream spawn 직후 시작하고, attestation은 별도 bounded Promise로 돌린다.
+- **tools/list·tools/call은 attestation 통과 전 성공하지 않는다.** attestation pending이면 startup timeout 안에서 bounded wait, 실패면 restricted 5개를 절대 노출하지 않고 연결을 종료(non-zero + 그룹 kill + HOME cleanup)한다. attestation 실패가 `upstream_end` 정상 종료로 가려지지 않도록, upstream_end 성공 종료는 attestation 완료까지 defer한다.
+
+## 2026-07-24 (V3 M3c-3b — launcher args 엄격화·단일 출처·전용 live runner)
+
+- **launcher 서버에 args는 빈 배열이어도 금지.** 혼합 검사를 `decl.args !== undefined`로 해 `args:[]` 존재 자체를 mixed_launcher로 거부한다(모호한 stdio/launcher 혼합 여지 제거).
+- **신뢰 launcher 목록은 단일 출처.** `profiles.ts`의 `TRUSTED_LAUNCHER_IDS` 하나만 사용하고 adapter의 중복 Set을 제거한다(목록 드리프트 방지). loader·adapter·contract가 같은 목록을 본다.
+- **live acceptance는 전용 runner로만, 자동 실행 금지.** `scripts/m3c3b-live-handoff.mjs`는 `HARNESS_LIVE_M3C3B=1`+TTY+claude version 게이트를 통과할 때만 실제 Claude·`npx shadcn`을 호출한다. npm test/CI에서 절대 실행되지 않으며 임시 경로·canary 격리·lsof ownership 확인 후 kill·원문 미출력을 강제한다. production/remote/billing/deploy 미접촉.
+
+## 2026-07-24 (V3 M3c-3b — live 전 P0/P1 하드닝 계약)
+
+- **trusted proxy 실행 경로는 고정, override 불가.** `shadcn_read_proxy`는 항상 `node + PACKAGE_ROOT/dist/tools/shadcnReadMcpProxy.js`. 인자·환경변수·profile·test seam 어느 것으로도 실행 경로를 바꿀 수 없다(과거 `launcherProxyPath`/`proxyPath` seam 제거). 파일 상태 검증(`verifyTrustedProxyFile`)만 분리해 테스트가 임시 경로로 호출하되, 그 경로가 generated config에 들어가는 공개 API는 두지 않는다.
+- **launcher profile은 secret을 갖지 않는다.** filtered shadcn read profile은 secretRefs·allowedDomains 정확히 `[]`, server key 정확히 `{name, launcher}`. launcher 서버가 secretRefs를 선언하면 config 생성 단계에서 `launcher_secret_refs_forbidden`으로 fail-closed(값 미노출). proxy는 임시 HOME/cache로 동작하므로 ambient secret이 필요 없다.
+- **server 선언은 로드 단계에서 runtime 검증한다(단순 cast 금지).** launcher/stdio/http/bare 분류별로 필수·금지 필드와 unknown key·mixed transport를 `validateServer`가 강제하고, `McpServerDecl.launcher`는 `"shadcn_read_proxy"` literal로 제한한다. schema(server oneOf + additionalProperties:false)도 runtime 계약과 일치시켜 문서-런타임 드리프트를 없앤다.
+- **trusted proxy는 symlink이면 거부한다.** `lstatSync`로 symlink을 따라가지 않고 거부(`launcher_proxy_symlink`), 일반 파일·읽기 가능만 통과. 심볼릭 링크로 신뢰 경로를 바꿔치기하는 것을 막는다.
+
+## 2026-07-23 (V3 M3c-3b — filtered shadcn read profile 배선 계약)
+
+- **registry엔 launcher 논리 식별자만, 절대경로·npx 미기록.** `McpServerDecl.launcher`(신뢰 목록 `shadcn_read_proxy`)를 runtime에서만 `node + PACKAGE_ROOT/dist/tools/shadcnReadMcpProxy.js`로 변환한다. command/args/url과 배타적, unknown launcher·proxy 파일 부재/디렉터리/읽기불가는 config 기록 전 fail-closed. 원본 `npx shadcn`을 profile에서 직접 실행하지 않는다(filtered proxy만이 경계).
+- **파일럿 handoff profile은 `handoff-shadcn-readonly` 하나만 허용.** `harness handoff --tool-profile`에 다른(MCP) profile을 주면 fail-closed(`profile_rejected`). 로드 후 정확 계약 검증(capability/binding/launcher/preapproved/denied/permission/limits/source)으로 registry 변조에 의한 노출 확대를 막는다. 상한은 proxy 정책 상수(calls6/resultChars8000/timeout60000)와 exact 일치.
+- **workflow용 `--tool-profile`과 handoff용 `--handoff-tool-profile`은 분리.** runWorkflow의 MCP fail-closed 가드는 그대로 — MCP binding profile을 workflow에 주면 여전히 거부. handoff 경로만 preflight+proxy로 MCP를 연다.
+- **profile 경로 대화형 argv는 `mcp__*` 전체 deny 대신 정확한 host 5개 allow + 금지 2개 deny.** 미지정 기본 경로는 기존 empty-MCP + `mcp__*` deny 그대로(완전 불변). preflight는 shadcn connected + 정확한 5개 도구일 때만 통과(누락/초과/금지 도구 snapshot은 tool_mismatch).
+- **components.json 표준 registry 검사는 Claude·proxy 실행 전.** custom/private/malformed/symlink이면 `registry_rejected`로 spawn·preflight·기록 없이 중단.
+- **HandoffRecord optional 필드(tool_profile_id/config_hash/snapshot_path)는 profile 경로에서만.** 기본 경로 record는 종전과 동일(optional 키 미포함), run_state status/completed 불변.
+
 ## 2026-07-22 (V3 M3c-3a — signal 즉시 종료 계약, downstream 위반 fatal 분류)
 
 - **AbortSignal은 downstream spawn 직후부터 연결한다.** startup 완료 후 등록하면 startup/in-flight signal이 timeout까지 대기하므로, spawn 직후(이미 aborted면 즉시) 연결하고 signal 수신 즉시 process group을 죽여 pending을 해제한다(startupTimeout 30s·perCallTimeout 60s 대기 금지).

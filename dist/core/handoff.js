@@ -11,6 +11,10 @@ import { generateTaskPrompt } from "./taskPrompt.js";
 import { runPreflight, PreflightError } from "../tools/preflight.js";
 import { buildHookSettings, buildHookEnv, shellQuote, SUPPORTED_HOOKS } from "../tools/hookSettings.js";
 import { isValidSecretRef, collectSecretValues, redactSecrets } from "../tools/redact.js";
+import { loadToolProfiles } from "../tools/profiles.js";
+import { applyBlockingMcpEnv } from "../tools/mcpEnv.js";
+import { checkComponentsJson, SHADCN_SERVER } from "../tools/shadcnPilot.js";
+import { getAllowedTools, getForbiddenTools, nsName, MAX_TOOL_CALLS, PER_CALL_TIMEOUT_MS, RESULT_CHARS_BUDGET } from "../tools/shadcnReadPolicy.js";
 /**
  * [M3b.2 offline] 문서 완료 → Claude Code 대화형(TUI) 핸드오프.
  *
@@ -26,6 +30,8 @@ import { isValidSecretRef, collectSecretValues, redactSecrets } from "../tools/r
  * 실제 Claude/live Hook은 이 모듈에서 실행하지 않는다(테스트는 seam으로 주입). 종료코드는 기록하지 않는다.
  */
 export const HANDOFF_PROFILE_ID = "handoff-default";
+/** [M3c-3b] 파일럿 단계에서 유일하게 허용되는 MCP handoff profile. 다른 MCP profile은 fail-closed. */
+export const PILOT_SHADCN_PROFILE_ID = "handoff-shadcn-readonly";
 const DEFAULT_MAX_PROMPT_BYTES = 128 * 1024;
 // --setting-sources ""로 서비스 레포 CLAUDE.md/AGENTS.md가 자동 로드되지 않으므로 프롬프트에 명시한다.
 const PLAN_FIRST_SUFFIX = "\n\n서비스 레포의 AGENTS.md와 CLAUDE.md가 존재하면 먼저 읽고 준수하라. " +
@@ -46,6 +52,75 @@ const HANDOFF_PREFLIGHT_PROFILE = {
     limits: { maxCallsPerStep: 0, maxResultChars: 0, maxElapsedMsPerCall: 0 },
     secretRefs: [],
 };
+/** filtered shadcn read profile의 허용 5개(host)·금지 2개(host) — 정책 상수에서만 파생(단일 출처). */
+const SHADCN_ALLOWED_HOST = getAllowedTools().map(nsName).sort();
+const SHADCN_DENIED_HOST = getForbiddenTools().map(nsName).sort();
+export class HandoffProfileError extends Error {
+}
+/**
+ * [M3c-3b] 로드한 profile이 filtered shadcn read 계약과 **정확히** 일치하는지 검증한다.
+ * registry 변조로 노출이 넓어지는 것을 막는다(허용/금지/launcher/상한/permission 전부 exact).
+ */
+function assertShadcnReadonlyContract(profile) {
+    const bare = getAllowedTools();
+    const eq = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+    const fail = (m) => {
+        throw new HandoffProfileError(`profile '${profile.id}' 계약 위반: ${m}`);
+    };
+    if (profile.id !== PILOT_SHADCN_PROFILE_ID)
+        fail("id");
+    if (!eq(profile.capabilities, ["component_registry_read"]))
+        fail("capabilities");
+    const b = profile.bindings.component_registry_read;
+    if (!b || b.kind !== "mcp")
+        throw new HandoffProfileError(`profile '${profile.id}' 계약 위반: binding kind(mcp) 아님`);
+    if (b.server !== SHADCN_SERVER)
+        fail("binding server");
+    if (!eq(b.tools, bare))
+        fail("binding.tools(정확히 읽기 5개)");
+    if (profile.servers.length !== 1)
+        fail("servers 개수");
+    const srv = profile.servers[0];
+    if (srv.name !== SHADCN_SERVER || srv.launcher !== "shadcn_read_proxy")
+        fail("server launcher");
+    // server own key는 정확히 name, launcher만 (command/args/url/transport는 존재 자체 거부 — args는 빈 배열이어도 거부).
+    if (!eq(Object.keys(srv), ["name", "launcher"]))
+        fail("server key는 정확히 {name, launcher}");
+    if (!eq(profile.preapprovedTools, SHADCN_ALLOWED_HOST))
+        fail("preapprovedTools(정확히 host 5개)");
+    if (!eq(profile.deniedTools, SHADCN_DENIED_HOST))
+        fail("deniedTools(정확히 host 2개)");
+    if (profile.permissionMode !== "approval_write")
+        fail("permissionMode");
+    if (!eq(profile.secretRefs, []))
+        fail("secretRefs(정확히 [])");
+    if (profile.allowedDomains === null || !eq(profile.allowedDomains, []))
+        fail("allowedDomains(정확히 [])");
+    // 상한은 proxy 정책 상수와 정확히 일치해야 한다(profile ↔ proxy enforcement 단일 출처).
+    if (profile.limits.maxCallsPerStep !== MAX_TOOL_CALLS ||
+        profile.limits.maxResultChars !== RESULT_CHARS_BUDGET ||
+        profile.limits.maxElapsedMsPerCall !== PER_CALL_TIMEOUT_MS) {
+        fail("limits(=proxy 정책 상한 calls6/resultChars8000/timeout60000)");
+    }
+    if (profile.source !== "official")
+        fail("source");
+}
+/** filtered shadcn read profile을 registry에서 로드·정확 계약 검증한다. 실패 시 HandoffProfileError. */
+function loadPilotProfile(toolProfilesPath) {
+    const profiles = loadToolProfiles(toolProfilesPath);
+    const profile = profiles.get(PILOT_SHADCN_PROFILE_ID);
+    if (!profile)
+        throw new HandoffProfileError(`registry에 '${PILOT_SHADCN_PROFILE_ID}' profile이 없습니다.`);
+    assertShadcnReadonlyContract(profile);
+    return profile;
+}
+/** filtered shadcn read profile의 Hook toolMap: 허용 host 5개 → server "shadcn"(exact). */
+function shadcnToolMap() {
+    const m = {};
+    for (const t of SHADCN_ALLOWED_HOST)
+        m[t] = SHADCN_SERVER;
+    return m;
+}
 /**
  * 배포 가능한 collector 절대경로 — 항상 `PACKAGE_ROOT/dist/tools/hookCollector.js`.
  * (import.meta.url 기반 상대 계산은 dev tsx에서 존재하지 않는 src/*.js를 가리키므로 쓰지 않는다.)
@@ -62,9 +137,14 @@ function deriveSecretRefs(env) {
     }
     return [...new Set(refs)].sort();
 }
-/** shell-safe 재진입 명령. 실제 실행 시 preflight를 다시 거치는 `harness handoff ... --yes`. */
-function buildReentryCommand(project, serviceCwd) {
-    return ["harness", "handoff", "--project", shellQuote(project), "--cwd", shellQuote(serviceCwd), "--yes"].join(" ");
+/** shell-safe 재진입 명령. 실제 실행 시 preflight를 다시 거치는 `harness handoff ... --yes`.
+ *  [M3c-3b] profile 지정 시 --tool-profile을 보존해 재진입에서도 동일 경로를 탄다. */
+function buildReentryCommand(project, serviceCwd, toolProfileId) {
+    const parts = ["harness", "handoff", "--project", shellQuote(project), "--cwd", shellQuote(serviceCwd)];
+    if (toolProfileId)
+        parts.push("--tool-profile", shellQuote(toolProfileId));
+    parts.push("--yes");
+    return parts.join(" ");
 }
 /**
  * [P0-1] planning contextRoot ↔ serviceCwd 경로 계약.
@@ -93,8 +173,8 @@ function buildContextContract(contextRoot, serviceCwd) {
  * [P0-1] planning 문서(docs/*.md)는 contextRoot에 있으므로 `--add-dir <contextRoot>`로 접근 권한을 준다
  * (serviceCwd와 별개 디렉터리). 경로 해석 계약은 initialPrompt(buildContextContract)에 명시된다.
  */
-function buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt) {
-    return [
+function buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt, tools) {
+    const argv = [
         "--strict-mcp-config",
         "--mcp-config",
         mcpConfigPath,
@@ -108,11 +188,16 @@ function buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt)
         "default",
         "--tools",
         "default",
-        "--disallowedTools",
-        "mcp__*",
-        "--", // 옵션 파싱 종료: 이후 initialPrompt를 --disallowedTools 값으로 소비하지 않도록.
-        initialPrompt,
     ];
+    // profile 경로: --allowedTools <정확한 host 5개>. 기본 경로: allowed 없음.
+    if (tools.allowed.length > 0)
+        argv.push("--allowedTools", tools.allowed.join(","));
+    // profile 경로: 금지 host 2개. 기본 경로: mcp__* 전체 deny(단일 값).
+    if (tools.denied.length > 0)
+        argv.push("--disallowedTools", tools.denied.join(","));
+    // 옵션 파싱 종료: 이후 initialPrompt를 가변 인자(--disallowedTools/--allowedTools) 값으로 소비하지 않도록.
+    argv.push("--", initialPrompt);
+    return argv;
 }
 /** bare 명령은 PATH에서, 경로 포함이면 존재 여부로 확인한다 (claude를 실제 실행하지 않는다). */
 function defaultResolveBin(bin) {
@@ -144,20 +229,22 @@ function defaultStdinApprove(message, preview) {
  */
 function buildPreview(o) {
     const head = o.taskPromptContent.split("\n").slice(0, 40).join("\n");
-    const preview = [
+    const lines = [
         "── task prompt (앞 40줄) ──",
         head,
         "───────────────────────────",
         `serviceCwd (cwd, 서비스 레포): ${o.serviceCwd}`,
         `planning contextRoot (판단 문서 루트, --add-dir): ${o.contextRoot}`,
-        "권한: --permission-mode default · --tools default · --disallowedTools mcp__*",
-        `Hook: ${SUPPORTED_HOOKS.join(", ")} (${SUPPORTED_HOOKS.length}개, exec form)`,
-        `trace: ${o.tracePath}`,
-        "MCP 서버/도구: 없음 (--strict-mcp-config + 빈 mcp-config)",
-        `secret: 설정·argv에 값 없음 / trace는 환경 secret 이름 ${o.redactCount}개 값 자동 마스킹`,
-        "hard deny(자동화 대상 아님): production deploy · live billing · remote repository write · pull request merge",
-    ].join("\n");
-    return o.scrub(preview);
+    ];
+    if (o.profile) {
+        // filtered shadcn read profile 경로: 노출·금지·상한을 명시(“MCP 없음” 문구 없음).
+        lines.push("권한: --permission-mode default · --tools default", `tool profile: ${o.profile.id}`, `MCP 서버: ${o.profile.server} (신뢰된 로컬 read-only proxy — 원본 npx shadcn 직접 실행 아님)`, `허용 도구 (${o.profile.allowed.length}): ${o.profile.allowed.join(", ")}`, `금지 도구 (${o.profile.denied.length}): ${o.profile.denied.join(", ")}`, `상한: calls ${o.profile.limits.maxCallsPerStep} / resultChars ${o.profile.limits.maxResultChars} / timeout ${o.profile.limits.maxElapsedMsPerCall}ms`);
+    }
+    else {
+        lines.push("권한: --permission-mode default · --tools default · --disallowedTools mcp__*", "MCP 서버/도구: 없음 (--strict-mcp-config + 빈 mcp-config)");
+    }
+    lines.push(`Hook: ${SUPPORTED_HOOKS.join(", ")} (${SUPPORTED_HOOKS.length}개, exec form)`, `trace: ${o.tracePath}`, `secret: 설정·argv에 값 없음 / trace는 환경 secret 이름 ${o.redactCount}개 값 자동 마스킹 (raw MCP 결과 미저장)`, "hard deny(자동화 대상 아님): production deploy · live billing · remote repository write · pull request merge");
+    return o.scrub(lines.join("\n"));
 }
 /** run_state.json을 다시 읽어 handoff 필드만 병합·기록한다. status/completed는 건드리지 않는다. */
 function persistHandoffRecord(project, record) {
@@ -175,8 +262,8 @@ export async function runHandoff(opts) {
     const log = (l) => (opts.logger ?? ((x) => console.log(x)))(scrub(l));
     const { project } = opts;
     const serviceCwd = resolve(opts.cwd ?? process.cwd());
-    const reentryCommand = buildReentryCommand(project, serviceCwd);
-    // 1) --print: 실행·preflight·상태 변경 없이 재진입 명령만 출력.
+    const reentryCommand = buildReentryCommand(project, serviceCwd, opts.toolProfileId);
+    // 1) --print: 실행·preflight·상태 변경 없이 재진입 명령만 출력(선택된 profile 보존).
     if (opts.print) {
         log(reentryCommand);
         return { action: "printed", reentryCommand };
@@ -191,6 +278,33 @@ export async function runHandoff(opts) {
             action: "not_completed",
             reason: `run이 완료(completed) 상태가 아닙니다 (status=${state.status}). 'harness run ${state.workflow_id} --project ${project} --resume'로 마저 완료한 뒤 handoff 하세요.`,
         };
+    }
+    // 2b) [M3c-3b] filtered shadcn read profile 경로. 미지정 시 아래 로직은 전부 no-op이라
+    //     기존 empty-MCP handoff 경로가 완전히 불변이다.
+    let pilotProfile;
+    if (opts.toolProfileId !== undefined) {
+        // 파일럿 단계: PILOT_SHADCN_PROFILE_ID만 허용. 다른(MCP) profile은 fail-closed.
+        if (opts.toolProfileId !== PILOT_SHADCN_PROFILE_ID) {
+            const msg = `허용되지 않은 handoff tool profile: '${opts.toolProfileId}' (파일럿 단계는 '${PILOT_SHADCN_PROFILE_ID}'만 허용).`;
+            log(msg);
+            return { action: "profile_rejected", message: msg };
+        }
+        // profile 로드 + 정확 계약 검증 (registry 변조로 노출 확대 방지).
+        try {
+            pilotProfile = loadPilotProfile(opts.toolProfilesPath);
+        }
+        catch (e) {
+            const msg = scrub(`profile 로드/계약 검증 실패: ${e.message}`);
+            log(msg);
+            return { action: "profile_rejected", message: msg };
+        }
+        // components.json 표준 registry 검사 — custom/private/malformed/symlink이면 Claude·proxy 실행 전 거부.
+        const reg = checkComponentsJson(serviceCwd);
+        if (!reg.ok) {
+            const msg = `components.json 표준 registry 검사 실패 (${reg.code}) — Claude·proxy 실행 전 거부.`;
+            log(msg);
+            return { action: "registry_rejected", code: reg.code, message: msg };
+        }
     }
     // 3) summary + task-prompt 자동 갱신.
     //    [P0-1] contextRoot = planning 문서(docs/*.md)·task prompt의 기준 루트. 대화형 cwd(serviceCwd)와 별개.
@@ -250,27 +364,48 @@ export async function runHandoff(opts) {
     // 8) 승인 게이트 (--yes면 스킵).
     if (!opts.yes) {
         const approve = opts.approve ?? defaultStdinApprove;
-        const preview = buildPreview({ taskPromptContent, serviceCwd, contextRoot, tracePath, redactCount: redactRefs.length, scrub });
+        const preview = buildPreview({
+            taskPromptContent,
+            serviceCwd,
+            contextRoot,
+            tracePath,
+            redactCount: redactRefs.length,
+            scrub,
+            profile: pilotProfile
+                ? { id: pilotProfile.id, server: SHADCN_SERVER, allowed: SHADCN_ALLOWED_HOST, denied: SHADCN_DENIED_HOST, limits: pilotProfile.limits }
+                : undefined,
+        });
         const ok = await approve(APPROVE_MESSAGE, preview);
         if (!ok) {
             log("handoff 취소됨 — Claude Code 세션을 열지 않았습니다.");
             return { action: "rejected" };
         }
     }
-    // 9) fail-closed preflight (빈 MCP config). 성공해야만 spawn.
+    // 9) fail-closed preflight. 성공해야만 spawn.
+    //    - 기본 경로: 빈 MCP config(ambient 격리 실측).
+    //    - profile 경로: proxy config(shadcn 서버 connected + 정확한 5개 도구일 때만 통과). snapshot의 configHash·경로를 기록.
     //    redactNames: ambient secret 이름을 오류 scrub에만 쓰고 child env로는 전달하지 않는다.
     const runPreflightFn = opts.runPreflightFn ?? runPreflight;
+    let profileConfigHash;
+    let profileSnapshotPath;
     try {
-        // snapshot 자체는 사용하지 않는다 — 성공(빈 서버/도구)만이 spawn 조건이다.
-        await runPreflightFn({ profile: HANDOFF_PREFLIGHT_PROFILE, serviceCwd, runtimeDir, now, emptyConfig: true, redactNames: redactRefs });
+        if (pilotProfile) {
+            const pf = await runPreflightFn({ profile: pilotProfile, serviceCwd, runtimeDir, now, redactNames: redactRefs });
+            profileConfigHash = pf.snapshot.configHash;
+            profileSnapshotPath = pf.snapshotPath;
+        }
+        else {
+            // snapshot 자체는 사용하지 않는다 — 성공(빈 서버/도구)만이 spawn 조건이다.
+            await runPreflightFn({ profile: HANDOFF_PREFLIGHT_PROFILE, serviceCwd, runtimeDir, now, emptyConfig: true, redactNames: redactRefs });
+        }
     }
     catch (e) {
         const code = e instanceof PreflightError ? e.code : "preflight";
         const message = scrub(e.message);
-        log(`preflight 실패 (${code}) — ambient MCP 격리 미확인. 세션을 열지 않았습니다.`);
+        log(`preflight 실패 (${code}) — ${pilotProfile ? "shadcn proxy 격리/도구" : "ambient MCP 격리"} 미확인. 세션을 열지 않았습니다.`);
         return { action: "preflight_failed", code, message };
     }
-    const mcpConfigPath = join(runtimeDir, "mcp-config.json"); // preflight가 emptyConfig로 기록
+    const mcpConfigPath = join(runtimeDir, "mcp-config.json"); // preflight가 config를 기록
     // 10) Hook settings(exec form, secret 값 없음) + trace 파일을 최소 권한·exclusive-create로 준비.
     //     기존 파일·symlink를 조용히 덮어쓰지 않고 fail-closed(wx). trace는 spawn 전에 빈 0600 파일로 생성.
     const settingsPath = join(runtimeDir, "hook-settings.json");
@@ -287,12 +422,23 @@ export async function runHandoff(opts) {
         return { action: "setup_failed", message: msg };
     }
     // 11) spawn argv + env (HARNESS_TOOL_*: secret 이름만 + auto-memory 격리; secret 값은 미포함).
-    const argv = buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt);
-    const env = {
+    //     profile 경로: allowedTools=host 5개·disallowedTools=host 2개(전체 mcp__* deny 없음)·Hook profileId+toolMap.
+    //     기본 경로: mcp__* 전체 deny·profileId=handoff-default·toolMap={}.
+    const argv = buildSpawnArgv(mcpConfigPath, settingsPath, contextRoot, initialPrompt, pilotProfile ? { allowed: SHADCN_ALLOWED_HOST, denied: SHADCN_DENIED_HOST } : { allowed: [], denied: ["mcp__*"] });
+    const baseEnv = {
         ...process.env,
-        ...buildHookEnv({ tracePath, profileId: HANDOFF_PROFILE_ID, secretRefs: redactRefs, toolMap: {} }),
+        ...buildHookEnv({
+            tracePath,
+            profileId: pilotProfile ? PILOT_SHADCN_PROFILE_ID : HANDOFF_PROFILE_ID,
+            secretRefs: redactRefs,
+            toolMap: pilotProfile ? shadcnToolMap() : {},
+        }),
         CLAUDE_CODE_DISABLE_AUTO_MEMORY: "1",
     };
+    // [M3c-3b] filtered shadcn read profile 경로에서만 blocking MCP 연결 env를 **마지막에** 강제한다
+    //          (cold npx + attestation이 기본 5s handshake를 넘겨 pending 되는 것 방지; ambient override 불가).
+    //          기본 handoff(empty MCP, toolProfile 미지정) 경로는 baseEnv 그대로 — 기존 동작 불변.
+    const env = pilotProfile ? applyBlockingMcpEnv(baseEnv) : baseEnv;
     // 12) spawn. 실패하면 run_state에 기록하지 않는다.
     const launchedAt = now();
     const spawnInteractive = opts.spawnInteractive ?? defaultSpawnInteractive;
@@ -305,6 +451,8 @@ export async function runHandoff(opts) {
         return { action: "spawn_failed", message };
     }
     // 13) 실제 spawn된 경우에만 run_state.handoff 기록. status/completed 불변, 종료코드 미기록.
+    //     profile 경로에서만 optional 필드(tool_profile_id/config_hash/snapshot_path)를 덧붙인다
+    //     (기본 경로 record는 종전과 동일 — optional 키 미포함).
     const record = {
         launched_at: launchedAt,
         cwd: serviceCwd,
@@ -312,6 +460,11 @@ export async function runHandoff(opts) {
         trace_path: tracePath,
         runtime_dir: runtimeDir,
     };
+    if (pilotProfile) {
+        record.tool_profile_id = PILOT_SHADCN_PROFILE_ID;
+        record.config_hash = profileConfigHash;
+        record.snapshot_path = profileSnapshotPath;
+    }
     persistHandoffRecord(project, record);
     log(`handoff 완료 — tool-trace: ${tracePath}`);
     return { action: "spawned", argv, runtimeDir, tracePath, settingsPath, mcpConfigPath, promptBytes, handoff: record, reentryCommand };

@@ -31,7 +31,8 @@ export async function runRun(
   bare = false,
   handoff = false,
   handoffCwd?: string,
-  handoffRunner: (o: { project: string; cwd?: string; yes?: boolean }) => Promise<unknown> = runHandoffCommand, // [M3b.2] 테스트 주입 seam
+  handoffToolProfileId?: string, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
+  handoffRunner: (o: { project: string; cwd?: string; yes?: boolean; toolProfileId?: string }) => Promise<unknown> = runHandoffCommand, // [M3b.2] 테스트 주입 seam
 ): Promise<void> {
   const provider = getProvider(providerId);
   const approve = yes ? async () => true : stdinApprover;
@@ -133,6 +134,7 @@ export async function runRun(
   // (failed면 위에서 return — 핸드오프하지 않고 resume 안내만 남는다.)
   if (handoff) {
     console.log("");
-    await handoffRunner({ project, cwd: handoffCwd, yes });
+    // [M3c-3b] --handoff-tool-profile은 handoff 경로 전용. workflow용 --tool-profile(toolProfileId)과 혼용하지 않는다.
+    await handoffRunner({ project, cwd: handoffCwd, yes, toolProfileId: handoffToolProfileId });
   }
 }

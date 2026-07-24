@@ -67,14 +67,17 @@ test("[M3b.2] run --handoff: run이 completed면 handoffRunner 호출(stub)", as
   makeIdeaProject(name);
   const prevExit = process.exitCode;
   let called = 0;
-  const spy = async () => {
+  let seenProfile: string | undefined = "UNSET";
+  const spy = async (o: { toolProfileId?: string }) => {
     called++;
+    seenProfile = o.toolProfileId;
     return {};
   };
   try {
-    // runRun(workflow, project, provider, maxRegen, allowSpawn, vault, resume, maxTokens, yes, toolProfile, bare, handoff, handoffCwd, handoffRunner)
-    await runRun("idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false, true, "/svc", spy);
+    // runRun(workflow, project, provider, maxRegen, allowSpawn, vault, resume, maxTokens, yes, toolProfile, bare, handoff, handoffCwd, handoffToolProfileId, handoffRunner)
+    await runRun("idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false, true, "/svc", "handoff-shadcn-readonly", spy);
     assert.equal(called, 1, "completed run은 handoff 이어붙임");
+    assert.equal(seenProfile, "handoff-shadcn-readonly", "[M3c-3b] --handoff-tool-profile이 handoffRunner로 전달됨");
   } finally {
     process.exitCode = prevExit;
     rmSync(projectPaths(name).root, { recursive: true, force: true });
@@ -93,7 +96,7 @@ test("[M3b.2] run --handoff: run이 failed면 handoffRunner 미호출(stub)", as
     return {};
   };
   try {
-    await runRun("idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false, true, "/svc", spy);
+    await runRun("idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false, true, "/svc", undefined, spy);
     assert.equal(called, 0, "failed run은 handoff 미실행");
   } finally {
     if (prevFail === undefined) delete process.env.HARNESS_FAIL_AT;

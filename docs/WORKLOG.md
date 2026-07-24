@@ -1,5 +1,87 @@
 # WORKLOG.md
 
+## 2026-07-24 (V3 M3c-3b — actual live acceptance PASS · V3 M3 전체 완료)
+
+**filtered shadcn read handoff의 actual live acceptance가 PASS. offline+actual live 완료. dead helper 정리 + 단일 커밋 마무리.**
+
+- **live 실측(Claude Code 2.1.218, `HARNESS_LIVE_M3C3B=1` 수동 runner)**: runner **exit 0 / PASS**.
+  - preflight snapshot: server 정확히 `shadcn` **connected** + tools 정확히 **host 5개**(원본 7개 중 금지 2개 `get_add_command_for_items`·`get_audit_checklist` **미노출**·ambient canary 부재).
+  - generated mcp-config: `command=process.execPath`, `args=[PACKAGE_ROOT/dist/tools/shadcnReadMcpProxy.js]`, launcher/npx 직접 실행 필드 없음. **config 파일 sha256 == snapshot.configHash == outcome.handoff.config_hash == run_state.handoff.config_hash**, snapshot_path 3중 일치.
+  - interactive argv: allowedTools 정확히 5개·disallowedTools 정확히 금지 2개·`mcp__*` 전체 deny 없음·`-- <initialPrompt>`·`-p`/stream-json 없음.
+  - ToolTrace: **records 25 / MCP tool_requested 3 / session_end 1**, profileId=handoff-shadcn-readonly, 호출 3개(get_project_registries·search_items_in_registries·view_items_in_registries) 각각 requested/succeeded **동일 callId** correlation·server=shadcn, **permission_requested/tool_failed/tool_denied 없음**(preapproved 자동 실행 확인), **sanitizedInput 지시 인자 정확 일치**, 금지 2개 미관측, raw MCP 결과·transcript_path·secret 평문 없음.
+  - serviceCwd 파일 **무변경**, run_state **completed 불변**, runtime/tool-trace dir **0700** · config/snapshot/settings/trace **0600**, ambient MCP/Hook canary **미기동**, proxy·shadcn@4.13.1·canary **잔존 프로세스 없음**, 임시 디렉터리 **cleanup 완료**.
+- **실패 이력(보존)**: ① 첫 live — protocol/startup interoperability 결함(downstream 버전 upstream 복사 + 초기화 응답을 attestation 이후로 지연)으로 `server_not_connected`. ② 두 번째 live — `status=pending`, Claude 2.1.218의 MCP connect deadline 기본 **5초**를 cold npx + attestation이 초과. ③ **blocking MCP env 0/45000/45000** 적용(proxy 30s < handshake 45s < preflight 60s) 후 **최종 PASS**.
+- **dead helper 정리**: `mcpEnv.applyBlockingMcpEnv()`를 실제 단일 적용 함수로 사용 — preflight `buildChildEnv`는 `return applyBlockingMcpEnv(env)`, handoff shadcn profile은 `applyBlockingMcpEnv(baseEnv)` 결과를 spawn env로 전달. 직접 `Object.assign(BLOCKING_MCP_ENV)` 중복 제거. 기본 handoff는 baseEnv 그대로(불변). runner는 계약 검증용 `BLOCKING_MCP_ENV` import 유지.
+- **상태**: M3c-3b = **offline + actual live 완료**. M3a(non-empty MCP strict 격리 live) · M3b.2(empty MCP 대화형 Hook live) · M3c-3b(filtered shadcn read handoff live) acceptance 모두 충족 → **V3 M3 전체 완료**. 다음 단계(예: 활성 read 도구 확대·Tavily/Research adapter M4)는 별도 계획 검토로만 기록(구현 미착수).
+- 검증: build/tsc(0)/node --check runner/git diff --check/npm pack dry-run/secret·runtime 스캔. exec 75 + core 273 + acceptance 71.
+
+## 2026-07-24 (V3 M3c-3b — 두 번째 live P0: blocking MCP 연결 env 강제)
+
+**두 번째 live도 `server_not_connected`(status=pending). 원인: Claude Code 2.1.218 `MCP_CONNECT_TIMEOUT_MS` 기본 5000ms인데 filtered proxy의 cold npx + exact-7 attestation이 5초 초과 → system/init 시점 pending. 동일 live 재시도 안 함. 실제 Claude/network 미실행.**
+- **단일 출처 helper**: `src/tools/mcpEnv.ts` 신규 — `BLOCKING_MCP_ENV = { MCP_CONNECTION_NONBLOCKING:"0", MCP_CONNECT_TIMEOUT_MS:"45000", MCP_TIMEOUT:"45000" }`(+`applyBlockingMcpEnv`). 타임아웃 순서: proxy downstream startup 30000ms < Claude MCP handshake 45000ms < preflight hard timeout 60000ms (cleanup 여유).
+- **preflight 배선**: `buildChildEnv`가 기존 allowlist·secret 격리·`ENABLE_TOOL_SEARCH`·auto-memory 유지하되, blocking MCP env를 **마지막에** `Object.assign`으로 강제 → ambient process.env·testEnv override 불가. hard timeout 60000ms·pending/failed/needs-auth 불성공·connected+exact tools만 성공 계약 유지.
+- **interactive 배선**: handoff-shadcn-readonly profile 경로의 대화형 spawn env에만 blocking MCP env를 **마지막에** 강제(ambient override 불가). 기본 handoff(empty MCP, toolProfile 미지정) 경로는 이 env를 추가하지 않아 **기존 동작 불변**. argv·stdio inherit·Hook 계약 무변경.
+- **테스트**: preflight child env 세 값 정확 + ambient/testEnv override 불가 + ambient 임의 변수 미전달(core 273). handoff-shadcn spawn env 세 값 정확 + ambient(1) override 불가. 기본 handoff env는 세 MCP 값을 강제하지 않음(ambient 그대로). 기존 pending/failed/needs-auth 불성공 테스트·protocol 두 leg·attestation·cleanup 테스트 전부 유지.
+- **runner**: `BLOCKING_MCP_ENV` 계약 값(0/45000/45000)을 실행 전 사후 확인(불일치 시 exit 2). pending retry/성공 처리 로직 미추가. actual live 미실행.
+- 검증: build/tsc(0)/node --check runner/opt-in 없음 exit2/opt-in+非TTY exit2/git diff --check 클린/rg override 0. exec 75 + core 273 + acceptance 71.
+- **live 재실행은 사람 승인 후 수동(보류). 이번 수정으로 handshake 타임아웃(5s→45s) 원인 제거.**
+
+## 2026-07-24 (V3 M3c-3b — MCP proxy interoperability P0: protocol 분리 + 초기화 응답 지연 제거)
+
+**live에서 preflight가 `server_not_connected`로 실패한 원인을 수정. 동일 live 재시도는 안 함. 실제 Claude/network 미실행.**
+- **P0-1 protocolVersion 두 leg 분리**: `shadcnReadMcpProxy`가 downstream 협상 버전을 upstream initialize 응답에 복사하던 것을 제거. upstream initialize의 `params.protocolVersion`을 검증(missing/비문자열/미허용 → `-32602` fail-closed, tools 미노출)하고 **요청받은 허용 버전을 그대로** 반환. downstream은 기존 `REQUEST_PROTOCOL_VERSION`으로 별도 협상, `upstreamProtocolVersion`/`downstreamProtocolVersion` 별도 상태. initialize·initialized 이전 tools/list·tools/call 금지 유지.
+- **P0-2 초기화 응답 지연 제거**: downstream initialize + tools/list exact-7 검증 완료 후에야 upstream listener를 시작하던 구조를 바꿔, **downstream spawn 직후 upstream listener 즉시 시작**. upstream initialize는 downstream 검증과 독립적으로 즉시 응답. downstream attestation은 별도 bounded Promise(`runAttestation`)로 수행하고, **tools/list·tools/call은 attestation exact-7 통과 전 성공 응답 금지**(pending은 startup timeout 안에서 bounded wait). attestation 실패 시 restricted 5개를 절대 노출하지 않고 연결 종료(`rejectStartup`) → main non-zero + downstream 그룹 종료 + HOME/cache cleanup. `upstream_end` 성공 종료는 attestation 완료(pass)까지 defer해 실패가 성공으로 가려지지 않게 함. queue/request/output 상한·signal 즉시 종료 계약 유지.
+- **회귀 테스트(proxy 26→32)**: downstream=2025-11-25인데 upstream이 각 허용 구버전 요청 → 응답=요청 버전, unsupported/missing pv → fail-closed·tools 미노출, downstream initialize 2s 지연에도 upstream initialize <500ms, 지연 downstream에서 tools/list는 attestation(≥600ms) 후에만 bare 5, 지연 attestation 실패 → initialize 이후에도 tools/list 성공 없음·reject·cleanup, pending attestation 중 abort 즉시 signal 종료·HOME cleanup. `toolsMismatch` 테스트는 새 계약(초기화 응답 허용·tools 미노출·reject)으로 정정. 금지 2·입력 필터·result budget·fatal/session·기존 exec SIGINT/SIGTERM(이제 pending-attestation 신호 경로) 전부 유지.
+- **runner 진단(§4)**: `preflight_failed` 시 scrub된 `outcome.message`(status 포함) 출력, raw init/stderr/result 미출력, 성공/실패 로그의 `claudeBin`도 `redact()` 적용.
+- 검증: build/tsc(0)/node --check runner/opt-in 없음 exit2/opt-in+非TTY exit2/git diff --check 클린/rg override 0. exec 75 + core 271 + acceptance 71.
+- **live acceptance는 여전히 사람 승인 후 수동 실행(보류). 이번 수정으로 preflight의 upstream 협상·연결 타임아웃 원인은 제거.**
+
+## 2026-07-24 (V3 M3c-3b — live runner 거짓 PASS 차단 보완, runner-only)
+
+**`scripts/m3c3b-live-handoff.mjs`만 보완(production 범위 확장 없음). 실제 live·commit 없음.**
+- **preapproved 실측 강화**: 계획된 3개 각각 tool_requested 정확히 1개 + 동일 callId tool_succeeded, 동일 callId에 tool_failed/tool_denied 없음, sanitizedInput이 지시 인자와 정확 deepEqual, preapproved 3개에 permission_requested 한 건이라도 있으면 FAIL(수동 승인이 `--allowedTools` 실패를 가리는 것 차단), 계획 외 `mcp__*` tool_requested 있으면 FAIL.
+- **잔존 프로세스 fail-closed**: runHandoff 전 proxy/shadcn 후보 baseline 수집(ps 실패 시 실행 시작 전 exit 2). TUI 종료 후 최대 5초 grace polling → 새 후보만 대상, lsof cwd로 임시 base ownership 확인. ps/lsof 실패·ownership 미확인은 **kill 없이 FAIL**, owned만 kill + 실제 사망 확인. cleanup 백스톱도 검사 실패를 숨기지 않고 기록.
+- **claude --version 안전장치**: 명시적 env allowlist(PATH/HOME/USER/SHELL/TMPDIR/TMP/TEMP/LANG + 표준 LC 카테고리만; TOKEN/KEY/SECRET/PASSWORD/AUTH·임의 LC_* 금지), timeout 10s·maxBuffer 64KiB, error/signal/stdout/stderr redaction, 실패 시 preflight/TUI 미실행 exit 2.
+- **artifact 연결 검증**: mcp-config를 `{mcpServers:{shadcn:{command:process.execPath,args:[고정 proxy],alwaysLoad:true}}}`로 exact deepEqual, mcp-config 파일 sha256 == snapshot.configHash == outcome.handoff.config_hash == run_state.handoff.config_hash 전부 동일, snapshot status 정확히 `"connected"`(정규식 아님), snapshot_path outcome==run_state==실제 경로.
+- offline: build/tsc(0)/node --check/opt-in 없음 exit2/opt-in+非TTY exit2/git diff --check 클린. exec 75 + core 265 + acceptance 71(runner는 production 미변경 → 카운트 불변).
+- **live acceptance는 여전히 사람 승인 후 수동 실행(보류).**
+
+## 2026-07-24 (V3 M3c-3b — 마지막 P1 정리 + 전용 live acceptance runner)
+
+**live 직전 P1 정리 + 전용 runner 준비. 실제 Claude/npx/network/TUI·commit 없음.**
+- **P1 정리(claudeCodeMcpAdapter.ts)**: launcher 혼합 검사를 `(decl.args && decl.args.length>0)`→`decl.args !== undefined`로(빈 배열 `args:[]`도 mixed_launcher 거부, buildMcpConfig 직접 호출 포함). adapter 내부 중복 `TRUSTED_LAUNCHERS` Set 제거 → `profiles.ts`의 `TRUSTED_LAUNCHER_IDS` **단일 출처** 사용(`isTrustedLauncher`). 테스트: launcher+args:[]→mixed_launcher, launcher ID 단일 출처 불변(목록 값 통과·목록 밖 unknown_launcher).
+- **전용 live runner 신규**: `scripts/m3c3b-live-handoff.mjs`(m3b2 안전장치·임시 workspace 방식 재사용). 게이트: `HARNESS_LIVE_M3C3B=1` 없으면 exit 2·非TTY exit 2·`claude --version`(semver) 실패 exit 2. 시작 전 구독 사용량 + `npx --yes shadcn@4.13.1 mcp` 네트워크 가능성 출력. production/remote/deploy/billing 미접촉, 모든 파일 `$TMPDIR/m3c3b-live-*`, signal/finally cleanup, npm test/CI 자동 실행 없음.
+- **runner 시나리오**: 임시 HARNESS_WORKSPACE+service repo에 completed run_state + planning 문서 생성 → production `runHandoff({ toolProfileId:"handoff-shadcn-readonly" })` seam 없이 실행(실제 preflight+TUI). serviceCwd custom registry 없음, ambient `.mcp.json` MCP canary + `.claude/settings.json` Hook canary 추가(strict 격리 시 미기동). 대화형 지시: 계획 승인 → get_project_registries → search(button,limit1) → view(@shadcn/button) → 파일 수정 없이 /exit, 금지 2개 미호출.
+- **PASS 조건**: runner exit 0 + preflight snapshot(shadcn/connected·host 5개·원본7/금지2/canary 부재) + config(node+고정 proxy·launcher/npx 없음) + argv(allowed5·denied2·mcp__* 없음·`-- prompt`·-p/stream-json 없음) + ToolTrace(profileId·MCP server=shadcn·requested/succeeded correlation·session_end 1·금지2 미관측·raw/transcript/secret 없음) + serviceCwd 무변경 + run_state completed 불변 + handoff record(tool_profile_id/config_hash/snapshot_path) + 권한(dir700/file600) + ambient canary 미기동 + proxy/shadcn/canary 잔존 프로세스 없음(lsof cwd ownership 확인 후에만 kill) + cleanup 완료. 실패 처리: preflight 실패 시 TUI 미실행, canary/금지 도구/trace 불일치 FAIL, cleanup 실패 숨김 금지, 결과 원문 미출력.
+- offline 검증: build/tsc noEmit(exit 0)/node --check runner/opt-in 없음 exit 2/opt-in+非TTY exit 2/git diff --check 클린. exec 75 + core 265 + acceptance 71.
+- **live acceptance는 여전히 사람 승인 후 수동 실행(보류).**
+
+## 2026-07-24 (V3 M3c-3b — actual live 전 P0/P1 하드닝)
+
+**M3c-3b offline 배선의 P0/P1을 보완. live 전 필수 하드닝만, 최소 수정. 실제 Claude/npx/network/TUI·commit 없음.**
+- **P0-1 launcher 실행 경로 override 완전 제거**: `BuildMcpConfigOpts.proxyPath`·`buildMcpConfig(...opts)`·`writeMcpConfig(...opts)`·`RunPreflightOpts.launcherProxyPath`·`HandoffOptions.launcherProxyPath` 및 전달 코드 삭제. `shadcn_read_proxy`는 항상 `command=process.execPath, args=[fromPackage("dist","tools","shadcnReadMcpProxy.js")]` **고정** — 인자·env·profile·test seam으로 변경 불가. 파일 검증은 실행 경로와 분리된 `verifyTrustedProxyFile(path)`로 추출(테스트는 이 함수만 임시 경로로 호출, 임시 경로가 generated config에 들어가는 API 없음). `rg "launcherProxyPath|proxyPath" src dist` = 0.
+- **P0-2 secretRefs 정확 계약 + 방어 심층화**: `assertShadcnReadonlyContract`에 secretRefs 정확히 `[]`·allowedDomains 정확히 `[]`·server own key 정확히 `{name, launcher}`(args는 빈 배열이어도 존재 거부) 추가. launcher profile이 secretRefs를 하나라도 선언하면 `buildMcpConfig`에서 `launcher_secret_refs_forbidden`으로 config·preflight·spawn 전에 거부(오류에 secret 값 미노출). 변조 재현: handoff-shadcn-readonly에 secretRefs 주입 + 실환경 sentinel → profile_rejected, preflight/spawn/runtime 0, 로그·오류 sentinel 평문 0.
+- **P1-1 runtime server validator**: `profiles.ts`에 `validateServer` 신설(단순 cast 제거). launcher/stdio/http/bare(name만, M2 호환) 분류별 강제 — launcher는 {name,launcher}만·shadcn_read_proxy만, stdio는 command 필수·args string[]·launcher/url 금지, http는 HTTPS·command/args/launcher 금지, unknown key·unknown launcher·mixed transport·bad transport는 로드 단계 ToolProfileError. `McpServerDecl.launcher`를 `"shadcn_read_proxy"` literal로 제한. `schemas/tool_profile.schema.json` server를 additionalProperties:false + launcher/stdio/http/bare oneOf로 runtime과 일치. 기존 stdio/http/bare profile 동작 유지.
+- **P1-2 symlink 거부**: `verifyTrustedProxyFile`을 `statSync`→`lstatSync` 기반으로 — symlink는 `launcher_proxy_symlink`로 거부, 일반 파일만·읽기 가능만. symlink 테스트 추가.
+- 추가 확인: profile 미지정 handoff 경로 완전 불변, allowed 5/denied 2/exact snapshot 유지, runWorkflow MCP fail-closed 유지, 기존 테스트 삭제·완화 없음.
+- 검증: build/tsc noEmit exit 0, exec 75 + core 264 + acceptance 71, git diff --check 클린, `rg` override 0건.
+- **live acceptance는 여전히 보류**(실제 Claude+shadcn stdio proxy 필요). 이번 단계는 P0/P1 하드닝만.
+
+## 2026-07-23 (V3 M3c-3b — filtered shadcn read profile offline 배선)
+
+> **정정(2026-07-24 P0-1):** 아래 최초 배선에는 `launcherProxyPath`(테스트/live) 실행 경로 override seam이 있었다. 이는 P0-1에서 **완전히 제거**되어 이제 proxy 실행 경로는 `PACKAGE_ROOT/dist/tools/shadcnReadMcpProxy.js`로 고정이며 외부에서 바꿀 수 없다. 아래 서술 중 launcher override 관련 부분은 상단 2026-07-24 항목으로 대체된다.
+
+**M3c-3a filtered proxy를 handoff profile로 offline 배선. 실제 Claude/npx/network/TUI·commit·push 없음.**
+- **ToolProfile 등록**: `registry/tool_profiles.json`에 `handoff-shadcn-readonly`(capability component_registry_read / mcp binding server shadcn / bare 5개 / preapproved 5 host / denied 2 host / approval_write / calls6·resultChars8000·elapsed60000 / source official).
+- **신뢰된 launcher**: `McpServerDecl.launcher`(schema enum `shadcn_read_proxy`) 추가. registry엔 절대경로·npx 없이 논리 식별자만. runtime config 생성 시에만 `command=process.execPath, args=[PACKAGE_ROOT/dist/tools/shadcnReadMcpProxy.js]`로 변환(`claudeCodeMcpAdapter.compileLauncherServer`). command/args/url/transport 혼합·unknown launcher 거부, config 기록 전 proxy 파일 존재·일반파일·읽기가능 검사, 생성 config에 launcher 필드 미포함. 기존 command/args/http 동작 불변.
+- **handoff 연결**: `harness handoff --tool-profile handoff-shadcn-readonly`(파일럿은 이 id만 허용, 다른 profile fail-closed). `harness run … --handoff --handoff-tool-profile <id>`(workflow용 `--tool-profile`과 분리, runWorkflow MCP 가드 불변). `--print` 재진입 명령에 `--tool-profile` 보존.
+- **실행 시퀀스(profile 경로)**: profile 로드+정확 계약 검증 → serviceCwd components.json 표준 registry 검사(custom/private/malformed/symlink이면 Claude·proxy 전 `registry_rejected`) → preflight(proxy config, emptyConfig=false) → shadcn connected + 정확한 5개 도구일 때만 통과 → 동일 config로 대화형 spawn(stream-json 미사용). preflight 실패 시 spawn·기록 금지.
+- **interactive argv(profile)**: `--strict-mcp-config --mcp-config <proxy> --settings <hook> --setting-sources "" --add-dir <contextRoot> --permission-mode default --tools default --allowedTools <host5> --disallowedTools <host2> -- <prompt>`. **profile 경로엔 `mcp__*` 전체 deny 없음**; 미지정 기본 경로는 기존 `mcp__*` deny 유지.
+- **Hook/trace/preview**: profile 경로 Hook profileId=handoff-shadcn-readonly·toolMap 허용 5개→shadcn, preview에 profileId·server·허용5·금지2·상한 표시('MCP 없음' 문구 제거), secret 값·raw MCP 결과 미노출. HandoffRecord에 optional `tool_profile_id/config_hash/snapshot_path`. run_state status/completed 불변.
+- **테스트**: adapter launcher 6종(config node+절대proxy·혼합·unknown·부재/디렉터리/읽기불가), handoffShadcn 통합(argv·toolMap·record·preview·profile_rejected·registry_rejected·preflight_failed·print·workflow 거부 유지) + 실 preflight fake-claude exact5 성공·누락/초과/금지 tool_mismatch. 기존 M3c-0/1/2/3a 불변 테스트는 "shadcn 미등록"→"shadcn profile은 handoff-shadcn-readonly(launcher)만·npx 미등록"으로 정정(삭제·완화 아님).
+- 검증: build/tsc noEmit 클린, exec 75 + core 253 + acceptance 71, git diff --check 클린, build 후 dist 정합.
+- **live acceptance는 보류**(실제 Claude 2.1.x + shadcn@4.13.1 stdio proxy 필요). 이번 단계는 offline 배선만.
+
 ## 2026-07-22 (V3 M3c-3a — signal P0 보완, M3c-3b 계획 검토 전 유지)
 
 **startup/in-flight signal 즉시 종료 결함 보완.** fake PATH `npx` fixture만(실제 shadcn/network/Claude 미실행).

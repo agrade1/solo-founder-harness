@@ -425,10 +425,12 @@ test("[M3c-2] runner opt-in 없음 → exit 2", () => {
   assert.equal(r.status, 2);
 });
 
-test("[M3c-2] 불변: registry/tool_profiles.json shadcn 미등록 · M3c-0/M3c-1 함수 불변", async () => {
+test("[M3c-2] 불변: registry shadcn profile은 handoff-shadcn-readonly만 · M3c-0/M3c-1 함수 불변", async () => {
   const { PACKAGE_ROOT } = await import("../core/paths.js");
   const reg = JSON.parse(readFileSync(join(PACKAGE_ROOT, "registry", "tool_profiles.json"), "utf8"));
-  assert.ok(!/shadcn/i.test(JSON.stringify(reg)));
+  const shadcnIds = reg.profiles.filter((p: { id: string }) => /shadcn/i.test(p.id)).map((p: { id: string }) => p.id);
+  assert.deepEqual(shadcnIds, ["handoff-shadcn-readonly"]);
+  assert.ok(!/npx/.test(JSON.stringify(reg)), "registry에 npx 직접 실행 없음(launcher만)");
   const m0 = await import("./shadcnPilot.js");
   const m1 = await import("./shadcnSchemaProbe.js");
   assert.equal(typeof m0.runShadcnDiscovery, "function");

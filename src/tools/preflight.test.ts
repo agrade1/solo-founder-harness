@@ -47,7 +47,7 @@ interface CaseEnv {
 /** 스텁 claude를 만들고 preflight를 실행한다. dir/자원 정리는 호출측 finally. */
 async function runCase(
   env: CaseEnv,
-  opts: { profile?: ToolProfile; serviceCwd?: string; timeoutMs?: number; extraEnv?: Record<string, string>; emptyConfig?: boolean; redactNames?: string[] } = {},
+  opts: { profile?: ToolProfile; serviceCwd?: string; timeoutMs?: number; extraEnv?: Record<string, string>; extraTestEnv?: Record<string, string>; emptyConfig?: boolean; redactNames?: string[] } = {},
 ) {
   const dir = mkdtempSync(join(tmpdir(), "harness-pf-"));
   const stub = join(dir, "claude-stub.sh");
@@ -81,6 +81,7 @@ exit \${PF_EXIT:-0}
   if (env.hang) testEnv.PF_HANG = "1";
   if (env.argvOut) testEnv.ARGV_OUT = argvOut;
   if (env.envOut) testEnv.ENV_OUT = envOut;
+  if (opts.extraTestEnv) Object.assign(testEnv, opts.extraTestEnv); // [M3c-3b] override 시도 검증용
 
   // process.env에는 실행 파일 위치와 (선언 secret/누출 검증용) 변수만 둔다.
   const setEnv: Record<string, string | undefined> = { HARNESS_CLAUDE_BIN: stub, ...(opts.extraEnv ?? {}) };
@@ -403,6 +404,30 @@ test("[M3a] env 격리: 미선언 secret 형태 변수는 child에 전달되지 
     assert.match(childEnv, /^MCP_CONNECTION_NONBLOCKING=0$/m);
     assert.match(childEnv, /^ENABLE_TOOL_SEARCH=false$/m);
     assert.match(childEnv, /^MY_SECRET=declared-secret$/m, "선언된 secret은 전달");
+  } finally {
+    c.cleanup();
+  }
+});
+
+test("[M3c-3b] child env에 blocking MCP env 세 값 정확 + ambient/testEnv override 불가 + secret 미전달", async () => {
+  const c = await runCase(
+    { stdout: GOOD_INIT, hang: true, envOut: true },
+    {
+      // ambient(process.env)와 testEnv seam 모두 잘못된 값으로 override 시도 — 안전값이 마지막에 이겨야 한다.
+      extraEnv: { MCP_CONNECT_TIMEOUT_MS: "1", MCP_TIMEOUT: "1", MCP_CONNECTION_NONBLOCKING: "1", AMBIENT_LEAK: "leak-should-not-pass" },
+      extraTestEnv: { MCP_CONNECT_TIMEOUT_MS: "2", MCP_TIMEOUT: "2", MCP_CONNECTION_NONBLOCKING: "1" },
+    },
+  );
+  try {
+    await c.run();
+    const childEnv = readFileSync(c.envOut, "utf8");
+    assert.match(childEnv, /^MCP_CONNECTION_NONBLOCKING=0$/m, "NONBLOCKING=0 강제");
+    assert.match(childEnv, /^MCP_CONNECT_TIMEOUT_MS=45000$/m, "CONNECT_TIMEOUT=45000 강제");
+    assert.match(childEnv, /^MCP_TIMEOUT=45000$/m, "MCP_TIMEOUT=45000 강제");
+    // override 시도 값(1/2)이 child에 남지 않는다.
+    assert.ok(!/^MCP_CONNECT_TIMEOUT_MS=(1|2)$/m.test(childEnv), "override 값 미적용");
+    // ambient 비-allowlist 변수는 child로 새지 않는다.
+    assert.ok(!/AMBIENT_LEAK/.test(childEnv), "ambient 임의 변수 미전달");
   } finally {
     c.cleanup();
   }

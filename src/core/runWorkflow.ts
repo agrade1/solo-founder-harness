@@ -122,6 +122,10 @@ export interface HandoffRecord {
   prompt_bytes: number;
   trace_path: string;
   runtime_dir: string;
+  // [M3c-3b] filtered shadcn read profile 경로에서만 기록되는 optional 필드. status/completed는 불변.
+  tool_profile_id?: string;
+  config_hash?: string;
+  snapshot_path?: string;
 }
 
 export interface RunWorkflowResult {

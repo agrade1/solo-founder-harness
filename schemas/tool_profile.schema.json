@@ -89,15 +89,45 @@
       ]
     },
     "server": {
-      "type": "object",
-      "required": ["name"],
-      "properties": {
-        "name": { "type": "string" },
-        "command": { "type": "string" },
-        "args": { "type": "array", "items": { "type": "string" } },
-        "url": { "type": "string" },
-        "transport": { "enum": ["stdio", "http"] }
-      }
+      "description": "[M3c-3b] launcher / stdio / http / bare(name만) 배타. additionalProperties:false로 unknown key 거부. 런타임 계약은 src/tools/profiles.ts validateServer가 강제(이 스키마는 계약 문서용).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "launcher"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "launcher": { "enum": ["shadcn_read_proxy"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "command"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "command": { "type": "string", "minLength": 1 },
+            "args": { "type": "array", "items": { "type": "string" } },
+            "transport": { "const": "stdio" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "url"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "url": { "type": "string", "pattern": "^https://" },
+            "transport": { "const": "http" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": { "name": { "type": "string", "minLength": 1 } }
+        }
+      ]
     }
   }
 }

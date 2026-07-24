@@ -69,7 +69,7 @@ rl.on("line", (line) => {
   let m; try { m = JSON.parse(t); } catch { return; }
   rec("scp-methods.txt", m.method);
   if (m.method === "notifications/initialized") return;
-  if (m.method === "initialize") { if (cfg.hangInitialize) return; send({ jsonrpc: "2.0", id: m.id, result: initResult() }); return; }
+  if (m.method === "initialize") { if (cfg.hangInitialize) return; const r = { jsonrpc: "2.0", id: m.id, result: initResult() }; if (cfg.delayInitializeMs) { setTimeout(() => send(r), cfg.delayInitializeMs); return; } send(r); return; }
   if (m.method === "tools/list") { send({ jsonrpc: "2.0", id: m.id, result: toolsList() }); return; }
   if (m.method === "tools/call") {
     const name = m.params && m.params.name;
@@ -220,12 +220,15 @@ test("[M3c-3a] 허용 5개 호출·정확 인자 downstream 전달(bare)", async
 
 // ── startup 거부 ──────────────────────────────────────────────────────────────
 
-test("[M3c-3a] downstream 7 불일치 → ds_tools_mismatch(serve 없음)", async () => {
+test("[M3c-3b] downstream 7 불일치 → attestation 실패: reject·restricted 5개 미노출(초기화 응답은 허용)", async () => {
   const out = await driveProxy({ mode: "toolsMismatch" }, [...INIT, req(2, "tools/list")]);
   try {
+    // attestation 실패 → 비정상 종료(reject). initialize 빠른 응답 계약상 upstream init은 응답될 수 있으나
+    // tools/list는 절대 성공하지 않고 restricted 5개를 노출하지 않는다.
     assert.equal((out.err as ShadcnProxyError)?.code, "ds_tools_mismatch");
-    assert.equal(out.outLines.length, 0);
-    assert.deepEqual(homeLeftovers().filter((h) => !out.homesBefore.has(h)), []);
+    assert.equal(byId(out.outLines, 2), undefined, "tools/list(id 2) 성공 응답 없음(미노출)");
+    assert.ok(!JSON.stringify(out.outLines).includes("get_project_registries"), "restricted 도구명 미노출");
+    assert.deepEqual(homeLeftovers().filter((h) => !out.homesBefore.has(h)), [], "임시 HOME cleanup");
   } finally {
     rmSync(out.dir, { recursive: true, force: true });
   }
@@ -617,14 +620,166 @@ test("[M3c-3a][exec] in-flight tools/call 무한 대기 → SIGTERM 3초 내 exi
   }
 });
 
-test("[M3c-3a] 불변: registry/tool_profiles.json shadcn 미등록 · M3c-0/1/2 함수 불변", async () => {
+test("[M3c-3b] 불변: registry shadcn profile은 handoff-shadcn-readonly(launcher)만 · M3c-0/1/2 함수 불변", async () => {
   const { PACKAGE_ROOT } = await import("../core/paths.js");
   const reg = JSON.parse(readFileSync(join(PACKAGE_ROOT, "registry", "tool_profiles.json"), "utf8"));
-  assert.ok(!/shadcn/i.test(JSON.stringify(reg)));
+  const shadcnProfiles = reg.profiles.filter((p: { id: string }) => /shadcn/i.test(p.id));
+  assert.deepEqual(shadcnProfiles.map((p: { id: string }) => p.id), ["handoff-shadcn-readonly"]);
+  // 신뢰된 launcher만 — command/args/url·npx 직접 실행 없음.
+  assert.equal(shadcnProfiles[0].servers[0].launcher, "shadcn_read_proxy");
+  assert.equal(shadcnProfiles[0].servers[0].command, undefined);
+  assert.ok(!/npx/.test(JSON.stringify(reg)), "registry에 npx 직접 실행 없음(launcher만)");
   const m0 = await import("./shadcnPilot.js");
   const m1 = await import("./shadcnSchemaProbe.js");
   const m2 = await import("./shadcnReadSemanticsProbe.js");
   assert.equal(typeof m0.runShadcnDiscovery, "function");
   assert.equal(typeof m1.runShadcnSchemaProbe, "function");
   assert.equal(typeof m2.runShadcnReadSemanticsProbe, "function");
+});
+
+// ── [M3c-3b] protocol 두 leg 분리 + 초기화 응답 지연 제거 + attestation 게이팅 ──────────────
+const waitFor = async (cond: () => unknown, timeoutMs: number): Promise<void> => {
+  const start = Date.now();
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error("waitFor timeout");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+};
+
+/** 타이밍/프로토콜 검증용 저수준 harness: 응답에 상대 시각(at)을 기록하고 수동으로 요청을 흘려보낸다. */
+function makeProxy(cfg: Record<string, unknown>, opts: { perCallTimeoutMs?: number; startupTimeoutMs?: number } = {}) {
+  const { dir, binDir, serviceCwd } = mkFixtureDir(cfg);
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const events: { at: number; msg: Record<string, unknown> }[] = [];
+  const t0 = Date.now();
+  let obuf = "";
+  output.on("data", (d) => {
+    obuf += d.toString();
+    let idx: number;
+    while ((idx = obuf.indexOf("\n")) >= 0) {
+      const l = obuf.slice(0, idx).trim();
+      obuf = obuf.slice(idx + 1);
+      if (l) try { events.push({ at: Date.now() - t0, msg: JSON.parse(l) }); } catch { /* */ }
+    }
+  });
+  const prevPath = process.env.PATH;
+  process.env.PATH = binDir + ":" + (prevPath ?? "");
+  const ac = new AbortController();
+  const p = runShadcnReadProxy({ serviceCwd, now: () => "t", input, output, perCallTimeoutMs: opts.perCallTimeoutMs ?? 4000, startupTimeoutMs: opts.startupTimeoutMs ?? 8000, onDiagnostic: () => {}, abortSignal: ac.signal });
+  const write = (r: Record<string, unknown> | string) => input.write((typeof r === "string" ? r : JSON.stringify(r)) + "\n");
+  return { input, output, events, ac, dir, binDir, serviceCwd, p, write, ev: (id: unknown) => events.find((e) => e.msg.id === id), restore: () => { process.env.PATH = prevPath; } };
+}
+
+test("[M3c-3b] protocol 분리: downstream=2025-11-25라도 upstream 응답은 요청한 허용 구버전 그대로", async () => {
+  for (const upv of ["2025-06-18", "2025-03-26", "2024-11-05"]) {
+    const out = await driveProxy({ mode: "normal", pv: "2025-11-25" }, [req(1, "initialize", { protocolVersion: upv, capabilities: {} }), notif("notifications/initialized"), req(2, "tools/list")]);
+    try {
+      assert.ok(out.result, out.err?.message);
+      const init = byId(out.outLines, 1) as { result?: { protocolVersion?: string } } | undefined;
+      assert.equal(init?.result?.protocolVersion, upv, `upstream 응답=요청 버전(${upv}), downstream(2025-11-25) 미복사`);
+      const tl = byId(out.outLines, 2) as { result?: { tools?: { name: string }[] } } | undefined;
+      assert.deepEqual((tl?.result?.tools ?? []).map((t) => t.name).sort(), [...BARE5].sort(), "attestation 후 bare 5개");
+    } finally {
+      rmSync(out.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("[M3c-3b] unsupported/missing upstream protocolVersion → fail-closed, tools 미노출", async () => {
+  for (const params of [{ protocolVersion: "1999-01-01" }, { protocolVersion: 123 as unknown as string }, {}]) {
+    const out = await driveProxy({ mode: "normal" }, [req(1, "initialize", params), notif("notifications/initialized"), req(2, "tools/list")]);
+    try {
+      assert.ok(out.result, out.err?.message);
+      assert.ok((byId(out.outLines, 1) as { error?: { code: number } })?.error, `initialize 거부(${JSON.stringify(params)})`);
+      assert.ok(!(byId(out.outLines, 1) as { result?: unknown })?.result, "initialize 성공 result 없음");
+      const tl = byId(out.outLines, 2) as { error?: unknown; result?: unknown } | undefined;
+      assert.ok(tl?.error && !tl.result, "tools/list not initialized 오류(미노출)");
+      assert.ok(!JSON.stringify(out.outLines).includes("get_project_registries"), "restricted 도구명 미노출");
+    } finally {
+      rmSync(out.dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("[M3c-3b] downstream initialize 2초 지연에도 upstream initialize는 500ms 이내 응답", async () => {
+  const h = makeProxy({ mode: "normal", pv: "2025-11-25", delayInitializeMs: 2000 }, { startupTimeoutMs: 8000 });
+  try {
+    h.write(req(1, "initialize", { protocolVersion: "2025-11-25", capabilities: {} }));
+    await waitFor(() => h.ev(1), 1500);
+    const initEv = h.ev(1)!;
+    assert.ok(initEv.at < 500, `upstream initialize 응답 ${initEv.at}ms < 500ms (downstream 2s 지연과 독립)`);
+    assert.equal((initEv.msg as { result?: { protocolVersion?: string } }).result?.protocolVersion, "2025-11-25");
+    // attestation은 아직 진행 중(~2s). abort로 즉시 정리(2s 대기 없음).
+    h.ac.abort();
+    const r = await h.p;
+    assert.equal(r.reason, "signal");
+  } finally {
+    h.restore();
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test("[M3c-3b] tools/list는 attestation 완료 후에만 정확한 bare 5개(지연 downstream)", async () => {
+  const h = makeProxy({ mode: "normal", pv: "2025-11-25", delayInitializeMs: 800 }, { startupTimeoutMs: 8000 });
+  try {
+    h.write(req(1, "initialize", { protocolVersion: "2025-11-25", capabilities: {} }));
+    h.write(notif("notifications/initialized"));
+    h.write(req(2, "tools/list"));
+    await waitFor(() => h.ev(1), 1500);
+    assert.ok(h.ev(1)!.at < 500, "initialize 빠른 응답");
+    await waitFor(() => h.ev(2), 4000);
+    const tl = h.ev(2)!;
+    assert.ok(tl.at >= 600, `tools/list는 attestation(지연 800ms) 후 응답: ${tl.at}ms`);
+    assert.deepEqual(((tl.msg as { result?: { tools?: { name: string }[] } }).result?.tools ?? []).map((t) => t.name).sort(), [...BARE5].sort());
+    h.input.end();
+    await h.p;
+  } finally {
+    h.restore();
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test("[M3c-3b] 지연 attestation 실패 → initialize 이후에도 tools/list 성공 없음·non-zero·cleanup", async () => {
+  const h = makeProxy({ mode: "toolsMismatch", pv: "2025-11-25", delayInitializeMs: 400 }, { startupTimeoutMs: 8000 });
+  const homesBefore = new Set(homeLeftovers());
+  try {
+    h.write(req(1, "initialize", { protocolVersion: "2025-11-25", capabilities: {} }));
+    h.write(notif("notifications/initialized"));
+    h.write(req(2, "tools/list"));
+    await waitFor(() => h.ev(1), 1500);
+    assert.ok(h.ev(1)!.at < 500, "initialize는 빠르게 응답");
+    let err: Error | undefined;
+    try {
+      await h.p;
+    } catch (e) {
+      err = e as Error;
+    }
+    assert.equal((err as ShadcnProxyError)?.code, "ds_tools_mismatch", "attestation 실패로 reject(non-zero)");
+    assert.equal(h.ev(2), undefined, "tools/list 성공 응답 없음");
+    assert.ok(!h.events.some((e) => JSON.stringify(e.msg).includes("get_project_registries")), "restricted 도구명 미노출");
+    assert.deepEqual(homeLeftovers().filter((x) => !homesBefore.has(x)), [], "실패 후 임시 HOME cleanup");
+  } finally {
+    h.restore();
+    rmSync(h.dir, { recursive: true, force: true });
+  }
+});
+
+test("[M3c-3b] pending attestation 중 abort → 즉시 signal 종료·임시 HOME cleanup", async () => {
+  const h = makeProxy({ mode: "normal", pv: "2025-11-25", delayInitializeMs: 3000 }, { startupTimeoutMs: 8000 });
+  const homesBefore = new Set(homeLeftovers());
+  try {
+    h.write(req(1, "initialize", { protocolVersion: "2025-11-25", capabilities: {} }));
+    await waitFor(() => h.ev(1), 1500); // upstream init 응답(attestation은 3s 지연으로 pending)
+    const start = Date.now();
+    h.ac.abort();
+    const r = await h.p;
+    assert.ok(Date.now() - start < 2000, "abort 즉시 종료(3s downstream 지연 대기 안 함)");
+    assert.equal(r.reason, "signal");
+    assert.equal(r.cleanupOk, true);
+    assert.deepEqual(homeLeftovers().filter((x) => !homesBefore.has(x)), [], "abort 후 임시 HOME cleanup");
+  } finally {
+    h.restore();
+    rmSync(h.dir, { recursive: true, force: true });
+  }
 });

@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
   loadToolProfiles,
+  parseToolProfiles,
   compileToolProfile,
   assertPolicyExecutable,
   hasMcpBinding,
@@ -138,4 +139,58 @@ test("fail-fast(cli): 명령 미존재 → 거부", () => {
   assert.doesNotThrow(() =>
     assertPolicyExecutable(c, { provider: getProviderCapabilities("claude-code"), commandAvailable: () => true }),
   );
+});
+
+// ── [M3c-3b] validateServer: 로드 단계 server 계약 강제 ──────────────────────────
+function parseServers(servers: unknown[]): void {
+  parseToolProfiles({
+    profiles: [
+      {
+        id: "srvtest",
+        capabilities: [],
+        bindings: {},
+        servers,
+        preapprovedTools: [],
+        deniedTools: [],
+        permissionMode: "read_only",
+        allowedDomains: [],
+        limits: { maxCallsPerStep: 0, maxResultChars: 0, maxElapsedMsPerCall: 0 },
+        secretRefs: [],
+      },
+    ],
+  });
+}
+
+test("[M3c-3b] validateServer: launcher/stdio/http/bare 유효 서버 허용", () => {
+  assert.doesNotThrow(() => parseServers([{ name: "shadcn", launcher: "shadcn_read_proxy" }]));
+  assert.doesNotThrow(() => parseServers([{ name: "s", command: "node", args: ["a"] }]));
+  assert.doesNotThrow(() => parseServers([{ name: "s", command: "node" }]));
+  assert.doesNotThrow(() => parseServers([{ name: "s", url: "https://x/mcp" }]));
+  assert.doesNotThrow(() => parseServers([{ name: "s" }])); // bare (M2 호환)
+});
+
+test("[M3c-3b] validateServer: 알 수 없는 launcher → ToolProfileError", () => {
+  assert.throws(() => parseServers([{ name: "s", launcher: "evil" }]), ToolProfileError);
+});
+
+test("[M3c-3b] validateServer: launcher + command/args/url/transport(unknown key) → ToolProfileError", () => {
+  for (const extra of [{ command: "node" }, { args: ["x"] }, { url: "https://x/" }, { transport: "stdio" }]) {
+    assert.throws(() => parseServers([{ name: "s", launcher: "shadcn_read_proxy", ...extra }]), ToolProfileError);
+  }
+});
+
+test("[M3c-3b] validateServer: mixed transport(http+command, stdio+url) → ToolProfileError", () => {
+  assert.throws(() => parseServers([{ name: "s", transport: "http", command: "node" }]), ToolProfileError);
+  assert.throws(() => parseServers([{ name: "s", command: "node", url: "https://x/" }]), ToolProfileError);
+});
+
+test("[M3c-3b] validateServer: http non-HTTPS → ToolProfileError", () => {
+  assert.throws(() => parseServers([{ name: "s", url: "http://insecure/" }]), ToolProfileError);
+});
+
+test("[M3c-3b] validateServer: unknown key / bad transport / name 누락 → ToolProfileError", () => {
+  assert.throws(() => parseServers([{ name: "s", command: "node", foo: 1 }]), ToolProfileError);
+  assert.throws(() => parseServers([{ name: "s", foo: 1 }]), ToolProfileError); // bare + unknown key
+  assert.throws(() => parseServers([{ name: "s", transport: "sse" }]), ToolProfileError);
+  assert.throws(() => parseServers([{ command: "node" }]), ToolProfileError); // name 누락
 });

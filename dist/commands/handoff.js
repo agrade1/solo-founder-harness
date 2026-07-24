@@ -12,13 +12,14 @@ function stdinApprove(message, preview) {
         });
     });
 }
-/** harness handoff --project <p> [--cwd <serviceRepo>] [--print] [--yes] */
+/** harness handoff --project <p> [--cwd <serviceRepo>] [--print] [--yes] [--tool-profile <id>] */
 export async function runHandoffCommand(opts) {
     const outcome = await runHandoff({
         project: opts.project,
         cwd: opts.cwd,
         print: opts.print,
         yes: opts.yes,
+        toolProfileId: opts.toolProfileId,
         approve: stdinApprove,
     });
     // 실패성 결과만 비정상 종료코드로 신호한다.
@@ -26,7 +27,11 @@ export async function runHandoffCommand(opts) {
         console.error(outcome.reason);
         process.exitCode = 1;
     }
-    else if (outcome.action === "setup_failed" || outcome.action === "preflight_failed" || outcome.action === "spawn_failed") {
+    else if (outcome.action === "setup_failed" ||
+        outcome.action === "profile_rejected" ||
+        outcome.action === "registry_rejected" ||
+        outcome.action === "preflight_failed" ||
+        outcome.action === "spawn_failed") {
         process.exitCode = 1;
     }
     return outcome;

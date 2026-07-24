@@ -126,6 +126,10 @@ test("[M3b.2] standalone handoff 성공 → spawned + argv 계약 + collector di
   assert.ok(Array.isArray(JSON.parse(env.HARNESS_TOOL_SECRET_REFS!)), "secretRefs는 이름 배열");
   assert.ok(env.HARNESS_TOOL_TRACE_PATH!.endsWith("hx.jsonl"));
   assert.equal(env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, "1");
+  // [M3c-3b] 기본 handoff(empty MCP, toolProfile 미지정) 경로는 blocking MCP env를 추가/강제하지 않는다(ambient 그대로).
+  assert.equal(env.MCP_CONNECT_TIMEOUT_MS, process.env.MCP_CONNECT_TIMEOUT_MS, "기본 경로는 MCP_CONNECT_TIMEOUT_MS 강제 없음(ambient 그대로)");
+  assert.equal(env.MCP_TIMEOUT, process.env.MCP_TIMEOUT, "기본 경로는 MCP_TIMEOUT 강제 없음");
+  assert.equal(env.MCP_CONNECTION_NONBLOCKING, process.env.MCP_CONNECTION_NONBLOCKING, "기본 경로는 MCP_CONNECTION_NONBLOCKING 강제 없음");
 
   // 최소 권한: 파일 0600, 디렉터리 0700
   assert.equal(mode(res.settingsPath), 0o600, "hook-settings 0600");

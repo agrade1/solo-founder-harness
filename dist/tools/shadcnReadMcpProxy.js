@@ -316,13 +316,41 @@ export function runShadcnReadProxy(opts) {
         let rejectedCalls = 0;
         let totalRequests = 0;
         const calledTools = [];
-        let dsProtocolVersion = "";
+        // 두 MCP leg의 protocolVersion을 **분리**한다. upstream 응답에 downstream 버전을 복사하지 않는다.
+        let upstreamProtocolVersion = ""; // upstream(Claude)이 요청한 허용 버전 — upstream 응답에만 사용
+        let downstreamProtocolVersion = ""; // downstream(shadcn)이 협상한 버전 — 내부 attestation용
+        // downstream attestation 상태 (upstream lifecycle와 독립). tools/list·tools/call은 passed 전 성공 금지.
+        let attestState = "pending";
+        const attestWaiters = [];
+        const settleWaiters = (ok) => {
+            while (attestWaiters.length)
+                attestWaiters.shift()(ok);
+        };
+        /** attestation 완료를 startup timeout 안에서 bounded wait. passed→true, failed/timeout→false. */
+        const ensureAttested = () => {
+            if (attestState === "passed")
+                return Promise.resolve(true);
+            if (attestState === "failed")
+                return Promise.resolve(false);
+            return new Promise((res) => {
+                let done = false;
+                const w = (ok) => {
+                    if (!done) {
+                        done = true;
+                        res(ok);
+                    }
+                };
+                attestWaiters.push(w);
+                setTimeout(() => w(false), startupTimeoutMs).unref?.();
+            });
+        };
         // 공통 종료(정확히 한 번). signal/child close 경합에도 settled 가드로 cleanup 1회.
         const doResolve = (reason) => {
             if (settled)
                 return;
             settled = true;
             removeAbort();
+            settleWaiters(false);
             input.removeListener("data", onData);
             void cleanup().then((cleanupOk) => resolve({ startupOk: true, reason, toolCalls, calledTools, forbiddenAttempts, rejectedCalls, downstreamPid: ds ? ds.pid : null, cleanupOk }));
         };
@@ -331,6 +359,8 @@ export function runShadcnReadProxy(opts) {
                 return;
             settled = true;
             removeAbort();
+            settleWaiters(false);
+            input.removeListener("data", onData);
             void cleanup().then((ok) => reject(ok ? err : new ShadcnProxyError("cleanup_failed", scrub("startup 실패 후 임시 HOME 정리 실패"))));
         };
         const onAbort = () => {
@@ -358,7 +388,7 @@ export function runShadcnReadProxy(opts) {
             abortListener = onAbort;
             opts.abortSignal.addEventListener("abort", abortListener);
         }
-        // ── serve 상태 머신 (startup 성공 후 시작) ──
+        // ── serve 상태 머신 ──
         const decoder = new StringDecoder("utf8");
         let ubuf = "";
         const seenIds = new Set();
@@ -380,8 +410,26 @@ export function runShadcnReadProxy(opts) {
         };
         const respondError = (id, code, message) => writeMsg({ jsonrpc: "2.0", id: validId(id) ? id : null, error: { code, message } });
         const maybeFinalize = () => {
-            if ((upstreamEnded || fatal) && !processing && queue.length === 0)
-                doResolve(fatal ? "downstream_fatal" : endReason);
+            if (settled || processing || queue.length > 0)
+                return;
+            if (fatal)
+                return doResolve("downstream_fatal");
+            if (!upstreamEnded)
+                return;
+            // attestation이 아직 진행 중이면 upstream_end로 성공 종료하지 않는다 —
+            // attestation 실패가 성공(upstream_end)으로 가려지지 않도록 완료(pass/fail)까지 대기한다.
+            if (attestState === "pending")
+                return;
+            doResolve(endReason); // attestState==="passed" (failed는 rejectStartup가 이미 종료)
+        };
+        // tools/list: attestation passed 전에는 restricted 5개를 **절대 노출하지 않는다**(pending은 bounded wait).
+        const handleToolsList = async (id) => {
+            const ok = await ensureAttested();
+            if (settled)
+                return;
+            if (!ok)
+                return respondError(id, -32000, "server unavailable"); // 미완료/실패 → 5개 미노출
+            writeMsg({ jsonrpc: "2.0", id, result: { tools: restrictedToolList() } });
         };
         const handleToolsCall = async (id, params) => {
             const p = isPlainObject(params) ? params : {};
@@ -411,6 +459,14 @@ export function runShadcnReadProxy(opts) {
                 diag(e.code ?? "policy");
                 return respondError(id, -32602, "invalid arguments"); // 정책 거부 — 세션 유지
             }
+            // downstream forward 전 attestation 확인(미완료면 bounded wait, 실패면 forward 금지).
+            const attested = await ensureAttested();
+            if (settled)
+                return;
+            if (!attested) {
+                rejectedCalls++;
+                return respondError(id, -32000, "server unavailable");
+            }
             toolCalls++;
             calledTools.push(nsName(name));
             try {
@@ -435,13 +491,19 @@ export function runShadcnReadProxy(opts) {
             if (method === "initialize") {
                 if (state !== "init")
                     return respondError(id, -32600, "already initialized");
+                // upstream이 요청한 protocolVersion 검증(missing/비문자열/미허용 → fail-closed, state 유지·tools 미노출).
+                const pv = isPlainObject(msg.params) ? msg.params.protocolVersion : undefined;
+                if (typeof pv !== "string" || !isAllowedProtocolVersion(pv))
+                    return respondError(id, -32602, "unsupported protocol version");
+                upstreamProtocolVersion = pv;
                 state = "initialized_pending";
-                return writeMsg({ jsonrpc: "2.0", id, result: { protocolVersion: dsProtocolVersion, capabilities: { tools: {} }, serverInfo: { name: "shadcn-read-proxy", version: "0.1.0" } } });
+                // 응답은 **upstream이 요청한 버전** 그대로. downstream 버전을 복사하지 않는다. downstream 검증과 독립적으로 즉시 응답.
+                return writeMsg({ jsonrpc: "2.0", id, result: { protocolVersion: upstreamProtocolVersion, capabilities: { tools: {} }, serverInfo: { name: "shadcn-read-proxy", version: "0.1.0" } } });
             }
             if (state !== "ready")
                 return respondError(id, -32600, "not initialized");
             if (method === "tools/list")
-                return writeMsg({ jsonrpc: "2.0", id, result: { tools: restrictedToolList() } });
+                return handleToolsList(id);
             if (method === "tools/call")
                 return handleToolsCall(id, msg.params);
             return respondError(id, -32601, "method not found");
@@ -522,8 +584,9 @@ export function runShadcnReadProxy(opts) {
                 maybeFinalize();
             });
         };
-        // ── startup: downstream init → tools/list 실측 7개 정확 일치 ──
-        void (async () => {
+        // ── downstream attestation: initialize → tools/list 실측 7개 정확 일치 (upstream과 독립·bounded). ──
+        //    실패 시 restricted 5개를 절대 노출하지 않고 rejectStartup(연결 종료·그룹 kill·HOME cleanup·non-zero).
+        const runAttestation = async () => {
             try {
                 const initR = await ds.request("initialize", { protocolVersion: REQUEST_PROTOCOL_VERSION, capabilities: {}, clientInfo: { name: "shadcn-read-proxy", version: "0" } }, startupTimeoutMs);
                 if (aborted || settled)
@@ -535,7 +598,8 @@ export function runShadcnReadProxy(opts) {
                 const si = initR.serverInfo;
                 if (!isPlainObject(si) || typeof si.name !== "string" || !si.name || typeof si.version !== "string" || !si.version)
                     throw new ShadcnProxyError("ds_server_info", "downstream serverInfo 누락");
-                dsProtocolVersion = initR.protocolVersion;
+                downstreamProtocolVersion = initR.protocolVersion; // 별도 상태 — upstream 응답에 복사 금지
+                void downstreamProtocolVersion; // 명시적 read: downstream 협상 버전은 별도 보관만 하고 upstream으로 전달하지 않는다.
                 ds.notify("notifications/initialized");
                 const bare = new Set();
                 let cursor;
@@ -569,14 +633,22 @@ export function runShadcnReadProxy(opts) {
                     throw new ShadcnProxyError("ds_tools_mismatch", "downstream 도구 목록이 실측 7개와 불일치");
                 if (aborted || settled)
                     return;
-                startServe();
+                attestState = "passed";
+                settleWaiters(true);
+                maybeFinalize(); // upstream이 이미 end했다면 이제 upstream_end로 정상 종료
             }
             catch (e) {
                 if (aborted || settled)
-                    return; // abort가 이미 signal로 종료 처리 중
+                    return; // abort/finalize가 이미 처리 중
+                attestState = "failed";
+                settleWaiters(false); // 대기 중 tools/list·tools/call은 settled 후 성공 응답을 쓰지 않는다(5개 미노출)
                 rejectStartup(e instanceof ShadcnProxyError ? new ShadcnProxyError(e.code, scrub(e.message)) : new ShadcnProxyError("ds_startup", scrub(e.message)));
             }
-        })();
+        };
+        // upstream listener를 downstream spawn 직후 **즉시** 시작한다(초기화 응답 지연 방지).
+        // downstream attestation은 독립 bounded Promise로 동시 수행한다.
+        startServe();
+        void runAttestation();
     });
 }
 /** 실행 진입점: serviceCwd=cwd, stdin/stdout으로 proxy 구동. stdout은 JSON-RPC 전용. */

@@ -15,7 +15,8 @@ function stdinApprover(message) {
     });
 }
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
-export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffRunner = runHandoffCommand) {
+export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffToolProfileId, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
+handoffRunner = runHandoffCommand) {
     const provider = getProvider(providerId);
     const approve = yes ? async () => true : stdinApprover;
     if (resume) {
@@ -108,6 +109,7 @@ export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDE
     // (failed면 위에서 return — 핸드오프하지 않고 resume 안내만 남는다.)
     if (handoff) {
         console.log("");
-        await handoffRunner({ project, cwd: handoffCwd, yes });
+        // [M3c-3b] --handoff-tool-profile은 handoff 경로 전용. workflow용 --tool-profile(toolProfileId)과 혼용하지 않는다.
+        await handoffRunner({ project, cwd: handoffCwd, yes, toolProfileId: handoffToolProfileId });
     }
 }

@@ -33,7 +33,17 @@ export interface McpServerDecl {
   args?: string[];
   url?: string;
   transport?: "stdio" | "http";
+  /**
+   * [M3c-3b] 신뢰된 launcher 식별자(literal). registry에 절대경로·사용자 환경 의존 node 경로를 남기지 않기 위해
+   * command/args/url 대신 논리 식별자만 기록한다. command/args/url/transport와 동시 사용 금지.
+   * runtime config 생성 시에만 command=process.execPath, args=[PACKAGE_ROOT/dist/tools/<proxy>.js]로 변환된다.
+   * 문자열 일반형이 아니라 신뢰 목록 literal로 제한한다.
+   */
+  launcher?: "shadcn_read_proxy";
 }
+
+/** [M3c-3b] 신뢰된 launcher 식별자 목록(runtime loader·adapter 공용). */
+export const TRUSTED_LAUNCHER_IDS = ["shadcn_read_proxy"] as const;
 
 export interface ToolProfile {
   id: string;
@@ -107,6 +117,50 @@ function validateBinding(cap: string, b: unknown, id: string): ToolBinding {
   }
 }
 
+/**
+ * [M3c-3b] 서버 선언 1개를 런타임 검증한다(단순 cast 금지). 위반 시 ToolProfileError(로드 단계 거부).
+ * 분류: launcher / http(url 또는 transport:http) / stdio(command 또는 transport:stdio) / bare(name만, M2 호환).
+ * unknown key·unknown launcher·mixed transport를 각 분류에서 거부한다.
+ */
+function validateServer(raw: unknown, id: string): McpServerDecl {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) throw new ToolProfileError(`profile '${id}': server가 객체가 아님`);
+  const s = raw as Record<string, unknown>;
+  if (typeof s.name !== "string" || !s.name) throw new ToolProfileError(`profile '${id}': server.name(비어있지 않은 문자열) 필요`);
+  const keys = Object.keys(s);
+  const onlyKeys = (allowed: string[]) => {
+    for (const k of keys) if (!allowed.includes(k)) throw new ToolProfileError(`profile '${id}': server '${s.name}'에 허용되지 않은 key '${k}'`);
+  };
+  if ("transport" in s && s.transport !== "stdio" && s.transport !== "http") {
+    throw new ToolProfileError(`profile '${id}': server '${s.name}'의 transport는 stdio|http만`);
+  }
+  // launcher 서버
+  if ("launcher" in s) {
+    if (!TRUSTED_LAUNCHER_IDS.includes(s.launcher as (typeof TRUSTED_LAUNCHER_IDS)[number])) {
+      throw new ToolProfileError(`profile '${id}': server '${s.name}'의 알 수 없는 launcher '${String(s.launcher)}'`);
+    }
+    onlyKeys(["name", "launcher"]); // command/args/url/transport 존재 자체 금지
+    return s as unknown as McpServerDecl;
+  }
+  // http 서버
+  if ("url" in s || s.transport === "http") {
+    if (typeof s.url !== "string" || !/^https:\/\//.test(s.url)) throw new ToolProfileError(`profile '${id}': server '${s.name}' http는 HTTPS url 필요`);
+    if ("command" in s || "args" in s || "launcher" in s) throw new ToolProfileError(`profile '${id}': server '${s.name}' http에 command/args/launcher 금지`);
+    onlyKeys(["name", "url", "transport"]);
+    return s as unknown as McpServerDecl;
+  }
+  // stdio 서버
+  if ("command" in s || s.transport === "stdio") {
+    if (typeof s.command !== "string" || !s.command) throw new ToolProfileError(`profile '${id}': server '${s.name}' stdio는 command(비어있지 않은 문자열) 필요`);
+    if ("args" in s && !isStrArray(s.args)) throw new ToolProfileError(`profile '${id}': server '${s.name}' args는 string[]`);
+    if ("launcher" in s || "url" in s) throw new ToolProfileError(`profile '${id}': server '${s.name}' stdio에 launcher/url 금지`);
+    onlyKeys(["name", "command", "args", "transport"]);
+    return s as unknown as McpServerDecl;
+  }
+  // bare 선언(name만) — M2 planning-plane 최소 선언 호환. execution 필드 없음.
+  onlyKeys(["name"]);
+  return s as unknown as McpServerDecl;
+}
+
 function validateStructure(raw: unknown): ToolProfile {
   if (!raw || typeof raw !== "object") throw new ToolProfileError("profile이 객체가 아님");
   const p = raw as Record<string, unknown>;
@@ -130,11 +184,12 @@ function validateStructure(raw: unknown): ToolProfile {
   for (const [cap, b] of Object.entries(p.bindings as Record<string, unknown>)) {
     bindings[cap as ToolCapability] = validateBinding(cap, b, id);
   }
+  const servers = (p.servers as unknown[]).map((s) => validateServer(s, id));
   return {
     id,
     capabilities: p.capabilities as ToolCapability[],
     bindings,
-    servers: p.servers as McpServerDecl[],
+    servers,
     preapprovedTools: p.preapprovedTools,
     deniedTools: p.deniedTools,
     permissionMode: p.permissionMode as PermissionMode,

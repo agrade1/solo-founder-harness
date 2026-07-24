@@ -4,6 +4,7 @@ import { join, dirname } from "node:path";
 import { NdjsonParser } from "../exec/streamParser.js";
 import { writeMcpConfig, writeEmptyMcpConfig, McpConfigError } from "../providers/claudeCodeMcpAdapter.js";
 import { redactSecrets, collectSecretValues } from "./redact.js";
+import { applyBlockingMcpEnv } from "./mcpEnv.js";
 /**
  * [M3a] Headless MCP preflight.
  * profile로 mcp-config를 생성하고 `claude -p --output-format stream-json`을 헤드리스로 띄워
@@ -43,13 +44,13 @@ function buildChildEnv(profile, testEnv) {
         if (v !== undefined)
             env[name] = v; // 선언된 secret만 통과
     }
-    env.MCP_CONNECTION_NONBLOCKING = "0";
     env.ENABLE_TOOL_SEARCH = "false";
     env.CLAUDE_CODE_DISABLE_AUTO_MEMORY = "1"; // [M3b.2] auto-memory 격리 (project/user memory 상속 방지)
     if (testEnv)
         for (const [k, v] of Object.entries(testEnv))
             env[k] = v;
-    return env;
+    // [M3c-3b] blocking MCP 연결 env는 **마지막에** 강제한다 — ambient/testEnv가 override할 수 없다.
+    return applyBlockingMcpEnv(env);
 }
 /** snapshot의 모든 문자열 필드를 redaction한 새 객체를 만든다 (반환/저장 동일 보장). */
 function redactSnapshot(s, scrub) {
