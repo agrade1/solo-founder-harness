@@ -25,6 +25,12 @@
  *  - cleanup은 idempotent하며 exit/SIGINT/SIGTERM에서도 임시 디렉터리·canary PID를 정리한다.
  *  - canary PID는 command line ownership 확인 후에만 kill한다(오인 kill 방지). 확인 실패는 FAIL.
  *
+ * [M3d.2] PASS + cleanup까지 모두 성공한 뒤에만 redacted live evidence 1건을 docs/evidence/m3d2에 기록한다.
+ *   evidence는 version/contract/status/timestamp + 정수·불리언 파생 지표뿐이며 trace 원문·argv·경로·session ID를
+ *   담지 않는다. 기록 실패는 runner 실패로 처리하고, 실패/미실행(non-spawned) run은 evidence를 남기지 않는다.
+ *   기록 위치 override는 **argv `--fixture-config <절대경로 .json>`의 `evidenceDir`로만** 가능하다
+ *   (환경변수 seam 제거 — env는 자손에 암묵 상속되어 production 기록 위치를 조용히 바꿀 수 있었다).
+ *
  * 선행: `npm run build` (dist 사용). 수동 실행 전용.
  * 실행: npm run build && HARNESS_LIVE_M3B2=1 node scripts/m3b2-live-handoff.mjs
  */
@@ -34,6 +40,18 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// ── [M3d.2] evidence 기록 위치 override는 argv로만 받는다(env seam 없음) ──────
+import { FixtureConfigError, loadFixtureConfig } from "./lib/fixture-config.mjs";
+let FIXTURE_EVIDENCE_DIR;
+try {
+  const loaded = loadFixtureConfig(process.argv.slice(2), { evidenceDir: { kind: "absPath" } });
+  FIXTURE_EVIDENCE_DIR = loaded.config?.evidenceDir;
+} catch (e) {
+  const code = e instanceof FixtureConfigError ? e.code : "unknown";
+  console.error(`거부: fixture 설정 [${code}] ${e?.message ?? ""}`);
+  process.exit(2);
+}
 
 // ── 안전장치 1: 명시적 opt-in ──────────────────────────────────────────────
 if (process.env.HARNESS_LIVE_M3B2 !== "1") {
@@ -57,9 +75,12 @@ const NODE = process.execPath;
 const SERVER = join(HERE, "fixtures", "m3a", "minimal-stdio-mcp.mjs"); // ambient MCP canary fixture 재사용
 
 const distHandoff = join(HERE, "..", "dist", "core", "handoff.js");
-if (!existsSync(distHandoff)) {
-  console.error(`빌드가 필요합니다: ${distHandoff} 없음 — 먼저 'npm run build'.`);
-  process.exit(2);
+const distEvidence = join(HERE, "..", "dist", "tools", "liveEvidence.js");
+for (const m of [distHandoff, distEvidence]) {
+  if (!existsSync(m)) {
+    console.error(`빌드가 필요합니다: ${m} 없음 — 먼저 'npm run build'.`);
+    process.exit(2);
+  }
 }
 if (!existsSync(SERVER)) {
   console.error(`ambient MCP canary fixture 없음: ${SERVER}`);
@@ -183,6 +204,7 @@ const { runWorkflow, loadRunState } = await import(join(HERE, "..", "dist", "cor
 const { projectPaths } = await import(join(HERE, "..", "dist", "core", "project.js"));
 const { mockProvider } = await import(join(HERE, "..", "dist", "providers", "mockProvider.js"));
 const { SUPPORTED_HOOKS } = await import(join(HERE, "..", "dist", "tools", "hookSettings.js"));
+const { buildLiveEvidence, writeLiveEvidence, resolveEvidenceDir } = await import(distEvidence);
 
 // credential 형태 보조 검사(config/settings/snapshot 전용 — trace는 정당한 tool-input 텍스트가 있어 제외).
 const CRED = /(?:authorization|api[_-]?key|apikey|access[_-]?token|token|secret|password|credential)\s*[:=]/i;
@@ -201,6 +223,10 @@ const serviceWorklog = join(serviceCwd, "docs", "WORKLOG.md"); // 생성되면 P
 const problems = [];
 let exitCode = 0;
 let spawnedVerified = false; // spawned 사후 검증까지 도달했는지 (finally에서 PASS 판정 조건)
+// [M3d.2] evidence 파생 지표 (정수/불리언만). 사후 검증 완주 시 조립하고, cleanup 성공 후에만 기록한다.
+let liveMetrics = null;
+let sentinelLeakAbsent = true;
+let permissionBitsExact = true;
 
 /** ambient MCP/Hook canary가 기동/실행됐으면 FAIL. spawned·non-spawned 양쪽에서 호출한다. */
 function checkCanaries() {
@@ -576,7 +602,10 @@ try {
     ["snapshot", snapText],
     ["trace", traceText],
   ]) {
-    if (txt.includes(sentinel)) problems.push(`${name}에 sentinel 평문 노출`);
+    if (txt.includes(sentinel)) {
+      sentinelLeakAbsent = false;
+      problems.push(`${name}에 sentinel 평문 노출`);
+    }
   }
   for (const [name, txt] of [
     ["settings", settingsText],
@@ -597,11 +626,15 @@ try {
   if (existsSync(snapshotPath)) modeChecks.push([snapshotPath, 0o600, "tools-snapshot"]);
   for (const [p, want, label] of modeChecks) {
     if (!existsSync(p)) {
+      permissionBitsExact = false;
       problems.push(`${label} 파일 부재: ${p}`);
       continue;
     }
     const m = mode(p);
-    if (m !== want) problems.push(`${label} 권한 ${m.toString(8)} (기대 ${want.toString(8)})`);
+    if (m !== want) {
+      permissionBitsExact = false;
+      problems.push(`${label} 권한 ${m.toString(8)} (기대 ${want.toString(8)})`);
+    }
   }
 
   // (k) run_state.handoff 기록 + completed 불변.
@@ -613,6 +646,27 @@ try {
     else if (st.handoff.trace_path !== tracePath) problems.push("run_state.handoff.trace_path 불일치");
   }
 
+  // [M3d.2] evidence 파생 지표 조립(원문·argv·경로·ID 없음. 정수/불리언만).
+  const countEvent = (event) => records.filter((r) => r.event === event).length;
+  liveMetrics = {
+    hookKindCount: Object.keys(settings?.hooks ?? {}).length,
+    traceRecordCount: records.length,
+    distinctSessionCount: sids.size,
+    toolRequestedCount: countEvent("tool_requested"),
+    toolSucceededCount: countEvent("tool_succeeded"),
+    toolFailedCount: countEvent("tool_failed"),
+    permissionRequestedCount: countEvent("permission_requested"),
+    sessionEndCount: countEvent("session_end"),
+    emptyMcpServerCount: Array.isArray(snap?.servers) ? snap.servers.length : 0,
+    emptyMcpToolCount: Array.isArray(snap?.tools) ? snap.tools.length : 0,
+    ambientMcpCanarySpawned: existsSync(canaryMcpPidFile),
+    ambientHookCanaryExecuted: existsSync(canaryHookSessionMarker) || existsSync(canaryHookPreMarker),
+    rejectMarkerCreated: existsSync(rejectMarker),
+    permissionBitsExact,
+    runStateHandoffRecorded: Boolean(st && st.handoff),
+    sentinelLeakAbsent,
+  };
+
   spawnedVerified = true; // 사후 검증 완주 — finally에서 PASS/FAIL 판정
 } catch (e) {
   const msg = redact(String(e?.message ?? e));
@@ -623,9 +677,24 @@ try {
 } finally {
   cleanup(); // idempotent. kill/정리 실패는 cleanupProblems로 별도 기록(숨기지 않음).
   const allProblems = [...problems, ...cleanupProblems];
+  // [M3d.2] 모든 계약 검사 + cleanup이 성공한 뒤에만 evidence 1건 기록. 기록 실패는 runner 실패.
+  let evidenceProblem = null;
+  if (spawnedVerified && allProblems.length === 0 && exitCode === 0) {
+    try {
+      writeLiveEvidence({
+        evidence: buildLiveEvidence({ contract: "m3b2_live_handoff", timestamp: new Date().toISOString(), metrics: liveMetrics }),
+        dir: resolveEvidenceDir({ repoRoot: join(HERE, ".."), overrideDir: FIXTURE_EVIDENCE_DIR }),
+        secretRefs: ["M3B2_LIVE_TOKEN"],
+      });
+    } catch (e) {
+      // 계약/권한 위반 메시지는 필드 이름만 담는다(경로·본문 미출력).
+      evidenceProblem = e?.name === "LiveEvidenceError" ? `${e.code}: ${e.message}` : (e?.code ?? e?.name ?? "unknown");
+    }
+  }
   if (spawnedVerified) {
-    if (allProblems.length) {
-      console.error("\n[m3b2-live] FAIL:\n - " + allProblems.map(redact).join("\n - "));
+    if (allProblems.length || evidenceProblem) {
+      if (evidenceProblem) console.error(`\n[m3b2-live] live evidence 기록 실패 [${redact(evidenceProblem)}] → FAIL 처리.`);
+      if (allProblems.length) console.error("\n[m3b2-live] FAIL:\n - " + allProblems.map(redact).join("\n - "));
       exitCode = 1;
     } else {
       console.log(
@@ -634,7 +703,8 @@ try {
           "callId correlation(planning Read·Read 성공/실패·Bash 승인) + permission_requested 별도(callId=null) · " +
           "Bash 비출력 존재확인(node -e, sentinel 값 미출력) · Write 수동 거부(requested+permission·marker 부재) · " +
           "session_end 정확1(callId/toolName=null) · trace 공통 계약 · 대화형 argv에 -p/stream-json 없음(-- 꼬리) · ambient MCP/Hook canary 미기동 · " +
-          "sentinel/credential 평문 부재 · 원문 미저장 · 권한(dir700/file600) · run_state.handoff 기록·completed 불변.",
+          "sentinel/credential 평문 부재 · 원문 미저장 · 권한(dir700/file600) · run_state.handoff 기록·completed 불변 · " +
+          "live evidence 기록(docs/evidence/m3d2, 정수·불리언 지표만).",
       );
     }
   } else if (allProblems.length) {
