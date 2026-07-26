@@ -17,9 +17,10 @@ agents/AGENTS_INDEX.md
 ## 읽지 말 것
 
 - agents/*.md 원문 전체 (경로/존재 확인만, 특정 agent 디버깅 시에만 해당 파일 하나를 연다)
-- docs/backlog/* — 단, 예외: 사용자가 V3 작업을 명시적으로 요청한 경우에만 아래 두 활성 문서를 읽는다.
-  - `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
-  - `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`
+- docs/backlog/* — 단, 예외: 사용자가 V3 작업을 명시적으로 요청한 경우에만 아래 세 활성 문서를 읽는다.
+    - `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`
+    - `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`
+    - `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
   - 그 외 backlog 문서는 사용자가 직접 지정하지 않는 한 구현 근거로 사용하지 않는다.
 - docs/IMPLEMENTATION_PLAYBOOK.md (사람용 진행 플레이북 — 사용자가 범위를 지정해주므로 직접 읽을 필요 없음)
 - docs/reference/* (아래 호출 조건에 해당할 때만)
@@ -42,6 +43,13 @@ agents/AGENTS_INDEX.md
 - 완료 기준: docs/ACCEPTANCE_TEST_CHECKLIST.md의 Test 1~5 전부 통과
 - workflow 실행마다 outputs/run_state.json 기록, 결과 저장 시 필수 섹션 헤더 검증(경고)
 - Opus 모델 세션: 지시를 문자 그대로 따르고, 명세에 없는 기능을 추가하지 않으며, 승인 전 파일 수정 금지 (상세: prompts/opus_optimization_guide.md)
+- 리뷰 finding은 **A(지금 차단) / B(지정 마일스톤·트리거 전 필수) / C(개선 backlog)** 로 분류한다.
+  **C만으로는 리비전 루프를 다시 돌리거나 기능 진행을 멈추지 않는다.** 유예 항목은 조용히 버리지 않고
+  대장에 남긴다(심각도·확률·영향 반경·유예 비용·수정 공수·기한·담당·증거·상태). 상세: AGENTS.md + 로드맵 §9.1
+- 테스트는 위험 비례: 변경마다 focused, handoff 전 전체 suite 1회, 반복·stress·live는 마일스톤/하드닝
+  게이트에서만(해당 계약을 건드린 변경은 예외). 테스트 완화·삭제는 여전히 금지.
+- 병렬 Claude Opus 5 세션은 **격리 worktree + 파일 소유권 분리**가 성립할 때만 쓴다. 공유 schema/API 변경·
+  통합·상태 마이그레이션·최종 전체 테스트·배타 자원 테스트는 직렬. 공유 dirty 체크아웃은 단일 세션. (AGENTS.md)
 
 ## 작업 종료 시
 
@@ -51,13 +59,15 @@ agents/AGENTS_INDEX.md
 
 ## V3 활성 설계 문서
 
-V3 작업은 아래 두 문서만 구현 기준으로 사용한다.
+V3 작업은 아래 세 문서만 구현 기준으로 사용한다. M3d 이후 로드맵·오케스트레이션 충돌은
+1번 문서가 우선한다.
 
-1. `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
+1. `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`
 2. `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`
+3. `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
 
 `docs/archive/V3_KICKOFF_SUPERSEDED.md`는 기존 `V3_KICKOFF.md`의 과거 계획 기록이며(archive로 이동됨)
-구현 근거로 사용하지 않는다. 문서 간 충돌 시 위 두 활성 문서가 우선한다.
+구현 근거로 사용하지 않는다. 문서 간 충돌 시 위 세 활성 문서와 위 우선순위를 적용한다.
 
 `docs/backlog/V3_FIELD_NOTES.md`는 실측 근거로만 참고하며,
 해당 문서만을 근거로 신규 기능을 구현하지 않는다.
