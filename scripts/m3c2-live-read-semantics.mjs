@@ -12,12 +12,16 @@
  *  - **실제 실행 시 `npx --yes shadcn@4.13.1 mcp` package download + standard registry network read(5회)가 발생할 수 있다.**
  *  - production/remote repo/billing/deploy 미접촉. 임시 serviceCwd/home/cache만 사용, cleanup.
  *  - 외부 결과 원문 출력 금지 — metrics(파생 지표)만 출력. signal/finally cleanup·잔존 프로세스 검사.
+ *  - 잔존 프로세스 검사는 **이 runner 소유(process tree 또는 임시 base cwd)** 로만 한정한다(m3c3b ownership 패턴).
+ *    같은 command line을 가진 남의 프로세스(병렬 테스트 등)는 잔존으로 보지 않는다. 소유권 미확인은 FAIL(kill 안 함).
+ *  - 프로세스 동일성은 pid가 아니라 **pid + ps lstart(시작 시각)** 으로 판정한다(pid 재사용 방지).
+ *  - 잔존 보고에는 외부 프로세스의 argv/command line을 **절대 출력하지 않는다** — pid/소유권/run-salt 해시만.
  *
  * 선행: `npm run build`. 실행: HARNESS_LIVE_M3C2_SEMANTICS=1 node scripts/m3c2-live-read-semantics.mjs
  */
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, realpathSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { randomBytes, createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,24 +57,121 @@ const redact = (s) => String(s ?? "").split(sentinel).join("***");
 const mode = (p) => statSync(p).mode & 0o777;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-function matchingShadcnPids() {
-  const r = spawnSync("/bin/ps", ["-Ao", "pid=,command="], { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 });
-  if (r.error || r.status !== 0) {
+// ── 잔존 프로세스 소유권 판정 (m3c3b ownership 패턴: process tree + cwd) ──────
+// 같은 command line(`shadcn@4.13.1 ... mcp`)을 가진 프로세스가 병렬로 존재할 수 있으므로,
+// **이 runner가 만든 프로세스**만 잔존으로 센다:
+//   owned  = ppid 체인이 이 runner(process.pid)에 닿거나, cwd가 임시 base(=serviceCwd 상위) 아래.
+//   foreign= cwd가 확인됐고 base 밖 / 다른 uid → 우리 것이 아님 → 무시.
+//   unknown= 살아있는데 cwd 확인 실패 또는 관측 중 동일성 변화 → 소유권 미확인 FAIL(kill 안 함).
+// pid는 재사용되므로 baseline 비교·재검증은 모두 identity(`pid@lstart`)로 한다.
+const OWN_PID = process.pid;
+const LSOF_BINS = ["/usr/sbin/lsof", "/usr/bin/lsof"];
+const basePrefixes = [...new Set([base, (() => { try { return realpathSync(base); } catch { return base; } })()])];
+const underBase = (p) => basePrefixes.some((b) => p === b || p.startsWith(b + "/"));
+// 실행마다 바뀌는 salt — 로그의 command line 해시가 역추적/상관분석에 쓰이지 않도록.
+const RUN_SALT = randomBytes(16).toString("hex");
+const cmdSignature = (cmd) => createHash("sha256").update(RUN_SALT).update("\u0000").update(String(cmd ?? "")).digest("hex").slice(0, 12);
+
+/**
+ * /bin/ps 1회로 pid/ppid/lstart/command 스냅샷. 실패 시 ok:false(호출측 fail-closed).
+ * lstart는 macOS/Linux ps 공통 키워드이며 `%a %b %e %H:%M:%S %Y` 5토큰이다.
+ * identity = `pid@lstart` — pid 재사용을 구분하는 이식 가능한 프로세스 지문.
+ */
+function psSnapshot() {
+  const r = spawnSync("/bin/ps", ["-A", "-ww", "-o", "pid=,ppid=,lstart=,command="], { encoding: "utf8", maxBuffer: 8 * 1024 * 1024 });
+  if (r.error || r.status !== 0 || typeof r.stdout !== "string") {
     const detail = r.error?.message ?? `exit ${r.status}${r.stderr ? `: ${String(r.stderr).trim()}` : ""}`;
     return { ok: false, error: String(detail) };
   }
-  const m = new Map();
-  for (const line of (r.stdout || "").split("\n")) {
-    const t = line.trim();
-    if (!t) continue;
-    const sp = t.indexOf(" ");
-    if (sp <= 0) continue;
-    const pid = Number(t.slice(0, sp));
-    const cmd = t.slice(sp + 1);
+  const rows = new Map();
+  for (const line of r.stdout.split("\n")) {
+    const m = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.*)$/);
+    if (!m) continue;
+    const pid = Number(m[1]);
+    const ppid = Number(m[2]);
     if (!Number.isInteger(pid) || pid <= 0) continue;
-    if (cmd.includes("shadcn@4.13.1") && /(^|\s)mcp(\s|$)/.test(cmd)) m.set(pid, cmd);
+    const start = m[3].replace(/\s+/g, " ");
+    rows.set(pid, { ppid, start, cmd: m[4], identity: `${pid}@${start}` });
   }
-  return { ok: true, map: m };
+  if (rows.size === 0) return { ok: false, error: "ps 출력 파싱 실패(lstart 형식 불일치)" };
+  return { ok: true, rows };
+}
+
+/** shadcn MCP command line에 일치하는 pid → {identity, cmd} (자기 자신 제외). cmd는 내부 판정/해시용이며 출력 금지. */
+function matchingShadcnPids() {
+  const snap = psSnapshot();
+  if (!snap.ok) return { ok: false, error: snap.error };
+  const m = new Map();
+  for (const [pid, row] of snap.rows) {
+    if (pid === OWN_PID) continue;
+    if (row.cmd.includes("shadcn@4.13.1") && /(^|\s)mcp(\s|$)/.test(row.cmd)) m.set(pid, { identity: row.identity, cmd: row.cmd });
+  }
+  return { ok: true, map: m, rows: snap.rows };
+}
+
+/** "alive" | "gone" | "other-user"(EPERM → 우리 프로세스가 아님). */
+function aliveState(pid) {
+  try {
+    process.kill(pid, 0);
+    return "alive";
+  } catch (e) {
+    return e?.code === "EPERM" ? "other-user" : "gone";
+  }
+}
+
+/** pid의 cwd. linux는 /proc, 그 외는 lsof. 확인 불가 시 null. */
+function pidCwd(pid) {
+  if (process.platform === "linux") {
+    try {
+      return realpathSync(`/proc/${pid}/cwd`);
+    } catch {
+      /* lsof로 폴백 */
+    }
+  }
+  for (const bin of LSOF_BINS) {
+    if (!existsSync(bin)) continue;
+    const r = spawnSync(bin, ["-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8", timeout: 10_000, maxBuffer: 1024 * 1024 });
+    if (r.error || r.status !== 0 || typeof r.stdout !== "string") continue;
+    const line = r.stdout.split("\n").find((l) => l.startsWith("n"));
+    if (line) return line.slice(1).trim();
+  }
+  return null;
+}
+
+/** ppid 체인이 이 runner에 닿는가(cycle/깊이 가드). */
+function isDescendantOfRunner(pid, rows) {
+  let cur = pid;
+  for (let depth = 0; depth < 64; depth++) {
+    const row = rows.get(cur);
+    if (!row) return false;
+    if (row.ppid === OWN_PID) return true;
+    if (row.ppid <= 1 || row.ppid === cur) return false;
+    cur = row.ppid;
+  }
+  return false;
+}
+
+/**
+ * 관측(cwd/ppid)이 끝난 뒤 같은 identity가 여전히 살아있는지 재확인한다.
+ * 사라졌으면 "gone"(잔존 아님), identity가 바뀌었으면(pid 재사용) stale 관측이므로 "unknown"(fail-closed).
+ */
+function revalidate(pid, identity, classification) {
+  const snap = psSnapshot();
+  if (!snap.ok) return "unknown";
+  const row = snap.rows.get(pid);
+  if (!row) return "gone";
+  if (row.identity !== identity) return "unknown";
+  return classification;
+}
+
+/** "owned" | "foreign" | "unknown" | "gone" — 분류 결과는 항상 동일 identity로 재검증한다. */
+function ownership(pid, identity, rows) {
+  if (isDescendantOfRunner(pid, rows)) return revalidate(pid, identity, "owned");
+  const alive = aliveState(pid);
+  if (alive === "gone") return "gone";
+  if (alive === "other-user") return "foreign"; // 다른 uid → 이 runner가 만든 프로세스가 아님
+  const cwd = pidCwd(pid);
+  return revalidate(pid, identity, cwd === null ? "unknown" : underBase(cwd) ? "owned" : "foreign");
 }
 
 let cleaned = false;
@@ -121,7 +222,8 @@ try {
     exitCode = 2;
     throw new Error("ps_baseline_failed");
   }
-  const beforePids = new Set(before.map.keys());
+  // baseline은 pid가 아니라 identity로 기억한다 — 같은 pid의 다른 incarnation은 새 프로세스다.
+  const beforeIdentities = new Map([...before.map].map(([pid, info]) => [pid, info.identity]));
 
   let res = null;
   try {
@@ -133,18 +235,31 @@ try {
     problems.push(`read-semantics 실패: ${e?.code ?? "unknown"}`);
   }
 
-  let leftover = new Map();
+  // 잔존 검사: baseline에 없던 새 pid 중 **이 runner 소유**만 잔존으로 센다.
+  // 남의 프로세스(foreign)는 무시하고, 살아있는데 소유권을 확인 못 하면 FAIL로 표면화한다.
+  let ownedLeftover = new Map();
+  let unverified = new Map();
   for (let waited = 0; waited <= 5000; waited += 500) {
     const cur = matchingShadcnPids();
     if (!cur.ok) {
       problems.push(`polling 중 /bin/ps 실패: ${redact(cur.error)}`);
       break;
     }
-    leftover = new Map([...cur.map].filter(([pid]) => !beforePids.has(pid)));
-    if (leftover.size === 0) break;
+    ownedLeftover = new Map();
+    unverified = new Map();
+    for (const [pid, info] of cur.map) {
+      if (beforeIdentities.get(pid) === info.identity) continue; // probe 시작 전부터 있던 **같은** 프로세스
+      const own = ownership(pid, info.identity, cur.rows);
+      if (own === "owned") ownedLeftover.set(pid, info);
+      else if (own === "unknown") unverified.set(pid, info);
+      // foreign(임시 base 밖·우리 tree 밖)/gone은 우리 소유 잔존이 아니므로 세지 않는다.
+    }
+    if (ownedLeftover.size === 0 && unverified.size === 0) break;
     if (waited < 5000) await sleep(500);
   }
-  for (const [pid, cmd] of leftover) problems.push(`shadcn MCP 프로세스 잔존(자동 kill 안 함): pid=${redact(String(pid))} cmd=${redact(cmd)}`);
+  // 외부 프로세스의 argv에는 남의 credential이 있을 수 있다 — command line은 출력하지 않고 run-salt 해시만 남긴다.
+  for (const [pid, info] of ownedLeftover) problems.push(`shadcn MCP 프로세스 잔존(자동 kill 안 함): pid=${pid} ownership=owned sig=${cmdSignature(info.cmd)}`);
+  for (const [pid, info] of unverified) problems.push(`shadcn MCP 후보 소유권/동일성 확인 실패(잔존 여부 미확인, FAIL, kill 안 함): pid=${pid} ownership=unverified sig=${cmdSignature(info.cmd)}`);
 
   if (res) {
     const snapshotPath = res.snapshotPath;

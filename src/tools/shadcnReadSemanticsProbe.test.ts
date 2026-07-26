@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, chmodSync, mkdirSync, existsSync, statSync, symlinkSync, readdirSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,6 +37,24 @@ const callsOut = join(__dirname, "scp-calls.txt");
 const callArgsOut = join(__dirname, "scp-callargs.txt");
 const rec = (f, m) => { try { fs.appendFileSync(f, String(m) + "\\n"); } catch {} };
 const send = (o) => process.stdout.write(JSON.stringify(o) + "\\n");
+// [잔존 검사 회귀용 seam] 이 fixture(=fake npx)는 runner가 baseline ps를 찍은 **뒤에만** 시작된다.
+//  - startMarker: 시작을 부모 테스트에 알린다(= "baseline 이후" 동기화 지점).
+//  - leak: runner 소유의 진짜 누수(probe serviceCwd에서 detached 실행)를 1개 만들고 pid+nonce를 남긴다.
+//  - waitForGo: 부모 테스트가 독립 프로세스를 띄울 때까지 bounded 대기 후 정상 응답을 시작한다.
+if (cfg.startMarker) { try { fs.writeFileSync(cfg.startMarker, String(process.pid)); } catch {} }
+if (cfg.leak) {
+  const { spawn } = require("node:child_process");
+  try {
+    const child = spawn(process.execPath, [cfg.leak.script].concat(cfg.leak.args), { cwd: process.cwd(), detached: true, stdio: "ignore" });
+    child.unref();
+    fs.writeFileSync(cfg.leak.pidFile, JSON.stringify({ pid: child.pid, nonce: cfg.leak.nonce }));
+  } catch {}
+}
+if (cfg.waitForGo) {
+  const idle = new Int32Array(new SharedArrayBuffer(4));
+  const until = Date.now() + 20000;
+  while (!fs.existsSync(cfg.waitForGo) && Date.now() < until) Atomics.wait(idle, 0, 0, 50);
+}
 const BARE7 = ["get_add_command_for_items","get_audit_checklist","get_item_examples_from_registries","get_project_registries","list_items_in_registries","search_items_in_registries","view_items_in_registries"];
 function initResult() { return { protocolVersion: PV, capabilities: { tools: {} }, serverInfo: { name: "shadcn", version: "1.0.0" } }; }
 function toolsListResult() {
@@ -418,6 +437,171 @@ test("[M3c-2] runner offline smoke: opt-in + fake npx → exit 0, metrics만, �
   } finally {
     rmSync(binDir, { recursive: true, force: true });
   }
+});
+
+// ── 잔존 프로세스 소유권(ownership) 회귀 ──────────────────────────────────────
+// runner의 잔존 검사는 command line만 보면 안 된다. 병렬 테스트가 같은
+// `npx --yes shadcn@4.13.1 mcp` command line을 baseline 이후에 만들 수 있기 때문이다.
+//  - foreign: **테스트 프로세스가 직접** 띄운 독립 sibling(runner의 자손이 아니고 cwd도 남의 것) → 무시되어야 한다.
+//    baseline 이후임은 fixture(=fake npx)가 남기는 start marker로 보장한다(runner는 baseline을 찍은 뒤에야 npx를 띄운다).
+//  - owned: fixture(=runner의 자식)가 serviceCwd에 남긴 진짜 detached 누수 → 검출되어야 한다.
+// 두 fixture 모두 수명 상한(TTL)이 있고, 정리는 child handle 또는 nonce 신원 확인 후에만 신호한다.
+
+/** 수명 상한이 있는 matching 프로세스. argv의 nonce로 신원 확인, secret으로 "argv 미출력"을 검증한다. */
+const MATCHING_SLEEPER_SRC = `const arg = process.argv.find((a) => a.startsWith("--ttl="));
+const ttl = Math.min(Number(arg ? arg.slice(6) : 0) || 30000, 60000);
+setTimeout(() => process.exit(0), ttl);
+`;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** runner 잔존 스캔이 잡는 command line(nonce/secret 포함) */
+const matchingArgs = (nonce: string, secret: string, ttlMs: number) => ["--yes", "shadcn@4.13.1", "mcp", `--ttl=${ttlMs}`, `--nonce=${nonce}`, `--secret=${secret}`];
+
+/** "match"=그 nonce를 가진 그 프로세스 / "absent"=없음(또는 다른 프로세스가 pid 재사용) / "unknown"=확인 불가(신호 금지). */
+function probePid(pid: number, nonce: string): "match" | "absent" | "unknown" {
+  if (!Number.isInteger(pid) || pid <= 1) return "absent";
+  const r = spawnSync("/bin/ps", ["-p", String(pid), "-ww", "-o", "command="], { encoding: "utf8", timeout: 10000 });
+  if (r.error || typeof r.stdout !== "string") return "unknown";
+  if (r.status === 1) return "absent";
+  if (r.status !== 0) return "unknown";
+  const cmd = r.stdout.trim();
+  if (!cmd) return "absent";
+  return cmd.includes(nonce) ? "match" : "absent";
+}
+
+async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean> {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    if (cond()) return true;
+    if (Date.now() >= until) return false;
+    await sleep(50);
+  }
+}
+
+/** pid 파일로만 회수 가능한 orphan 정리: nonce 신원 확인 → SIGKILL → bounded 종료 확인. 미확인 pid에는 절대 신호하지 않는다. */
+async function reapOrphan(pidFile: string, nonce: string): Promise<string | null> {
+  if (!existsSync(pidFile)) return null;
+  let pid = 0;
+  try {
+    const info = JSON.parse(readFileSync(pidFile, "utf8")) as { pid?: number; nonce?: string };
+    if (info?.nonce !== nonce) return "pid 파일 nonce 불일치 — 신호 보내지 않음";
+    pid = Number(info?.pid);
+  } catch {
+    return "pid 파일 파싱 실패 — 신호 보내지 않음";
+  }
+  const state = probePid(pid, nonce);
+  if (state === "unknown") return `누수 프로세스 상태 확인 불가 — 신호 보내지 않음(정리 미확인, pid=${pid})`;
+  if (state !== "match") return null; // 이미 종료 / 다른 프로세스가 pid 재사용 → kill 금지
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* race: 그 사이 종료 */
+  }
+  const confirmed = await waitFor(() => probePid(pid, nonce) === "absent", 5000);
+  return confirmed ? null : `잔존 프로세스 종료 확인 실패(pid=${pid})`;
+}
+
+/** 테스트가 handle을 쥔 자식: SIGKILL 후 bounded 종료 대기. */
+async function reapChild(child: ChildProcess | null): Promise<string | null> {
+  if (!child || child.exitCode !== null || child.signalCode !== null) return null;
+  const exited = new Promise<boolean>((resolve) => {
+    const t = setTimeout(() => resolve(false), 5000);
+    child.once("exit", () => {
+      clearTimeout(t);
+      resolve(true);
+    });
+  });
+  child.kill("SIGKILL");
+  return (await exited) ? null : "독립 프로세스 종료 확인 실패";
+}
+
+function makeRunnerFixture(cfgFor: (binDir: string) => Record<string, unknown>): string {
+  const binDir = mkdtempSync(join(tmpdir(), "scp2-runner-"));
+  const npx = join(binDir, "npx");
+  writeFileSync(npx, FIXTURE_SRC, "utf8");
+  chmodSync(npx, 0o755);
+  writeFileSync(join(binDir, "matching-sleeper.mjs"), MATCHING_SLEEPER_SRC, "utf8");
+  writeFileSync(join(binDir, "scp-config.json"), JSON.stringify(cfgFor(binDir)), "utf8");
+  return binDir;
+}
+const runnerEnv = (binDir: string) => ({ ...process.env, HARNESS_LIVE_M3C2_SEMANTICS: "1", PATH: binDir + ":" + (process.env.PATH ?? "") });
+/** runner 출력에 외부 프로세스 argv(=남의 credential)가 전혀 없어야 한다. */
+function assertNoArgvLeak(out: string, nonce: string, secret: string): void {
+  assert.ok(!out.includes(secret), "외부 프로세스 argv의 secret이 출력됨");
+  assert.ok(!out.includes(nonce), "외부 프로세스 argv의 nonce가 출력됨");
+  assert.ok(!/cmd=|--secret|--nonce|--ttl=/.test(out), `command line이 출력됨:\n${out}`);
+}
+
+test("[M3c-2] runner 잔존 검사: baseline 이후 테스트가 직접 띄운 독립(foreign) shadcn 프로세스는 무시(exit 0)", async () => {
+  const nonce = "scp2fgn" + randomBytes(8).toString("hex");
+  const secret = "FOREIGNSECRET-" + randomBytes(8).toString("hex");
+  const foreignCwd = mkdtempSync(join(tmpdir(), "scp2-foreign-"));
+  const binDir = makeRunnerFixture((d) => ({ mode: "normal", startMarker: join(d, "scp-started.txt"), waitForGo: join(d, "scp-go.txt") }));
+  let helper: ChildProcess | null = null;
+  let cleanupIssue: string | null = null;
+  try {
+    let out = "";
+    const runner = spawn(process.execPath, [RUNNER], { env: runnerEnv(binDir), stdio: ["ignore", "pipe", "pipe"] });
+    const done = new Promise<number | null>((resolve) => {
+      const t = setTimeout(() => runner.kill("SIGKILL"), 90000);
+      runner.stdout.on("data", (d: Buffer) => (out += d.toString()));
+      runner.stderr.on("data", (d: Buffer) => (out += d.toString()));
+      runner.once("close", (code) => {
+        clearTimeout(t);
+        resolve(code);
+      });
+    });
+    try {
+      // (1) fake npx 시작 = runner가 baseline ps를 이미 찍었다는 뜻.
+      assert.ok(await waitFor(() => existsSync(join(binDir, "scp-started.txt")), 60000), "fake npx가 시작되지 않음 — seam 실패");
+      // (2) 테스트 프로세스가 직접(runner의 자손이 아닌 sibling으로) 남의 cwd에 독립 프로세스를 띄운다.
+      helper = spawn(process.execPath, [join(binDir, "matching-sleeper.mjs"), ...matchingArgs(nonce, secret, 30000)], { cwd: foreignCwd, stdio: "ignore" });
+      const helperPid = helper.pid ?? 0;
+      assert.ok(await waitFor(() => probePid(helperPid, nonce) === "match", 15000), "독립 프로세스가 ps에 보이지 않음 — 테스트 무의미");
+      // (3) 그제서야 fixture가 응답을 시작한다 → runner의 잔존 스캔은 (2)를 반드시 관측한다.
+      writeFileSync(join(binDir, "scp-go.txt"), "go", "utf8");
+      const status = await done;
+      assert.equal(helper.exitCode, null, "독립 프로세스가 runner 실행 중 종료됨 — 테스트 무의미");
+      assert.equal(status, 0, `foreign 프로세스 때문에 실패함 (status=${status})\n${out}`);
+      assert.ok(!/잔존|미확인/.test(out), `foreign 프로세스를 잔존/미확인으로 오귀속함:\n${out}`);
+      assert.ok(!out.includes(`pid=${helperPid}`), `foreign pid가 문제로 보고됨:\n${out}`);
+      assertNoArgvLeak(out, nonce, secret);
+    } finally {
+      writeFileSync(join(binDir, "scp-go.txt"), "go", "utf8"); // 실패 경로에서도 fixture가 멈춰 있지 않도록
+      await done;
+    }
+  } finally {
+    cleanupIssue = await reapChild(helper);
+    rmSync(binDir, { recursive: true, force: true });
+    rmSync(foreignCwd, { recursive: true, force: true });
+  }
+  assert.equal(cleanupIssue, null, cleanupIssue ?? "");
+});
+
+test("[M3c-2] runner 잔존 검사: runner 소유(serviceCwd) 누수 프로세스는 잔존으로 검출(exit 1)", async () => {
+  const nonce = "scp2own" + randomBytes(8).toString("hex");
+  const secret = "OWNEDSECRET-" + randomBytes(8).toString("hex");
+  const binDir = makeRunnerFixture((d) => ({
+    mode: "normal",
+    leak: { script: join(d, "matching-sleeper.mjs"), args: matchingArgs(nonce, secret, 25000), pidFile: join(d, "scp-leak-pid.json"), nonce },
+  }));
+  const pidFile = join(binDir, "scp-leak-pid.json");
+  let cleanupIssue: string | null = null;
+  try {
+    const r = spawnSync(process.execPath, [RUNNER], { encoding: "utf8", timeout: 90000, env: runnerEnv(binDir) });
+    const out = (r.stdout ?? "") + (r.stderr ?? "");
+    assert.ok(existsSync(pidFile), `누수 프로세스가 생성되지 않음 — seam 실패:\n${out}`);
+    const leakedPid = Number((JSON.parse(readFileSync(pidFile, "utf8")) as { pid: number }).pid);
+    assert.equal(probePid(leakedPid, nonce), "match", "누수 프로세스가 runner 실행 내내 살아있지 않음 — 테스트 무의미");
+    assert.equal(r.status, 1, `owned 잔존을 검출하지 못함 (status=${r.status})\n${out}`);
+    assert.ok(/잔존/.test(out), `잔존 문제 미보고:\n${out}`);
+    assert.ok(out.includes(`pid=${leakedPid} ownership=owned`), `잔존 pid=${leakedPid} 미보고:\n${out}`);
+    assertNoArgvLeak(out, nonce, secret);
+  } finally {
+    cleanupIssue = await reapOrphan(pidFile, nonce);
+    rmSync(binDir, { recursive: true, force: true });
+  }
+  assert.equal(cleanupIssue, null, cleanupIssue ?? "");
 });
 
 test("[M3c-2] runner opt-in 없음 → exit 2", () => {
