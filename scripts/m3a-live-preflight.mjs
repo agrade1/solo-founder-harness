@@ -12,6 +12,12 @@
  *  - fixture pid-file로 실제 기동·격리·종료를 검증하고, 잔여 프로세스는 finally에서 정리+실패 처리.
  *  - 실패 시 fail-closed(성공 result 미반환) — interactive 세션은 절대 실행하지 않는다.
  *
+ * [M3d.2] PASS + 정리까지 모두 성공한 뒤에만 redacted live evidence 1건을 docs/evidence/m3d2에 기록한다.
+ *   evidence는 version/contract/status/timestamp + 정수·불리언 파생 지표뿐이며 원문·경로·식별자를 담지 않는다.
+ *   기록 실패는 runner 실패로 처리한다. 실패/미실행 run은 evidence를 남기지 않는다.
+ *   기록 위치 override는 **argv `--fixture-config <절대경로 .json>`의 `evidenceDir`로만** 가능하다
+ *   (환경변수 seam 제거 — env는 자손에 암묵 상속되어 production 기록 위치를 조용히 바꿀 수 있었다).
+ *
  * 안전장치: HARNESS_LIVE_M3A=1 이 없으면 실행을 거부한다. npm test에서는 호출되지 않는다.
  * 선행: `npm run build` (dist 사용). 수동 실행 전용이며 CI/자동 파이프라인에서 돌리지 않는다.
  *
@@ -24,6 +30,18 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
+
+// ── [M3d.2] evidence 기록 위치 override는 argv로만 받는다(env seam 없음) ──────
+import { FixtureConfigError, loadFixtureConfig } from "./lib/fixture-config.mjs";
+let FIXTURE_EVIDENCE_DIR;
+try {
+  const loaded = loadFixtureConfig(process.argv.slice(2), { evidenceDir: { kind: "absPath" } });
+  FIXTURE_EVIDENCE_DIR = loaded.config?.evidenceDir;
+} catch (e) {
+  const code = e instanceof FixtureConfigError ? e.code : "unknown";
+  console.error(`거부: fixture 설정 [${code}] ${e?.message ?? ""}`);
+  process.exit(2);
+}
 
 if (process.env.HARNESS_LIVE_M3A !== "1") {
   console.error(
@@ -38,11 +56,15 @@ const NODE = process.execPath;
 const SERVER = join(HERE, "fixtures", "m3a", "minimal-stdio-mcp.mjs");
 
 const preflightMod = join(HERE, "..", "dist", "tools", "preflight.js");
-if (!existsSync(preflightMod)) {
-  console.error(`빌드가 필요합니다: ${preflightMod} 없음 — 먼저 'npm run build'.`);
-  process.exit(2);
+const evidenceMod = join(HERE, "..", "dist", "tools", "liveEvidence.js");
+for (const m of [preflightMod, evidenceMod]) {
+  if (!existsSync(m)) {
+    console.error(`빌드가 필요합니다: ${m} 없음 — 먼저 'npm run build'.`);
+    process.exit(2);
+  }
 }
 const { runPreflight } = await import(preflightMod); // PreflightError는 code 필드로 판별
+const { buildLiveEvidence, writeLiveEvidence, resolveEvidenceDir } = await import(evidenceMod);
 
 const CRED = /(?:authorization|api[_-]?key|apikey|access[_-]?token|token|secret|password|credential)\s*[:=]/i;
 
@@ -88,6 +110,18 @@ mkdirSync(runtimeDir, { recursive: true });
 let exitCode = 0;
 const problems = [];
 
+// [M3d.2] evidence 파생 지표 (정수/불리언만). 계약 검사 통과 시에만 기록에 사용한다.
+let checksPassed = false;
+let passSnapshot = null;
+let expectedServerCount = 0;
+let expectedToolCount = 0;
+let expectedServerConnected = false;
+let snapshotWritten = false;
+let ambientCanarySpawned = false;
+let fixtureExitedWithinLimit = false;
+let sentinelLeakAbsent = true;
+let sensitivePatternAbsent = true;
+
 try {
   // ambient .mcp.json — canary 서버(strict가 제외해야 함). 기동 시 canary pid-file 생성.
   writeFileSync(
@@ -128,27 +162,38 @@ try {
     exitCode = 1;
   } else {
     const s = res.snapshot;
-    if (!(s.servers.length === 1 && s.servers[0].name === "expected" && s.servers[0].status === "connected")) {
+    expectedServerCount = s.servers.length;
+    expectedToolCount = s.tools.length;
+    expectedServerConnected = s.servers.length === 1 && s.servers[0].name === "expected" && s.servers[0].status === "connected";
+    if (!expectedServerConnected) {
       problems.push(`expected server가 connected 아님: ${JSON.stringify(s.servers)}`);
     }
     if (JSON.stringify(s.tools) !== JSON.stringify(["mcp__expected__read_thing"])) {
       problems.push(`expected tool 불일치: ${JSON.stringify(s.tools)}`);
     }
-    if (!existsSync(res.snapshotPath)) problems.push("tools-snapshot.json 미생성");
+    snapshotWritten = existsSync(res.snapshotPath);
+    if (!snapshotWritten) problems.push("tools-snapshot.json 미생성");
 
     const snapText = existsSync(res.snapshotPath) ? readFileSync(res.snapshotPath, "utf8") : "";
     const cfgPath = join(runtimeDir, "mcp-config.json");
     const cfgText = existsSync(cfgPath) ? readFileSync(cfgPath, "utf8") : "";
     const retText = JSON.stringify(s);
     for (const [name, txt] of [["반환 snapshot", retText], ["저장 snapshot", snapText], ["config", cfgText]]) {
-      if (txt.includes(sentinel)) problems.push(`${name}에 sentinel 평문`);
-      if (CRED.test(txt)) problems.push(`${name}에 credential 형태 평문(보조 검사)`);
+      if (txt.includes(sentinel)) {
+        sentinelLeakAbsent = false;
+        problems.push(`${name}에 sentinel 평문`);
+      }
+      if (CRED.test(txt)) {
+        sensitivePatternAbsent = false;
+        problems.push(`${name}에 credential 형태 평문(보조 검사)`);
+      }
     }
     if (/canary/.test(snapText) || /canary/.test(retText)) problems.push("ambient canary가 snapshot에 노출됨");
   }
 
   // ── MCP 프로세스 격리·정리 검증 (성공/실패 무관) ──
-  if (existsSync(canaryPidFile)) {
+  ambientCanarySpawned = existsSync(canaryPidFile);
+  if (ambientCanarySpawned) {
     problems.push("ambient canary가 기동됨(pid-file 존재) — strict 격리 실패");
     const p = readPid(canaryPidFile);
     if (p && isAlive(p)) killPid(p);
@@ -170,6 +215,8 @@ try {
       if (isAlive(p)) {
         problems.push(`expected fixture(pid ${p})가 ${limitMs}ms 내 종료되지 않음`);
         killPid(p);
+      } else {
+        fixtureExitedWithinLimit = true;
       }
     }
   }
@@ -178,8 +225,9 @@ try {
     console.error("[m3a-live] FAIL:\n - " + problems.join("\n - "));
     exitCode = 1;
   } else if (!err) {
-    console.log("[m3a-live] PASS — expected connected · tool 일치 · canary 부재 · snapshot 생성 · sentinel/credential 평문 부재 · fixture 정상 종료.");
-    console.log(JSON.stringify(res.snapshot, null, 2)); // cwd는 redacted(***), sentinel 없음
+    // 계약 검사 통과. PASS 판정·evidence 기록은 정리(finally) 성공 이후에만 한다.
+    checksPassed = true;
+    passSnapshot = res.snapshot; // cwd는 redacted(***), sentinel 없음
   }
 } catch (e) {
   const msg = String(e?.message ?? e);
@@ -201,7 +249,48 @@ try {
     console.error("[m3a-live] finally: 잔여 fixture 프로세스를 정리함 → 실패 처리.");
     exitCode = 1;
   }
-  rmSync(base, { recursive: true, force: true });
+  try {
+    rmSync(base, { recursive: true, force: true });
+  } catch {
+    console.error("[m3a-live] finally: 임시 디렉터리 정리 실패 → 실패 처리.");
+    exitCode = 1;
+  }
+
+  // [M3d.2] 모든 계약 검사 + 정리가 성공한 뒤에만 evidence 1건 기록. 기록 실패는 runner 실패.
+  if (checksPassed && exitCode === 0) {
+    try {
+      writeLiveEvidence({
+        evidence: buildLiveEvidence({
+          contract: "m3a_live_preflight",
+          timestamp: new Date().toISOString(),
+          metrics: {
+            expectedServerCount,
+            expectedToolCount,
+            expectedServerConnected,
+            snapshotWritten,
+            ambientCanarySpawned,
+            fixtureExitedWithinLimit,
+            sentinelLeakAbsent,
+            sensitivePatternAbsent,
+          },
+        }),
+        dir: resolveEvidenceDir({ repoRoot: join(HERE, ".."), overrideDir: FIXTURE_EVIDENCE_DIR }),
+        secretRefs: ["M3A_SENTINEL_SECRET"],
+      });
+    } catch (e) {
+      // 계약/권한 위반 메시지는 필드 이름만 담는다(경로·본문 미출력).
+      const detail = e?.name === "LiveEvidenceError" ? `${e.code}: ${e.message}` : (e?.code ?? e?.name ?? "unknown");
+      console.error(`[m3a-live] live evidence 기록 실패 [${detail}] → FAIL 처리.`);
+      exitCode = 1;
+    }
+  }
+
+  if (checksPassed && exitCode === 0) {
+    console.log("[m3a-live] PASS — expected connected · tool 일치 · canary 부재 · snapshot 생성 · sentinel/credential 평문 부재 · fixture 정상 종료 · live evidence 기록(docs/evidence/m3d2).");
+    console.log(JSON.stringify(passSnapshot, null, 2));
+  } else if (checksPassed) {
+    console.error("[m3a-live] FAIL — 계약 검사는 통과했으나 정리/evidence 단계에서 실패.");
+  }
   console.log(`[m3a-live] 종료 (exit ${exitCode}).`);
   process.exit(exitCode);
 }

@@ -1,5 +1,408 @@
 # DECISIONS.md
 
+## 2026-07-26 (배송 우선 리뷰 triage · 유예 무손실 대장 · 테스트 비례 · 안전 병렬 Claude 세션 — 문서 전용)
+
+여덟 번째 리비전 재검토 결과(`APPROVE_FEATURE_PROGRESSION` · Category A 0건 · Category C 1건)를 기록하면서
+사용자가 승인한 작업 방식 정책을 확정했다. **코드·schema·의존성은 건드리지 않았다.**
+
+- **기능 배송이 무한 디테일 하드닝보다 우선한다 — 그래서 finding을 분류 없이 두지 않는다.** 리비전 루프가
+  여덟 번 돈 실제 이유는 "발견된 모든 것이 암묵적으로 차단 취급"됐기 때문이다. 이제 모든 finding은
+  **A(지금 차단) / B(지정 마일스톤·트리거 전 필수) / C(개선 backlog)** 중 하나로 분류하고,
+  **C만으로는 리비전 루프를 다시 돌리거나 기능 진행을 멈추지 않는다.** "리뷰가 뭔가를 찾았으니 또 한 바퀴"는
+  기본 동작이 아니다. 반대로 A의 정의는 좁히지 않았다 — P0/P1, 데이터 손실, 승인/인증/상태 전이 우회,
+  되돌리기 어려운 아키텍처, **유예 비용이 커서 후속 작업이 안전하지 않거나 폐기 대상이 되는 것**은 그대로 차단이다.
+- **우선순위는 심각도 단독이 아니라 "유예 비용 대 수정 공수"로 매긴다.** 심각도 라벨만 보면 확률이 극히 낮고
+  영향 반경이 좁은 항목이 실제 배송을 계속 막는다. 반대로 라벨이 낮아도 지금 안 고치면 후속 산출물을 통째로
+  다시 만들어야 하는 항목이 있다. 판단 기준을 **비용 축**으로 옮긴 이유다.
+- **유예는 하되 조용히 버리지 않는다.** 분류만 하고 잊으면 "배송 우선"이 곧 "위험 은폐"가 된다. 그래서 유예 항목은
+  심각도·확률·영향 반경·유예/rework 비용·수정 공수·기한/트리거·담당·증거 참조·상태를 전부 유지하는 대장
+  (로드맵 §9.1)에 남기고, **B는 명시적 기한이 있을 때만** 유예를 허용한다. 기존 M3d 차단 게이트 2건도 같은
+  대장에 `B-1`/`B-2`로 적었다 — **형식만 바뀌었을 뿐 여전히 차단**이다.
+- **이번 Category C를 실제로 유예했다(정책의 첫 적용).** bounded computed dynamic specifier가 런타임 합성
+  route를 놓칠 수 있다는 지적은 사실이지만, 현재 production 호출부 5개는 영향이 없고 확률이 낮으며 영향 반경이
+  "미래 소스 레벨 감사 누락"으로 한정되고 유예 비용이 낮다 → `C-1`로 등록하고 아홉 번째 리비전을 열지 않았다.
+  **다만 같은 지적 중 "문서가 사실보다 강하게 적혀 있다"는 부분은 즉시 고쳤다** — 유예해도 되는 것은 *구현 범위*
+  이지 *부정확한 주장*이 아니기 때문이다. `safe` 분기가 존재하는 이상 "조용히 통과하는 경로는 없다"고 쓸 수 없다.
+  bounded 규칙 서술과 positive 대조군(정상 dist import 3파일이 호출부로 잡히지 않음)은 그대로 남겼다.
+- **진행 승인과 완료 승인을 어휘로 분리한다.** 이번 verdict는 `APPROVE_FEATURE_PROGRESSION`이며
+  **M3d 완료 APPROVE가 아니다.** 둘을 같은 단어로 적으면 다음 세션이 게이트를 닫힌 것으로 오독한다.
+  그래서 상태 문서 전반에서 이 판정을 **절대 "M3d APPROVE"로 축약하지 않기로** 했고, 리뷰 이력도
+  "REQUEST_CHANGES 8회 + 진행 승인 1회 · **M3d 완료 APPROVE 0회**"로 적는다.
+- **테스트는 위험에 비례시킨다 — 단 완화는 아니다.** 매 리비전마다 전체 suite 3회 + stress를 돌리는 것은
+  비용만 크고 새 정보를 주지 않았다(일곱·여덟 번째 리비전이 실증). 이제 변경마다 focused, handoff 전 전체 1회,
+  반복·stress·live는 마일스톤/하드닝 게이트에서만 돌린다. **변경이 동시성·lock·타이밍·live runner 계약을
+  건드리면 예외 없이 즉시 돌린다**, 그리고 **테스트 완화·삭제 금지는 그대로**다.
+- **병렬 Claude 세션은 "속도"가 아니라 "격리"가 조건이다.** 여러 Opus 5 세션을 쓰는 이득은 파일 소유권이
+  disjoint하고 worktree가 격리됐을 때만 실재한다. 공유 dirty 체크아웃에서 병렬을 돌리면 서로의 미커밋 변경을
+  덮어쓰고 검증이 무의미해진다 — 그래서 **직전 리비전들을 단일 세션으로 진행한 것은 옳았다**고 명시 기록한다.
+  병렬을 허용하는 경우에도 공유 schema/API 변경·통합/병합·상태 마이그레이션·최종 전체 테스트·배타 자원/stress/
+  live 테스트는 **직렬**이고, 동시성 상한은 CPU/부하·메모리·토큰 예산·manifest `maxSessions`로 묶으며,
+  이득보다 경합이 크면 **세션 1개로 되돌린다**. 오케스트레이터가 의존성·소유권·artifact hash·상태·완료·결과
+  라우팅을 검증하고, 로컬 통합은 직렬, **원격 쓰기는 계속 hard deny**다.
+- **M4는 계획 준비와 구현 착수를 분리한다.** "M3d 완료 전 M4 금지"를 문자 그대로 유지하면, 사람이 실행해야 하는
+  외부 게이트(조용한 호스트 stress · TTY live runner)를 기다리는 동안 아무 진전도 못 한다. 그래서 **계획 준비는
+  지금 허용**하고 **구현 착수는 별도 사용자 마일스톤 승인**으로 남겼다. 승인된 offline/격리 M4 작업이 남은 외부
+  M3d 작업과 겹칠 수 있다는 것은 **제안으로만** 적었다 — **미검증 live evidence를 소비하지 않는 범위**에서만
+  성립하고, M3d는 그대로 미완료이며 M4도 M3d 게이트 전에는 자기 통합/acceptance를 통과할 수 없다.
+  이 중첩을 조용히 발동하거나 승인받았다고 적지 않는다.
+- **장기 규칙과 상세 근거의 위치를 분리한다.** `AGENTS.md`/`CLAUDE.md`에는 세션·마일스톤과 무관하게 유효한
+  **요약 규칙만** 넣고, 대장 템플릿·항목·판단 근거는 로드맵과 상태 문서에 둔다. 과거 리비전 기록은
+  다시 쓰지 않고 "그 시점 기록" 표기로 보존한다(이력 훼손 금지).
+
+## 2026-07-26 (V3 M3d.2 **여덟 번째 리비전** — 지정자는 URL 규칙으로, 동적 route는 bounded fail closed, scope는 보수적으로)
+
+여덟 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES 3건: P2 2 — 감사에 남은 ESM 우회로 · scope 미인식,
+P3 1 — 회귀 커버리지 부족 + 문서 과장)를 **테스트·문서로만** 해소하며 내린 결정들이다.
+일곱 번째~세 번째 리비전의 계약을 **폐기하지 않고 보강**한다. **production 코드는 건드리지 않았다**
+(fixture 로더의 모듈 주석 정정도 이번 범위 밖으로 두었다 — 범위 규율 우선).
+
+- **"모듈 지정자"는 문자열이 아니라 URL이다.** 상대 경로를 문자열로만 비교하면 query·fragment·percent 인코딩이
+  전부 우회로가 된다(Node ESM은 file URL을 디코드해 같은 파일로 해석한다). 그래서 감사는 **URL 문법 순서대로**
+  자르고 디코드한 뒤 비교한다. 정규식으로 `?`·`#`·`%`를 더 잘 다루는 길은 택하지 않았다 — 같은 종류의 구멍이
+  계속 남는다. **디코드할 수 없으면 "로더가 아니다"라고 결론내지 않는다**(판정 불가 = 문제로 보고).
+- **동적 route는 "증명"이 아니라 명시적으로 bounded한 규칙으로 판정한다.** `import()` 인자를 정적으로 접을 수 있는
+  범위(리터럴 · 치환 없는 template · `+` 연결 · 정확히 한 번 선언된 `const` 문자열)는 접어서 확정하고,
+  접히지 않으면 **도달 가능한 문자열 조각**으로 판정한다: 조각이 없으면 fail closed, 조각에 로더 token이 있으면
+  로더로 보고, 조각이 있고 token이 없으면 `safe`. **`safe` 분기를 남긴 것은 의도적 트레이드오프**다 —
+  live runner 3종의 정상 동적 import(빌드 산출물 로딩)를 깨뜨리면 규칙이 쓸 수 없게 되고, 그러면 사람이 감사를
+  끄게 된다. 대신 **whole-program 증명을 주장하지 않는다**고 코드 주석·문서·리뷰 보고에 명시하고, 실제 repo의
+  정상 동적 import 3파일이 호출부로 잡히지 않음을 테스트가 대조군으로 고정한다.
+- **"재수출"은 형태가 아니라 결과로 본다.** 직접 `export … from`만 막으면 import-then-export로 같은 결과를 만들 수
+  있다(그리고 그 경우 예전 감사는 **아무 문제도 보고하지 않았다**). 그래서 수집을 **두 패스**로 나눠
+  import/동적 로딩을 전부 모은 뒤 노출을 판정한다 — **소스 순서(ESM hoisting)로 우회할 수 없어야** 하기 때문이다.
+  namespace 자체의 export, 별칭 export, default export도 같은 도달 경로로 취급한다.
+- **scope는 정확히 계산하는 대신 보수적으로 실패시킨다.** 테스트 감사에 완전한 binder를 재구현하는 것은 비용도
+  크고 그 자체가 새 버그 표면이다. 대신 선언 sweep으로 "전역 `process`나 추적 중인 바인딩을 **가릴 수 있는**
+  선언이 하나라도 있으면 실패"로 고정했다 — 오탐(가려지지 않은 경우까지 실패)은 사람이 확인하면 되고,
+  미탐(가려진 것을 정상으로 인정)은 계약을 조용히 무너뜨린다. 같은 이유로 **shadow된 식별자는 import 사용으로
+  인정하지 않는다**(미사용 검사가 무력해지는 것을 막는다).
+- **부분 파싱된 소스를 "안전"의 근거로 쓰지 않는다.** 구문 오류가 있으면 AST가 불완전하므로 "import를 못 찾았다"는
+  아무것도 증명하지 않는다 → 파싱 진단이 있으면 그 파일을 감사 결과에 남기고 문제로 보고한다.
+  (`parseDiagnostics`는 TypeScript 준공개 필드라는 위험을 문서에 남기고, 전용 회귀 2건으로 고정했다.)
+- **부하(stress) acceptance 완료 게이트를 "비차단"으로 적지 않는다.** 이전 리비전 기록들이 이 게이트를 잔여
+  위험(비차단) 목록에 넣어 적었는데, 그러면 "미충족이지만 넘어갈 수 있는 항목"으로 읽힌다. 게이트는 **차단**이다 —
+  해당 줄들에 정정 표기를 달고 이번 리비전 서술에서는 차단 게이트로 분류했다. 동시에 **재실행은 하지 않았다**:
+  production 코드를 바꾸지 않은 리비전에서 같은 부하 조건의 재실행은 새 정보를 주지 않으므로 직전 FAIL을 그대로
+  미충족으로 남긴다(테스트 완화·낙관적 PASS 주장으로 대체하지 않는다).
+
+## 2026-07-26 (V3 M3d.2 **일곱 번째 리비전** — 호출부 발견은 구문 인식·재귀 감사로)
+
+일곱 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES 1건: P2 — 호출부 발견이 전수가 아님)를 해소하며
+내린 결정들이다. 여섯 번째~세 번째 리비전의 계약을 **폐기하지 않고 보강**한다.
+
+- **"스캔으로 발견한다"는 계약은 구문 인식이 아니면 공허하다.** 여섯 번째 리비전은 하드코딩 목록을 스캔으로
+  바꾼 것까지는 옳았지만, 문자열 일치 + 한 겹 디렉터리라는 구현이 **중첩 경로 · 공백/주석이 낀 호출 ·
+  별칭 import**를 놓쳤다. "새 호출부가 생기면 먼저 깨진다"고 문서에 적어 둔 이상, 그 발견은 **언어 문법 수준**
+  이어야 한다고 판단해 TypeScript AST 기반 감사로 바꿨다. 문법을 근사하는 정규식·문자열 규칙을 더 정교하게
+  만드는 길은 택하지 않았다(같은 종류의 구멍이 계속 남는다).
+- **감사 도구는 테스트 안에만 둔다.** TypeScript는 이미 devDependency이므로 **테스트에서만** import하고
+  production 코드·`package.json`·런타임 의존성은 건드리지 않았다. 소스 계약 검사를 위해 production에
+  hook·주입 표면을 만드는 선택지는 배제했다.
+- **symlink는 production 소스로 세지 않는다.** 감사 대상 열거에서 symlink 파일·디렉터리는 **따라가지 않고
+  건너뛰되 목록으로 보고**한다. 따라가면 경로 밖 파일을 "감사한 production 소스"로 세게 되고, 조용히 제외하면
+  숨겨진 호출부가 생긴다 — lock 계층의 `O_NOFOLLOW` 결정과 같은 이유(검사 대상과 실제 대상이 같아야 한다)다.
+- **비공허성은 합성 소스로 증명하고 production을 훼손하지 않는다.** 우회 3종(중첩·공백/주석·별칭)과 namespace
+  경유 호출을 **메모리상의 합성 소스**로 감사에 통과시켜, 발견되고 거부되는지 확인한다. 임시 파일을 만들거나
+  production 호출부를 잠시 고치는 방식은 잔재·원복 위험이 있어 피했다(열거 계약만 임시 디렉터리로 확인한다).
+- **감사는 "조용한 통과"를 만들지 않는다.** import했지만 호출하지 않는 바인딩, 두 번 이상의 호출, 동적 로딩,
+  재수출, 비호출 참조는 전부 문제로 보고한다 — 계약 밖 형태를 "검사 대상 아님"으로 흘려보내면 다시 같은
+  우회가 생긴다.
+- **부하(stress) acceptance는 이번 세션에서 재실행하지 않는다.** 직전 세션이 같은 호스트에서 두 번 실행해
+  두 번 다 같은 원인(외부 부하 + 이번 범위 밖 고정 5초 deadline 2건)으로 FAIL했고, 이번 리비전은 production
+  코드를 전혀 바꾸지 않았다. 같은 조건에서 세 번째 실행은 새 정보를 주지 않으므로 **직전 FAIL을 그대로
+  미충족(pending)으로 기록**한다 — 테스트 완화나 낙관적 PASS 주장으로 대체하지 않는다.
+
+## 2026-07-26 (V3 M3d.2 **여섯 번째 리비전** — 최종 엔트리 symlink 거부 · 성공 상태는 완결 후 공표 · 호출부 전수 계약)
+
+여섯 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES 6건: P1 1 · P2 1 · P3 1 + 추가 지적)를 구현으로 해소하며
+내린 결정들이다. 다섯 번째~세 번째 리비전의 계약을 **폐기하지 않고 보강**한다.
+
+- **신원 검사 대상과 파괴적 조작 대상은 같은 "엔트리"여야 한다 → 읽기 open도 `O_NOFOLLOW`.**
+  `openSync(path, "r")`는 symlink를 따라가므로, 검사는 "옮겨진 원본"을 보고 unlink/rename은 "그 자리의 symlink
+  엔트리"에 적용될 수 있었다. 우회로를 좁히는 대신 **최종 엔트리가 symlink면 아예 열지 않는다**(ELOOP/EMLINK →
+  `lock_path_symlink`). 대상 파일이 정상적인 우리 lock이더라도 인정하지 않는다 — "우리 파일이라는 증거"는
+  경로 해석 없는 단일 엔트리에서만 얻는다는 기존 원칙(발행 시 fd `fstat` → `link` → `lstat`)과 같은 규칙이다.
+- **`O_NOFOLLOW` 미지원 플랫폼은 lock 전이를 거부한다(fail closed).** fixture 로더가 이미 같은 선택을 했고
+  (주입 거부), lock은 그보다 더 중요하므로 "보장할 수 없으면 하지 않는다"를 택했다. 대상 플랫폼
+  (macOS/Linux + Node ≥18)에서는 항상 지원되며, 그렇지 않은 환경에서 조용히 약해지는 것보다 멈추는 편이 낫다.
+- **성공 상태는 "전이 완결" 뒤에만 공표한다.** 다섯 번째 리비전에서 guard 반납 실패를 오류로 올리기로 했는데,
+  `release()`는 여전히 콜백 안에서 `state="released"`를 먼저 세팅해 **오류가 나도 released로 남았다**
+  (소비자는 `lockReleased:true`로 보고). 이제 전이 콜백은 **결과만 값으로 돌려주고** 상태 공표는
+  `withTransitionGuard`가 정상 반환한 뒤 한 곳(`publishState`)에서만 한다. lock 파일이 사라졌다는 사실만으로
+  "해제됨"이라 부르지 않는다 — guard가 남아 있으면 다음 실행을 막아야 하므로 상태는 `failed`가 맞다.
+  같은 규칙을 `quarantine()`에도 적용했고, acquire·reentry는 **이미** guard 반납 뒤에 결과를 만들므로
+  재감사만 하고 구현을 넓히지 않았다(근거 없는 확장 금지).
+- **소비자도 "미완결"을 숨기지 않는다.** wrapper와 stress runner는 `released`도 `quarantined`도 아니면
+  `lock 해제가 완결되지 않았습니다(state=…)`를 문제로 남긴다. 상태 문자열은 고정 집합이라 경로·pid·환경이
+  새지 않으며, 요약 지표(`lockReleased`)와 사람이 읽는 진단이 서로 어긋나지 않게 한다.
+- **소스 계약 회귀는 "발견 + 형태" 두 단계로 만든다.** io seam 회귀가 두 파일만 보고 있었기 때문에 live runner
+  3종의 호출부는 검사되지 않았다. 파일 목록을 하드코딩하는 대신 `scripts/**.mjs`를 **스캔해 호출부를 발견**하고
+  기대 목록과 비교한 뒤 각 호출의 최상위 인자를 세는 방식을 택했다 — 새 호출부가 생기면 테스트가 먼저 깨져
+  사람이 계약을 확인하게 된다. 이 방식은 의존성도, 외부 주입 표면도 늘리지 않는다(정적 소스 검사).
+- **부하 acceptance 실패를 테스트 완화로 없애지 않는다.** 이 세션의 stress 실행은 외부 부하가 큰 호스트에서
+  **고정 5초 child startup deadline** 두 건(`preflight` M3a canary · `shadcnPilot` M3c-0 discovery) 때문에 FAIL했다.
+  그 deadline을 늘리거나 테스트를 건드리는 것은 이번 리뷰 범위 밖이며 production 타임아웃 정책 변경이므로,
+  **원인·증거를 기록하고 사용자 판단에 남긴다**(조용한 호스트 재실행 또는 별도 승인 후 부하 내성 개선).
+  stress runner 자체는 거짓 PASS 없이 FAIL을 정직하게 보고했고 lock 정리·해제 계약은 정상 동작했다.
+
+## 2026-07-26 (V3 M3d.2 **다섯 번째 리비전** — 파괴 직전 재검증 · 정리 실패도 실패 · 재진입 기준 보존)
+
+다섯 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES 5건)를 구현으로 해소하며 내린 결정들이다.
+네 번째·세 번째 리비전의 계약을 **폐기하지 않고 보강**한다.
+
+- **파괴적 syscall은 "직전 재검증"을 반드시 앞세운다.** 확인과 unlink/rename 사이에 동기화 지점이나 임의의
+  지연이 끼면 그 사이 교체가 가능하므로, guard 제거는 pause 이후 **record+inode 재확인 → 최종 경로 lstat**,
+  격리 rename은 temp 완성 이후 **기본 record+inode 재확인**을 통과해야만 진행한다. Node 18에는
+  `unlinkat`·compare-and-unlink가 없어 이 창을 **0으로 만들 수 없다**는 사실을 숨기지 않고 주석·문서에 적었다.
+  택한 원칙: **창을 syscall 두 개로 줄이고, 남은 창에서 벌어진 일은 사후에 탐지해 fail closed로 멈춘다.**
+  낙관적으로 "우리 것이겠지"라고 지우는 것보다 남의 파일을 보존하고 수동 개입을 요구하는 쪽이 낫다.
+- **전이는 "완결"까지 성공이다 — guard 반납 실패는 성공이 아니다.** 이전에는 guard를 반납하지 못해도
+  경고만 남기고 handle을 돌려줬는데, 그러면 전이가 완결되지 않은 상태로 suite가 시작된다. 이제 반납 실패는
+  `lock_guard_release_failed`(mechanism)로 올려 acquire/reentry 자체를 거부한다. 대가로 그런 경우
+  **발행된 lock과 남은 guard가 모두 수동 정리 대상**이 되지만, "겹쳐 실행하지 않는다"가 이 lock의 존재 이유이므로
+  가용성보다 배타성을 택했다.
+- **정리(cleanup)도 신원 확인 대상이고, 정리 실패는 삼키지 않는다.** 임시 파일조차 열자마자 확보한 (dev,ino)와
+  일치할 때만 지운다 — 이름이 추측 불가능하더라도 "우리가 만든 그 inode"라는 증거 없이 unlink하지 않는다.
+  신원을 확보하지 못했거나 교체됐거나 unlink가 실패하면 지우지 않고 보고하며, 발행 후라면 mechanism 실패로
+  올린다. `.new` 잔재가 남는 것보다 남의 파일을 지우는 것이 더 나쁜 결과라는 판단이다.
+- **재진입 이후의 소유권 기준은 tokenHash가 아니라 "재진입 시점에 본 그 파일"이다.** 성공한 재진입은
+  기본 record + (dev,ino)를 `base`로 고정해 돌려주고, 이후 cleanup 격리까지 그 기준을 **명시 전달**한다.
+  같은 tokenHash를 아는 행위자가 pid/identity가 다른 lock으로 바꿔치우면 격리하지 않고 보존한다.
+  즉 token은 "우리 계열"임을 말할 뿐 "이 파일이 그 lock"임을 말하지 못한다.
+- **테스트 전용 주입은 외부 표면(argv/env)을 넓히지 않는 선에서만 늘린다.** fd close 실패처럼 syscall 결과를
+  바꿔야 하는 경로는 argv로는 재현할 수 없으므로, `loadFixtureConfig`의 **세 번째 인자(in-process io seam)** 를
+  택했다: fs 함수 4개로 표면이 최소이고, production 진입점은 인자 2개로만 호출하므로 argv·env·설정 파일
+  내용으로는 도달할 수 없다. "**외부** 주입은 argv 하나뿐"이라는 계약은 그대로이며, 회귀 테스트가 production
+  호출부의 인자 개수를 문자열로 고정해 미래의 확장을 막는다. 반대로 lock 라이브러리에는 io seam을 **넣지 않았다**
+  — 여러 함수에 io를 관통시키는 비용·표면이 그 경로 한 건의 테스트 가치보다 크다고 판단했고, 대신 그 한계를
+  잔여 위험으로 명시한다.
+- **pause 지점은 "전이 종류 + 위치"로만 늘린다.** 새 회귀 테스트 4건을 위해 고정 enum에 4개
+  (`before_publish_tmp_cleanup` / `before_quarantine_rename` / `before_guard_unlink_acquire` /
+  `before_guard_unlink_reentry`)를 추가했다. 이름에 전이 종류를 붙여 한 실행에서 정확히 한 전이만 멈추게 하는
+  기존 규칙을 유지한다(같은 이름이 여러 전이에서 걸리면 테스트가 비결정적이 된다).
+- **계약이 강해지면 기존 테스트의 기대도 강해진 쪽으로 고친다(완화 금지).** acquire 경로의 guard inode 교체
+  케이스는 "경고 후 probe 성공(exit 1)"을 기대했지만, 새 계약에서는 **성공 handle 없이 거부(exit 2)** 다.
+  단정 자체는 유지·추가만 했다(guard 보존·내용 불변 + lock 잔존 + 다음 실행 차단). 테스트를 지우거나 느슨하게
+  만들지 않고, 관측 가능한 계약이 바뀐 부분만 그 계약대로 다시 적었다.
+
+## 2026-07-26 (V3 M3d.2 **네 번째 리비전** — 발행 신원 불변식 · 전이 실패 분류 · 주입 로더 단일 fd)
+
+네 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES 5건)를 구현으로 해소하며 내린 결정들이다.
+세 번째 리비전의 guard 계약을 **폐기하지 않고 보강**한다.
+
+- **"발행했다"는 신원까지 확인해야 성립한다.** 파일 발행은 임시 파일 fd `fstat`으로 (dev,ino)를 확보하고
+  `link` 뒤 최종 경로 `lstat`이 같은 (dev,ino)임을 확인해야 성공이다. 신원 확인이 실패하거나 어긋나면
+  **성공을 반환하지 않고**, 그 파일이 우리 것이라는 증거가 없으므로 **최종 경로를 지우지도 않는다**.
+  결과적으로 `published:true`의 dev/ino는 non-null **불변식**이 되고, 이후 전이의 inode 검증에
+  "신원을 몰라서 건너뛰는" 분기가 존재하지 않는다. 신원을 모르는 상태로 계속 진행하는 것보다
+  **탐지 후 중단**이 안전하다는 판단이다.
+- **전이 실패는 두 분류뿐이고 기본값은 fail closed다.** `refusal`(아무 상태도 바꾸지 않은 계약상 거부)만
+  guard를 반납하고, `mechanism`(I/O 오류·신원 불일치·불확실·예상 밖 예외)은 guard를 남긴다.
+  **분류를 명시하지 않은 오류는 자동으로 `mechanism`** 이다 — 새 코드가 실수로 위험한 쪽 기본값을 고르지
+  않게 하려는 의도적 선택이다. 그 결과 unlink 실패의 ENOENT나 close 실패처럼 "성공처럼 보이는 실패"도
+  전부 흔적을 남긴다.
+- **"우리 token이 맞다"만으로 외부 교체를 인정하지 않는다.** 격리(quarantine) rewrite는 rename이라 inode가
+  바뀌므로 inode보다 먼저 판정해야 하지만, 그 대가로 token만 아는 행위자의 교체를 통과시켜서는 안 된다.
+  그래서 격리 record는 기본 필드(v/kind/pid/identity/tokenHash) **보존**을 요구하고, 판정 순서를
+  tokenHash → record 동일성 → quarantined → inode로 고정했다. `quarantineByToken`도 tokenHash를 먼저 본다
+  (남의 lock이 격리돼 있다는 사실을 우리 성공으로 보고하지 않는다).
+- **주입 설정은 경로를 한 번만 연다.** 검사(`lstat`)와 사용(`readFileSync`)이 경로를 두 번 해석하면 그 사이의
+  교체로 검사와 실제 바이트가 서로 다른 대상이 된다. 따라서 `O_RDONLY|O_NOFOLLOW`로 **1회 open** → 같은 fd의
+  `fstat`으로 일반 파일 확인 → **같은 fd**에서 상한+1 바이트만 읽고 **실제 읽은 바이트로** 상한을 판정한다.
+  O_NOFOLLOW를 제공하지 않는 플랫폼에서는 주입 기능 자체를 거부한다(기능보다 안전).
+- **하위 프로세스는 남의 권한 key를 해석하지 않는다(confused deputy 금지).** 상위 runner가 자기 fixture 파일을
+  그대로 물려주면 하위가 상위 전용 key까지 계약에 넣어야 한다. 그래서 상위는 **하위가 실제로 해석하는 최소 설정만**
+  새 파일로 명시 전달하고, 하위 계약에서 상위 전용 key를 삭제했다. 넓은 공용 설정보다 좁은 명시 전달이 낫다.
+- **주입 seam은 늘리지 않는다.** 새 테스트가 필요해도 env seam·임의 명령 seam은 만들지 않고, 기존 argv
+  `--fixture-config`의 **고정 enum에 pause 지점 1개**(`before_guard_unlink_release`)만 추가했다. pause 지점 이름에
+  전이 종류를 붙여 한 실행에서 **정확히 한 전이만** 멈추게 한다(같은 이름이 여러 전이에서 걸리면 테스트가
+  비결정적이 된다).
+- **테스트는 "실패를 만드는 방법"까지 검증 대상이다.** 읽기 전용 디렉터리로 실패를 만들면 lock 발행과 guard 제거가
+  **동시에** 막혀 분류(mechanism/refusal)를 구분할 수 없다는 것을 mutation으로 확인했다. 그래서 디렉터리를 쓸 수 있는
+  상태에서 발행만 충돌시키는 테스트를 따로 두었다. 마찬가지로 CLI spawn 기반 경합 테스트는 시도 횟수가 적어
+  검사–사용 경합을 잡지 못하므로 로더를 **in-process로 수천 번** 호출하는 형태로 바꿨다.
+
+## 2026-07-26 (V3 M3d.2 **세 번째 리비전** — lock format v2 + transition guard, 자동 회수 폐지, argv 전용 주입)
+
+세 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES 6건)를 구현으로 해소하며 내린 결정들이다.
+아래 결정은 같은 날 **두 번째 리비전의 stale 회수 관련 결정 3건(직렬화·inode CAS·중단된 회수)을 폐기·대체**한다.
+
+- **상태 전이는 파일 하나가 아니라 "전이 guard"로 직렬화한다.** lock 파일만으로는 "소유를 확인한 순간"과
+  "지우거나 덮는 순간" 사이가 열려 있어, release가 새 소유 lock을 지우고 quarantine이 그것을 덮는 양방향 TOCTOU가
+  생긴다. 그래서 acquire/release/quarantine/reentry를 **crash-persistent `<lock>.guard` 안에서만** 수행하고,
+  guard 안에서 tokenHash·격리 표시·inode 신원을 다시 확인한 뒤에만 파일을 조작한다. lock format은 `v2`다.
+- **guard는 남의 것을 절대 건드리지 않는다.** guard 제거는 **자기 nonce + 자기 inode**를 확인한 뒤에만 한다.
+  다른 guard가 있으면 bounded 대기 후 거부할 뿐, 죽은 보유자의 guard라도 자동 제거·자동 인수하지 않는다.
+- **전이 실패와 전이 중 강제종료는 흔적을 남겨 다음 suite를 막는다(fail closed).** quarantine write 실패·unlink
+  실패·신원 불일치·SIGKILL은 guard를 남긴다. 반대로 **아무것도 바꾸지 않은 거부는 no-op**이므로 guard를 정상
+  반납한다 — 그렇지 않으면 두 suite를 한 번 겹쳐 실행한 것만으로 영구 수동 개입이 필요해진다.
+  안전(겹침 금지)과 사용성(정상 경합은 회복 가능)을 이 경계로 나눈다.
+- **dead/orphan lock 자동 회수를 폐지한다.** 소유자의 죽음은 정리 완료의 증거가 아니다 — SIGKILL로 죽었다면
+  소유 프로세스 그룹의 잔재가 남아 있을 수 있고, 그 상태에서 lock을 이어받으면 다음 suite가 그 잔재를 관측한다.
+  따라서 `lock_orphaned`로 **항상 거부**하고 사람이 확인 후 제거한다. 회수가 없으므로 `.recovery` mutex,
+  stale rename, inode CAS 회수 경로도 전부 제거했다(두 번째 리비전의 "회수 mutex 크래시 창" 위험은 소멸).
+- **lock이 없어도 guard가 있으면 acquire는 우회하지 않는다.** "lock 파일이 안 보이니 비었다"는 판단은 전이 도중
+  스냅샷일 수 있다.
+- **detached는 "정리 책임을 지는 계층"만 쓴다.** 재진입(nested) wrapper가 detached child를 만들면 그 그룹이
+  상위 stress runner의 pgid 스캔에서 사라진다. 그래서 standalone일 때만 자기 그룹을 만들고, nested면 그룹을 만들지
+  않아 **모든 자손이 상위 소유 pgid에 남게** 한다. 상위의 유예(TERM→8s→KILL)는 하위 shutdown 예산보다 짧지 않다 —
+  timeout 경로도 즉시 SIGKILL하지 않는다.
+- **테스트 주입은 env가 아니라 argv 하나로만 들어온다.** env는 자손에 암묵 상속되므로 셸에 export한 값이
+  production 실행(`npm test`, live runner)의 lock 경로·evidence 위치를 조용히 바꿀 수 있고, 상위/하위가 서로 다른
+  lock 파일을 보게 되어 배타성 자체가 깨진다. 주입은 `--fixture-config <절대경로 .json>` 하나뿐이며
+  크기·일반 파일·symlink·절대경로·allowlist key·타입/범위를 엄격 검증한다. **임의 명령 실행 seam은 만들지 않는다.**
+  `HARNESS_SUITE_LOCK_TOKEN`은 예외로 남기는데, 테스트 seam이 아니라 실제 부모→자식 ownership handoff이기 때문이다.
+  evidence 디렉터리도 같은 이유로 `HARNESS_LIVE_EVIDENCE_DIR`를 폐기하고 명시 인자(`overrideDir`)만 받는다.
+- **회귀는 실제 경합·강제종료로 검증하고 비공허성을 mutation으로 증명한다.** 재확인 제거·guard blind unlink·
+  nested detached·timeout 즉시 KILL 네 가지를 실제로 주입해 해당 테스트가 실패함을 확인한 뒤 원복했다.
+- **M3d 완료·리뷰 승인은 여전히 선언하지 않는다.** live runner 3종과 evidence 3건은 **pending**이며
+  **fresh Codex 최종 재검토도 받지 않았다.**
+
+## 2026-07-26 (V3 M3d.2 **두 번째 리비전** — lock 격리(quarantine), 단일 종료 상태 기계, stale 회수 신원 안전성)
+
+> **부분 대체됨(세 번째 리비전).** 격리·단일 종료 상태 기계는 유효하다. 반면 **stale 회수 3건
+> (`.recovery` 직렬화 / inode CAS 회수 / 중단된 회수 거부)은 폐기**되었다 — 자동 회수 자체가 없어졌다.
+> detached 관련 서술도 "nested는 detached하지 않는다"로 정정되었다. 아래는 역사 기록이다.
+
+두 번째 fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES)를 문서로 무마하지 않고 구현으로 해소하며 내린 결정들이다.
+아래 결정은 같은 날 앞선 M3d.2 결정 중 **stale 회수·정리 후 해제** 항목을 대체한다.
+
+- **정리 확인에 실패하면 lock을 해제하지 않는다 — 해제 대신 "격리"한다.** 소유 worker·프로세스 그룹·자손이
+  남아 있을 수 있는 상태에서 lock을 노출하면 다음 suite가 그 잔재를 관측해 거짓 실패한다. 그렇다고 확인될 때까지
+  붙잡고 있으면 terminal에서 빠져나갈 수 없다. 그래서 lock 파일에 `quarantined:true`를 원자적으로 표시하고
+  **즉시 종료**한다. 격리된 lock은 **소유자가 죽어도 stale 회수 대상이 아니다** — 자동 복구보다 겹침 방지를 우선한다.
+  해제는 사람이 잔재를 확인한 뒤 수동으로 한다. 이 규칙은 stress runner와 lock wrapper 양쪽에 같게 적용한다.
+- **종료 경로는 하나의 비동기 idempotent bounded 상태 기계뿐이다.** normal close / spawn error / SIGINT / SIGTERM /
+  반복 시그널 / escalation이 전부 같은 기계를 지난다. "시그널을 보냈다"는 정리의 증거가 아니다 — 소유 그룹과
+  소유 pgid 자손이 **사라진 것을 확인**한 뒤에만 lock을 해제한다. 반대로 **시그널 exit 의미(130/143)는 확인 결과와
+  무관하게 유지**한다. 종료 코드는 호출자와의 계약이고, lock 노출 여부는 별개의 안전 결정이기 때문이다.
+- **detached child의 중첩 프로세스 그룹은 만든 쪽이 확인한다.** lock wrapper가 띄우는 `npm run test:inner`는
+  자기 pgid를 갖기 때문에 상위 stress runner의 pgid 스캔에 잡히지 않는다. 각 계층이 자기 그룹을 확인하고,
+  상위는 하위의 종료를 기다리는 사슬로 전체를 덮는다.
+- **stale 회수는 직렬화 + 재분류 + inode CAS 세 겹으로만 한다.** `check → blind rename`은
+  "A가 stale로 읽음 → B가 회수 후 live lock 생성 → A가 그 live lock을 rename"으로 겹침을 만든다.
+  ① `<lock>.recovery` exclusive 발행으로 회수 구간을 직렬화하고, ② 구간 안에서 **다시 읽고 다시 분류**하며,
+  ③ rename **직후** 옮겨진 파일의 inode가 분류 대상과 같은지 확인한다. rename은 원자적이므로 이 사후 확인이
+  "그 inode를 옮긴 유일한 프로세스"라는 증명이다. 어긋나면 되돌리고 **절대 lock을 만들지 않는다**.
+- **중단된 회수는 자동으로 인수하지 않는다.** 회수 mutex 보유자가 죽었거나 확인 불가하면 `lock_recovery_stalled`로
+  거부한다. 죽은 mutex를 인수하는 순간 "둘 다 인수" 경합이 다시 열리고, 그 경합의 손해(남의 live lock 이동)는
+  탐지는 되어도 원복이 보장되지 않는다. **안전이 편의를 이긴다** — 사람이 파일 두 개를 지우면 된다.
+- **lock 파일은 완성된 뒤에만 최종 이름으로 존재한다.** 비공개 임시 파일에 전부 쓰고 `link()`로 발행한다
+  (EEXIST = 이미 보유자 있음, `wx`와 동일한 배타성). 부분 write 실패가 최종 경로에 "형식 위반 lock"을 남겨
+  영구 거부 상태를 만드는 일을 없앤다. evidence publish와 같은 원칙이다.
+- **테스트 주입 seam은 좁은 enum·절대경로만 받는다.** 정리 확인 실패·회수 경합 인터리빙은 실제 잔존 프로세스를
+  만들지 않고 결정론적으로 재현한다. 회수 경합 재현용 동기화 지점(`PAUSE_DIR`/`PAUSE_AT`)도 firm 상한(20s)을 갖는다.
+  주입 경로는 다른 프로세스에 신호를 보내지 않으며, 회귀 테스트가 **무관한 제3 프로세스의 생존**을 함께 확인한다.
+- **회귀 테스트의 비공허성을 mutation으로 확인한다.** 재분류를 끄면 2-contender 테스트가 실패하고, inode 사후 확인을
+  끄면 교체 거부 테스트가 실패한다는 것을 실제로 확인한 뒤 원복했다. "통과했다"만으로는 방어를 증명하지 않는다.
+- **M3d 완료·리뷰 승인은 여전히 선언하지 않는다.** 이번 검증(연속 3회 `npm test` + 부하 stress 1회)은 통과했지만
+  live runner 3종과 evidence 3건은 **pending**이고, **fresh Codex 최종 재검토도 받지 않았다.**
+
+## 2026-07-26 (V3 M3d.2 리비전 — suite 직렬화 lock, evidence publish 프로토콜, timestamp 동치)
+
+fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES) 지적을 문서로 무마하지 않고 구현으로 해소하며 내린 결정들이다.
+아래 결정은 같은 날 이전 M3d.2 결정 중 저장·동시성 항목을 **대체**한다.
+
+- **전체 suite 직렬화는 "탐지"가 아니라 "lock"이 1차 방어다.** 일반 `npm test`와 stress를 **같은 배타 lock 하나**로
+  묶었다(`npm test` = lock wrapper → `test:inner`). `ps` 스캔은 lock을 우회해 시작된 suite를 잡는 backstop으로만 남긴다.
+  이유: 전역 프로세스/tmp 상태를 관측하는 테스트가 있어(M3d.1 실측) 두 suite가 동시에 시작되면 거짓 실패한다.
+  `test:inner`는 기존 순서(exec → core → acceptance)와 카운트·exit 의미를 그대로 유지한다 — lock만 추가한다.
+- **재진입은 token으로만 허용한다.** stress가 띄운 자기 소유 `npm test` child만 32B 난수 ownership token으로 재진입한다.
+  lock 파일에는 **sha256만** 남기므로 파일을 읽어도 재진입할 수 없고, PID만으로는 어떤 신뢰도 부여하지 않는다.
+- **stale lock 회수는 신원 확인 + 원자적 rename으로만 한다.** 소유자 판정은 `pid + ps lstart`이며,
+  pid 부재 또는 lstart 불일치(pid 재사용)일 때만 `rename`으로 회수한다(rename ENOENT = 남이 먼저 회수 → 경합 없이 재시도).
+  **손상·버전 불일치·`ps` 확인 불가 lock은 회수하지 않고 거부한다(fail closed).** 자동 복구보다 겹침 방지를 우선한다.
+- **부하 없는 stress PASS를 금지한다.** worker 전원 spawn 확인 + `npm test` 종료 시점까지 전원 생존을 요구하고,
+  부하 deadline > suite 상한을 강제한다. "부하를 걸었다고 주장하지만 실제로는 없었다"를 구조적으로 배제한다.
+- **정리는 단일 비동기 idempotent 상태 기계로만 한다.** 소유 그룹·worker만 종료하고, 소멸을 bounded 확인한
+  **뒤에** lock을 해제한다. 확인 실패·확인 불가는 성공으로 넘기지 않고 FAIL로 보고한다.
+  timeout은 group kill 실패와 무관하게 실제 wall-clock 상한을 유지한다(매달리지 않는다).
+- **evidence 최종 파일명은 완성 후에만 존재한다.** 숨김 임시 파일에 전부 쓰고 fsync·close·재검증한 뒤
+  **exclusive hard link**로 publish한다(덮어쓰기 없음). 이유: 이전 방식은 최종 이름으로 열어 쓰는 중 크래시가 나면
+  성공 산출물과 같은 이름의 잘린 파일이 남을 수 있었다. 정리 실패는 조용히 무시하지 않고 실패로 보고하며,
+  완결되지 않은 기록은 발행분까지 되돌린다.
+- **경로 기반 TOCTOU는 완전 방어라고 주장하지 않는다.** dev+ino 신원 보관·publish 직전 재확인·신원 확인 후 unlink로
+  창을 좁히고 교체를 탐지하되, Node 18에 디렉터리 핸들 상대 열기가 없다는 한계를 코드·문서에 남긴다.
+- **schema와 런타임 timestamp 판정은 반드시 같아야 한다.** 정규식만으로 동일 판정이 가능하도록 연도를 2000..2099로
+  한정했다(그 범위에서 윤년 = 4의 배수). 두 판정의 동치는 accept/reject 표 테스트로 강제한다.
+
+## 2026-07-26 (V3 M3d.2 — live evidence 계약과 stress acceptance 동시성)
+
+- **live evidence는 "성공 전용 + allowlist"다.** `status`는 `"pass"` 고정이며 실패·스킵·미실행 run은 evidence를 남기지
+  않는다. 허용 필드는 `version`/`contract`/`status`/`timestamp`/`metrics`뿐이고 `metrics`는 runner별 exact key 집합의
+  정수(0..1,000,000)·boolean만이다. **denylist가 아니라 allowlist로 닫는다** — 새 필드를 추가하려면 schema·validator·테스트를
+  같이 바꿔야 한다.
+- **runner별 discriminated 계약을 쓴다.** 하나의 느슨한 공통 evidence 대신 `m3a_live_preflight`/`m3b2_live_handoff`/
+  `m3c3b_live_handoff` 세 계약을 두고, 다른 계약의 metrics 교차는 거부한다. 모든 객체 레벨에서 unknown key를 거부한다
+  (`additionalProperties:false` 동등).
+- **런타임 검증은 수동 closed validator다(신규 검증 의존성 0).** JSON Schema는 계약 문서이고,
+  두 정의의 동기는 테스트가 강제한다(`tool_profile.schema.json`과 동일한 기존 방식 유지).
+- **금지 필드는 이름 스캔으로 먼저 거부한다.** raw transcript·tool/MCP 입출력·argv·명령·경로·hostname/user·PID·
+  session/call/request ID·환경변수·secret 참조/값·config 본문·free-form error/message는
+  **redaction 마커로 치환해도 허용되지 않는다.** 마스킹은 금지 필드의 통과 수단이 아니다.
+- **redaction은 backstop이지 게이트가 아니다.** 영속화 직전 `redactSecrets`/`collectSecretValues`로 잔재를 재검사하되,
+  잔재가 있으면 **가려서 저장하는 대신 쓰기를 거부**한다. 지표만 담는 payload에 secret/경로 문자가 나타나는 것 자체가
+  계약 위반이라는 판단이다.
+- **evidence 경로는 payload에 담지 않고 출력하지도 않는다.** 파일명은 UTC compact timestamp + nonce로 충돌 저항성을 갖고,
+  exclusive create(`wx`)로 조용한 덮어쓰기를 금지한다. 디렉터리 0700 / 파일 0600, symlink·비디렉터리 대상 거부,
+  실패 시 부분 산출물 제거. 상위 경로 symlink 검사는 bounded(4단계)로 두고 시스템 prefix(macOS `/var` 등)는 대상에서
+  제외한다 — realpath 완전 일치를 요구하면 정상 tmp 경로까지 거부되기 때문이다.
+- **evidence는 "모든 계약 검사 + cleanup 성공" 이후에만 기록하고, 기록 실패는 runner 실패다.**
+  PASS를 먼저 선언하고 나중에 기록하지 않는다(PASS 출력 자체를 evidence 기록 뒤로 옮겼다).
+- **stress acceptance는 겹쳐 실행하지 않는다.** 배타 lock + `ps` 스캔으로 다른 suite/stress가 있으면 거부하고,
+  `ps` 확인 실패도 거부(fail-closed)한다. 단 후보는 **실행 파일이 node/npm/sh 계열인 프로세스로 좁힌다** —
+  argv에 테스트 명령 문자열만 담은 무관한 프로세스(예: 허용 도구 목록을 argv로 받는 agent CLI)를 동시 실행으로
+  오판했기 때문이다(M3d.1의 loose command matching 교훈 재확인).
+- **SIGKILL 직후 생존 판정은 하지 않는다.** reap 전이라 거짓 실패가 된다. 종료 확인은 bounded polling으로 한다.
+- **M3d 완료는 아직 선언하지 않는다.** 구현·offline 검증(연속 3회 `npm test` + 부하 stress 1회)은 통과했지만
+  live runner 3종 실행과 evidence 3건 생성은 **pending**이다. M3b.2는 사람 TTY를 요구하므로 자동 실행 대상이 아니다.
+  **M4 ready로 판정하지 않는다.**
+
+## 2026-07-26 (V3 M3d.1 — live runner 소유권 판정과 전역상태 테스트 동시성 계약)
+
+- **M3d.1은 완료로 표시한다(fresh Codex Sol xhigh 최종 verdict = APPROVE). 단 M3d 전체는 완료가 아니다.**
+- **"baseline 이후 매칭 = 내 잔여물"은 잘못된 판정 규칙이다.** M3c-2 live runner가 baseline 이후의
+  `shadcn@4.13.1 … mcp` 매칭 프로세스를 전부 자기 것으로 간주해 무관한 동시 프로세스가 거짓 실패를 유발했다.
+  수정 범위는 `scripts/m3c2-live-read-semantics.mjs`와 `src/tools/shadcnReadSemanticsProbe.test.ts`로 한정한다.
+- **소유권 정의는 "runner 프로세스 트리 자손 OR cwd가 runner 임시 base 하위"다.** baseline 이후에 생겼어도
+  그 base 밖의 진짜 독립 sibling은 foreign으로 무시한다. 검사 불가(unknown)는 fail-closed를 유지하되
+  **kill 대상이 아니다** — 판정 불가를 소유로 승격하지 않는다.
+- **프로세스 신원은 PID 단독으로 판단하지 않는다.** baseline과 재검증 모두 `pid + ps lstart`를 쓴다(PID 재사용 방지).
+  후보 argv는 로그에 남기지 않고, 진단은 pid·ownership·**run별 salted SHA-256 signature**만 노출한다.
+- **테스트 sleeper는 bounded TTL을 갖고, 정리는 신원 확인 후에만 한다.** child handle 또는 nonce로 orphan 신원을
+  확인하고 종료를 bounded하게 확인한다. **blind PID signal은 금지한다.**
+- **프로세스 전역·tmp 전역 상태를 관찰하는 테스트는 exclusive resource class/lock을 요구한다.**
+  근거: 이번에 겹친 검증 1회가, fresh 리뷰어와 메인 스위트가 동시에 전역 m3c2 temp/process 상태를 관찰하는 바람에
+  실패했고 격리 재실행은 PASS였다. 이런 테스트는 동시 실행하지 않는다. 이 계약을 **M4 durable-state/scheduler**의
+  구체 요건과 **M5 bridge 실행 요건**으로 로드맵에 반영한다(마일스톤 목표 자체는 변경하지 않는다).
+- **M5 bridge 세션은 silent하면 안 된다.** Claude bootstrap 실측에 따라 진행/이벤트 스트리밍,
+  no-progress·wall-clock bounded deadline, cancellation, descendant cleanup을 요건으로 둔다.
+  최종 결과만 반환하는 세션은 수용하지 않는다.
+- **잔여 위험은 비차단으로 수용한다.** `lstart` 1초 해상도, 대상 Linux의 procps 호환 `/bin/ps` 전제
+  (미지원 환경 inspection은 fail-closed).
+- **다음은 남은 M3d 범위다.** redacted persistent live-evidence schema/테스트 + 반복 full-suite/stress acceptance는
+  **별도 상세 계획·승인 후** 진행한다. M4 착수 가능 상태로 선언하지 않는다.
+
+## 2026-07-26 (자율 오케스트레이션 로드맵·통신·fresh-session·권한 모델)
+
+- **M3d 이후 최우선 기준은 `V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`.** 기존 두 활성 문서의
+  M0~M3 보안·진행·handoff 계약은 유지하되 기존 M4~M7 순서는 새 M3d~M10으로 대체한다.
+- **중앙 LLM 세션은 SoR이 아니다.** TypeScript orchestrator+디스크 run state가 상태·의존성·예산·승인을
+  소유하고, Coordinator도 phase/wave/context 경계마다 fresh하게 교체할 수 있어야 한다.
+- **agent 통신은 orchestrator 중계만.** 공통 envelope+type별 Markdown body+artifact revision/hash를
+  runtime validator가 확인한다. direct sibling state mutation과 raw transcript 전달은 금지한다.
+- **fresh 정책:** task attempt, review/critique/verification, 기본 revise는 각각 새 세션. reviewer는
+  저자 transcript 없이 task/contract/diff/test/evidence만 읽는 read-only 독립 세션이다.
+- **모델 라우팅:** 개발·수정은 Claude Code Opus, 큰 계획·문서 비평·검토는 Codex
+  `gpt-5.6-sol` xhigh, 상태 전이·schema·hash·gate는 LLM 없는 kernel.
+- **권한 피로는 milestone approval manifest로 줄인다.** 승인된 writable roots/commands/dependencies/
+  domains/budget 안에서는 자동 진행하고 범위 확대는 consolidated request로 pause한다. auto-review는
+  승인 검토자 변경일 뿐 sandbox 확대가 아니다. 기존 hard deny는 불변이다.
+- **자기개발 bootstrap:** controller는 검증된 base/dist에서 고정 실행하고 worker는 worktree만 수정한다.
+  로컬 병합 뒤 milestone 경계에서 controller를 rebuild/restart한다. M5 live 후 M6부터 autopilot 사용.
+- **로드맵 자기수정 제한:** Codex는 개선 proposal을 만들 수 있으나 scope·권한·비용 확대, dependency 추가,
+  테스트 완화, hard deny 변경은 사람 재승인 없이는 active roadmap에 반영하지 않는다.
+
 ## 2026-07-24 (V3 M3 전체 완료 — M3c-3b actual live PASS)
 
 - **M3c-3b는 offline + actual live 완료로 표시한다.** filtered shadcn read handoff가 Claude Code 2.1.218에서 runner exit 0/PASS로 실측됐다(preflight shadcn connected+host 5 exact, 금지 2 미노출, trace records 25/tool_requested 3/session_end 1, config_hash 체인·snapshot_path 일치, serviceCwd 무변경, canary·잔존 프로세스 없음, cleanup 완료).

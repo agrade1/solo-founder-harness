@@ -3,13 +3,791 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
+## 최신 갱신 (2026-07-26 — 여덟 번째 리비전 **재검토 결과 기록 + 배송 우선 리뷰 정책 · 병렬 세션 정책 도입**: verdict `APPROVE_FEATURE_PROGRESSION` · Category A 0건 · **M3d 완료 APPROVE 아님** · 부하 acceptance 미충족(차단) · live acceptance pending → **M3d 미완료** · 문서 전용 세션)
+
+이 세션은 **문서·정책 전용**이다. 코드·패키지·schema·script·생성 산출물·의존성은 **한 줄도 바꾸지 않았고**,
+commit/push/fetch/pull/PR·패키지 설치·네트워크·테스트·stress·live runner도 **실행하지 않았다**.
+변경 파일은 정확히 9개: `AGENTS.md` · `CLAUDE.md` · `docs/handoff/CODEX_HANDOFF.md` · `docs/CONTEXT_SUMMARY.md` ·
+`docs/WORKLOG.md` · `docs/DECISIONS.md` · 활성 V3 문서 3건(로드맵 · MCP · DESIGN).
+
+### 1) 여덟 번째 리비전 재검토 결과 (fresh Codex Sol xhigh · read-only)
+
+- **verdict: `APPROVE_FEATURE_PROGRESSION`.** 리뷰는 read-only였고 테스트·네트워크·편집을 하지 않았다.
+- **Category A(지금 차단): 0건.**
+- **이것은 M3d 완료 APPROVE가 아니다.** 부하(stress) acceptance는 여섯 번째 리비전의 **FAIL 기록 그대로
+  미충족/pending**(차단 게이트)이고, live runner 3종과 evidence 3건도 pending이다 → **M3d는 미완료**다.
+  **기존 완료 게이트는 전부 그대로 존재한다.** 이 판정을 "M3d APPROVE"로 줄여 적지 않는다.
+- **Category C(개선 backlog) 1건**: bounded computed dynamic specifier 분석이, 도달 가능한 조각 각각에는
+  `fixture-config`가 없지만 런타임에 합성되는 route(예: `"./lib/" + (flag ? "fixture-" : "other-") + "config.mjs"`)를
+  놓칠 수 있다. 현재 production 호출부 5개는 **영향 없음** · 확률 낮음 · 영향 반경은 "미래 소스 레벨 호출부 감사
+  누락"으로 한정 · 유예 비용 낮음 · 수정 공수 소~중 → 유예 대장 **`C-1`**(로드맵 §9.1)로 등록했고 이번에 고치지 않았다.
+  같은 Category C의 **문서 정확성 정정**("unproven/loader 보고 = 조용히 통과하는 경로 없음"이라는 과장 제거,
+  bounded 규칙 서술과 positive dist-import 대조군은 유지)은 아래 여덟 번째 리비전 항목 본문에 반영했다.
+- 리뷰 이력 현행: **REQUEST_CHANGES 8회(리비전 1~8에 각 1회) + 진행 승인 1회**. **M3d 완료 승인은 0회.**
+- **M4 구현은 not started**이며 별도 사용자 마일스톤 승인이 필요하다. 배송 우선 원칙에 따라 **M4 계획 준비는
+  지금 가능**하고, 승인된 offline/격리 M4 작업이 남은 외부 M3d 작업과 겹칠 수 있다는 **제안**은 로드맵 M4 절에
+  적었다 — **제안일 뿐 발동하지 않았고 승인받지도 않았다.**
+
+### 2) 사용자 승인 정책 도입 (문서화만)
+
+- **리뷰 finding 분류 A/B/C + 배송 우선**: A = 지금 차단(P0/P1 · 데이터 손실 · 승인/인증/상태 전이 우회 ·
+  되돌리기 어려운 아키텍처 · 유예 비용이 커서 후속 작업이 안전하지 않거나 폐기 대상), B = 지정 마일스톤/트리거 전
+  필수(명시적 기한이 있을 때만 유예), C = 개선 backlog. **C만으로는 리비전 루프를 다시 돌리거나 기능 진행을
+  멈추지 않는다.** 우선순위는 **심각도 단독이 아니라 유예 비용 대 수정 공수**로 정한다.
+- **유예 항목 무손실 대장**: 심각도 · 확률 · 영향 반경 · 유예/rework 비용 · 수정 공수 · 기한/트리거 · 담당 ·
+  증거 참조 · 상태를 유지한다. **조용한 폐기 금지.** 현재 열린 항목은 `C-1`/`C-2`/`C-3`(개선)과
+  `B-1`(부하 acceptance)/`B-2`(live evidence) — 뒤 둘은 여전히 **차단**이다.
+- **테스트 비례**: 변경마다 focused → handoff 전 전체 suite 1회 → 반복·stress·live는 마일스톤/하드닝 게이트
+  (해당 계약을 건드린 변경은 예외적으로 즉시). **테스트 완화·삭제 금지는 불변.**
+- **fresh context 유지 + 병렬 Claude 세션 조건부 허용**: 구현/리비전 = fresh Claude Code Opus 5,
+  넓은 계획·비평·리뷰 = fresh Codex `gpt-5.6-sol` xhigh, 리뷰어는 read-only이며 작성자 transcript와 분리.
+  병렬은 **격리 worktree + disjoint 파일 소유권**이 성립하고 DAG·공유 API/schema가 먼저 확정된 경우에만 쓰며,
+  공유 schema/API 변경·통합/병합·상태 마이그레이션·최종 전체 테스트·배타 자원/stress/live 테스트는 **직렬**이다.
+  동시성은 CPU/부하·메모리·토큰 예산·manifest `maxSessions`로 제한하고, 오케스트레이터가 의존성·소유권·
+  artifact hash·상태·완료·결과 라우팅을 검증한다. **로컬 통합 직렬, 원격 쓰기 hard deny 유지.**
+  **직전의 공유 dirty 체크아웃 리비전을 단일 세션으로 한 것은 옳았다** — 병렬은 격리 worktree가 있는 미래 작업부터.
+- 상세 규칙·대장 템플릿은 로드맵 §9.1~§9.3에 있고, `AGENTS.md`/`CLAUDE.md`에는 요약만 넣었다.
+
+### 3) Git 관찰
+
+`develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. 로컬 `develop`과 `origin/develop` 모두 같은 커밋
+(remote-tracking reflog에 2026-07-26 13:48:21 +0900 외부 push 갱신 기록). 워킹 트리는 의도적으로 dirty하며
+누적된 승인 범위 M3d 작업이 **전부 보존**되어 있다(이 세션은 문서 9개만 수정).
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **여덟 번째 리비전**: 여덟 번째 fresh Codex Sol xhigh REQUEST_CHANGES 3건(P2 2 · P3 1) 수정 · **stress acceptance는 여섯 번째 리비전 세션의 FAIL 기록 그대로 미충족(이번 세션 미재실행) · live acceptance 여전히 pending → M3d 미완료 · 승인 미수령**)
+
+> **재검토됨(2026-07-26).** 아래 구현·검증 서술은 그대로 유효하다. 다만 "재검토 대기(pending)"·"APPROVE 0회"는
+> **그 시점 기록**이며, 현행 사실은 **REQUEST_CHANGES 8회 + 진행 승인(`APPROVE_FEATURE_PROGRESSION`) 1회 ·
+> M3d 완료 APPROVE 0회**다(위 "최신 갱신" 참조). **M3d 미완료·M4 not started는 변함없다.**
+
+리뷰 요청 범위: M3d.2 **여덟 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성, 부하 acceptance 미충족, M4 not started).
+리뷰 이력은 **REQUEST_CHANGES 8회(리비전 1~8에 각 1회) · APPROVE 0회**였고, 이 리비전은 당시 **재검토 대기(pending)** 였다
+(→ 2026-07-26 재검토 결과 `APPROVE_FEATURE_PROGRESSION`, 위 "최신 갱신").
+아래는 구현·검증 보고이며, **M3d 완료 승인은 받지 않았다.**
+
+- **변경 파일(여덟 번째 리비전, 코드·테스트 1개 + 문서 7개)**: `src/tools/suiteExclusiveLock.test.ts`(70 → 75건),
+  문서 7개(WORKLOG / DECISIONS / CONTEXT_SUMMARY / 이 파일 / 로드맵 / 활성 V3 기준 문서 2건).
+  **production 코드는 한 줄도 바꾸지 않았다** — `scripts/lib/suite-exclusive-lock.mjs`,
+  `scripts/lib/fixture-config.mjs`(모듈 주석 포함), `scripts/suite-lock.mjs`, `scripts/m3d2-stress-acceptance.mjs`,
+  live runner 3종, `src/tools/liveEvidence.*`, `schemas/*`, `package.json` 모두 **미수정**(의존성 변경도 없다).
+- **P2-1 (지정자 정규화가 URL 규칙이 아니었다)**: 일곱 번째 리비전의 AST 감사는 상대 지정자를 **문자열 경로로만**
+  풀어서 ⓐ `"./lib/fixture-config.mjs?v=1"`(query) · `"…#seam"`(fragment) · `"…?a=1#b"` 조합, ⓑ
+  `"./lib/fixture%2Dconfig.mjs"`처럼 **percent 인코딩**된 지정자(Node ESM은 file URL을 디코드해 **같은 파일**로
+  해석한다)를 로더로 **인식하지 못했다** → 그 import로 세 번째 인자(io seam)를 넘겨도 감사를 통과했다.
+  이제 정규화는 URL 문법 그대로다: **첫 `#` 뒤 전부 fragment → 그 앞 첫 `?` 뒤 query → 남은 path를
+  `decodeURIComponent`**. 디코드 불가(`%zz`)·인코딩된 경로 구분자(`%2F`, `fileURLToPath`가 거부한다)는
+  "로더가 아니다"로 넘기지 않고 **판정 불가 = fail closed로 보고**한다.
+- **P2-2 (계산된 동적 import route를 아예 보지 않았다)**: 예전 감사는 `import()` 인자가 **문자열 리터럴일 때만**
+  판정했다. 이제 지정자 식을 bounded하게 **접는다**: 문자열 리터럴 · 치환 없는 template · `+` 연결 ·
+  **파일 안에서 정확히 한 번 `const`로 선언되고 초기화식이 있는 이름**(재귀 상한 8). 접히면 그 결과로 판정하고,
+  접히지 않으면 **도달 가능한 문자열 조각**을 모아 판정한다.
+  **채택한 bounded fail-closed 규칙(문서화된 규칙이며 whole-program 증명을 주장하지 않는다)**:
+  조각이 **하나도 없으면**(파라미터·재할당 `let`·중복 선언 등) 로더를 배제할 근거가 없으므로 **fail closed로 보고**,
+  조각 중 하나라도 로더 token(`fixture-config`)을 포함하거나 정규화 불가면 **로더 동적 로딩으로 보고**,
+  그 밖(조각이 있고 로더 token이 없음)은 `safe`로 본다. `safe` 분기를 남긴 이유는 live runner 3종의 **정상**
+  동적 import(`await import(join(HERE, "..", "dist", …))` 빌드 산출물 로딩)를 깨지 않기 위해서이고,
+  실제 repo 대조군(`m3c-live-discovery` · `m3c-live-schema-probe` · `m3c2-live-read-semantics`)이 호출부 목록에
+  **들어오지 않음**을 같은 테스트가 단정한다. `loader`·`unproven`은 둘 다 **문제로 보고**된다.
+  (**정정 — 2026-07-26, 여덟 번째 리비전 재검토 Category C.** 원래 이 자리에 "조용히 통과하는 경로는 없다"고
+  적었으나 사실이 아니다. `safe` 분기가 정확히 그 경로다: 도달 가능한 조각이 있고 그 조각 각각에는 로더 token이
+  없지만 런타임에 합성되는 구성(예: `"./lib/" + (flag ? "fixture-" : "other-") + "config.mjs"`)은 보고되지 않는다.
+  규칙은 위에 적은 **bounded fail-closed 규칙 그대로**이고 whole-program 증명이 아니며, 실제 안전 근거는
+  **positive 대조군** — 정상 dist 동적 import 3파일이 호출부로 잡히지 않고 production 호출부는 정확히 5개라는
+  단정 — 이다. 이 한계는 유예 대장 `C-1`(로드맵 §9.1)로 등록했다.)
+- **P2-3 (import-then-export 재수출을 놓쳤다)**: 예전 감사는 **직접 `export … from`만** 잡고,
+  `import { loadFixtureConfig } …` 뒤의 `export { loadFixtureConfig }`는 ExportSpecifier를 참조 대상에서 제외해
+  **아무 문제도 보고하지 않았다**(정상 호출 + 재수출이면 issues가 비어 있었다) → 다른 모듈이 그 재수출로 감사
+  밖에서 세 번째 인자를 넘길 수 있었다. 이제 수집이 **두 패스**다: import/`export … from`/동적 로딩을 전부 모은
+  **뒤에** 노출 패스가 `export { X }` · `export { X as Y }` · `export default X`(namespace 파생 노출 포함)를 본다 →
+  **소스 순서(import 먼저/export 먼저)로 우회할 수 없다**. `export * as ns from <loader>`도 직접 재수출로 잡는다.
+- **P2-4 (바인딩 판정이 scope를 몰랐다)**: 식별자 텍스트만 봤기 때문에 ⓐ 지역 `process` shadow가
+  `canonicalFirstArg` + 첫 인자 **원문** 단정까지 통과했고(그 경우 "외부 주입은 argv 하나뿐" 계약이 깨진다),
+  ⓑ shadow된 이름이 **import 사용으로 계산**되어 미사용 검사가 무력했고, ⓒ **namespace import에는 미사용 검사가
+  아예 없었다**. 이제 선언 sweep(`var`/`let`/`const`·구조 분해·파라미터·function/class 이름·import 바인딩·
+  `catch` 변수)을 돌려 **전역 `process`나 추적 중인 direct/namespace 바인딩을 가리는 선언이 하나라도 있으면
+  감사를 실패**시킨다(정확한 scope 계산 대신 conservative fail closed). 그리고 **shadow된 식별자는 import 사용으로
+  인정하지 않으며**(→ 미사용 바인딩으로도 보고된다), `process` shadow가 있으면 구조가 맞아도
+  `canonicalFirstArg=false`다. namespace도 direct와 **동일한 미사용 검사**를 받고, namespace를 값으로 넘기는
+  참조도 우회 표면으로 보고한다.
+- **P3 (감사 신뢰성 · 문서 정확성)**: ⓐ 이제 감사는 **파싱 진단**을 본다 — 구문 오류가 있으면 "부분 파싱된
+  소스"이므로 "import를 못 찾았다"를 "로더를 부르지 않는다"의 근거로 쓰지 않고 fail closed로 보고한다.
+  ⓑ 상태 문서의 리비전·카운트·게이트 표기를 여덟 번째 리비전 사실로 정정했고, **부하(stress) acceptance
+  완료 게이트를 "비차단"으로 표기하지 않는다**(아래 항목 참조).
+- **기존 계약은 그대로 유지**: `scripts` 아래 **모든 깊이**의 일반 `.mjs` 재귀 열거 + symlink 파일·디렉터리
+  미추적·보고(실제 레포 0건), 기대 호출부 **정확히 5개**(`suite-lock.mjs`, `m3d2-stress-acceptance.mjs`,
+  `m3a-live-preflight.mjs`, `m3b2-live-handoff.mjs`, `m3c3b-live-handoff.mjs`), 파일당 호출 **1회**,
+  **인자 정확히 2개**, 첫 인자가 **구조적으로** `process.argv.slice(2)`(원문까지 동일), 문자열·주석 **오탐 0**,
+  그리고 여섯 번째 리비전의 `O_NOFOLLOW`·post-guard 상태 공표·소비자 미완결 보고 — 모두 이번 focused **75/75**
+  실행에서 통과했고 관련 production 코드는 수정하지 않았다.
+  **TypeScript는 이미 devDependency이며 테스트에서만 import한다 — 의존성·production 주입 표면 추가 0.**
+- **테스트(70 → 75건, 삭제·완화 0)**: 신규 5건 =
+  ⓐ **query/fragment/percent 지정자**(6형태, 전부 세 번째 인자를 넘긴다) 발견+거부 · 정규화 불가 2형태
+  (`%2F` · `%zz`) fail closed 보고 · 로더가 아닌 query 지정자는 **오탐하지 않음**,
+  ⓑ **계산된 동적 import** 6형태(연결 · const 바인딩 · const+연결 · 치환 template · 접힌 지정자+query ·
+  `require` 연결) 로더 확정 + 확정 불가 3형태(파라미터 · 재할당 `let` · 중복 선언) fail closed +
+  **정상 빌드 산출물 동적 import는 호출부로 세지 않음**(대조군),
+  ⓒ **재수출** 6형태(import-then-export · export-before-import · 별칭 · default · namespace 파생 · `export * as`),
+  ⓓ **shadow** 6형태(`process` const/파라미터 · direct 바인딩 · namespace · 미사용 namespace · namespace 값 전달),
+  ⓔ **파싱 진단** 2형태(로더 호출부 · 로더 무관 파일).
+  기존 production 호출부 테스트에는 **정상 동적 import 대조군 3파일이 실제로 열거되는지** 단정을 더했다.
+  ⓐ~ⓔ는 **순수 합성 소스**(메모리)라 임시 파일을 남기지 않고 production을 잠시라도 훼손하지 않는다.
+- **검증 실측(offline)**: `node --check`(.mjs 4종) OK, `npx tsc --noEmit -p tsconfig.json` 0,
+  테스트 파일 단독 strict 타입체크 0, `npm run build` **PASS**(파이프로 종료 상태를 가리지 않고 확인),
+  `git diff --check` clean. focused `suiteExclusiveLock.test.ts` **75/75**, `liveEvidence.test.ts` **24/24**.
+  `npm test` **연속 3회 전부 PASS(직렬, 겹침 없음)** = exec **75/75** + core **374/374**(369 → 374: 신규 5건) +
+  acceptance **71/71**. 실행 후 tmp lock/guard/격리·`.new` 잔재 0, repo backup/mutation 잔재 0,
+  잔존 suite/fixture 프로세스 0, git 파일 목록 세션 시작과 동일.
+  (범위 밖 기존 잔재는 그대로 남는다: `harness-perm-*` 임시 디렉터리 다수 —
+  `src/exec/permissionCompiler.test.ts:69` · 이번 세션보다 9시간 앞선 `harness-pf-*` 1건.)
+- **비공허성(mutation) 8종** — 새 방어 하나씩 되돌려 해당 테스트가 실패함을 확인하고 **전부 정확히 원복**했다:
+  ① query/fragment 분해 제거 → **2건 실패**(지정자 테스트 + 동적 테스트), ② percent 디코드 제거 → 지정자 테스트 실패,
+  ③ 동적 지정자 게이트를 문자열 리터럴 전용으로 복원 → 동적 테스트 실패, ④ 노출 패스 제거 → 재수출 테스트 실패,
+  ⑤ `process` shadow를 정규형 판정에서 제외 → shadow 테스트 실패, ⑥ direct/namespace shadow 검출 제거 →
+  shadow 테스트 실패(shadow된 식별자가 다시 "사용"으로 계산됨), ⑦ namespace 미사용 검사 제거 → shadow 테스트 실패,
+  ⑧ 파싱 진단 무시 → 구문 오류 테스트 실패.
+  원복 후 프로젝트/단독 strict 타입체크 0 · `npm run build` PASS · focused **75/75** · **24/24** 재확인,
+  소스 내 `MUTATION` 흔적 grep **0**. (이 리포는 hash 명령이 차단되어 있어 역방향 exact edit + 전량 재실행으로
+  원복을 확인한다.)
+- **부하(stress) acceptance는 미충족이며 이것은 M3d 완료를 막는 차단 게이트다(비차단 위험이 아니다)**:
+  여섯 번째 리비전 세션이 같은 호스트에서 2회 실행해 2회 다 **exit 1**이었고, 실패 테스트 2건은 그때부터 지금까지
+  **아무 리비전도 손대지 않은 고정 5초 child startup deadline**(`preflight.test.ts` M3a canary ·
+  `shadcnPilot.test.ts` M3c-0 discovery)이며 호스트 외부 부하(10 CPU · load average 8.76/11.10/8.50)가 원인으로
+  확인됐다. 이번 리비전도 **production 코드를 전혀 바꾸지 않았으므로** 같은 조건의 재실행은 새 정보를 주지 않는다 →
+  사용자 지시대로 재실행하지 않고 **직전 FAIL을 그대로 미충족으로 기록**한다(거짓 PASS 없음).
+  상세 JSON·수치는 아래 "이전 갱신(여섯 번째 리비전)" 항목에 있다.
+  (정정: 아래 여섯 번째·일곱 번째 리비전 항목은 이 게이트를 "잔여 위험(비차단)" 목록에 넣어 적었다 —
+  **완료 게이트로서는 차단이 맞다**. 해당 줄에 정정 표기를 달았다.)
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 명령은 아래 "이전 갱신"과 동일하다.
+  **3종 PASS + evidence 3건 생성 + 부하 acceptance PASS + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로
+  판정하지 말 것.** **M4는 not started.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. commit/fetch/push/pull/PR·
+  패키지 설치·의존성 변경·네트워크·live runner 실행 없음. 워킹 트리는 계속 dirty이며 **세션 시작 시점의 파일
+  목록과 동일**(기존 dirty 변경 전부 보존, 신규 파일 추가 없음).
+- **잔여 위험(비차단 — 부하 acceptance 게이트는 여기 포함되지 않는다)**: 아래 여섯 번째 리비전 목록의 lock 계층
+  위험이 전부 유효하다. 이번 리비전이 더하거나 명시한 것: ⓐ 감사는 **정적 분석**이므로 런타임 동적 호출은
+  "문제 보고"까지만 하고 실행 자체를 막지는 못한다, ⓑ `scripts` 밖(예: `src/`)에서 로더를 부르는 코드는 이 감사
+  범위 밖이다(현재 그런 호출부는 없다), ⓒ 동적 지정자 판정은 **bounded 규칙**이라 "관측 가능한 조각은 있으나
+  로더 token이 없는" 완전 런타임 구성 경로는 `safe`로 본다(whole-program 증명 아님 — 위 규칙 그대로),
+  ⓓ 선언 sweep은 열거한 선언 형태만 보므로 새 형태가 생기면 shadow를 놓칠 수 있다(그 경우에도 호출 형태·노출·
+  동적 로딩 검사는 그대로 동작한다), ⓔ `parseDiagnostics`는 TypeScript의 준공개 필드라 상위 버전에서 이름이
+  바뀌면 이 검사가 **조용히 무력화**될 수 있다(전용 회귀 2건이 그걸 잡는다),
+  ⓕ `scripts/lib/fixture-config.mjs` 모듈 주석이 production 진입점을 **2개만 예시**로 적어 실제 5개와 어긋나 보인다 —
+  이번 범위(테스트+문서, production 주석 수정 금지)에서 **수정하지 않았다**(다음 승인 범위에서 주석만 정정 권장).
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **일곱 번째 리비전**: 일곱 번째 fresh Codex Sol xhigh REQUEST_CHANGES 1건(P2) 수정 · **stress acceptance는 여섯 번째 리비전 세션의 FAIL 기록 그대로 미충족(이번 세션 미재실행) · live acceptance 여전히 pending → M3d 미완료 · 승인 미수령**)
+
+> **보강됨(여덟 번째 리비전).** 아래 재귀·AST 감사 계약은 그대로 유효하지만, 지정자 정규화(query/fragment/percent) ·
+> 계산된 동적 import · import-then-export 재수출 · scope(shadow) · 파싱 진단은 위 여덟 번째 리비전 항목이
+> 더 강한 계약으로 보강했다. 아래 "REQUEST_CHANGES 7회"·테스트 카운트(70건)·core 369는 **그 시점 기록**이며,
+> 현행 사실은 **REQUEST_CHANGES 8회 + 진행 승인 1회 · M3d 완료 APPROVE 0회 · 75건 · core 374**다.
+
+리뷰 요청 범위: M3d.2 **일곱 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성, 부하 acceptance 미충족, M4 not started).
+리뷰 이력은 **REQUEST_CHANGES 7회(리비전 1~7에 각 1회) · APPROVE 0회**이며, 이 리비전도 **재검토 대기(pending)** 다.
+아래는 구현·검증 보고일 뿐이고 어떤 승인도 받지 않았다.
+
+- **변경 파일(일곱 번째 리비전, 코드·테스트 1개 + 문서 7개)**: `src/tools/suiteExclusiveLock.test.ts`(67 → 70건),
+  문서 7개(WORKLOG / DECISIONS / CONTEXT_SUMMARY / 이 파일 / 로드맵 / 활성 V3 기준 문서 2건).
+  **production 코드는 한 줄도 바꾸지 않았다** — `scripts/lib/suite-exclusive-lock.mjs`,
+  `scripts/lib/fixture-config.mjs`, `scripts/suite-lock.mjs`, `scripts/m3d2-stress-acceptance.mjs`,
+  live runner 3종, `src/tools/liveEvidence.*`, `schemas/*`, `package.json` 모두 **미수정**(의존성 변경도 없다).
+- **P2 (production 호출부 발견이 전수가 아니다)**: 여섯 번째 리비전의 회귀는 `scripts` 루트와 `scripts/lib`를
+  **한 겹만** 훑고 `loadFixtureConfig(` **문자열 일치**로 호출부를 찾았다. 그래서 ⓐ 더 깊은 하위 디렉터리의
+  호출부(레포에 실제로 `scripts/fixtures/m3a/minimal-stdio-mcp.mjs` 깊이가 있다), ⓑ 식별자와 `(` 사이에
+  공백·줄바꿈·주석이 낀 호출, ⓒ `import { loadFixtureConfig as loadCfg }` 별칭 호출이 **세 번째 인자
+  (in-process io seam)를 넘긴 채 감사를 통과**할 수 있었다 — 문서화된 "새 호출부가 생기면 먼저 깨진다"는
+  경계와 모순이다. 이제 감사는 **구문 인식·재귀**다:
+  ⓐ `scripts` 아래 **모든 깊이**의 일반 `.mjs`를 재귀 열거하고 **symlink 파일·디렉터리는 신뢰하지 않고
+  따라가지 않으며**(건너뛴 목록을 보고하고 실제 레포에서는 0건임을 단정), 로더 모듈 자신은 호출부에서 제외한다.
+  ⓑ TypeScript AST로 **`scripts/lib/fixture-config.mjs`에서 온 바인딩**(named 별칭 `as`, namespace import,
+  절대경로/`file:` 지정자까지 fail closed 판정)을 추적해 그 바인딩을 통한 호출만 본다 — 공백·주석은 AST가
+  흡수하므로 호출을 놓치지 않고, 문자열·주석 안의 이름은 호출이 아니므로 오탐하지 않는다.
+  ⓒ 각 호출은 **인자 정확히 2개**이고 첫 인자가 **구조적으로** `process.argv.slice(2)`여야 한다
+  (문자열 비교가 아니라 `process`→`argv`→`slice(2)` AST 모양 + optional chaining 금지).
+  ⓓ import했지만 **호출하지 않는 바인딩**, **다중 호출**, 동적 로딩(`import()`/`require()`), 재수출,
+  비호출 참조(`const alias = loadFixtureConfig`)는 전부 **문제로 보고**한다(조용히 넘기지 않는다).
+  ⓔ 기대 호출부 집합은 실제 코드가 그렇듯 **정확히 5개**(`suite-lock.mjs`, `m3d2-stress-acceptance.mjs`,
+  `m3a-live-preflight.mjs`, `m3b2-live-handoff.mjs`, `m3c3b-live-handoff.mjs`)로 유지했다.
+  **TypeScript는 이미 devDependency이며 테스트에서만 import한다 — 의존성·production 주입 표면 추가 0.**
+- **테스트(67 → 70건, 삭제·완화 0)**: 기존 호출부 회귀 1건을 재귀·AST 판으로 **교체·강화**(목록·바인딩 이름·
+  호출 수·인자 2개·첫 인자 원문/구조까지 단정, 재귀가 실제로 중첩 fixture 파일에 닿는지도 단정)하고 신규 3건 추가 =
+  ⓐ **열거 계약**(임시 디렉터리 트리: 중첩 `.mjs` 발견 · symlink 파일/디렉터리 미추적 및 보고 · 비 `.mjs` 제외 ·
+  symlink 디렉터리 너머 파일을 production 소스로 세지 않음),
+  ⓑ **우회 mutation 4종**(중첩 경로 · 공백/주석 분리 호출 · 별칭 import · namespace import — 넷 다 세 번째 인자를
+  넘긴다)이 모두 **발견되고 거부**되며 같은 실행에서 정상 합성 호출부는 통과,
+  ⓒ 첫 인자 비정규형 · 미사용 바인딩 · 다중 호출 · 동적 로딩/재수출/비호출 참조 검출 + **문자열·주석 오탐 금지**.
+  ⓑ·ⓒ는 **순수 합성 소스**(메모리)라 임시 파일을 남기지 않고 production을 잠시라도 훼손하지 않는다.
+- **여섯 번째 리비전 수정분 재감사(그대로 유지됨)**: `O_NOFOLLOW` symlink 거부 3건, lock unlink 뒤 guard 반납
+  실패 시 handle `failed`/`released=false`, 소비자(wrapper·stress)의 "해제 미완결" 보고, focused 테스트 전량,
+  mutation 잔재 0 — 모두 이번 세션의 focused **70/70** 실행에서 통과했고 관련 코드는 수정하지 않았다.
+- **검증 실측(offline)**: `node --check`(.mjs 4종) OK, `npx tsc --noEmit -p tsconfig.json` 0,
+  테스트 파일 단독 strict 타입체크 0, `npm run build` **PASS**(파이프로 종료 상태를 가리지 않고 확인),
+  `git diff --check` clean. focused `suiteExclusiveLock.test.ts` **70/70**, `liveEvidence.test.ts` **24/24**.
+  `npm test` **연속 3회 전부 PASS(직렬, 겹침 없음)** = exec **75/75** + core **369/369**(366 → 369: 신규 3건) +
+  acceptance **71/71**. 실행 후 tmp lock/guard/격리·`.new` 잔재 0, repo backup/mutation 잔재 0,
+  잔존 suite/fixture 프로세스 0(기존 범위 밖 이슈인 `harness-perm-*` 임시 디렉터리는 그대로 남는다).
+- **비공허성(mutation) 4종**: ① 재귀 제거 → 열거 테스트 + 실제 호출부 테스트 **2건 실패**, ② 옛 문자열 스캔
+  게이트 복원 → **공백/주석·별칭 케이스 실패**, ③ 별칭 인식 제거 → **별칭 케이스 실패**, ④ 인자 개수 검사 완화
+  (`!== 2` → `< 2`) → **세 번째 인자 거부 단정 전부 실패**. 네 mutation 모두 **정확히 원복**했고, 원복 후
+  타입체크 0 · focused **70/70** · **24/24** 재확인, 소스 내 mutation 흔적 grep 0. (이 리포는 hash 명령이
+  차단되어 있어 역방향 exact edit + 전량 재실행으로 원복을 확인한다.)
+- **stress acceptance는 이 세션에서 실행하지 않았다(미충족·pending, 거짓 PASS 아님)**: 여섯 번째 리비전 세션이
+  같은 호스트에서 2회 실행해 2회 다 **exit 1**이었고, 실패 테스트 2건은 **이번 리비전이 손대지 않은 고정 5초
+  child startup deadline**(`preflight.test.ts` M3a canary · `shadcnPilot.test.ts` M3c-0 discovery)이며
+  호스트 외부 부하(10 CPU · load average 8.76/11.10/8.50)가 원인으로 확인됐다. 이번 리비전은 **production 코드를
+  전혀 바꾸지 않았으므로** 같은 조건의 세 번째 실행은 새 정보를 주지 않는다 → 사용자 지시대로 재실행하지 않고
+  **직전 FAIL을 그대로 미충족으로 기록**한다. 상세 JSON·수치는 아래 "이전 갱신(여섯 번째 리비전)" 항목에 있다.
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 명령은 아래 "이전 갱신"과 동일하다.
+  **3종 PASS + evidence 3건 생성 + 부하 acceptance PASS + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로
+  판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. commit/fetch/push/pull/PR·
+  패키지 설치·의존성 변경·네트워크·live runner 실행 없음. 워킹 트리는 계속 dirty이며 **세션 시작 시점의 파일
+  목록과 동일**(기존 dirty 변경 전부 보존, 신규 파일 추가 없음).
+- **잔여 위험(비차단 — 단, 부하 acceptance 게이트는 비차단이 아니다: 여덟 번째 리비전 정정)**: 아래 여섯 번째
+  리비전 목록이 전부 유효하다. 이번 리비전이 더한 것: ⓐ 감사는 **정적
+  분석**이므로 런타임 동적 호출은 "문제 보고"까지만 하고 실행 자체를 막지는 못한다, ⓑ `scripts` 밖(예: `src/`)
+  에서 로더를 부르는 코드는 이 감사 범위 밖이다(현재 그런 호출부는 없다), ⓒ `scripts/lib/fixture-config.mjs`
+  모듈 주석이 production 진입점을 **2개만 예시**로 적어 실제 5개와 어긋나 보인다 — 이번 범위(테스트+문서)에서
+  production 파일을 건드리지 않으려 **수정하지 않았다**(다음 승인 범위에서 주석만 정정 권장).
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **여섯 번째 리비전**: 여섯 번째 fresh Codex Sol xhigh REQUEST_CHANGES 6건 수정 · **stress acceptance는 이 세션 호스트에서 FAIL(외부 부하) · live acceptance 여전히 pending → M3d 미완료 · 승인 미수령**)
+
+> **보강됨(일곱 번째 리비전).** 아래 계약은 그대로 유효하다. 다만 "io seam 회귀가 호출부를 스캔해 전수 검사한다"는
+> 항목의 구현은 위 일곱 번째 리비전에서 **구문 인식·재귀 감사**로 교체·강화됐고, "REQUEST_CHANGES 6회"·
+> 테스트 카운트(67건)·core 366은 **그 시점 기록**이다. 현행 사실은 **REQUEST_CHANGES 8회 + 진행 승인 1회 ·
+> M3d 완료 APPROVE 0회 · 75건 · core 374**다(이 줄은 2026-07-26 재검토 결과로 갱신했다).
+
+리뷰 요청 범위: M3d.2 **여섯 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성, M4 not started).
+리뷰 이력은 **REQUEST_CHANGES 6회(리비전 1~6에 각 1회) · APPROVE 0회**이며, 이 리비전도 **재검토 대기(pending)** 다.
+아래는 구현·검증 보고일 뿐이고 어떤 승인도 받지 않았다.
+
+- **변경 파일(여섯 번째 리비전, 코드·테스트 4개 + 문서 7개)**: `scripts/lib/suite-exclusive-lock.mjs`
+  (최종 엔트리 symlink 거부 · 성공 상태 공표 순서), `scripts/suite-lock.mjs`(해제 미완결 명시 보고),
+  `scripts/m3d2-stress-acceptance.mjs`(같은 보고), `src/tools/suiteExclusiveLock.test.ts`(62 → 67건),
+  문서 7개(WORKLOG / DECISIONS / CONTEXT_SUMMARY / 이 파일 / 로드맵 / 활성 V3 기준 문서 2건).
+  `scripts/lib/fixture-config.mjs`·`src/tools/liveEvidence.*`·`schemas/*`·`package.json`·live runner 3종은
+  **이번 리비전에서 수정하지 않았다**.
+- **P1 (최종 경로 symlink가 lock 신원 검사를 우회)**: `readLockSnapshot`·`readGuardRecord`가
+  `openSync(path, "r")`로 열어 **symlink를 따라갔다**. 그래서 원본 lock을 다른 이름으로 옮기고 그 자리에 symlink를
+  두면 ⓐ release가 옮겨진 원본의 record·(dev,ino)로 소유를 인정한 뒤 **symlink만 unlink하고 해제 성공을 보고**하고,
+  ⓑ quarantine이 그 **남의 symlink 엔트리를 rename으로 덮을** 수 있었다. 이제 두 reader는 공용
+  `openReadNoFollow`로 `O_RDONLY|O_NOFOLLOW`만 사용하고, symlink(ELOOP/EMLINK)는 `lock_path_symlink`,
+  `O_NOFOLLOW` 미지원 플랫폼은 `lock_nofollow_unsupported`로 **거부**한다(fail closed).
+  두 경우 모두 **그 엔트리도 대상 파일도 지우거나 덮지 않는다**: release는 mechanism 실패로 guard를 남기고,
+  acquire는 아무 상태도 바꾸지 않은 거부라 guard를 정상 반납한다. 회귀 3건(release / token 격리 / acquire)은
+  **각각 symlink 엔트리 보존 + 대상 원본 inode·내용 보존 + 어떤 성공 종결도 보고하지 않음**을 함께 단정한다.
+- **P2 (guard 반납 실패 뒤에도 handle이 released로 남음)**: 전이 콜백이 `handle.state = "released"`를
+  `withTransitionGuard` 완결 **전에** 세팅했고, catch는 `held`만 `failed`로 바꿨기 때문에 lock unlink 뒤 guard 반납이
+  실패해도(`lock_guard_release_failed`) state가 released로 남아 소비자가 `lockReleased:true`로 보고했다.
+  이제 콜백은 **결과만 값으로 돌려주고**(`{value:{state}, retainGuard}`) 상태 공표는 `withTransitionGuard`가 정상
+  반환한 뒤 `publishState` 한 곳에서만 한다 → guard 정리/교체/unlink 실패가 lock unlink 뒤에 나면
+  **problems 보고 · `state="failed"` · `released=false` · guard 잔존**이다. wrapper(`suite-lock.mjs`)와 stress도
+  `released`·`quarantined`가 모두 아니면 `lock 해제가 완결되지 않았습니다(state=…)`를 문제로 남겨
+  **`lockReleased:true`로 보고하지 않는다**. 결정적 회귀 3건: ⓐ **in-process handle** — pause 지점에서 별도 프로세스가
+  guard를 같은 내용·**다른 inode**로 교체(교체를 inode로 증명) → lock 파일은 이미 없고 handle은 `failed`,
+  `released=false`, 재호출해도 승격 없음, 남은 guard가 다음 실행 차단; ⓑ **wrapper CLI** — guard unlink만 EACCES,
+  `lock_guard_release_failed` + 미완결 보고; ⓒ **stress 요약** — `cleanupConfirmed:true`인데
+  `lockReleased:false` · `cleanupProblems>0`. `quarantine()`도 같은 완결 규칙으로 정리했고,
+  **acquire·reentry는 이미 guard 반납 뒤에 handle/결과를 만들므로 재감사만** 하고 구현을 넓히지 않았다.
+- **추가 지적 (io seam 회귀가 production 호출부 일부만 검사)**: 이제 `scripts/**.mjs`를 **스캔해 호출부를 발견**하고
+  ⓐ 목록이 기대 5개(`suite-lock.mjs`, `m3d2-stress-acceptance.mjs`, `m3a-live-preflight.mjs`,
+  `m3b2-live-handoff.mjs`, `m3c3b-live-handoff.mjs`)와 정확히 같은지, ⓑ 각 호출의 **최상위 인자가 정확히 2개**이고
+  첫 인자가 `process.argv.slice(2)`인지 확인한다(중첩 괄호/중괄호를 세어 인자를 분리한다).
+  좁힌 계약이 아니라 **전수 커버리지**이며, 새 호출부가 생기면 목록 비교가 먼저 깨진다. 의존성·외부 주입 표면 추가 없음.
+- **P3 (문서 수치 모순)**: 아래 "이전 갱신(다섯 번째 리비전)"의 "3개 + 문서 6개"를 실제 나열
+  (lock 라이브러리 · fixture 로더 · wrapper · 테스트 = **4개**, 문서 **7개**)와 맞게 정정했다.
+  이번 작업은 **여섯 번째 리비전 · 여섯 번째 REQUEST_CHANGES**이고 **APPROVE 0 · live evidence 3건 pending ·
+  M3d 미완료 · M4 not started**는 그대로다.
+- **테스트(62 → 67건, 삭제·완화 0)**: 신규 5건 = symlink release 보존 · symlink token 격리 보존 · symlink acquire 거부
+  (+ "따라가는 읽기 open 없음" 소스 계약) · lock unlink 뒤 guard 반납 실패 시 handle `failed` · stress 요약
+  `lockReleased:false`. 강화 2건 = wrapper guard 제거 실패 테스트에 `lock_guard_release_failed`·미완결 보고 단정 추가,
+  io seam 회귀를 호출부 전수 검사로 확대. **pause 지점·fixture key·env seam·임의 명령 seam 추가 0**.
+- **검증 실측(offline)**: `node --check`(.mjs 4종)·`npx tsc --noEmit -p tsconfig.json` 0·`npm run build` PASS,
+  `git diff --check` clean, **git이 보는 파일 266건 전수 NUL 0**.
+  focused `suiteExclusiveLock.test.ts` **67/67**, `liveEvidence.test.ts` **24/24**.
+  `npm test` **연속 3회 전부 PASS(직렬, 겹침 없음)** = exec **75/75** + core **366/366** + acceptance **71/71**(3회 동일).
+  실행 후 tmp lock/guard/격리·`.new` 잔재 0, repo backup/mutation 잔재 0, 잔존 suite/fixture 프로세스 0.
+- **stress acceptance는 이 세션 호스트에서 FAIL이다(정직 보고, 거짓 PASS 아님)**: 일반 suite 3회가 끝난 **뒤**
+  1회 실행 → **exit 1**,
+  `{"loadWorkers":4,"loadDeadlineMs":2400000,"testTimeoutMs":1800000,"elapsedMs":263998,"workersSpawned":4,`
+  `"workersExitedBeforeCleanup":0,"workersAliveAtSuiteClose":4,"npmTestExitCode":1,"npmTestTimedOut":false,`
+  `"workersAliveAfterCleanup":0,"npmGroupAliveAfterCleanup":false,"ownedDescendantsAfterCleanup":0,`
+  `"cleanupConfirmed":true,"cleanupProblems":0,"lockReleased":true,"lockQuarantined":false,"shutdownReason":"error"}`.
+  원인 파악을 위한 **진단 실행 1회**(전체 로그 캡처)도 동일 결과(elapsed 301973ms). 부하 중 실패한 테스트는
+  **2건뿐이고 이번 리비전이 수정하지 않은 파일**이다: `src/tools/preflight.test.ts` "[M3a] extra canary tool 실패"
+  (`preflight 타임아웃 (5000ms) — system/init 미수신`)와 `src/tools/shadcnPilot.test.ts`
+  "[M3c-0] discovery 성공(generic fixture)"(`discovery 타임아웃 (5000ms)`) → core **364/366**(exec 75/75, acceptance 미도달).
+  호스트가 외부 앱으로 이미 포화였다: 10 CPU에 load average **8.76 / 11.10 / 8.50**(Chrome 57% · WindowServer 42% ·
+  VS Code · OBS). 부하 worker 4개가 더해지면 **고정 5초 child startup 창**을 넘긴다(이전 리비전의 stress PASS 기록은
+  elapsed 109.8s로 훨씬 한가한 호스트였다). 같은 두 파일은 부하 없이 **40/40 PASS**이고 `npm test` 3회도 PASS다.
+  lock 계층 계약은 두 실행 모두 정상 동작했다(정리 확인 성공 · 문제 0 · 정상 해제 · 격리 없음 · 잔재 0 ·
+  worker 4/4 suite 종료까지 생존). **테스트를 완화하거나 production 5초 deadline을 임의로 바꾸지 않았다** —
+  범위 밖이며 별도 근거·승인이 필요하다. 리뷰어 참고: 이 항목은 **부하 acceptance 미충족**으로 읽어야 하며,
+  M3d 완료 판정에 그대로 반영해야 한다.
+- **비공허성(mutation) 4종**: ① `O_NOFOLLOW` 제거 → symlink 3건 **전부 실패(0/3)**, ② guard 반납 전에 `released`
+  공표(옛 동작) → P2 3건 **전부 실패**(handle · wrapper CLI · stress 요약), ③ `suite-lock.mjs` 로더 호출에 세 번째
+  인자 추가 → 호출부 회귀가 인자 개수로 실패, ④ 임시 production 호출부 파일 추가 → 호출부 **발견**이 실패.
+  네 mutation 모두 **정확히 원복**했고(임시 파일 삭제), 원복 후 `node --check`·`tsc --noEmit` 0·focused **67/67**·
+  **24/24** 재확인, 소스 mutation 흔적 grep 0, git 파일 목록 동일. (이 리포는 hash 명령이 차단되어 있어
+  역방향 exact edit + 전량 재실행으로 원복을 확인한다.)
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 명령은 아래 "이전 갱신"과 동일하다.
+  **3종 PASS + evidence 3건 생성 + 부하 acceptance PASS + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로
+  판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. commit/fetch/push/pull/PR·
+  패키지 설치·의존성 변경·네트워크·live runner 실행 없음. 워킹 트리는 계속 dirty이며 **세션 시작 시점의 파일
+  목록과 동일**(기존 dirty 변경 전부 보존, 신규 파일 추가 없음).
+- **잔여 위험**: ① **stress acceptance가 호스트 외부 부하에 민감**하다(고정 5초 deadline 2건) — 조용한
+  호스트 재실행 또는 별도 승인 하의 부하 내성 개선이 필요하다.
+  **(여덟 번째 리비전 정정: 이 항목은 원래 "비차단" 목록에 있었으나, 부하 acceptance 통과는 M3d 완료의
+  차단 게이트다 — 비차단으로 읽으면 안 된다. 아래 ②~⑩만 비차단 위험이다.)**
+  ② `O_NOFOLLOW` 미지원 플랫폼은 lock 전이 전체가
+  거부되며(fail closed) 그 분기는 전용 테스트가 없다(lock 라이브러리에 주입 seam을 만들지 않기로 한 결정 유지).
+  ③ symlink 방어는 **열기 시점** 판정이므로 "마지막 확인 → unlink/rename" 창은 여전히 0이 아니다(Node 18에
+  `unlinkat`·compare-and-unlink 없음). ④ 격리 lock·남은 guard·정리하지 못한 `.new`는 **사람이 수동 제거**해야 한다.
+  ⑤ lock 라이브러리 `closeSync` 실패 경로 전용 테스트 없음(간접 고정). ⑥ `ps lstart` 1초 해상도.
+  ⑦ Linux는 procps 호환 `/bin/ps` 전제. ⑧ 신원 확인은 계약 밖 경로 교체를 **탐지·중단**하지만 원복은 보장하지 않는다.
+  ⑨ evidence 경로 TOCTOU 완전 제거 불가 · evidence 지표는 runner 판정의 파생값.
+  ⑩ 기존 이슈(범위 밖): `src/exec/permissionCompiler.test.ts:69`가 `harness-perm-*` 임시 디렉터리를 남긴다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **다섯 번째 리비전**: 다섯 번째 fresh Codex Sol xhigh REQUEST_CHANGES 5건 수정 · **live acceptance 여전히 pending → M3d 미완료 · 승인 미수령**)
+
+> **보강됨(여섯 번째 리비전).** 아래 계약은 유효하지만 lock/guard 읽기의 symlink 처리와 성공 상태 공표 시점은
+> 위 여섯 번째 리비전 항목이 더 강한 계약으로 보강했다. 아래 "REQUEST_CHANGES 5회"·테스트 카운트(62건)는
+> **그 시점 기록**이며, 현행 사실은 **REQUEST_CHANGES 8회 + 진행 승인 1회 · M3d 완료 APPROVE 0회 ·
+> 75건 · core 374**다(이 줄은 2026-07-26 재검토 결과로 갱신했다).
+
+리뷰 요청 범위: M3d.2 **다섯 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성, M4 not started).
+리뷰 이력은 **REQUEST_CHANGES 5회(리비전 1~5에 각 1회) · APPROVE 0회**이며, 이 리비전도 **재검토 대기(pending)** 다.
+아래는 구현·검증 보고일 뿐이고 어떤 승인도 받지 않았다.
+
+- **변경 파일(다섯 번째 리비전, 코드·테스트 4개 + 문서 7개)**: `scripts/lib/suite-exclusive-lock.mjs`(guard 제거·격리 rename
+  직전 재검증 · 신원 확인 후 임시 파일 정리 · guard 반납 실패 전파 · 재진입 base 기준 반환/요구),
+  `scripts/lib/fixture-config.mjs`(close 실패 거부 + in-process io seam), `scripts/suite-lock.mjs`(재진입 base 보관 →
+  cleanup 격리에 명시 전달 · quarantine 모드도 재진입 후 격리), `src/tools/suiteExclusiveLock.test.ts`(54 → 62건),
+  상태 문서 **7개**(WORKLOG / DECISIONS / CONTEXT_SUMMARY / 이 파일 / 로드맵 / 활성 V3 기준 문서 2건).
+  (정정: 이 항목은 원래 "3개 + 문서 6개"로 적혀 있었으나 나열된 실제 개수는 **코드·테스트 4개 + 문서 7개**다 —
+  여섯 번째 리비전에서 P3로 정정했다.)
+  `src/tools/liveEvidence.*`·`schemas/*`·`package.json`·`scripts/m3d2-stress-acceptance.mjs`·live runner 3종은
+  **이번 리비전에서 수정하지 않았다**.
+- **P1-1 (`releaseTransitionGuard`가 pause 뒤 재검증 없이 unlink)**: 이제 "소유 확인 → 동기화 지점 →
+  **같은 fd로 record(nonce)+inode 재확인** → 최종 경로 `lstat` 신원 확인 → unlink" 순서다. 그 사이 다른
+  nonce/inode guard로 교체되면 **그 guard를 보존**하고 `{ok:false, problem}`을 돌려주며, 호출자가 mechanism
+  실패로 올려 다음 실행을 차단한다. Node 18에는 `unlinkat`·compare-and-unlink가 없어 마지막 확인과 unlink 사이
+  창을 **0으로 만들 수 없다** — 창을 syscall 두 개로 줄이고 사후 실패를 숨기지 않는다(모듈 주석에 한계 명시).
+- **P1-2 (격리의 마지막 원본 확인이 temp write/close보다 앞이라 rename이 foreign lock을 덮을 수 있음)**:
+  temp close 성공 **뒤**, rename **직전**에 `readLockSnapshot`으로 **기본 record + (dev,ino)** 를 다시 확인한다.
+  하나라도 다르면 rename하지 않고 외부 lock을 보존하며 guard를 남긴다. 비교 기준이 없으면 아무것도 덮지 않는다.
+  격리 임시 파일 정리도 신원 확인 후에만 하고 정리 실패를 problems에 함께 담는다.
+- **P1-3 (publish temp unlink·guard record close 오류 삼킴 + `withTransitionGuard`가 guard 반납 실패 무시)**:
+  ⓐ guard 반납 실패는 `lock_guard_release_failed`(mechanism)로 올린다 → **acquire/reentry가 전이를 완결하지 못한 채
+  성공 handle을 돌려주고 suite를 시작하는 경로가 없다**(원인 문자열을 메시지에 담아 조용히 사라지지 않게 했다).
+  상태 미변경 `refusal`만 guard를 반납한다는 계약은 유지하고, 그 반납이 실패하면 원래 거부 코드를 함께 담아 올린다.
+  ⓑ 임시 파일 정리는 `dropOwnTemp`로 **열자마자 fd에서 확보한 (dev,ino)와 일치할 때만** unlink한다 — 신원이
+  없거나 교체됐으면 **blind unlink하지 않고** 보고한다. 발행 후 정리 실패는 `lock_publish_cleanup_failed`.
+  ⓒ 발행 실패 경로에서 삼켰던 `closeSync` 오류, `readGuardRecord`/`readLockSnapshot`의 fd close 실패도
+  더 이상 무시하지 않는다(후자는 소유 확인을 불확실로 보고 fail closed).
+- **P1-4 (재진입 시점 trusted base를 보존하지 않아 동일 tokenHash 외부 교체 lock을 격리할 수 있음)**:
+  `tryReenterSuiteLock`이 검증 성공 시점의 **기본 record + dev/ino**를 `base`로 돌려주고, wrapper가 보관해
+  cleanup 격리(`quarantineByToken({ expected })`)까지 **명시 전달**한다. `expected`는 필수이며, 같은 tokenHash지만
+  기본 record·inode가 다른 lock은 **보존**하고 guard를 남긴다. 판정 순서는 `verifyOwnership`과 동일하게
+  tokenHash → 기본 record → quarantined → inode. 테스트 전용 `quarantine` CLI 모드도 production과 같은 순서
+  (재진입으로 기준 확보 → 그 기준으로만 격리)로 바꿨다 — tokenHash만으로는 격리하지 않는다.
+- **P2-5 (fixture 로더가 `closeSync` 실패를 무시하고 config 반환)**: 이제 `fixture_close_failed`로 거부한다.
+  검증용 주입은 `loadFixtureConfig`의 **세 번째 인자(in-process io seam)** 뿐이다 — fs 함수 4개로 표면이 최소이고,
+  허용 key 밖·함수 아닌 값은 `fixture_io_invalid`, **production 진입점(`suite-lock.mjs`,
+  `m3d2-stress-acceptance.mjs`)은 인자 2개로만 호출**하므로 argv·env·설정 파일 내용으로는 도달할 수 없다.
+  따라서 활성 문서의 "**외부** 주입은 argv 하나뿐" 계약과 모순되지 않으며, 전용 회귀 테스트가 두 호출부의
+  호출 문자열을 고정해 미래 확장을 막는다. 임의 명령 주입 표면은 만들지 않았다.
+- **추가 감사 재확인**: 발행 성공의 dev/ino non-null 불변식 유지 · guard 이후 모든 I/O 실패의 분류
+  (기본값 mechanism) · guard record+inode 단일 fd · release/quarantine 소유 판정 순서 동일 ·
+  기본 record 보존 요구 · 로더의 `O_NOFOLLOW` 단일 open/fstat/read · 소비자별 최소 fixture key(양방향 거부) ·
+  TERM 무시 중첩 escalation 계약(상위 TERM → 8s 유예 → 확인 → KILL) 모두 유지됨을 테스트로 재확인했다.
+- **P2 테스트(54 → 62건, 삭제·완화 0)**: 신규 8건 = guard 제거 직전 재확인 2케이스(다른 nonce / 동일 nonce·다른
+  inode) · **acquire** 전이 guard 제거 실패 시 성공 handle 없음(exit 2 + lock·guard 잔존 + 차단) · **reentry** 동일 ·
+  발행 후 임시 파일 정리 실패 시 성공 handle 없음(`.new` 잔재는 보고만 하고 남긴다) · 격리 rename 직전 외부 교체
+  보존 2케이스 · 동일 tokenHash 외부 교체 lock 보존 · fixture 로더 close 실패 · production 호출부 io seam 미전달.
+  기존 1건은 강해진 계약대로 **강화**했다(acquire 경로 guard inode 교체: exit 1 → **exit 2 + 성공 handle 없음**).
+  주입은 argv fixture 고정 enum에 pause 지점 4개 추가뿐(`before_publish_tmp_cleanup` /
+  `before_quarantine_rename` / `before_guard_unlink_acquire` / `before_guard_unlink_reentry`) — env seam·임의 명령
+  seam 없음, fixture 없으면 불가능, production 기본 동작 불변.
+- **검증 실측(offline)**: `node --check`(.mjs 4종)·`npx tsc --noEmit -p tsconfig.json` 0·`npm run build` PASS,
+  `git diff --check` clean, **git이 보는 파일 266건 전수 NUL 0**.
+  focused `suiteExclusiveLock.test.ts` **62/62**, `liveEvidence.test.ts` **24/24**.
+  `npm test` **연속 3회 전부 PASS(직렬, 겹침 없음)** = exec **75/75** + core **361/361** + acceptance **71/71**(3회 동일).
+  일반 suite 종료 **뒤** stress 1회 **PASS** —
+  `{"loadWorkers":4,"workersSpawned":4,"workersAliveAtSuiteClose":4,"npmTestExitCode":0,"npmTestTimedOut":false,`
+  `"workersAliveAfterCleanup":0,"npmGroupAliveAfterCleanup":false,"ownedDescendantsAfterCleanup":0,`
+  `"cleanupConfirmed":true,"cleanupProblems":0,"lockReleased":true,"lockQuarantined":false}` (elapsed 109.8s).
+  실행 후 lock/guard/격리·`.new` 임시 잔재·repo backup/mutation 잔재·잔존 fixture 프로세스 0.
+  (기록 정확성: 위 연속 3회 앞에 수치 캡처가 잘린 예비 full suite 1회가 있었다 — 그 회차도 acceptance 71/71 PASS이며
+  기록 대상은 그 뒤의 연속 3회다. 모든 실행은 직렬이고 stress와 겹치지 않았다.)
+- **비공허성(mutation) 6종**: guard 재확인 제거 / guard 반납 실패 무시(옛 동작, 4건 실패) / 격리 rename 직전
+  재확인 제거 / 재진입 기준 대신 현재 파일 수용(tokenHash만 신뢰) / 발행 후 임시 파일 정리 실패 삼킴 /
+  fixture close 실패 삼킴 — 모두 해당 테스트가 실패함을 확인한 뒤 **전부 원복**했다(원복 후 `node --check`와
+  focused 62/62 재확인, 소스 내 mutation 흔적 grep 0). 리뷰어 참고: 이 리포는 hash 명령 사용이 차단되어 있어
+  파일 해시 대신 **역방향 exact edit + 전량 재실행**으로 원복을 확인했다.
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 명령은 아래 "이전 갱신"과 동일하다.
+  **3종 PASS + evidence 3건 생성 + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로 판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. commit/fetch/push/pull/PR·
+  패키지 설치·의존성 변경·네트워크·live runner 실행 없음. 워킹 트리는 계속 dirty이며 **세션 시작 시점의 파일
+  목록과 동일**(기존 dirty 변경 전부 보존, 신규 파일 추가 없음).
+- **잔여 위험(비차단)**: ① 격리 lock·남은 guard·정리하지 못한 `.new` 임시 파일은 **사람이 수동 제거**해야 한다
+  (정리 실패까지 fail closed에 포함되어 수동 개입 표면이 조금 넓어졌다). ② Node 18에 `unlinkat`·
+  compare-and-unlink가 없어 "마지막 확인 → unlink/rename" 창을 0으로 만들 수 없다(창 최소화 + 사후 탐지).
+  ③ **lock 라이브러리의 `closeSync` 실패 경로는 전용 테스트가 없다** — io seam을 lock 라이브러리까지 넓히지
+  않기로 결정했고(표면 비용 > 이득), 구현은 fail closed지만 회귀는 "소유 확인 불가 → 제거하지 않음" 분기로만
+  간접 고정된다. ④ `ps lstart` 1초 해상도. ⑤ Linux는 procps 호환 `/bin/ps` 전제. ⑥ 신원 확인은 계약 밖 경로
+  교체를 **탐지·중단**하지만 원복은 보장하지 않는다. ⑦ evidence 경로 TOCTOU 완전 제거 불가(Node 18 한계).
+  ⑧ evidence 지표는 runner 판정의 파생값. ⑨ 기존 이슈(범위 밖): `src/exec/permissionCompiler.test.ts:69`가
+  `harness-perm-*` 임시 디렉터리를 남긴다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **네 번째 리비전**: 네 번째 fresh Codex Sol xhigh REQUEST_CHANGES 5건 수정 · **live acceptance 여전히 pending → M3d 미완료 · 승인 미수령**)
+
+> **보강됨(다섯 번째 리비전).** 아래 계약은 유효하지만 guard 제거·격리 rename·정리 실패 처리·재진입 격리 기준은
+> 위 다섯 번째 리비전 항목이 더 강한 계약으로 보강했다. 아래 "REQUEST_CHANGES 4회"·테스트 카운트(54건)는
+> **그 시점 기록**이며, 현행 사실은 **REQUEST_CHANGES 8회 + 진행 승인 1회 · M3d 완료 APPROVE 0회 ·
+> 75건 · core 374**다(이 줄은 2026-07-26 재검토 결과로 갱신했다).
+
+리뷰 요청 범위: M3d.2 **네 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성).
+리뷰 이력은 **REQUEST_CHANGES 4회(리비전 1~4에 각 1회) · APPROVE 0회**이며, 이 리비전도 **재검토 대기(pending)** 다.
+아래는 구현·검증 보고일 뿐이고 어떤 승인도 받지 않았다.
+
+- **변경 파일(네 번째 리비전)**: `scripts/lib/suite-exclusive-lock.mjs`(발행 신원 불변식 · 실패 분류 · unlink/close
+  fail closed · 격리 record 보존 검사 · guard record+inode 단일 fd), `scripts/lib/fixture-config.mjs`(단일 fd
+  `O_NOFOLLOW` 로더), `scripts/suite-lock.mjs`(fixture 계약을 자기 해석 key로 축소), `scripts/m3d2-stress-acceptance.mjs`
+  (child 전용 최소 fixture 명시 전달 · `nested_ignore_term` 모드), `src/tools/suiteExclusiveLock.test.ts`(43 → 54건),
+  상태 문서 6개(WORKLOG / DECISIONS / CONTEXT_SUMMARY / 이 파일 / 로드맵 / 활성 V3 기준 문서 2건).
+  `src/tools/liveEvidence.*`·`schemas/*`·`package.json`·live runner 3종은 **이번 리비전에서 수정하지 않았다**.
+- **P1-1 (linkSync 뒤 lstat 실패를 published:true·dev/ino null로 반환 → inode 검증 생략)**: 발행은
+  ① 임시 파일을 **열린 fd의 `fstat`** 으로 (dev,ino) 확보(경로 재해석 없음) → ② `link` → ③ 최종 경로 `lstat`이
+  **같은 (dev,ino)**·일반 파일임을 확인해야 성공이다. lstat 실패는 `lock_publish_unverifiable`, 불일치는
+  `lock_publish_identity_mismatch`이고 **둘 다 최종 경로를 지우지 않는다**(우리 파일이라는 증거가 없으면 손대지 않고,
+  그 파일이 남아 새 suite 실행을 막는다 = 계약 밖 경로 간섭 탐지·중단). `published:true`의 dev/ino는 **non-null
+  불변식**이므로 `verifyOwnership`·격리 rewrite의 inode 검증이 **무조건** 수행된다(옛 `if (ino !== null)` 우회 제거).
+  guard 발행이 불확실하면 그 guard를 제거하지 않고 실패하고, lock 발행 실패는 감싼 guard를 남긴다.
+- **P1-2 (guard 취득 뒤 lock temp create/write/close/link 실패가 retainGuard=false로 전파)**: 전이 실패를
+  `SuiteLockError.failure ∈ {refusal, mechanism}`으로 **명시 분류**하고 **기본값을 `mechanism`(guard 유지)** 으로
+  바꿨다. acquire/release/quarantine/reentry를 전수 감사해 guard 취득 뒤의 메커니즘 오류는 전부 guard를 남기고,
+  **아무 상태도 바꾸지 않은 계약상 거부만** 자기 nonce+inode 확인 후 반납한다. 함께 고친 것: `writeAllSync`로
+  **short write를 오류로** 올림(부분 기록 금지), 격리 `closeSync` 실패를 무시하지 않음(rename 안 함),
+  격리 rename **직후** 신원 재확인, **lock unlink ENOENT도 실패**, **guard 제거 실패(ENOENT 포함)도 보고**,
+  보유 중 lock이 계약 밖에서 사라진 경우를 "해제됨"으로 처리하지 않음, `quarantineByToken`은 **tokenHash 먼저**,
+  격리 record는 기본 필드(v/kind/pid/identity/tokenHash) **보존 요구**(같은 token만으로 외부 교체 불인정),
+  guard record와 inode를 **한 fd**에서 함께 읽기.
+- **P1-3 (fixture 로더의 lstat → readFileSync 검사–사용 경합)**: 경로를 **정확히 한 번** 열고
+  (`O_RDONLY|O_NOFOLLOW`) → 그 fd의 `fstat`으로 일반 파일 확인 → **같은 fd에서 최대 8193B** 읽기 →
+  **실제 읽은 바이트로** 상한 판정. 최종 symlink는 열기 전 거부(ELOOP/EMLINK), 교체된 경로는 다시 열지 않고,
+  close 오류는 이미 읽은 바이트에 영향이 없어 fd 누수만 막는다. O_NOFOLLOW 미지원 플랫폼은 주입을 거부한다.
+- **P2-4 (테스트 공백)**: `suiteExclusiveLock.test.ts` **43 → 54건**. 신규 11건 = post-guard **lock 발행 실패(EACCES)**,
+  계약 밖 writer와의 **발행 충돌**(디렉터리는 쓸 수 있는 상태 → guard 유지가 오직 분류 때문임을 고정),
+  **lock unlink syscall 실패**, **guard 제거 unlink 실패**, 같은 token 외부 격리 record 거부,
+  **TERM 무시 중첩 child·손자의 상위 유예 후 KILL·전 자손 소멸**(`nested_ignore_term`), fixture 로더 4건
+  (최종 symlink / 8192 통과·8193 거부 / 비일반 파일 / **경합 중 교체 설정 미해석**), 양방향 fixture key 거부.
+  주입은 기존 argv `--fixture-config`의 고정 enum·allowlist뿐이고 pause 지점 1개(`before_guard_unlink_release`)만
+  추가했다 — env seam·임의 명령 seam 없음, fixture가 없으면 불가능, production 기본 동작 불변, 기존 테스트 삭제·완화 없음.
+- **confused deputy 축소**: stress runner가 자기 fixture를 그대로 물려주지 않고 **child가 해석하는 최소 설정만**
+  (`lockPath`/`injectDir`/`childMs`/`confirmMs`/`guardWaitMs`) 새 파일로 전달한다. wrapper 계약에서 stress 전용 key
+  (workers/testTimeoutMs/deadlineMs/suiteMode/suiteSleepMs)를 **삭제**하고 `inject`는 `confirm_failure` 하나로 좁혔다.
+- **P3-5 (문서 리뷰 횟수 모순)**: 로드맵의 "REQUEST_CHANGES 두 번뿐"과 "세 번째 반영"을 실제 이력
+  **4회 REQUEST_CHANGES · APPROVE 0회 · 네 번째 리비전 재검토 대기**로 정정했고, 상태 문서와 활성 V3 기준 문서 2건도
+  같은 사실로 맞췄다. 어디에도 승인을 받았다고 쓰지 않았다.
+- **검증 실측(offline)**: `node --check`(.mjs 4종)·`npx tsc --noEmit -p tsconfig.json` 0·`npm run build` PASS,
+  `git diff --check` clean, **git이 보는 파일 266건 전수 NUL 0**.
+  focused `suiteExclusiveLock.test.ts` **54/54**, `liveEvidence.test.ts` **24/24**.
+  `npm test` **연속 3회 전부 PASS(직렬, 겹침 없음)** = exec **75/75** + core **353/353** + acceptance **71/71**(3회 동일).
+  일반 suite 종료 **뒤** stress 1회 **PASS** —
+  `{"loadWorkers":4,"workersSpawned":4,"workersAliveAtSuiteClose":4,"npmTestExitCode":0,"npmTestTimedOut":false,`
+  `"workersAliveAfterCleanup":0,"npmGroupAliveAfterCleanup":false,"ownedDescendantsAfterCleanup":0,`
+  `"cleanupConfirmed":true,"cleanupProblems":0,"lockReleased":true,"lockQuarantined":false}` (elapsed 109.5s).
+  실행 후 lock/guard/격리 파일·임시 잔재·잔존 fixture 프로세스 0.
+- **비공허성(mutation) 9종**: O_NOFOLLOW 제거 / 바이트 상한 제거 / 옛 `lstat`+`readFileSync` 복원 / 실패 분류
+  기본값 되돌림 / lock unlink 오류 무시 / guard unlink 오류 무시 / base record 검사 제거 / 발행 신원 확인 제거
+  (54건 중 **40건 실패**) / 그룹 대신 child만 kill — 모두 해당 테스트가 실패함을 확인한 뒤 **전부 원복**
+  (원복 후 해시 일치 확인). 리뷰어 참고: 읽기 전용 디렉터리 기반 실패 주입은 lock 발행과 guard 제거를 **동시에**
+  막으므로 분류를 구분하지 못한다 — 그래서 "발행 충돌" 테스트를 따로 두었다. 또 CLI spawn 기반 경합 테스트는 시도
+  횟수가 적어 옛 로더를 잡지 못했고, 로더를 **in-process로 수천 번** 호출하는 형태로 바꾼 뒤 옛 구현이 교체된
+  설정을 해석함을 재현했다(그 테스트는 실제 경합 발생(refused > 0)까지 요구한다).
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 명령은 아래 "이전 갱신"과 동일하다.
+  **3종 PASS + evidence 3건 생성 + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로 판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. commit/fetch/push/pull/PR·
+  패키지 설치·의존성 변경·네트워크·live runner 실행 없음. 워킹 트리는 계속 dirty(기존 dirty 변경 전부 보존).
+- **잔여 위험(비차단)**: ① 격리 lock과 남은 guard는 **사람이 수동 제거**해야 풀린다(자동 회수 폐지의 대가).
+  ② `ps lstart` 1초 해상도. ③ Linux는 procps 호환 `/bin/ps` 전제. ④ 신원 확인은 계약 밖 경로 교체를 **탐지·중단**하지만
+  원복은 보장하지 않는다. ⑤ Node 18에는 `unlinkat`·디렉터리 상대 열기가 없어 "신원 확인 → unlink" 창을 0으로 만들 수
+  없다(같은 fd로 창을 줄이고 사후 탐지·fail closed로 막는다). ⑥ evidence 경로 TOCTOU 완전 제거 불가(Node 18 한계).
+  ⑦ evidence 지표는 runner 판정의 파생값. ⑧ 기존 이슈(범위 밖): `src/exec/permissionCompiler.test.ts:69`가
+  `harness-perm-*` 임시 디렉터리를 남긴다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **세 번째 리비전**: 세 번째 Codex Sol xhigh REQUEST_CHANGES 6건 수정 · **live acceptance 여전히 pending → M3d 미완료 · 승인 미수령**)
+
+> **보강됨(네 번째 리비전).** 아래 guard 계약은 유효하지만, 발행 신원 확인·전이 실패 분류·fixture 로더는
+> 위 네 번째 리비전 항목이 더 강한 계약으로 대체·보강했다. 테스트 카운트도 아래 값은 그 시점 기록이다.
+
+리뷰 요청 범위: M3d.2 **세 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성).
+이 세션도 어떤 리뷰 승인도 받지 않았다 — 아래는 구현·검증 보고일 뿐이다.
+
+- **변경 파일(세 번째 리비전)**: `scripts/lib/suite-exclusive-lock.mjs`(guard 계약으로 재작성 · 자동 회수 삭제),
+  `scripts/lib/fixture-config.mjs`(신규 · argv 전용 주입 로더), `scripts/suite-lock.mjs`(nested 그룹 계약 · fixture spec),
+  `scripts/m3d2-stress-acceptance.mjs`(timeout TERM→유예→확인→KILL), `src/tools/liveEvidence.ts`(env seam 제거 →
+  `overrideDir`), live runner 3종(argv fixture), `src/tools/suiteExclusiveLock.test.ts`(32 → 43건),
+  `src/tools/liveEvidence.test.ts`(23 → 24건), `dist/tools/liveEvidence.js`(재빌드), 상태 문서 6개.
+- **P1-1/P1-2 (release·quarantine의 blind unlink/rename TOCTOU, 전이 실패·SIGKILL이 fail closed 아님)**:
+  lock format을 **v2**로 올리고 acquire/release/quarantine/reentry를 **crash-persistent `<lock>.guard`** 안에서만
+  수행한다. guard 안에서 **tokenHash → 격리 표시 → inode 신원** 순으로 재확인한 뒤에만 파일을 만들거나 지우거나 덮는다.
+  다른 guard는 blind unlink하지 않고, 제거는 **자기 nonce + 자기 inode** 확인 후에만 한다. 전이 메커니즘 실패
+  (quarantine write 실패 포함)·전이 중 SIGKILL은 **guard를 남겨** 이후 모든 acquire를 거부한다
+  (`lock_transition_guard_present`, 수동 제거 안내). 아무것도 바꾸지 않은 계약상 거부만 guard를 정상 반납한다.
+- **P1-3 (stale 경로 제거 후 남은 crash hole)**: `.recovery` mutex와 stale rename 회수를 **삭제**했다.
+  소유자가 죽은 lock은 `lock_orphaned`로 **항상 거부**하고, **lock 파일이 없어도 guard가 있으면 acquire는
+  우회 publish하지 않는다**. 자동 회수가 없으니 "회수 mutex를 쥔 채 크래시" 창도 없다.
+- **P1-4 (nested wrapper의 detached 그룹이 상위 pgid 스캔에 안 보임 · 상위 grace가 너무 짧음)**:
+  standalone일 때만 detached로 자기 그룹을 만들고, **nested면 그룹을 만들지 않아 전 자손이 상위 stress pgid에 남는다**.
+  상위 stress의 timeout도 즉시 SIGKILL이 아니라 **TERM → 8s 유예 → 생존 확인 → KILL**이며, 이는 하위 wrapper의
+  shutdown 예산(유예 1.2s + 확인 3s)보다 짧지 않다.
+- **P1-5 (경합·강제종료 경로 테스트 부족)**: `suiteExclusiveLock.test.ts` **32 → 43건**. release↔quarantine 양방향,
+  **release 전이 중 lock 교체**(다른 소유자 token / 동일 내용·다른 inode) 2케이스, **전이 중 SIGKILL → lock+guard 잔존
+  → suite·stress 모두 거부**, quarantine write 실패 → guard 잔존, guard 존재 시 acquire 거부, **guard 소유권**
+  (nonce 불일치 / inode 교체) 2케이스, orphan 자동 회수 금지, 중첩 자손 정리 3건.
+  **비공허성**: 재확인 제거 / guard blind unlink / nested `detached:true` / timeout 즉시 KILL 네 mutation에서
+  해당 테스트가 실패함을 확인한 뒤 원복했다.
+- **P2-6 (production의 process.env 테스트 seam · `HARNESS_LIVE_EVIDENCE_DIR` 노출)**: 주입을 **argv
+  `--fixture-config <절대경로 .json>` 하나**로 통일했다(`scripts/lib/fixture-config.mjs`: 8KiB 상한, 일반 파일·
+  symlink 금지, 절대경로, 소비자 allowlist key, 타입/범위/enum 검증, 임의 명령 실행 seam 없음).
+  production은 lock 경로·`ps` fixture·pause/injection·evidence 디렉터리를 env에서 읽지 않으며
+  `resolveEvidenceDir`는 명시 인자 `overrideDir`만 받는다. `HARNESS_SUITE_LOCK_TOKEN`은 테스트 seam이 아니라
+  실제 부모→자식 ownership handoff라 유지한다. live runner 3종의 정상 사용자 명령은 flag 없이 그대로 동작한다.
+  회귀 테스트가 ① 옛 env 이름을 전부 심어도 테스트 모드 거부 + 그 경로에 파일 미생성, ② production 소스에 이름 잔재
+  없음, ③ evidence PASS 경로에서 env decoy 디렉터리 미생성 + 콘솔에 경로 미노출을 확인한다.
+- **검증 실측(offline)**: `node --check`(.mjs 4종)·`tsc --noEmit` 0·`npm run build` PASS, `git diff --check` clean,
+  **git이 보는 파일 266건 전수 NUL 0**. focused `liveEvidence.test.ts` **24/24**, `suiteExclusiveLock.test.ts` **43/43**.
+  `npm test` **연속 3회 전부 PASS(직렬, 겹침 없음)** — 2·3회차 = exec **75/75** + core **342/342** + acceptance **71/71**;
+  1회차는 캡처 tail에 acceptance **71/71 / ALL PASS**만 남았다(`test:inner`는 `&&` 체인이라 exec·core 통과가 전제).
+  일반 suite 종료 **뒤** stress 1회 **PASS** —
+  `{"loadWorkers":4,"workersSpawned":4,"workersAliveAtSuiteClose":4,"npmTestExitCode":0,"npmTestTimedOut":false,`
+  `"workersAliveAfterCleanup":0,"npmGroupAliveAfterCleanup":false,"ownedDescendantsAfterCleanup":0,`
+  `"cleanupConfirmed":true,"cleanupProblems":0,"lockReleased":true,"lockQuarantined":false}` (elapsed 89.6s).
+  실행 후 lock/guard/격리 파일·임시 잔재·잔존 fixture 프로세스 0.
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 명령은 아래 "이전 갱신"과 동일하다.
+  **3종 PASS + evidence 3건 생성 + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로 판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. commit/fetch/push/PR/패키지 설치·
+  의존성 변경·네트워크 없음. 워킹 트리는 계속 dirty(기존 dirty 변경 전부 보존).
+- **잔여 위험(비차단)**: ① 격리 lock과 남은 guard는 **사람이 수동 제거**해야 풀린다(자동 회수 폐지의 대가).
+  ② `ps lstart` 1초 해상도. ③ Linux는 procps 호환 `/bin/ps` 전제(미지원 시 fail closed).
+  ④ inode/tokenHash 확인은 계약 밖 경로 교체를 탐지·중단하지만 원복은 보장하지 않는다.
+  ⑤ evidence 경로 TOCTOU 완전 제거 불가(Node 18 한계). ⑥ evidence 지표는 runner 판정의 파생값.
+  ⑦ 기존 이슈(범위 밖): `src/exec/permissionCompiler.test.ts:69`가 `harness-perm-*` 임시 디렉터리를 남긴다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **두 번째 리비전**: 두 번째 Codex Sol xhigh REQUEST_CHANGES 4건 수정 · **live acceptance 여전히 pending → M3d 미완료 · 최종 재검토 미수령**)
+
+> **대체됨(세 번째 리비전).** 아래 P1-3의 `.recovery` mutex·stale rename 회수는 **삭제**되었고,
+> detached 관련 서술도 "nested는 detached하지 않는다"로 정정되었다. 아래는 역사 기록이다.
+
+리뷰 요청 범위: M3d.2 **두 번째** 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성).
+이 세션은 어떤 리뷰 승인도 받지 않았다 — 아래는 구현·검증 보고일 뿐이다.
+
+- **변경 파일(두 번째 리비전)**: `scripts/lib/suite-exclusive-lock.mjs`(재작성), `scripts/suite-lock.mjs`(재작성),
+  `scripts/m3d2-stress-acceptance.mjs`(종료·격리 경로 수정), `src/tools/suiteExclusiveLock.test.ts`(17 → 32건),
+  그리고 상태 문서 5개(WORKLOG / DECISIONS / CONTEXT_SUMMARY / 이 파일 / 로드맵).
+  live runner 3종·`liveEvidence.*`·`schemas/*`·`package.json`은 **이번 리비전에서 수정하지 않았다**.
+- **P1-1 (정리 확인 실패인데 lock을 무조건 해제)**: `scripts/m3d2-stress-acceptance.mjs`가 `cleanupConfirmed:false`를
+  계산해 놓고도 `lock.release()`를 무조건 호출했다. 이제 **확인 성공 시에만 해제**하고, 실패하면 해제 대신
+  lock을 **격리(quarantine)** 한다 — `quarantined:true`를 원자적으로 표시하며, 격리된 lock은 **소유자가 죽어도
+  stale 회수 대상이 아니다**(`lock_quarantined`로 항상 거부). 격리는 파일 write 1회라 **매달리지 않고 즉시 종료**한다
+  (terminal exit 호환). `process.on("exit")`와 반복 시그널 탈출 경로에도 같은 격리를 적용했고, 요약에
+  `lockQuarantined`를 추가했다. 회귀 테스트가 주입된 확인 실패에서 ①격리 표시 ②다른 suite·stress 모두 `lock_quarantined`
+  거부 ③소유 worker는 정리됨 ④**무관한 제3 프로세스는 생존**을 확인한다.
+- **P1-2 (wrapper 시그널 경로가 child close·그룹 확인 없이 해제)**: `scripts/suite-lock.mjs`를 **비동기 idempotent
+  bounded shutdown 상태 기계 하나**로 재작성했다. normal close / spawn error / SIGINT / SIGTERM / 반복 시그널 /
+  escalation 전부 같은 기계를 지난다: 소유 child 그룹만 TERM → 유예(5s) → KILL → **그룹과 소유 pgid 자손 소멸을
+  bounded 확인**(기본 20s) → **확인 뒤에만** 해제. 확인 실패·불가는 해제 대신 격리(fail closed),
+  **시그널 exit 의미 130/143은 확인 결과와 무관하게 유지**한다. child는 detached라 상위 stress runner의 pgid 스캔에
+  잡히지 않는 중첩 그룹을 만드므로 이 wrapper가 자기 그룹을 직접 확인한다. 인자·설정 검증은 lock 획득 **전에** 끝낸다.
+- **P1-3 (stale 회수 check-then-blind-rename 경합)**: "A가 stale로 읽음 → B가 회수 후 live lock 생성 → A가 그 live
+  lock을 rename"으로 겹침이 가능했다. 세 겹으로 막았다. ① **직렬화**: `<lock>.recovery`를 exclusive 발행한
+  프로세스만 회수 구간 진입. 보유자 생존 → bounded 대기 후 `lock_recovery_in_progress`, 보유자 사망/확인 불가 →
+  **자동 인수 없이** `lock_recovery_stalled`(안전 > 편의, 수동 제거 안내). ② **회수 구간 안 재읽기·재분류** — 대기 중
+  생긴 live lock을 `lock_held`로 잡는다. ③ **inode CAS** — fd `fstat`으로 (dev,ino) 확보, rename 직전 `lstat` 확인,
+  rename은 원자적이므로 **직후** 옮겨진 파일의 inode 재확인이 "그 inode를 옮긴 유일한 프로세스"라는 증명이다.
+  어긋나면 되돌린 뒤 `lock_reclaim_identity_mismatch`로 실패하고 **절대 lock을 만들지 않는다**.
+  추가로 lock 파일은 비공개 임시 파일 → `link()` 발행이라 **부분 write가 최종 경로에 잔재를 남기지 않는다**.
+- **P2-4 (문서 NUL 주장 거짓)**: "src/scripts/schemas/dist NUL 0"은 사실이 아니었다 — gitignore된 기존
+  `src/.DS_Store`에 NUL 6,681바이트가 있다. WORKLOG·이 파일·로드맵·CONTEXT_SUMMARY의 **현행 M3d.2 검증 문장만**
+  "변경·추적 대상 텍스트 파일"로 정정했다(무관한 과거 항목은 건드리지 않았다).
+- **테스트**: `src/tools/suiteExclusiveLock.test.ts` **17 → 32건**(신규 15건, 모두 결정론적·bounded).
+  주입 seam은 좁은 enum·절대경로만 받고 임의 명령 실행 경로를 만들지 않으며, 실제 잔존 프로세스를 만들지 않는다.
+  **비공허성**: 재분류를 끄면 2-contender 테스트가 실패하고(A가 B의 live lock 탈취 재현), inode 사후 확인을 끄면
+  교체 거부 테스트가 실패함을 mutation으로 확인한 뒤 원복했다.
+- **검증 실측(offline)**: `npm run build` PASS, `git diff --check` clean,
+  **git이 보는 파일 265건 전수 스캔 NUL 0**(ignore된 `src/.DS_Store`는 범위 밖이며 NUL 포함).
+  focused `suiteExclusiveLock.test.ts` **32/32**. `npm test` **연속 3회 전부 PASS(직렬, 병렬 실행 없음)** =
+  exec **75/75** + core **330/330** + acceptance **71/71**. 일반 suite가 전부 끝난 **뒤** stress 1회 **PASS** —
+  `{"loadWorkers":4,"workersSpawned":4,"workersAliveAtSuiteClose":4,"npmTestExitCode":0,"npmTestTimedOut":false,`
+  `"workersAliveAfterCleanup":0,"ownedDescendantsAfterCleanup":0,"cleanupConfirmed":true,"cleanupProblems":0,`
+  `"lockReleased":true,"lockQuarantined":false}` (elapsed 100.9s). 실행 후 공용 lock 파일·m3d2 임시 잔재 0.
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 아래 "이전 갱신"의 3개 명령 그대로다.
+  **3종 PASS + evidence 3건 생성 + fresh Codex 최종 재검토 전에는 M3d 완료·M4 ready로 판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. 이 리비전도 commit/fetch/push/PR/
+  패키지 설치·의존성 변경·네트워크를 하지 않았다. 워킹 트리는 계속 dirty(기존 dirty 변경 전부 보존).
+- **잔여 위험(비차단)**: ① 회수 mutex를 쥔 채 크래시하면(마이크로초 창) 자동 stale 회수가 영구 거부되고 사람이
+  `<lock>`·`<lock>.recovery`를 수동 제거해야 한다 — 의도적 선택(겹침 방지 > 자동 복구). ② 격리 lock도 수동 제거해야
+  풀린다(같은 이유). ③ `ps lstart` 1초 해상도. ④ Linux는 procps 호환 `/bin/ps` 전제(미지원 시 fail closed).
+  ⑤ inode CAS는 계약 밖 외부 행위자의 경로 교체를 **탐지·중단**하지만, 이미 옮긴 파일의 원복까지 보장하지는
+  않는다(경고로 보고). ⑥ evidence 경로 TOCTOU 완전 제거 불가(앞선 리비전 P2-5 그대로). ⑦ evidence 지표는 runner
+  판정의 파생값. ⑧ 기존 이슈(범위 밖): `src/exec/permissionCompiler.test.ts:69`가 `harness-perm-*` 임시 디렉터리를 남긴다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 **리비전**: Codex Sol xhigh REQUEST_CHANGES 6건 수정 · **live acceptance 여전히 pending → M3d 미완료**)
+
+리뷰 요청 범위: M3d.2 리비전 diff. **M3d 전체 완료·M4 ready 판정은 아직 하지 말 것**(live evidence 3건 미생성).
+
+- **추가/변경 파일(리비전)**: `scripts/lib/suite-exclusive-lock.mjs`(신규), `scripts/suite-lock.mjs`(신규),
+  `scripts/m3d2-stress-acceptance.mjs`(재작성), `src/tools/liveEvidence.ts`, `src/tools/liveEvidence.test.ts`,
+  `src/tools/suiteExclusiveLock.test.ts`(신규), `schemas/live_evidence.schema.json`, `package.json`(script 2줄),
+  `dist/tools/liveEvidence.js`(재빌드). live runner 3종은 이 리비전에서 **수정하지 않았다**(검사 → cleanup →
+  evidence → PASS 순서, opt-in 가드, `npm test` 미연결 그대로).
+- **P1-1 (부하 없는 stress PASS 가능)**: 설정된 worker **전부**의 spawn을 `spawn` 이벤트로 확인하고,
+  `npm test`가 닫힐 때까지 전원 생존을 요구한다. spawn 실패·정리 전 종료·정리 전 error는 FAIL.
+  부하 firm deadline > `npm test` wall-clock 상한을 **강제**(위반 시 exit 2)해 부하가 suite 전 구간을 덮게 했다.
+  worker는 부모 소멸(ppid 변경) 시 스스로 종료해 고아로 남지 않는다.
+- **P1-2 (시그널·자손 정리 미검증)**: 비동기 idempotent **shutdown 상태 기계** 하나로 통일.
+  소유 npm 프로세스 그룹(TERM→유예→KILL) + 자기 부하 worker만 종료 → worker/그룹/소유 pgid 자손 소멸을
+  bounded 확인 → **확인 뒤에** lock 해제 → exit. normal/timeout/error/SIGINT(130)/SIGTERM(143) 전 경로 공용.
+  timeout은 group kill 실패와 무관하게 실제 wall-clock 상한으로 확정된다. 확인 실패·`ps` 확인 불가는 FAIL이며
+  보고는 bounded 코드·건수뿐(pid·경로·argv 없음).
+- **P1-3 (일반 suite와 stress가 lock을 공유하지 않음)**: 공용 배타 lock 도입.
+  `npm test` = `node scripts/suite-lock.mjs run test:inner`이고 `test:inner`는 기존과 동일하게
+  **exec → core → acceptance** 순서를 그대로 돌린다(카운트·exit 의미 불변). stress도 같은 lock을 잡는다.
+  stress가 띄운 자기 소유 `npm test` child만 **추측 불가 32B ownership token**으로 재진입한다(디스크에는 sha256만).
+  소유자 판정은 `pid + ps lstart`이며 PID 단독 신뢰 없음. stale lock은 `rename` 원자적 회수로만 처리해 경합을 없앴고,
+  손상/버전 불일치/`ps` 확인 불가 lock은 **회수하지 않고 거부**(fail closed). `ps` 스캔은 backstop으로 남기고
+  `npm test`/`npm run test:*`/`tsx|node --test`/`acceptance.sh`/stress/lock wrapper를 잡도록 좁게 강화했다.
+  lock 보유 중 중첩 stress 실행도 거부한다.
+- **P1-4 (최종 파일명이 완성 전에 노출)**: evidence는 같은 디렉터리의 **숨김 임시 파일**에 전부 쓰고
+  chmod·fsync·close·재검증(byte 동일 + 계약 재파싱)까지 끝낸 뒤 **exclusive hard link**로 원자적 publish한다.
+  덮어쓰기 없음(EEXIST → 거부). 쓰기 중 SIGKILL 크래시 재현 테스트로 **최종 성공 산출물 이름의 잘린 파일이
+  생기지 않음**을 확인했다. 실패·정리 실패 시 발행분까지 신원 확인 후 되돌린다. publish 후 디렉터리 fsync(지원 시).
+- **P2-5 (evidence 디렉터리 symlink TOCTOU)**: 디렉터리·파일 **dev+ino 신원**을 보관해 publish 직전 재확인하고,
+  정리 unlink도 신원 확인 후에만 수행한다(교체된 파일은 지우지 않고 실패로 보고). 잡아낸 정리 실패는 조용히
+  무시하지 않는다. 문서 주장도 좁혔다 — Node 18에는 디렉터리 핸들 상대 열기가 없어 경로 기반 TOCTOU를 완전히
+  없앨 수 없고, 위 조치는 창 축소·사후 탐지 **완화**이며 완전 방어가 아니다.
+- **P2-6 (schema/런타임 timestamp 판정 불일치)**: 양쪽을 같은 의미로 맞췄다. `Z` 고정 UTC, 밀리초 3자리 선택,
+  시 00-23·분·초 범위, 달력 실재성(2월 30·31, 4·6·9·11월 31, 비윤년 2월 29 거부), 연도 2000..2099
+  (이 범위에서 윤년 = 4의 배수 → 정규식만으로 동일 결정 가능). 테스트가 accept 6건/reject 28건 표로
+  schema 판정 == 런타임 판정을 강제하고, schema에 미지원 keyword가 추가되면 실패한다.
+- **검증 실측(offline)**: `npm run build` PASS, `git diff --check` clean,
+  **변경·추적 대상 텍스트 파일(tracked + ignore 제외 untracked)** NUL 0.
+  (정정: 원래 "src/scripts/schemas/dist NUL 0"이라고 적었으나 사실이 아니다 — gitignore된 기존
+  `src/.DS_Store`에 NUL이 있다. 실제 검증 범위는 git이 보는 텍스트 파일이다.)
+  focused `liveEvidence.test.ts` **23/23**, `suiteExclusiveLock.test.ts` **17/17**.
+  `npm test` **연속 3회 전부 PASS(직렬)** = exec **75/75** + core **315/315** + acceptance **71/71**
+  (elapsed 115.9s / 124.1s / 114.2s). 그 뒤 stress 1회 **PASS** —
+  `{"loadWorkers":4,"workersSpawned":4,"workersAliveAtSuiteClose":4,"npmTestExitCode":0,"npmTestTimedOut":false,`
+  `"workersAliveAfterCleanup":0,"ownedDescendantsAfterCleanup":0,"cleanupConfirmed":true,"cleanupProblems":0,"lockReleased":true}`
+  (elapsed 191.2s). 실행 후 공용 lock 파일·m3d2 임시 디렉터리 잔재 0.
+- **live acceptance는 이 세션에서도 실행하지 않았다(pending)** — 아래 "이전 갱신"의 3개 명령 그대로다.
+  **3종 PASS + evidence 3건 생성 전에는 M3d 완료·M4 ready로 판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. 이 리비전도 commit/fetch/push/PR/
+  패키지 설치·의존성 변경을 하지 않았다. 워킹 트리는 계속 dirty(기존 dirty 변경 전부 보존).
+- **잔여 위험(비차단)**: `ps lstart` 1초 해상도(같은 초에 pid가 재사용되면 신원이 겹칠 수 있음), Linux는 procps
+  호환 `/bin/ps` 전제(미지원 시 fail closed로 거부), evidence 경로 TOCTOU 완전 제거 불가(위 P2-5),
+  evidence 지표는 runner 판정의 파생값이라 runner 판정이 틀리면 그대로 반영된다.
+  관찰(기존 이슈, 이 리비전 범위 밖): `src/exec/permissionCompiler.test.ts:69`가 실행마다 `harness-perm-*`
+  임시 디렉터리를 정리하지 않고 남긴다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.2 구현 완료 · **live acceptance pending → M3d 미완료**)
+
+리뷰 요청 범위: M3d.2 = redacted persistent live-evidence + 반복/부하 acceptance. **M3d 전체 완료 판정은 아직 하지 말 것.**
+
+- **영향 파일**: `schemas/live_evidence.schema.json`(신규), `src/tools/liveEvidence.ts`(신규),
+  `src/tools/liveEvidence.test.ts`(신규), `scripts/m3a-live-preflight.mjs`, `scripts/m3b2-live-handoff.mjs`,
+  `scripts/m3c3b-live-handoff.mjs`, `scripts/m3d2-stress-acceptance.mjs`(신규), `package.json`(script 1줄 추가),
+  그리고 완료/상태 문서 5개. 빌드 산출물 `dist/tools/liveEvidence.js`가 새로 생겼다(이 레포는 dist를 커밋한다).
+- **evidence 계약(닫힌 allowlist)**: 허용 top-level은 `version`/`contract`/`status`/`timestamp`/`metrics` 정확히 5개.
+  `status`는 `"pass"` 고정(성공 전용). `metrics`는 runner별 discriminated 계약의 exact key 집합이며 값은
+  0..1,000,000 정수 또는 boolean만. 모든 객체 레벨에서 unknown key 거부. 직렬화 상한 4096B.
+- **금지 필드**: raw transcript, tool/MCP 입출력, argv, 명령, 파일 경로, hostname/user, PID,
+  session/call/request ID, env·secret 참조/값, config 본문, free-form error/message → key 이름 조각 스캔으로 **선행 거부**.
+  redaction 마커로 치환해도 통과하지 않는다.
+- **backstop**: 영속화 직전 기존 `redactSecrets`/`collectSecretValues`로 직렬화 텍스트 재검사.
+  secret 값·credential 형태·예상 외 문자(`/ \ $ =`) 감지 시 **가리지 않고 쓰기 거부**(fail-closed).
+- **저장**: `docs/evidence/m3d2`(첫 성공 live 실행 시 생성), 성공 1건당 파일 1개
+  `<contract>-<UTC compact ts>-<12B nonce>.json`, dir 0700 / file 0600, exclusive create(`wx`),
+  symlink·비디렉터리 거부(대상 + bounded 4단계 상위), 실패 시 부분 산출물 제거, 경로는 payload·콘솔 미노출.
+- **runner 통합 규칙**: 3종 runner 모두 opt-in 가드·TTY 요건·fail-closed·cleanup·기존 PASS 의미를 유지한다.
+  evidence는 **모든 계약 검사 + cleanup 성공 뒤에만** 기록하고, 기록 실패는 runner 실패(exit 1)다.
+  non-spawned/실패/미실행 경로는 evidence를 남기지 않는다. live runner는 `npm test`에 연결되지 않았다.
+- **stress**: `npm run acceptance:stress:m3d2`(수동 전용). bounded CPU worker(기본 4, firm deadline 900s) 아래
+  `npm test` 1회 직렬 실행. 배타 lock + `ps` 스캔(실행 파일이 node/npm/sh 계열인 후보만)으로 다른 suite/stress와
+  겹치면 거부하고, `ps` 실패도 거부. 자신이 만든 child만 성공/실패/시그널에서 정리하며 종료는 bounded polling으로 확인.
+- **검증 실행 결과(offline)**: `npm run build` PASS, `git diff --check` clean, NUL 0.
+  `liveEvidence.test.ts` 단독 **16/16 PASS**. `npm test` **연속 3회 전부 PASS** = exec 75/75 + core **291/291** +
+  acceptance 71/71(직렬). stress **PASS**(동일 카운트, elapsed 85.6s, `cleanupProblems:0`, 잔존 worker 0).
+  참고: 첫 stress 시도는 SIGKILL 직후 생존을 즉시 판정해 거짓 실패했고, bounded polling으로 고친 뒤 PASS했다.
+- **live acceptance는 실행하지 않았다(pending)**: M3b.2가 사람 대화형 TTY를 요구하므로 이 세션에서 돌리지 않았다.
+  사용자 실행 명령: `npm run build && HARNESS_LIVE_M3A=1 node scripts/m3a-live-preflight.mjs` /
+  `... HARNESS_LIVE_M3B2=1 node scripts/m3b2-live-handoff.mjs` / `... HARNESS_LIVE_M3C3B=1 node scripts/m3c3b-live-handoff.mjs`.
+  **3종 모두 PASS + evidence 3건 생성 전에는 M3d 완료·M4 ready라고 판정하지 말 것.**
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74` 불변. 이번 M3d.2 작업도
+  commit/fetch/push/PR/패키지 설치를 하지 않았다. 워킹 트리는 계속 dirty(기존 dirty 변경 전부 보존) — clean 아님.
+- **잔여 위험(비차단)**: 상위 symlink 검사 bounded(4단계, 시스템 prefix 제외), stress `ps` 스캔은 command line
+  heuristic(배타 lock이 1차 방어), evidence 지표는 runner 판정의 파생값이라 runner 판정이 틀리면 그대로 반영된다.
+
+## 이전 갱신 (2026-07-26 — V3 M3d.1 완료, Codex Sol xhigh APPROVE)
+
+- **M3d.1 완료. fresh Codex Sol xhigh 최종 검토 verdict = APPROVE. M3d 전체는 완료가 아니다.**
+- 원인: M3c-2 live runner가 baseline 이후 `shadcn@4.13.1 mcp`에 매칭되는 프로세스를 전부 자기 잔여물로
+  간주해, 무관한 동시 실행 프로세스가 거짓 실패를 만들 수 있었다.
+- 수정 범위는 `scripts/m3c2-live-read-semantics.mjs`와 `src/tools/shadcnReadSemanticsProbe.test.ts` 두 파일뿐이다.
+- 소유권 = **runner 프로세스 트리 자손 OR cwd가 runner 임시 base 하위**. 그 base 밖의 진짜 독립적인
+  post-baseline sibling은 foreign이며 무시한다. unknown inspection은 fail-closed를 유지하고 kill하지 않는다.
+- 프로세스 baseline·재검증은 **PID 단독이 아니라 `pid + ps lstart`**. 후보 argv는 로그에 남기지 않고,
+  진단은 pid·ownership·**run별 salted SHA-256 signature**만 쓴다.
+- 테스트 sleeper는 bounded TTL을 갖고, 정리는 child handle 또는 nonce로 확인된 orphan 신원에 대해
+  bounded 종료 확인으로만 한다. blind PID signal 없음.
+- 최종 리비전 후 검증: `git diff --check` clean, NUL 바이트 0, `npm run build` PASS,
+  해당 파일 단독 **18/18 PASS 2회**, `npm run test:core` **275/275 PASS**,
+  격리 `npm test` PASS = exec **75/75** + core **275/275** + acceptance **71/71**.
+- 앞선 겹친 검증 1회 실패는 fresh 리뷰어와 메인 스위트가 전역 m3c2 temp/process 상태를 동시에 관찰했기 때문이고,
+  격리 재실행은 PASS였다. 오케스트레이션 계약으로 채택: **프로세스 전역·tmp 전역 상태를 관찰하는 테스트는
+  명시적 exclusive resource class/lock을 요구하며 동시 실행하지 않는다**(M4 durable-state/scheduler 요건,
+  M5 bridge 실행 요건으로 로드맵에 기록).
+- M5 추가 요건(Claude bootstrap 실측): 진행/이벤트 스트리밍, no-progress·wall-clock bounded deadline,
+  cancellation, descendant cleanup. 최종 결과만 내는 silent session은 수용하지 않는다.
+- **Git 관찰**: `develop` / HEAD `af0552e5ba98100b7ae5970b0cb44224e3469c74`, 로컬 `origin/develop`도 동일 커밋
+  (remote-tracking reflog는 2026-07-26 13:48:21 +0900 push로 갱신됨). 이번 M3d.1 작업은 commit/fetch/push를
+  하지 않았다. **워킹 트리는 의도적으로 dirty하다** — 선행 docs-only 로드맵 편집 + M3d.1 구현 2파일이 있고
+  자율 오케스트레이션 로드맵 문서는 아직 untracked다. clean이라고 부르지 않는다.
+- Claude Code 관찰 버전 `2.1.220`.
+- 잔여 위험(비차단): `lstart` 1초 해상도, 대상 Linux는 procps 호환 `/bin/ps` 전제이며 미지원 inspection은
+  fail-closed된다.
+- **다음**: 남은 M3d 범위 — redacted persistent live-evidence schema/테스트 + 로드맵의 반복 full-suite/stress
+  acceptance. **별도 상세 계획과 승인이 필요하며, M4 ready 상태가 아니다.**
+- 아래 "clean"·flake 272/273 서술은 이 갱신 이전 시점의 기록이다.
+
+## 이전 갱신 (2026-07-26 — 자율 오케스트레이션 로드맵 활성화)
+
+- 새 최우선 구현 기준: `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`.
+- 후속 순서: **M3d baseline 안정화 → M4 agent 통신/state → M5 Codex↔Claude bridge/autopilot
+  → M6 계층 오케스트레이터 → M7 기획/Research → M8 디자인 → M9 개발 → M10 hardening**.
+- 중앙 LLM 세션은 SoR이 아니다. TypeScript kernel+디스크 state가 제어하고 Coordinator/Worker/Reviewer는
+  fresh session으로 교체한다. 메시지는 schema+Markdown body+artifact hash로 전달한다.
+- 모델 기본: 개발/수정=Claude Code Opus, 큰 계획·문서 비평·독립 review=Codex `gpt-5.6-sol` xhigh.
+- M5 완료 뒤부터 사람의 프롬프트/완료보고 복사를 `autopilot`이 대체한다. M4/M5는 기존 수동 handoff로 bootstrap.
+- Git: `develop`/`af0552e`, `origin/develop` 동일, clean. Claude Code `2.1.220`, Codex CLI
+  `0.146.0-alpha.3`(2026-07-26 확인).
+- 사용자 실행 M3 live runner들은 PASS 보고. 임시 산출물 cleanup 때문에 저장소 사후 검증은 불가하며
+  M3d에서 redacted live evidence 영속화를 설계한다.
+- Codex 재검증: exec 75 PASS, acceptance 71 PASS. core 전체 부하에서 알려진 M3c-2 runner smoke
+  1건 재현(272/273), 해당 파일 단독 16/16 PASS. 테스트 완화 없이 M3d에서 안정화한다.
+- 이 갱신보다 아래에 있는 “M3 미구현/미확인/다음 M3” 표현은 당시 역사 기록이다.
+
 ---
 
 ## 1. 프로젝트 개요
 
 - **현재 버전**: `package.json` `2.6.0`. CLI `--version`은 package.json을 런타임에서 읽어 동일 값 출력(M0).
   (exec/mission·V3 M1/M2는 v2.6.0 태그 이후 develop에 누적된 미태그 작업.)
-- **현재 브랜치 / 작업 트리**: `develop` / **CLEAN** (검증: `git status --porcelain` 빈 출력).
+- **현재 브랜치 / 작업 트리**: `develop` / **DIRTY**. 이 "CLEAN" 표기는 V3 M1/M2 시점의 기록이었다 —
+  M3d.1 이후 문서·구현 변경과 M3d.2 신규 파일이 누적되어 워킹 트리는 계속 dirty이며 commit하지 않았다
+  (현행 상태는 위 "최신 갱신"의 Git 관찰 항목을 본다).
 - **Provider 구조** (`src/providers/`): 3종 — `mock`(무과금 기본), `claude-code`(`claude -p` 구독 위임),
   `anthropic`(API). 인터페이스 `Provider = { id; generate(input): Promise<AgentResult> }`.
 - **workflow / step 종류** (`registry/workflows.json`, 4개):

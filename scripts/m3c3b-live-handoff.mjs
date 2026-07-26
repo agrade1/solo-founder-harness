@@ -26,6 +26,12 @@
  *  - cleanup은 idempotent + signal(SIGINT/SIGTERM) 안전. canary/proxy PID는 **command-line ownership(lsof cwd) 확인 후에만** kill.
  *  - 실제 MCP 결과 원문은 출력·저장하지 않고 파생 지표만 출력.
  *
+ * [M3d.2] PASS + cleanup까지 모두 성공한 뒤에만 redacted live evidence 1건을 docs/evidence/m3d2에 기록한다.
+ *   evidence는 version/contract/status/timestamp + 정수·불리언 파생 지표뿐이며 trace 원문·argv·경로·hash·session ID를
+ *   담지 않는다. 기록 실패는 runner 실패로 처리하고, 실패/미실행(non-spawned) run은 evidence를 남기지 않는다.
+ *   기록 위치 override는 **argv `--fixture-config <절대경로 .json>`의 `evidenceDir`로만** 가능하다
+ *   (환경변수 seam 제거 — env는 자손에 암묵 상속되어 production 기록 위치를 조용히 바꿀 수 있었다).
+ *
  * 선행: `npm run build`. 실행: npm run build && HARNESS_LIVE_M3C3B=1 node scripts/m3c3b-live-handoff.mjs
  */
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, statSync, readdirSync, lstatSync } from "node:fs";
@@ -34,6 +40,18 @@ import { randomBytes, createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
+
+// ── [M3d.2] evidence 기록 위치 override는 argv로만 받는다(env seam 없음) ──────
+import { FixtureConfigError, loadFixtureConfig } from "./lib/fixture-config.mjs";
+let FIXTURE_EVIDENCE_DIR;
+try {
+  const loaded = loadFixtureConfig(process.argv.slice(2), { evidenceDir: { kind: "absPath" } });
+  FIXTURE_EVIDENCE_DIR = loaded.config?.evidenceDir;
+} catch (e) {
+  const code = e instanceof FixtureConfigError ? e.code : "unknown";
+  console.error(`거부: fixture 설정 [${code}] ${e?.message ?? ""}`);
+  process.exit(2);
+}
 
 // ── 안전장치 1: 명시적 opt-in ──────────────────────────────────────────────
 if (process.env.HARNESS_LIVE_M3C3B !== "1") {
@@ -58,8 +76,10 @@ const SERVER = join(HERE, "fixtures", "m3a", "minimal-stdio-mcp.mjs"); // ambien
 const PROXY = join(HERE, "..", "dist", "tools", "shadcnReadMcpProxy.js"); // 신뢰 proxy(고정 경로) — 실존 필수
 
 const distHandoff = join(HERE, "..", "dist", "core", "handoff.js");
+const distEvidence = join(HERE, "..", "dist", "tools", "liveEvidence.js");
 for (const [p, why] of [
   [distHandoff, "dist/core/handoff.js"],
+  [distEvidence, "dist/tools/liveEvidence.js (live evidence writer)"],
   [PROXY, "dist/tools/shadcnReadMcpProxy.js (신뢰 proxy)"],
   [SERVER, "ambient MCP canary fixture"],
 ]) {
@@ -218,6 +238,7 @@ async function checkLeftoverAfterTui(baselineSet) {
     if (Date.now() - start >= 5000) break;
     await sleep(500);
   }
+  leftoverProcessCount = newPids.length; // evidence 지표(성공 시 0). 아래에서 각 건을 FAIL로 기록한다.
   for (const pid of newPids) {
     if (!isAlive(pid)) continue;
     const own = ownershipUnderBase(pid);
@@ -328,6 +349,7 @@ const { mockProvider } = await import(join(HERE, "..", "dist", "providers", "moc
 const { getAllowedTools, getForbiddenTools, nsName } = await import(join(HERE, "..", "dist", "tools", "shadcnReadPolicy.js"));
 const { SHADCN_SERVER } = await import(join(HERE, "..", "dist", "tools", "shadcnPilot.js"));
 const { BLOCKING_MCP_ENV } = await import(join(HERE, "..", "dist", "tools", "mcpEnv.js"));
+const { buildLiveEvidence, writeLiveEvidence, resolveEvidenceDir } = await import(distEvidence);
 
 // blocking MCP env 계약 값 사후 확인(단일 출처 상수). preflight/interactive에 강제되는 세 값이
 // 기대와 다르면 실행 전 중단(exit 2). pending을 retry/성공 처리하는 로직은 추가하지 않는다.
@@ -354,6 +376,12 @@ const serviceWorklog = join(serviceCwd, "docs", "WORKLOG.md");
 const problems = [];
 let exitCode = 0;
 let spawnedVerified = false;
+// [M3d.2] evidence 파생 지표 (정수/불리언만). 사후 검증 완주 시 조립하고, cleanup 성공 후에만 기록한다.
+let liveMetrics = null;
+let leftoverProcessCount = 0;
+let sentinelLeakAbsent = true;
+let permissionBitsExact = true;
+let hashChainMatched = false;
 
 function checkCanaries() {
   if (existsSync(canaryMcpPidFile)) problems.push("ambient MCP canary 기동됨(pid-file 존재) — strict MCP 격리 실패");
@@ -616,7 +644,10 @@ try {
 
   // (g) sentinel/credential 평문 부재.
   for (const [name, txt] of [["settings", existsSync(settingsPath) ? readFileSync(settingsPath, "utf8") : ""], ["mcp-config", cfgText], ["snapshot", snapText], ["trace", traceText]]) {
-    if (txt.includes(sentinel)) problems.push(`${name}에 sentinel 평문 노출`);
+    if (txt.includes(sentinel)) {
+      sentinelLeakAbsent = false;
+      problems.push(`${name}에 sentinel 평문 노출`);
+    }
   }
   for (const [name, txt] of [["mcp-config", cfgText], ["snapshot", snapText]]) {
     if (txt && CRED.test(txt)) problems.push(`${name}에 credential 형태 평문(보조 검사)`);
@@ -633,11 +664,15 @@ try {
   ];
   for (const [p, want, label] of modeChecks) {
     if (!existsSync(p)) {
+      permissionBitsExact = false;
       problems.push(`${label} 파일 부재: ${p}`);
       continue;
     }
     const m = mode(p);
-    if (m !== want) problems.push(`${label} 권한 ${m.toString(8)} (기대 ${want.toString(8)})`);
+    if (m !== want) {
+      permissionBitsExact = false;
+      problems.push(`${label} 권한 ${m.toString(8)} (기대 ${want.toString(8)})`);
+    }
   }
 
   // (i) run_state.handoff 기록 + completed 불변 + profile 필드 + artifact 연결(config_hash 체인·snapshot_path).
@@ -651,13 +686,18 @@ try {
       // config_hash 체인: mcp-config 파일 sha256 == snapshot.configHash == outcome.handoff.config_hash == run_state.handoff.config_hash.
       if (!cfgHash || cfgHash.length !== 64) problems.push("mcp-config 파일 sha256 계산 실패");
       else {
+        let chainOk = true;
         for (const [label, v] of [
           ["snapshot.configHash", snap?.configHash],
           ["outcome.handoff.config_hash", handoff?.config_hash],
           ["run_state.handoff.config_hash", st.handoff.config_hash],
         ]) {
-          if (v !== cfgHash) problems.push(`config_hash 불일치: ${label}=${String(v).slice(0, 12)}… ≠ 파일 sha256 ${cfgHash.slice(0, 12)}…`);
+          if (v !== cfgHash) {
+            chainOk = false;
+            problems.push(`config_hash 불일치: ${label}=${String(v).slice(0, 12)}… ≠ 파일 sha256 ${cfgHash.slice(0, 12)}…`);
+          }
         }
+        hashChainMatched = chainOk; // evidence 지표는 일치 여부(불리언)만 — hash 값은 담지 않는다.
       }
       // snapshot_path: outcome.handoff와 run_state.handoff가 동일하고 실제 snapshotPath와 일치.
       if (handoff?.snapshot_path !== snapshotPath) problems.push("outcome.handoff.snapshot_path ≠ 실제 snapshotPath");
@@ -667,7 +707,30 @@ try {
   }
 
   // 파생 지표만 출력(원문 없음).
-  console.log(`[m3c3b-live] 파생 지표: trace records=${records.length}, MCP tool_requested=${records.filter((r) => r.event === "tool_requested" && String(r.toolName).startsWith("mcp__")).length}, session_end=${ends.length}, snapshot tools=${(snap?.tools ?? []).length}`);
+  const mcpRequested = records.filter((r) => r.event === "tool_requested" && String(r.toolName).startsWith("mcp__"));
+  console.log(`[m3c3b-live] 파생 지표: trace records=${records.length}, MCP tool_requested=${mcpRequested.length}, session_end=${ends.length}, snapshot tools=${(snap?.tools ?? []).length}`);
+
+  // [M3d.2] evidence 파생 지표 조립(원문·argv·경로·hash·ID 없음. 정수/불리언만).
+  liveMetrics = {
+    allowedToolCount: ALLOWED_HOST.length,
+    deniedToolCount: DENIED_HOST.length,
+    snapshotToolCount: Array.isArray(snap?.tools) ? snap.tools.length : 0,
+    traceRecordCount: records.length,
+    distinctSessionCount: sids.size,
+    mcpToolRequestedCount: mcpRequested.length,
+    mcpToolSucceededCount: records.filter((r) => r.event === "tool_succeeded" && String(r.toolName).startsWith("mcp__")).length,
+    unplannedMcpToolRequestedCount: mcpRequested.filter((r) => !plannedHosts.has(r.toolName)).length,
+    forbiddenToolObservedCount: records.filter((r) => DENIED_HOST.includes(r.toolName)).length,
+    sessionEndCount: ends.length,
+    leftoverProcessCount,
+    hashChainMatched,
+    serviceRepoUnchanged: svcAfter === svcBefore && !existsSync(serviceWorklog),
+    ambientMcpCanarySpawned: existsSync(canaryMcpPidFile),
+    ambientHookCanaryExecuted: existsSync(canaryHookSessionMarker) || existsSync(canaryHookPreMarker),
+    permissionBitsExact,
+    runStateHandoffRecorded: Boolean(st && st.handoff),
+    sentinelLeakAbsent,
+  };
 
   spawnedVerified = true;
 } catch (e) {
@@ -679,9 +742,25 @@ try {
 } finally {
   cleanup();
   const allProblems = [...problems, ...cleanupProblems];
+
+  // [M3d.2] 모든 계약 검사 + cleanup이 성공한 뒤에만 evidence 1건 기록. 기록 실패는 runner 실패.
+  let evidenceProblem = null;
+  if (spawnedVerified && allProblems.length === 0 && exitCode === 0) {
+    try {
+      writeLiveEvidence({
+        evidence: buildLiveEvidence({ contract: "m3c3b_live_handoff", timestamp: new Date().toISOString(), metrics: liveMetrics }),
+        dir: resolveEvidenceDir({ repoRoot: join(HERE, ".."), overrideDir: FIXTURE_EVIDENCE_DIR }),
+        secretRefs: ["M3C3B_LIVE_TOKEN"],
+      });
+    } catch (e) {
+      // 계약/권한 위반 메시지는 필드 이름만 담는다(경로·본문 미출력).
+      evidenceProblem = e?.name === "LiveEvidenceError" ? `${e.code}: ${e.message}` : (e?.code ?? e?.name ?? "unknown");
+    }
+  }
   if (spawnedVerified) {
-    if (allProblems.length) {
-      console.error("\n[m3c3b-live] FAIL:\n - " + allProblems.map(redact).join("\n - "));
+    if (allProblems.length || evidenceProblem) {
+      if (evidenceProblem) console.error(`\n[m3c3b-live] live evidence 기록 실패 [${redact(evidenceProblem)}] → FAIL 처리.`);
+      if (allProblems.length) console.error("\n[m3c3b-live] FAIL:\n - " + allProblems.map(redact).join("\n - "));
       exitCode = 1;
     } else {
       console.log(
@@ -690,7 +769,8 @@ try {
           "interactive argv(allowed 5·denied 2·mcp__* 없음·-- 꼬리·-p/stream-json 없음) · " +
           "preapproved 실측(3개 각 tool_requested 1 + 동일 callId succeeded, failed/denied/permission 없음, sanitizedInput 정확 일치, 계획 외 mcp__* 없음) · " +
           "ToolTrace(profileId·server=shadcn·session_end 1·원문/transcript/secret 없음) · serviceCwd 무변경 · run_state completed 불변 · 권한(dir700/file600) · " +
-          "ambient MCP/Hook canary 미기동 · 잔존 proxy/shadcn/canary 없음(baseline+grace, ownership 확인 후 kill) · cleanup 완료.",
+          "ambient MCP/Hook canary 미기동 · 잔존 proxy/shadcn/canary 없음(baseline+grace, ownership 확인 후 kill) · cleanup 완료 · " +
+          "live evidence 기록(docs/evidence/m3d2, 정수·불리언 지표만).",
       );
     }
   } else if (allProblems.length) {
