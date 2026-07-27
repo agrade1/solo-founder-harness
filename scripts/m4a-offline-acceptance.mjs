@@ -188,9 +188,11 @@ try {
   reopened.startTask("child");
   check("child running", reopened.getTask("child").state === "running", reopened.getTask("child").state);
 
-  mkdirSync(join(workspace, "docs"), { recursive: true });
-  writeFileSync(join(workspace, "docs", "child-output.md"), `# child 산출물\n${MARKER}\n`);
-  const pointer = reopened.registerArtifact({ taskId: "child", path: "docs/child-output.md", role: "output" });
+  // M5b부터 `registerArtifact`가 **task 소유권을 집행**하므로 child는 자기 소유 경로(`src/exec/child`)에
+  // 산출물을 낸다(이전 판의 `docs/child-output.md`는 child 소유 밖이었다 — `artifact_not_owned`).
+  mkdirSync(join(workspace, "src", "exec", "child"), { recursive: true });
+  writeFileSync(join(workspace, "src", "exec", "child", "child-output.md"), `# child 산출물\n${MARKER}\n`);
+  const pointer = reopened.registerArtifact({ taskId: "child", path: "src/exec/child/child-output.md", role: "output" });
   check("artifact revision 1", pointer.revision === 1, String(pointer.revision));
   check("artifact sha256 기록", /^[0-9a-f]{64}$/.test(pointer.sha256));
   check("artifact producer 기록", pointer.producerTaskId === "child");
@@ -231,13 +233,13 @@ try {
   console.log("");
   console.log("== M4a: 10) raw artifact 본문·transcript가 state/snapshot/message index에 없음 ==");
   const stateText = readFileSync(paths.stateFile, "utf8");
-  const artifactText = readFileSync(join(workspace, "docs", "child-output.md"), "utf8");
+  const artifactText = readFileSync(join(workspace, "src", "exec", "child", "child-output.md"), "utf8");
   check("artifact 본문에 marker 존재(대조군)", artifactText.includes(MARKER));
   check("run_state.json에 raw 본문 없음", !stateText.includes(MARKER));
   check("snapshot.md에 raw 본문 없음", !finalSnapshot.includes(MARKER));
   check("message index에 raw 본문 없음", !JSON.stringify(finalState.messages).includes(MARKER));
   check("state에 transcript 필드 없음", !/transcript/i.test(stateText));
-  check("snapshot에 artifact 포인터 있음", finalSnapshot.includes("docs/child-output.md@1"));
+  check("snapshot에 artifact 포인터 있음", finalSnapshot.includes("src/exec/child/child-output.md@1"));
   check(
     "snapshot에 bounded summary 있음",
     finalSnapshot.includes("child 산출물 1건을 만들었고 검증은 dependent가 이어받는다."),

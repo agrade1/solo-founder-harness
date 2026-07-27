@@ -21,12 +21,21 @@ import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from
  */
 function reviewerProvider(perRound: string[][]): ExecutionProvider {
   let i = 0;
-  const script: EventScript = (spec): SessionEvent[] => {
+  const script: EventScript = (spec, prompt): SessionEvent[] => {
     const critical = perRound[Math.min(i, perRound.length - 1)];
     i++;
-    const md =
-      `## Risks\n### Critical\n${critical.length ? critical.map((c) => `- ${c}`).join("\n") : "- 없음"}\n### Notes\n- n` +
-      `\n## Verdict: ${critical.length ? "revise" : "pass"}`;
+    // M5b A5: 스키마가 활성 로드맵 §5.2 `review_result`로 좁혀졌고 대상 신원은 호출자 기대값에 묶인다.
+    // 프롬프트가 알려준 revision/hash를 그대로 확인해 준다(실제 리뷰어가 하는 일과 같다).
+    const revision = /^- revision: (.+)$/m.exec(prompt)?.[1] ?? "(미상)";
+    const hash = /^- hash: (.+)$/m.exec(prompt)?.[1] ?? "(미상)";
+    const md = [
+      `## Reviewed Revision and Hash\n- revision: ${revision}\n- hash: ${hash}`,
+      `## Findings (P0/P1/P2)\n${critical.length ? critical.map((c) => `- P1: ${c}`).join("\n") : "- 없음"}`,
+      "## Reproduction or Evidence\n- diff 근거",
+      "## Missing Tests\n- 없는 테스트 없음",
+      "## Contract Deviations\n- 계약 위반 없음",
+      `## Verdict: ${critical.length ? "revise" : "pass"}`,
+    ].join("\n\n");
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
       { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },

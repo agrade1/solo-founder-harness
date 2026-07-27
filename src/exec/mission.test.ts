@@ -11,6 +11,7 @@ import { runProcess } from "./runProcess.js";
 import { AsyncEventQueue } from "./eventQueue.js";
 import { MockExecProvider, type EventScript } from "./mockExecProvider.js";
 import { runMission, renderMissionReport, type MissionBrief } from "./mission.js";
+import { REVIEW_RESULT_HEADINGS } from "./reviewer.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from "./types.js";
 
 /** 태스크마다 고유 파일을 쓰고, 받은 model을 기록하는 코더 stub. 옵션으로 rate limit 이벤트 방출. */
@@ -41,11 +42,28 @@ class MissionCoder implements ExecutionProvider {
   async stop(): Promise<void> {}
 }
 
+/**
+ * §5.2 `review_result` "결함 없음" 본문. heading 이름은 `REVIEW_RESULT_HEADINGS`에서 가져오므로
+ * 스키마가 또 바뀌면 이 mock도 함께 따라간다(문자열 하드코딩 드리프트 방지).
+ */
+function cleanReviewBody(prompt: string): string {
+  const rev = /^- revision: (.+)$/m.exec(prompt)?.[1] ?? "(미상)";
+  const hash = /^- hash: (.+)$/m.exec(prompt)?.[1] ?? "(미상)";
+  return [
+    `## ${REVIEW_RESULT_HEADINGS[0]}\n- revision: ${rev}\n- hash: ${hash}`,
+    `## ${REVIEW_RESULT_HEADINGS[1]}\n- 없음`,
+    `## ${REVIEW_RESULT_HEADINGS[2]}\n- diff 근거`,
+    `## ${REVIEW_RESULT_HEADINGS[3]}\n- 없는 테스트 없음`,
+    `## ${REVIEW_RESULT_HEADINGS[4]}\n- 계약 위반 없음`,
+    `## ${REVIEW_RESULT_HEADINGS[5]}: pass`,
+  ].join("\n\n");
+}
+
 function cleanReviewer(): MockExecProvider {
-  const script: EventScript = (spec): SessionEvent[] => {
+  const script: EventScript = (spec, prompt): SessionEvent[] => {
     const raw = { type: "mock", session_id: spec.sessionId };
-    // M5b(`B-8`): 리뷰 게이트가 명시 verdict를 요구한다(Critical 0건 ↔ pass).
-    const md = "## Risks\n### Critical\n- 없음\n### Notes\n- ok\n## Verdict: pass";
+    // M5b(`B-8`+A5): 리뷰 게이트가 §5.2 `review_result` 스키마 · 명시 verdict · 대상 신원 확인을 요구한다.
+    const md = cleanReviewBody(prompt);
     return [
       { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: md, numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },

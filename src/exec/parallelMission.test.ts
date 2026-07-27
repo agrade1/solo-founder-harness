@@ -10,6 +10,7 @@ import { runProcess } from "./runProcess.js";
 import { AsyncEventQueue } from "./eventQueue.js";
 import { MockExecProvider, type EventScript } from "./mockExecProvider.js";
 import { runParallelMission } from "./parallelMission.js";
+import { REVIEW_RESULT_HEADINGS } from "./reviewer.js";
 import type { MissionBrief } from "./mission.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from "./types.js";
 
@@ -41,13 +42,30 @@ class ParallelCoder implements ExecutionProvider {
   async stop(): Promise<void> {}
 }
 
+/**
+ * §5.2 `review_result` "결함 없음" 본문. heading 이름은 `REVIEW_RESULT_HEADINGS`에서 가져오고
+ * 대상 신원은 프롬프트가 알려준 값을 그대로 확인해 준다(M5b A5 계약).
+ */
+function cleanReviewBody(prompt: string): string {
+  const rev = /^- revision: (.+)$/m.exec(prompt)?.[1] ?? "(미상)";
+  const hash = /^- hash: (.+)$/m.exec(prompt)?.[1] ?? "(미상)";
+  return [
+    `## ${REVIEW_RESULT_HEADINGS[0]}\n- revision: ${rev}\n- hash: ${hash}`,
+    `## ${REVIEW_RESULT_HEADINGS[1]}\n- 없음`,
+    `## ${REVIEW_RESULT_HEADINGS[2]}\n- diff 근거`,
+    `## ${REVIEW_RESULT_HEADINGS[3]}\n- 없는 테스트 없음`,
+    `## ${REVIEW_RESULT_HEADINGS[4]}\n- 계약 위반 없음`,
+    `## ${REVIEW_RESULT_HEADINGS[5]}: pass`,
+  ].join("\n\n");
+}
+
 function cleanReviewer(): MockExecProvider {
-  const script: EventScript = (spec): SessionEvent[] => {
+  const script: EventScript = (spec, prompt): SessionEvent[] => {
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
       { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
-      // M5b(`B-8`): 리뷰 게이트가 명시 verdict를 요구한다(Critical 0건 ↔ pass).
-      { kind: "result", sessionId: spec.sessionId, isError: false, text: "## Risks\n### Critical\n- 없음\n## Verdict: pass", numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
+      // M5b(`B-8`+A5): 리뷰 게이트가 §5.2 스키마 · 명시 verdict · 대상 신원 확인을 요구한다.
+      { kind: "result", sessionId: spec.sessionId, isError: false, text: cleanReviewBody(prompt), numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };
   return new MockExecProvider(script);

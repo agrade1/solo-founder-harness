@@ -198,7 +198,9 @@ function bootRoot(extra: string[] = [], ws = makeWorkspace()): { ws: string; k: 
     manifest: manifestFor(["root", ...extra]),
     clock: fixedClock(),
   });
-  k.createRootTask(seed("root", "tech-lead"));
+  // `docs`도 소유한다 — 아래 artifact 테스트가 `docs/a.md`를 이 task의 산출물로 등록하고,
+  // M5b부터 `registerArtifact`가 **소유권을 집행**하므로 픽스처가 정직해야 한다(`artifact_not_owned`).
+  k.createRootTask(seed("root", "tech-lead", { ownership: ["docs", "src/root"] }));
   k.startTask("root");
   return { ws, k };
 }
@@ -569,6 +571,50 @@ test("[M4a] artifact 등록: revision/supersedes · 포인터 필드 · missing/
   assert.equal(codeOf(() => k.registerArtifact({ taskId: "root", path: "../outside.md", role: "output" })), "path_parent_segment");
 });
 
+// ── M5b: artifact 등록은 소유권을 집행한다(독립 리뷰 A2) ──────────────────────
+//
+// 이전 판은 "running task + 파일이 workspace 안에 있다"만 봤다 → task A가 **task B의 소유 경로**나
+// 승인 밖 경로를 자기 산출물로 등록할 수 있었다. controller가 아니라 **권위 계층**에서 막는다.
+
+test("[M5b] artifact 등록: 남의 소유 경로·승인 밖 경로는 거부다(교차 task 오염 차단)", () => {
+  const { ws, k } = bootRoot(["other"]);
+  k.createRootTask(seed("other", "qa-security")); // ownership = ["src/other"]
+  k.startTask("other");
+  mkdirSync(join(ws, "src", "other"), { recursive: true });
+  mkdirSync(join(ws, "src", "root"), { recursive: true });
+  writeFileSync(join(ws, "src", "other", "x.md"), "남의 것\n");
+  writeFileSync(join(ws, "src", "root", "mine.md"), "내 것\n");
+
+  // ⓐ root는 other의 경로를 등록할 수 없다(그 반대도 마찬가지).
+  assert.equal(codeOf(() => k.registerArtifact({ taskId: "root", path: "src/other/x.md", role: "output" })), "artifact_not_owned");
+  assert.equal(codeOf(() => k.registerArtifact({ taskId: "other", path: "src/root/mine.md", role: "output" })), "artifact_not_owned");
+  // ⓑ 자기 소유 경로는 그대로 통과한다(게이트가 공허하지 않다는 증거).
+  assert.equal(k.registerArtifact({ taskId: "root", path: "src/root/mine.md", role: "output" }).revision, 1);
+  assert.equal(k.registerArtifact({ taskId: "other", path: "src/other/x.md", role: "output" }).revision, 1);
+  // ⓒ 거부는 state를 바꾸지 않는다(등록 2건 그대로).
+  assert.equal(k.getState().artifacts.length, 2);
+});
+
+test("[M5b] artifact 등록: 승인된 writableRoots 밖은 거부다", () => {
+  const ws = makeWorkspace();
+  const k = createOrchestrationRun({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    // 소유권은 `infra`까지 주지만 승인된 writable root는 `src`뿐인 state는 만들 수 없으므로,
+    // ownership ⊆ writableRoots 불변식을 지키면서 **manifest가 더 좁은** 경우를 만든다.
+    manifest: manifestFor(["root"], { writableRoots: ["src"], ownershipByTask: { root: ["src"] } }),
+    clock: fixedClock(),
+  });
+  k.createRootTask(seed("root", "tech-lead", { ownership: ["src"] }));
+  k.startTask("root");
+  mkdirSync(join(ws, "docs"), { recursive: true });
+  writeFileSync(join(ws, "docs", "a.md"), "v1\n");
+  // `docs/a.md`는 소유 경로(`src`) 밖이므로 소유권 게이트가 먼저 잡는다.
+  assert.equal(codeOf(() => k.registerArtifact({ taskId: "root", path: "docs/a.md", role: "output" })), "artifact_not_owned");
+  assert.equal(k.getState().artifacts.length, 0);
+});
+
 test("[M4a] 상위 디렉터리 symlink로 workspace를 벗어나는 artifact 거부", () => {
   const { ws, k } = bootRoot();
   const outside = mkdtempSync(join(tmpdir(), "m4a-outside-"));
@@ -669,7 +715,8 @@ test("[M4a] 재시작: 같은 run을 새 인스턴스로 열면 ready 목록·re
   k.requestSpawn({
     envelope: envelope("spawn_request", "root", "tech-lead", { messageId: "spawn-1" }),
     body: body("spawn_request"),
-    child: seed("child", "dev-lead", { ownership: ["src/root"] }),
+    // child가 `docs/a.md`를 등록하므로 parent가 가진 `docs` 범위를 위임받는다(권한 확대 아님).
+    child: seed("child", "dev-lead", { ownership: ["docs"] }),
   });
   k.createDependentTask({ ...seed("dependent", "qa-security"), dependsOn: ["child"] });
   mkdirSync(join(ws, "docs"), { recursive: true });
@@ -726,7 +773,7 @@ test("[M4a] 읽기 API는 깊은 사본을 준다 — 반환값 수정으로 sta
   const s = k.getState();
   s.tasks[0].state = "blocked";
   assert.equal(k.getTask("root")!.state, "running");
-  assert.deepEqual(k.getTask("root")!.ownership, ["src/root"]);
+  assert.deepEqual(k.getTask("root")!.ownership, ["docs", "src/root"]);
 });
 
 test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 바꿀 진입점이 없다", () => {

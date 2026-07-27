@@ -91,6 +91,7 @@ import { validateApprovalManifest } from "./approvalManifest.js";
 import { CODEX_SESSION_ID_RE, CodexJsonlParser } from "./codexStreamParser.js";
 import { verifyExecutionBoundary, verifyTrustedExecutable, } from "./executionBoundary.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
+import { READ_ONLY_EXECUTION_CONTRACT } from "./types.js";
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
 export const MAX_PROMPT_CHARS = 262_144;
 /** stderr 버퍼 상한(문자) — 요약 전에도 무제한으로 쌓지 않는다. */
@@ -377,6 +378,13 @@ function isBoundTo(handle, state) {
 export class CodexCliProvider {
     opts;
     id = "codex-cli";
+    /**
+     * **read-only 실행 계약 brand**(M5b 독립 리뷰 A2). 이 구현은 sandbox를 `read-only`로 고정하고
+     * (`codex_sandbox_forbidden`) strict empty MCP를 격리 홈·`--strict-config`로 집행하므로
+     * `StableController`의 read-only bridge를 지날 자격이 있다. 문자열 `id`가 아니라 **이 심볼 참조**가
+     * 판정 근거다(같은 id를 단 다른 객체는 거부된다).
+     */
+    [READ_ONLY_EXECUTION_CONTRACT] = true;
     sessions = new Map();
     spawnFn;
     /** invocation generation 발급기 — 단조 증가하며 재사용되지 않는다. */

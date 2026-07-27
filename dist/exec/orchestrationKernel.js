@@ -32,7 +32,7 @@
  */
 import { ARTIFACT_ROLES, CENTRAL_MESSAGE_TYPES, LIMITS, ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, OrchestrationError, SUMMARY_REQUIRED, assertSlug, assertText, formatTimestamp, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
 import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
-import { assertRegistryRoleId, validateApprovalManifest } from "./approvalManifest.js";
+import { assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 import { assertReferentialIntegrity, commitRun, ensureRunDir, loadRun, pendingDeliveries, runExists, runPaths, sha256Hex, verifyArtifactFile, writeSnapshot, } from "./orchestrationStore.js";
 const clone = (v) => structuredClone(v);
 export class OrchestrationKernel {
@@ -245,7 +245,17 @@ export class OrchestrationKernel {
                 throw new OrchestrationError("invalid_artifact_ref", `role은 ${ARTIFACT_ROLES.join("|")} 중 하나여야 한다`);
             }
             const path = normalizeWorkspacePath(input.path, "artifact path");
+            // workspace 탈출·symlink는 **가장 먼저** 걸린다(더 근본적인 위반이므로 코드도 그쪽이 이긴다).
             const sha256 = verifyArtifactFile(this.paths.workspaceRoot, path, null);
+            // **소유권 집행은 여기가 유일한 지점이다**(V3 M5b 독립 리뷰 A2). 이전 판은 "running task + 파일 존재"만
+            // 봤으므로 task A가 task B의 소유 경로를 자기 산출물로 등록할 수 있었다(교차 task 오염). 등록은
+            // 모든 호출자(controller·CLI·테스트)가 지나는 좁은 API 하나이므로 불변식을 여기에 둔다.
+            if (!task.ownership.some((own) => pathWithin(path, own))) {
+                throw new OrchestrationError("artifact_not_owned", `artifact ${path}는 task ${task.taskId}의 소유 경로 밖이다`);
+            }
+            if (!draft.manifest.writableRoots.some((root) => pathWithin(path, root))) {
+                throw new OrchestrationError("artifact_outside_writable_root", `artifact ${path}는 승인된 writableRoots 밖이다`);
+            }
             const prior = draft.artifacts.filter((a) => a.path === path).sort((a, b) => a.revision - b.revision).pop() ?? null;
             const revision = prior === null ? 1 : prior.revision + 1;
             const record = {

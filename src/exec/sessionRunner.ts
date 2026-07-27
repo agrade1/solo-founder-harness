@@ -8,6 +8,7 @@
  *   거부될 수 있음. 견고한 병합 전략은 DESIGN_QUESTIONS Q4.
  */
 import { join, basename } from "node:path";
+import { createHash } from "node:crypto";
 import { readFileSync, existsSync, appendFileSync } from "node:fs";
 import { createWorktree, removeWorktree, type WorktreeInfo } from "./worktree.js";
 import { compilePermissions, materializeSettings } from "./permissionCompiler.js";
@@ -156,6 +157,8 @@ export async function runSession(opts: RunSessionOpts): Promise<SessionOutcome> 
           coder: { role: spec.role, task: spec.task, dod: spec.dod, forbidden: spec.forbidden },
           contract,
           diff: outcome.diff!.raw,
+          // 리뷰어가 "무엇을 봤는지"를 호출자 기대값에 묶는다(M5b A5 — 본문 자기 주장만으로는 통과 없음).
+          subject: { revision: wt.branch, hash: createHash("sha256").update(outcome.diff!.raw).digest("hex") },
         });
         outcome.reviews.push({ round, critical: verdict.critical });
         if (verdict.critical.length === 0) {
