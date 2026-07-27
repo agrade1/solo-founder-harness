@@ -2,7 +2,88 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — **V3 M5a 5차 리비전: 독립 Codex 리뷰(REVISE) — 낡은 핸들 · 가변 시계로 만료 우회(`C-23` 2차 reopen) · 드리프트 marker 불일치** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-27 — **V3 M5b 1차 리비전: 독립 Codex 리뷰(REVISE) A/P1 5건 fixed · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  base = 승인된 M5a HEAD `409dee2`. 커밋: `1a94261`(feat) · `42777d9`(docs) · **`6bc390d`(1차 리비전 fix)**
+  + 이 docs 커밋. **fresh Claude Opus 5 세션.** 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 ·
+  **live provider 추론** · secret 사용 0. `node_modules` stage 0. Ponytail(full).
+- **독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰가 `409dee2..42777d9`에 REVISE(A/P1 5건)** 를 냈고
+  **리비전 `6bc390d`가 5건을 전부 닫았다**:
+  ⓐ **생성 authority 미봉인** — caller-owned `opts`를 실행 입력으로 재읽기(객체·메서드 교체 통과, 테스트가
+  `provider.start` monkey-patch를 기대) · 중첩 manifest 가변 · handoff 산출물이 await를 건너는 live alias ·
+  경계의 `targetRoot` 폐기 → **객체+메서드 함수 포착 · 깊은 freeze · handoff 즉시 봉인 · targetRoot로 만든
+  새 불변 spec**, tripwire는 단일 marker `controller_binding_drift`.
+  ⓑ **정책이 집행이 아니었다**(선언 검증기 · 결과 폐기 · provider 권한과 독립) → M5b 계약을 **증명 가능한
+  read-only Codex planning/review bridge**로 좁혔다: `READ_ONLY_EXECUTION_CONTRACT` brand 있는 provider만 ·
+  spec은 `permissionMode: "plan"` 전용(**ClaudeCliProvider 기본 acceptEdits 차단**) · 실행 요구 선언은 전부
+  `policy_not_read_only` · artifact 소유권은 **kernel `registerArtifact`(권위)** 가 집행. wrapper token 화면을
+  집행이라고 주장하지 않는다 → 타입 있는 집행 = 신규 **`B-10`(M5c)**.
+  ⓒ **소진된 예산으로 다음 task 시작** → start·send **직전마다** 게이트, 소진 후 남은 task는 provider 호출 0.
+  ⓓ **포인터가 경계 await 뒤 낡음** → 불변 스냅샷을 **await 없는 동기 게이트**에서 재검증(다음 문장이 호출).
+  ⓔ **중복 종료·중복 리뷰 섹션(`B-8` reopen)** → 공용 `consumeExactlyOneTerminal`(종료 정확히 1건 · 종료 뒤
+  이벤트 전부 거부) + reviewer가 **§5.2 `review_result`** 를 **펜스 밖에서** 파싱(필수 heading 6개 각 1회 ·
+  verdict 1개 · 미상/중복/모순 거부 · 대상 revision·hash를 호출자 기대값에 묶음). `B-8` **재closed**.
+- **C 정정**: `resultBody`가 durable body에 토큰 usage를 적고 있었다 → **제거 + 부재 회귀**(반환값만 남는다).
+- **대장**: `C-16`·`C-21`·`C-25`·`C-27` fixed(M5b) · `B-8` fixed(리비전 `6bc390d`).
+  **신규 `B-10`**(타입 있는 실행 집행 — M5c Claude 쓰기 전) · **`B-11`**(batch 전체 running vs per-task
+  preflight — M5c autopilot 전) · **`B-12`**(재시작 시 예산 회계 초기화 — 늦어도 M5c) · **`B-13`**(durable
+  완료가 provider 정리 확인보다 먼저 · `stop` 실패 삼킴 — M5c live runner 전) ·
+  **`C-12` → B(P1) 재분류**(트리거 발화). `B-7`·`B-9`는 열린 live 하드 게이트.
+  `C-17`·`C-18`·`C-19`·`C-22`·`C-24`·`C-26`은 **손대지 않았다**(fixed 아님).
+- **테스트(자기보고 — 독립 리뷰어 재실행 아님)**: 파일 단독 `stableController` **36/36** ·
+  `reviewer` **14/14** · `orchestrationKernel` **70/70** · `codexCliProvider` **58/58** ·
+  `executionBoundary` **17/17** · `sessionRunner` **7/7** · `npm run test:exec` **295/295** ·
+  **race subset 14건 직렬 3회 → 3/3** · kernel acceptance 개별 재실행 `m4a` 31/31 · `m4b` 42/42 ·
+  `m4c` 77/77 · `tsc --noEmit` 0 · `build` PASS(dist parity) · `git diff --check` clean.
+  **mutation 6종 전부 죽고 정확히 원복**. 살아남는 1건은 durable 직전 중복 포인터 재검증(사이에 await 없음).
+- **다음 세션이 할 일**: ① **supervisor의 fresh Codex read-only 독립 재리뷰**(범위 `409dee2..HEAD`) —
+  **M5b는 그 전까지 승인 상태가 아니고 위 fixed 판정 전부가 재확인 대상**이다. ② M5c(`B-10`~`B-13` +
+  `C-17`·`C-18`·`C-19`·`C-22`·`C-24`·`C-26` + autopilot CLI + pause/recovery). ③ M5d = offline
+  self-hosting acceptance. **미실행**: `npm test` 전체(최종 M5 handoff 직렬 1회 예약) · `test:core` ·
+  `acceptance.sh` 전체 · stress · live · MCP · 실제 추론. **M5 전체는 미완료다.**
+
+## 이전 (2026-07-27 — **V3 M5b: stable controller bridge, offline 구현** · 봉인·정책·usage·증거 서술은 위 리비전이 정정했다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  **현재 HEAD `42777d9`**(이 문서 커밋 전 기준). base = **승인된 M5a HEAD `409dee2`**.
+  **fresh Claude Opus 5 세션.** amend/rebase/reset · 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 ·
+  **live provider 추론** · secret 사용 0. `node_modules` stage 0. Pony Tail(full).
+- **M5a는 승인됐다**: 다섯 번째 fresh 독립 Codex 리뷰가 `409dee2`에 **`APPROVE_TO_STACK` · A finding 0**.
+  이전 문서의 "5차 리뷰 pending / M5a 미승인" 표현은 **그 승인 이전의 dated 기록**이다.
+- **M5b 커밋 2개**: `1a94261`(feat — stable controller + `B-8`/`C-16`/`C-21`/`C-25`/`C-27`) ·
+  `42777d9`(docs — durable 직전 포인터 재검증을 중복 방어로 명시).
+- **핵심 계약**: `StableController`는 `OrchestrationKernel` 위의 **얇은 다리**다 — kernel이 유일한
+  scheduler·상태 권위이고 controller는 `scheduleReady` → `startScheduledBatch` → `registerArtifact` →
+  `submitResult`/`acknowledgeDelivery`만 부른다(두 번째 scheduler·상태 시스템 0, `runParallelMission`
+  재사용 0). manifest·checkout·git 경로·provider 신원·시각 권위 **봉인** + 매 advance 대조 →
+  단일 marker `controller_binding_drift`. 모든 start·send 직전 `verifyExecutionBoundary`+`revalidateSync`.
+  **deny-by-default 정책 1개**(정확한 명령·pin된 dependency·정확한 도메인·task 소유권/writableRoots·
+  로컬 merge·예산 + **manifest가 덮지 못하는 레포 hard deny**), 게이트는 start·send **이전**과 ack **이전**.
+  durable inbox 순서 소비 · **성공 종료 결과 뒤에만 ack** · artifact 포인터 재검증 · turn마다 `events()`
+  재구독(`C-25`) · durable state에 프롬프트/transcript/stderr/argv/secret/`SessionHandle` 0 ·
+  usage는 반환값(state schema 무변경).
+- **테스트**: 파일 단독 `stableController` **19/19** · `orchestrationKernel` **68/68** ·
+  `codexCliProvider` **58/58** · **provider race subset 8/8 직렬 반복 3회(3/3)** ·
+  `npm run test:exec` **268/268** · `tsc --noEmit` 0 · `build` PASS(dist parity) · `git diff --check` clean.
+  mutation은 `B-8` fail-open · start/전달 직전 정책 제거 · 조기 ack · provider 이전 artifact 검증 제거 ·
+  예전 events iterable 재사용 · `C-27` unhandled rejection · `C-21` poison 제거 · `C-16` 교차 충돌 제거를
+  전부 죽였다. **살아남은 1건(정직)**: durable 직전 중복 포인터 재검증만 제거하면 실패 테스트가 **없다**
+  (`registerArtifact`와 `submitResult`가 사이에 await 없이 같은 검증을 한다) — 중복 방어로 남기고 주석에
+  단독 커버리지 없음을 적었다.
+- **대장**: `B-8`·`C-16`·`C-21`·`C-25`·`C-27` **fixed(M5b)**. `B-7`·`B-9`는 **열린 live 하드 게이트**
+  (M5b는 live 0이라 트리거 미소진). **M5c open**: `C-17`(kernel 만료 `>=`) · `C-18`(deadline·취소·자손
+  정리) · `C-19`(reviewer 결과를 kernel state로 옮기기 전 schema 검증) · `C-22`(재시작 소유권·복구) ·
+  `C-24`(stderr 정확한 상한) · `C-26`(신뢰된 git/worktree 자동화). `C-23`의 최종 closer는 **M5a 5차**다.
+- **다음 세션이 할 일**: ① **supervisor의 fresh Codex `gpt-5.6-sol` xhigh read-only 독립 리뷰**(범위
+  `409dee2..42777d9`) — **M5b는 그 전까지 승인 상태가 아니고 위 fixed 판정도 재확인 대상**이다.
+  ② 리뷰 통과 후 **M5c**(위 6건 + autopilot CLI + pause/recovery). ③ **M5d**는 offline self-hosting
+  acceptance. **미실행**: `npm test` 전체(최종 M5 handoff 직렬 1회로 예약) · `test:core` · acceptance ·
+  stress · live · MCP · 실제 추론. **M5 전체는 미완료다.**
+
+## 이전 (2026-07-27 — **V3 M5a 5차 리비전: 독립 Codex 리뷰(REVISE) — 낡은 핸들 · 가변 시계로 만료 우회(`C-23` 2차 reopen) · 드리프트 marker 불일치**)
+
+
 
 - **위치**: 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
   시작 HEAD `8f95877` 위에 **로컬 커밋만**(code+tests+dist `bfd1cd0`, docs 후속). **새 fresh Claude Opus 5

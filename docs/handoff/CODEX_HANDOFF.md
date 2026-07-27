@@ -3,7 +3,106 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5a 5차 리비전(offline)** · **M5 미완료 · M5a handoff 미승인** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5b stable controller · 1차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+
+- **M5a는 승인됐다**(다섯 번째 fresh 독립 Codex 리뷰가 `409dee2`에 `APPROVE_TO_STACK` · A finding 0).
+  아래 절들의 "M5a handoff 미승인" 표기는 그 승인 이전의 dated 기록이다.
+- **M5b는 offline 구현 + 1차 리비전까지다.** worktree `/private/tmp/solo-founder-harness-m5b` ·
+  branch `work/m5b-stable-controller`, base `409dee2`, 로컬 커밋 `1a94261`(feat) · `42777d9`(docs) ·
+  **`6bc390d`(1차 리비전 fix)** + 이 docs 커밋. 원격 push/PR/merge 0 · live provider 추론 0 · 네트워크 0 ·
+  secret 사용 0 · `node_modules` stage 0.
+- **독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰 = REVISE (A/P1 5건)**, 범위 `409dee2..42777d9`.
+  **리비전 `6bc390d`가 5건 전부 fixed**:
+  ⓐ **생성 authority가 실제로 봉인되지 않았다** — controller가 caller-owned `opts`에서 실행 입력을 계속
+  재읽기했다(같은 `id`의 다른 provider · 같은 state의 다른 kernel · 다른 handoff 교체가 통과, **테스트가
+  `provider.start` monkey-patch가 실행되기를 기대**) · 중첩 manifest 가변 · handoff `spec`/`request`/`outputs`가
+  await를 건너는 live alias · 경계가 확인한 `targetRoot` 폐기. → kernel·provider·handoff **객체와 메서드
+  함수까지 생성자 포착**(실행 입력은 그것만) · `this.opts`는 **tripwire 전용**(`controller_binding_drift`
+  단일 marker) · manifest **깊은 복사·깊은 freeze** + 밖에는 방어적 불변 사본 · handoff 산출물은 **await 전에**
+  closed 검증→복사→freeze · cwd는 **`targetRoot`로 만든 새 불변 spec**. `SessionHandle` 참조 동일성 보존.
+  ⓑ **정책이 집행이 아니었다** — `ExecutionRequest`는 자기 선언 · 컴파일 결과 폐기 · provider 실제 권한과 독립
+  → 빈 request로도 edit 가능 provider가 명령·쓰기·네트워크 가능. → **M5b 계약을 "증명 가능한 read-only Codex
+  planning/review bridge"로 좁혔다**: `READ_ONLY_EXECUTION_CONTRACT` **brand**(문자열 `id` 위조 불가 ·
+  production 발급자 = `CodexCliProvider`) · spec `permissionMode: "plan"` 전용(**ClaudeCliProvider 기본
+  `acceptEdits` 차단**, `allowedTools`/`addDirs`/`settingsPath`/비 read-only sandbox 거부) · 명령·쓰기·
+  dependency·네트워크·merge·MCP 요구는 전부 `policy_not_read_only` · hard deny 의도는 `policy_hard_denied` ·
+  artifact 소유권은 **kernel `registerArtifact`(권위)** 가 집행(`artifact_not_owned`). **wrapper token 화면을
+  집행이라고 주장하지 않는다** — 타입 있는 집행 = 신규 **`B-10`(M5c 하드 게이트)**.
+  ⓒ **소진을 아는 예산으로 다음 batch task가 시작될 수 있었다** → start·send **직전마다** 봉인·만료·경과·토큰
+  게이트, 소진 확인 후 남은 task는 **provider 호출 0**(두 task 회귀가 start 수 0 고정).
+  ⓓ **포인터 검증이 경계 await 뒤 낡았다** → 불변 스냅샷을 **await 없는 단일 동기 게이트**에서 재검증
+  (그 다음 문장이 provider 호출) + start/send 창 결정론적 변조 seam 테스트.
+  ⓔ **중복 종료·중복 리뷰 섹션이 `B-8`을 reopen했다** → 공용 `consumeExactlyOneTerminal`(종료 **정확히 1건** ·
+  종료 뒤 모든 이벤트 거부) + reviewer가 **활성 로드맵 §5.2 `review_result`** 를 **코드 펜스 밖에서** 파싱
+  (필수 heading 6개 **각각 1회** · verdict **1개** · 미상/중복/모순 거부 · 대상 revision·hash를 **호출자
+  기대값**에 묶음). `buildReviewPrompt`·모든 caller/mock 갱신. **`B-8` 재closed(새 증거)**.
+  ⓕ **C 정정**: durable `resultBody`의 토큰 usage 제거(+부재 회귀) · "봉인/hard-deny 집행/전이 0/usage"
+  서술과 증거 라벨 정정.
+- **대장**: `C-16`·`C-21`·`C-25`·`C-27` fixed(M5b) · `B-8` fixed(리비전 `6bc390d`).
+  **신규 `B-10`**(타입 있는 실행 집행 — M5c Claude 쓰기 실행 전) · **`B-11`**(선택된 batch 전체가 per-task
+  preflight 전에 running · 시작 안 된 task가 자원 보유 — M5c autopilot 전) · **`B-12`**(재시작 시 토큰·경과
+  회계 초기화 — 늦어도 M5c) · **`B-13`**(durable 완료·자원 해제가 provider 정리 확인보다 먼저 · `stop` 실패
+  삼킴 — M5c live runner 또는 다른 provider 전) · **`C-12` → B(P1) 재분류**(트리거 발화: 실패한 전달이
+  running task에 unack로 남고 ready-only advance가 재시도하지 않는다 — M5c autopilot 전).
+  **`B-7`·`B-9`는 열린 live 하드 게이트**(M5b live 0). **`C-17`·`C-18`·`C-19`·`C-22`·`C-24`·`C-26`은
+  리비전이 손대지 않았고 fixed로 주장하지 않는다.** `C-23`의 최종 closer는 M5a 5차다.
+- **M5b 리비전 검증(이 세션 자기보고 — read-only 독립 리뷰어가 재실행한 것이 아니다)**: 파일 단독
+  `stableController.test.ts` **36/36** · `reviewer.test.ts` **14/14** · `orchestrationKernel.test.ts`
+  **70/70** · `codexCliProvider.test.ts` **58/58** · `executionBoundary.test.ts` **17/17** ·
+  `sessionRunner.test.ts` **7/7** · `npm run test:exec` **295/295**(268 → 295) ·
+  **중복 종료 + 포인터/예산 race subset 14건 직렬 반복 3회 → 3회 모두 14/14** ·
+  kernel 계열 acceptance 개별 재실행 `m4a` **31/31** · `m4b` **42/42** · `m4c` **77/77** ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS(dist parity) · `git diff --check` clean.
+  **mutation 6종**(포착 메서드 재읽기 1건 / 깊은 복사·freeze 제거 4건 / 경계 뒤 포인터 재검증 제거 2건 /
+  per-task 예산 게이트 제거 2건 / 중복 종료 거부 제거 5건 / 중복 리뷰 섹션 거부 제거 1건) **전부 죽었고
+  `git checkout --`로 정확히 원복**(`MUTATION` grep 0 · `numstat` 0줄). **살아남는 1건(정직)**: durable
+  직전 중복 포인터 재검증 단독 제거는 실패 테스트 없음(사이에 await 없음 — 중복 방어로 남기고 주석에 적었다).
+- **다음 게이트 = supervisor의 fresh Codex read-only 독립 재리뷰**. **그 전까지 M5b는 승인 상태가 아니고
+  위 fixed 판정 전부가 재확인 대상이다.** **전체 suite(`npm test`) 미실행** — 최종 M5 handoff(M5d 이후)
+  직렬 1회 예약. 미실행: `npm test` 전체 · `test:core` · `acceptance.sh` 전체 · stress · live · MCP ·
+  실제 Codex/Claude 추론 · M5c lifecycle · M5d E2E. **M5 전체는 미완료다.**
+
+### 이전 — M5b 최초 구현 기록 (2026-07-27 · **위 리비전이 봉인·정책·usage·증거 서술과 `B-8` 판정을 정정했다**)
+
+- **M5a는 승인됐다.** 다섯 번째 fresh 독립 Codex `gpt-5.6-sol` xhigh read-only 리뷰가 **M5a 최종 로컬 HEAD
+  `409dee2`** 에 **`APPROVE_TO_STACK` · A finding 0**을 냈다. 아래 절들의 "M5a handoff 미승인" 표기는
+  **그 승인 이전의 dated 기록**이며 현행 판정이 아니다(이력으로 보존한다).
+- **M5b는 offline 구현만 끝났다.** worktree `/private/tmp/solo-founder-harness-m5b` ·
+  branch `work/m5b-stable-controller`, base `409dee2`, 로컬 커밋 **`1a94261`**(feat) + **`42777d9`**(docs).
+  원격 push/PR/merge 0 · live provider 추론 0 · 네트워크 0 · secret 사용 0 · `node_modules` stage 0.
+- **계약 요약**: `StableController`는 `OrchestrationKernel` 위의 **얇은 다리**다 — kernel이 유일한
+  scheduler이자 상태 전이 권위이고, controller는 `scheduleReady` → `startScheduledBatch` →
+  `registerArtifact` → `submitResult`/`acknowledgeDelivery`만 부른다(두 번째 scheduler·상태 시스템 0 ·
+  `runParallelMission` 재사용 0). manifest(kernel에서 읽어 재검증한 사본 + canonical digest) · controller
+  checkout · git 실행 파일 경로 · provider 신원 · 시각 권위를 **봉인**하고 매 advance 대조 →
+  단일 marker **`controller_binding_drift`**. 모든 provider start·send 직전에 M5a
+  `verifyExecutionBoundary` → `revalidateSync()`. **deny-by-default 정책 하나**(`compileExecutionPolicy`:
+  정확한 명령 allowlist · 정확히 pin된 dependency · 정확한 도메인 · task 소유권/writableRoots · 로컬 merge ·
+  세션/토큰/경과 예산 + **manifest가 덮지 못하는 레포 hard deny**)가 **start·send 이전과 ack 이전**에 돈다.
+  durable inbox는 순서대로 소비하고 **성공 종료 결과 뒤에만 ack**한다. artifact 포인터는 handoff 직전·
+  durable 직전에 재검증하고, turn마다 `events(handle)`를 다시 부른다(`C-25`). durable state에는
+  프롬프트·transcript·stderr·argv·secret·`SessionHandle`이 하나도 없고 **usage는 반환값**이다
+  (state schema 무변경). **핸들은 재구성 금지 — `start()`가 준 그 객체 그대로** 들고 다닌다.
+- **대장 갱신**: `B-8`(reviewer fail-open → 안정 `ReviewGateError` 코드 + 명시 Risks/Critical 헤더 +
+  명시 `pass|revise|block` verdict 일관성) · `C-16` · `C-21` · `C-25` · `C-27` = **fixed(M5b)**.
+  **`B-7`·`B-9`는 열린 live 하드 게이트**로 남는다(M5b는 live를 켜지 않아 트리거 미소진).
+  **M5c 소유로 open**: `C-17` · `C-18` · `C-19`(reviewer 결과를 kernel state로 옮기기 전 schema 검증) ·
+  `C-22` · `C-24` · `C-26`. `C-23`의 최종 closer는 **M5a 5차 리비전**이다(4차 아님).
+- **M5b 검증**: 파일 단독 `stableController.test.ts` **19/19** · `orchestrationKernel.test.ts` **68/68** ·
+  `codexCliProvider.test.ts` **58/58** · **provider race subset 8/8 직렬 반복 3회 → 3회 모두 8/8** ·
+  `npm run test:exec` **268/268** · `npx tsc --noEmit` 0 · `npm run build` PASS(dist parity) ·
+  `git diff --check` clean. mutation은 `B-8` fail-open · start/전달 직전 정책 제거 · 조기 ack ·
+  provider 이전 artifact 검증 제거 · 예전 events iterable 재사용 · `C-27` unhandled rejection ·
+  `C-21` poison 제거 · `C-16` 교차 충돌 제거를 전부 죽였다. **살아남은 1건(정직한 한계)**: durable 직전의
+  중복 포인터 재검증만 제거하면 실패하는 테스트가 **없다**(`registerArtifact`와 바로 뒤 `submitResult`가
+  사이에 await 없이 같은 포인터를 검증한다) — 중복 방어로 남기고 주석에 단독 커버리지 없음을 적었다.
+- **다음 게이트 = supervisor의 fresh Codex read-only 독립 리뷰**(범위 `409dee2..42777d9`).
+  **그 전까지 M5b는 승인 상태가 아니고 위 fixed 판정도 재확인 대상이다.**
+  **전체 suite(`npm test`)는 여전히 미실행** — 최종 M5 handoff(M5d 이후) 직렬 1회로 예약.
+  미실행: `npm test` 전체 · `test:core` · acceptance · stress · live · MCP · 실제 Codex/Claude 추론 ·
+  M5c lifecycle · M5d E2E(offline self-hosting acceptance). **M5 전체는 미완료다.**
+
+### 이전 — M5a 5차 리비전 기록 (2026-07-27 · **당시 표기: M5a handoff 미승인**)
 
 범위 `85ebe883..8f95877`을 **또 다른 독립 fresh Codex `gpt-5.6-sol` xhigh read-only**가 리뷰해 다시
 **REVISE**를 냈다. 4차의 내부 linearization(첫 await 전 동기 claim · await 뒤·발행 직전 소유권 재확인 ·
