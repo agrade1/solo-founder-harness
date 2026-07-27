@@ -44,7 +44,8 @@ class MissionCoder implements ExecutionProvider {
 function cleanReviewer(): MockExecProvider {
   const script: EventScript = (spec): SessionEvent[] => {
     const raw = { type: "mock", session_id: spec.sessionId };
-    const md = "## Risks\n### Critical\n- 없음\n### Notes\n- ok";
+    // M5b(`B-8`): 리뷰 게이트가 명시 verdict를 요구한다(Critical 0건 ↔ pass).
+    const md = "## Risks\n### Critical\n- 없음\n### Notes\n- ok\n## Verdict: pass";
     return [
       { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
       { kind: "result", sessionId: spec.sessionId, isError: false, text: md, numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },

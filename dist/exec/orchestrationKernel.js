@@ -576,6 +576,12 @@ function assertActive(task, what, allowIdle = false) {
 /**
  * 전달 대상 해석: taskId 우선, 없으면 roleId로 찾되 **유일할 때만** 인정한다.
  * 자기 자신·미상·모호는 전부 거부하고, 종료된 task도 수신자가 될 수 없다.
+ *
+ * **taskId ↔ roleId 교차 namespace 모호성도 거부한다(대장 `C-16`, M5b).** 어떤 task의 `taskId`가
+ * **다른 task의 `roleId`** 와 같으면 이전 판은 taskId를 조용히 먼저 골랐다 — 실제 inbox 소비가 생긴
+ * 지금은 그 선택 하나로 bounded summary·artifact 포인터가 **엉뚱한 관련 task**로 갈 수 있다.
+ * 중앙은 "누구에게"를 추측하지 않으므로 두 해석이 갈리면 `ambiguous_recipient`다(전이 0).
+ * 같은 task가 자기 taskId와 roleId를 같게 가진 경우는 해석이 하나이므로 충돌이 아니다.
  */
 function resolveRecipientTask(state, raw, sender) {
     const id = assertSlug(raw, "deliverTo");
@@ -583,7 +589,11 @@ function resolveRecipientTask(state, raw, sender) {
         throw new OrchestrationError("invalid_recipient", "orchestrator는 전달 대상 task가 아니다(중앙은 이미 수신자다)");
     }
     const byTaskId = state.tasks.find((t) => t.taskId === id);
-    const matches = byTaskId ? [byTaskId] : state.tasks.filter((t) => t.roleId === id);
+    const byRoleId = state.tasks.filter((t) => t.roleId === id);
+    if (byTaskId && byRoleId.some((t) => t.taskId !== byTaskId.taskId)) {
+        throw new OrchestrationError("ambiguous_recipient", `전달 대상 ${id}가 어떤 task의 taskId이면서 다른 task의 roleId다 — taskId를 추측해 고르지 않는다`);
+    }
+    const matches = byTaskId ? [byTaskId] : byRoleId;
     if (matches.length === 0)
         throw new OrchestrationError("unknown_recipient", `미상 전달 대상: ${id}`);
     if (matches.length > 1) {

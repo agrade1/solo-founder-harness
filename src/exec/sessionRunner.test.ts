@@ -14,13 +14,19 @@ import { autoApprove } from "./approvalQueue.js";
 import { MockExecProvider, type EventScript } from "./mockExecProvider.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from "./types.js";
 
-/** 라운드마다 다른 Critical 목록을 내는 리뷰어 mock. */
+/**
+ * 라운드마다 다른 Critical 목록을 내는 리뷰어 mock.
+ * M5b(`B-8`)부터 리뷰 게이트가 **명시 verdict**를 요구하므로 Critical 유무와 일치하는 verdict를 함께 낸다
+ * (계약이 강해진 것이고 이 테스트들의 의미는 그대로다 — 완화·삭제 0).
+ */
 function reviewerProvider(perRound: string[][]): ExecutionProvider {
   let i = 0;
   const script: EventScript = (spec): SessionEvent[] => {
     const critical = perRound[Math.min(i, perRound.length - 1)];
     i++;
-    const md = `## Risks\n### Critical\n${critical.length ? critical.map((c) => `- ${c}`).join("\n") : "- 없음"}\n### Notes\n- n`;
+    const md =
+      `## Risks\n### Critical\n${critical.length ? critical.map((c) => `- ${c}`).join("\n") : "- 없음"}\n### Notes\n- n` +
+      `\n## Verdict: ${critical.length ? "revise" : "pass"}`;
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
       { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },

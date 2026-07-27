@@ -1047,13 +1047,16 @@ test("[M5a] resume: ephemeral 거부 · 관측 UUID로만 재실행 · 두 번�
 });
 
 test("[M5a] resume: 정규 UUID를 관측하지 못했으면 --last로 대체하지 않고 거부", async () => {
+  // 두 스트림 모두 **비가역 프로토콜 실패**(`missing_session_id` · `invalid_session_id`)이므로
+  // M5b(`C-21`)부터는 세션 자체가 닫히고 `codex_protocol_failed`가 먼저 거부한다 — 계약이
+  // **더 강해진 것**이고(그 전에도 `codex_resume_unavailable`로 거부됐다) 어느 쪽이든 **spawn 0**이다.
   for (const stream of [['{"type":"turn.completed","usage":{}}'], ['{"type":"thread.started","thread_id":"--last"}']]) {
     const h = await harness((c) => c.finish(stream, 0));
     try {
       const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
       const handle = await h.provider.start(spec, "1차");
       await drain(h.provider.events(handle));
-      assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), "codex_resume_unavailable");
+      assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), "codex_protocol_failed");
       assert.equal(h.calls.length, 1, "resume 거부에서는 두 번째 프로세스가 없다");
     } finally {
       h.cleanup();
@@ -1179,6 +1182,62 @@ test("[M5a] MCP 위반을 본 세션은 닫힌다 — resume으로 이어갈 수
     assert.equal(r[0].terminalReason, "mcp_call_observed");
     assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), "codex_mcp_observed");
     assert.equal(h.calls.length, 1, "오염된 thread를 다시 띄우지 않는다");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5b] C-21: 프로토콜 실패로 끝난 turn 뒤에는 resume이 없다(spawn 추가 0)", async () => {
+  // MCP·신원 충돌만 세션을 닫던 이전 판에서는 이 네 스트림 뒤의 `send`가 **그 thread를 이어갔다**.
+  const streams: Array<[string, string[], string]> = [
+    ["malformed", [`{"type":"thread.started","thread_id":"${TID}"}`, "{oops", '{"type":"turn.completed","usage":{}}'], "malformed_line"],
+    [
+      "oversized",
+      [`{"type":"thread.started","thread_id":"${TID}"}`, `{"type":"x","p":"${"z".repeat(70_000)}"}`, '{"type":"turn.completed","usage":{}}'],
+      "oversized_line",
+    ],
+    [
+      "duplicate_terminal",
+      [`{"type":"thread.started","thread_id":"${TID}"}`, '{"type":"turn.completed","usage":{}}', '{"type":"turn.completed","usage":{}}'],
+      "duplicate_terminal",
+    ],
+    [
+      "post_terminal",
+      [
+        `{"type":"thread.started","thread_id":"${TID}"}`,
+        '{"type":"turn.completed","usage":{}}',
+        '{"type":"item.completed","item":{"id":"i","item_type":"agent_message","text":"late"}}',
+      ],
+      "post_terminal_event",
+    ],
+  ];
+  for (const [label, stream, reason] of streams) {
+    const h = await harness((c) => c.finish(stream, 0));
+    try {
+      const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+      const handle = await h.provider.start(spec, "1차");
+      const r = resultsOf(await drain(h.provider.events(handle)));
+      assert.equal(r.length, 1, label);
+      assert.equal(r[0].isError, true, label);
+      assert.equal(r[0].terminalReason, reason, label);
+      // 실패한 turn이 깨끗한 baseline이 되지 않는다 — 호출자가 `isError`를 무시해도 fail closed다.
+      assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), "codex_protocol_failed", label);
+      assert.equal(h.calls.length, 1, `${label}: 실패한 turn 뒤에 프로세스를 또 띄웠다`);
+    } finally {
+      h.cleanup();
+    }
+  }
+});
+
+test("[M5b] C-21: 정상 turn은 그대로 resume된다(게이트가 과잉 차단하지 않는다)", async () => {
+  const h = await harness((c) => c.finish(OK_STREAM, 0));
+  try {
+    const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+    const handle = await h.provider.start(spec, "1차");
+    assert.equal(resultsOf(await drain(h.provider.events(handle)))[0].isError, false);
+    await h.provider.send(handle, "2차");
+    assert.equal(h.calls.length, 2);
+    assert.equal(resultsOf(await drain(h.provider.events(handle)))[0].isError, false);
   } finally {
     h.cleanup();
   }
@@ -1485,6 +1544,11 @@ interface GateGit {
   path: string;
   arm(): void;
   release(): void;
+  /**
+   * `arm()` 이후 완료된 git 위임이 `count`건이 되면 정착한다 — 타이머를 추측하지 않고 **완료 신호**를
+   * 센다("창이 닫혔다"를 기다리는 결정론적 방법). 경계 1회는 `--show-toplevel` + `rev-parse HEAD` = 2건이다.
+   */
+  ran(count?: number): Promise<void>;
   cleanup(): void;
 }
 
@@ -1492,6 +1556,7 @@ function gateGit(): GateGit {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-gategit-")));
   const armFile = join(dir, "arm");
   const relFile = join(dir, "release");
+  const ranFile = join(dir, "ran");
   const script = join(dir, "git");
   // 자식은 PATH를 물려받지 않으므로 shebang은 현재 node의 **절대경로**다.
   // 확장자가 없어 CJS로 로드된다(tmpdir에 package.json이 없다).
@@ -1499,13 +1564,15 @@ function gateGit(): GateGit {
     script,
     [
       `#!${process.execPath}`,
-      'const { existsSync } = require("node:fs");',
+      'const { appendFileSync, existsSync } = require("node:fs");',
       'const { spawnSync } = require("node:child_process");',
       "const idle = new Int32Array(new SharedArrayBuffer(4));",
       `while (existsSync(${JSON.stringify(armFile)}) && !existsSync(${JSON.stringify(relFile)})) {`,
       "  Atomics.wait(idle, 0, 0, 5);",
       "}",
       `const r = spawnSync(${JSON.stringify(TRUSTED_GIT)}, process.argv.slice(2), { stdio: "inherit" });`,
+      // 완료를 한 줄씩 남긴다 — 테스트가 "몇 건이 끝났는지"로 창이 닫힌 시점을 판정한다.
+      `appendFileSync(${JSON.stringify(ranFile)}, "x\\n");`,
       "process.exit(r.status === null || r.status === undefined ? 1 : r.status);",
       "",
     ].join("\n"),
@@ -1513,8 +1580,19 @@ function gateGit(): GateGit {
   );
   return {
     path: script,
-    arm: () => writeFileSync(armFile, ""),
+    arm: () => {
+      rmSync(ranFile, { force: true }); // 이후 완료만 센다
+      writeFileSync(armFile, "");
+    },
     release: () => writeFileSync(relFile, ""),
+    ran: async (count = 1) => {
+      // bounded 폴링(최대 ~10s). 시간을 추측하지 않고 완료 건수를 본다.
+      for (let i = 0; i < 2000; i++) {
+        if (existsSync(ranFile) && readFileSync(ranFile, "utf8").trimEnd().split("\n").length >= count) return;
+        await new Promise<void>((r) => setTimeout(r, 5));
+      }
+      throw new Error(`게이트된 git 위임이 release 후에도 ${count}건에 이르지 못했다`);
+    },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
   };
 }
@@ -1578,6 +1656,70 @@ test("[M5a] stop은 child 없는 claim도 취소한다 — release 후에도 spa
     await h.provider.stop(handle, "멱등"); // 두 번째 stop은 조용히 통과한다
     assert.equal(h.calls.length, 1);
   } finally {
+    h.cleanup();
+  }
+});
+
+// ── C-27: stop은 취소된 invocation이 정착한 뒤에 반환한다 (M5b) ─────────────────
+
+/** 이미 정착한 promise의 reaction만 소화한다 — 여전히 pending이면 그대로 남는다(타이머 없이 판정). */
+async function settledOutcome(p: Promise<unknown>): Promise<string> {
+  let outcome = "(미정착)";
+  void p.then(
+    () => (outcome = "(통과)"),
+    (e) => (outcome = codeOf(e)),
+  );
+  await Promise.resolve();
+  await Promise.resolve();
+  return outcome;
+}
+
+test("[M5b] C-27: stop은 starting 상태의 invocation이 정착한 뒤에 반환한다", async () => {
+  const h = await gatedHarness();
+  try {
+    const handle = await h.provider.start(h.spec, "1차");
+    await drain(h.provider.events(handle));
+    assert.equal(h.calls.length, 1);
+
+    h.gate.arm();
+    const pending = h.provider.send(handle, "2차"); // claim만 된 상태(child 없음, 경계에서 정지)
+    assert.equal(await settledOutcome(pending), "(미정착)", "아직은 진행 중이어야 한다");
+
+    await h.provider.stop(handle, "취소");
+    // **stop 반환 시점에 이미 정착**했다 — 호출자가 나중에 rejection을 따로 받아 처리할 필요가 없다.
+    assert.equal(await settledOutcome(pending), "codex_invocation_cancelled");
+    assert.equal(h.calls.length, 1, "취소된 claim이 프로세스를 띄웠다");
+
+    h.gate.release();
+    await h.gate.ran(2); // 뒤늦게 끝난 경계 작업도 발행·spawn을 하지 못한다
+    assert.equal(h.calls.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5b] C-27: 취소된 invocation promise를 버려도 unhandled rejection이 없다", async () => {
+  const seen: unknown[] = [];
+  const onUnhandled = (e: unknown): void => {
+    seen.push(e);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  const h = await gatedHarness();
+  try {
+    const handle = await h.provider.start(h.spec, "1차");
+    await drain(h.provider.events(handle));
+
+    h.gate.arm();
+    void h.provider.send(handle, "2차"); // 호출자가 promise를 **버린다**(오케스트레이션 배선의 실수 형태)
+    await h.provider.stop(handle, "취소"); // 하나만 await한다
+    h.gate.release();
+    await h.gate.ran(2); // 늦게 끝난 경계 작업이 내부 promise를 reject시키는 지점까지 지난다
+    await new Promise<void>((r) => setImmediate(r));
+    await new Promise<void>((r) => setImmediate(r));
+    assert.deepEqual(seen, [], "버려진 취소 promise가 unhandled rejection으로 떴다");
+    assert.equal(h.calls.length, 1);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
     h.cleanup();
   }
 });
@@ -1682,6 +1824,36 @@ test("[M5a] 낡은 핸들은 교체 세션을 읽지도·조종하지도·중지
     // ⓓ H2 자신의 stop은 정상 동작한다(낡은 핸들 방어가 정상 경로를 막지 않는다).
     await h.provider.stop(h2, "H2 종료");
     assert.equal(await codeOfCall(() => h.provider.events(h2)), "codex_unknown_session");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5b] 핸들 계약의 정확한 능력: 신원 참조를 보존한 사본은 유효하고, 재구성은 fail closed다", async () => {
+  // M5a 5차 리비전 계약의 **정확한** 범위를 고정한다(문서가 "겉 객체 동일성"을 요구하는 것처럼 읽혔다):
+  // 판정은 **`providerBinding` 참조 동일성 하나**이므로 spread 사본도 그 참조를 들고 있으면 유효하고,
+  // 참조 없이 `{sessionId, spec}`으로 재구성·직렬화한 핸들은 거부된다. controller 배선의 계약이다.
+  const h = await gatedHarness();
+  try {
+    const handle = await h.provider.start(h.spec, "1차");
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
+
+    const clone = { ...handle }; // 신원 참조를 보존한 사본
+    await h.provider.send(clone, "사본으로 보낸 2차");
+    assert.equal(h.calls.length, 2, "신원을 보존한 사본이 거부됐다");
+    assert.equal(h.calls[1].stdin, "사본으로 보낸 2차");
+    assert.equal(resultsOf(await drain(h.provider.events(clone))).length, 1);
+
+    // 직렬화·재구성(신원 참조 유실)은 어떤 진입점에서도 통하지 않는다.
+    const rebuilt = JSON.parse(JSON.stringify({ sessionId: handle.sessionId, spec: h.spec })) as typeof handle;
+    assert.equal(await codeOfCall(() => h.provider.send(rebuilt, "재구성")), "codex_stale_handle");
+    assert.equal(await codeOfCall(() => h.provider.events(rebuilt)), "codex_stale_handle");
+    await h.provider.stop(rebuilt, "재구성 stop"); // 무해해야 한다
+    assert.equal(h.calls.length, 2, "재구성 핸들이 프로세스를 띄웠다");
+    // 원래 핸들은 여전히 살아 있다(재구성 stop이 세션을 지우지 않았다).
+    await h.provider.send(handle, "3차");
+    assert.equal(h.calls.length, 3);
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
   } finally {
     h.cleanup();
   }

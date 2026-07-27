@@ -4,7 +4,13 @@
  * 기존 `ExecutionProvider` 계약을 그대로 구현한다 — **두 번째 오케스트레이터·상태 시스템을 만들지 않는다.**
  * 세션 수명 모델은 `ClaudeCliProvider`와 같다(호출당 프로세스 1개, 후속 turn은 resume).
  *
- * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3·4·5차 리비전 반영):
+ * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3·4·5차 리비전 + M5b controller 배선 전 정리 반영):
+ * - **프로토콜 실패로 끝난 turn 뒤에는 resume이 없다(M5b · 대장 `C-21`).** 파서가 비가역 실패를 기록한
+ *   invocation이 닫히면 세션도 `codex_protocol_failed`로 닫는다 → 후속 `send`는 **spawn 0**이다.
+ *   판정을 호출자의 `result.isError` 확인에만 맡기지 않는다(`B-8`과 같은 방향의 fail-open 제거).
+ * - **`stop()`은 취소된 invocation이 정착한 뒤에 반환한다(M5b · 대장 `C-27`).** 호출자에게 준 promise를
+ *   취소 신호와 race시키고 그 결과에 항상 handler를 붙이므로, **`stop` 하나만 await해도** 나중에 뜨는
+ *   unhandled rejection이 없고 `stop`이 진행 중 git 조회에 매달리지도 않는다.
  * - **핸들은 세션 인스턴스에 묶인다(5차 리비전 · A/P1).** 이전 판은 `send`/`events`/`stop`이 `sessionId`
  *   **하나로만** 상태를 찾았다 → H1을 stop하고 같은 id로 H2를 start하면 **낡은 H1이 H2의 이벤트를 읽고,
  *   H2에 지시를 보내고, H2를 중지·삭제**할 수 있었다(4차의 교체 테스트는 내부 정리만 봤고 이미 반환된
@@ -380,7 +386,19 @@ export class CodexCliProvider {
         // spawn seam은 **여기서 한 번** 포착한다 — 이후 `opts.spawn`을 바꿔도 실행 대상은 바뀌지 않는다.
         this.spawnFn = opts.spawn ?? nodeSpawn;
     }
-    async start(spec, initialPrompt) {
+    /**
+     * 호출자에게 주는 promise에 **항상 handler를 하나 붙인다**(대장 `C-27`). 반환값은 그대로 호출자
+     * 것이고 오류도 그대로 전달된다 — 그림자는 **unhandled rejection만** 막는다(오류를 삼키지 않는다).
+     * 이게 있어야 "취소된 invocation은 `stop` 하나만 await해도 조용히 정착한다"가 성립한다.
+     */
+    tracked(p) {
+        void p.then(() => undefined, () => undefined);
+        return p;
+    }
+    start(spec, initialPrompt) {
+        return this.tracked(this.startSession(spec, initialPrompt));
+    }
+    async startSession(spec, initialPrompt) {
         if (typeof spec?.sessionId !== "string" || spec.sessionId.length === 0) {
             fail("codex_config_invalid", "spec.sessionId가 필요하다");
         }
@@ -399,6 +417,7 @@ export class CodexCliProvider {
             settled: Promise.resolve(),
             gen: 0,
             cancelled: false,
+            inflight: null,
             codexSessionId: "",
             homeId: null,
             poisoned: "",
@@ -421,8 +440,13 @@ export class CodexCliProvider {
      * 후속 지시 = `codex exec … resume <관측된 UUID>`. 관측 전·ephemeral·실행 중·오염 세션은 거부한다.
      * **핸들 신원이 먼저다**: 낡은·위조 핸들은 대상 세션을 읽지도 건드리지도 않고 `codex_stale_handle`이다.
      */
-    async send(handle, message) {
+    send(handle, message) {
+        return this.tracked(this.sendMessage(handle, message));
+    }
+    async sendMessage(handle, message) {
         const state = this.requireState(handle);
+        // 프로토콜 실패로 닫힌 세션은 이어가지 않는다(`codex_mcp_observed` ·
+        // `codex_session_identity_conflict` · **`codex_protocol_failed`** — 대장 `C-21`).
         if (state.poisoned)
             fail(state.poisoned, "세션이 프로토콜 위반으로 닫혔다");
         // `starting`(claim 후 spawn 전)도 실행 중으로 본다 — 겹친 send는 **동기로** 거부되고 spawn 0이다.
@@ -448,6 +472,11 @@ export class CodexCliProvider {
      * 발행·spawn을 하지 못하고 거부된다(예전에는 그 창에서 추적되지 않는 프로세스가 뜰 수 있었다).
      * **낡은 핸들의 `stop`은 무해·멱등이다(5차 리비전)**: 같은 id에 이미 **교체 세션**이 있으면
      * signal·close·상태 변경·삭제를 **하나도** 하지 않고 조용히 돌아온다(없는 세션 stop과 같은 취급).
+     *
+     * **`starting`에서도 진행 중 invocation이 정착한 뒤에 반환한다(대장 `C-27`, M5b).** 취소 신호로
+     * 호출자 promise를 **즉시** `codex_invocation_cancelled`로 정착시키고(진행 중 git 조회를 기다리지
+     * 않으므로 매달리지 않는다) 그 결과를 await한다 → **`stop` 하나만 await한 호출자에게도** 나중에 뜨는
+     * unhandled rejection이 없다. 뒤늦게 끝난 경계 작업은 소유권 검사에서 걸려 발행·spawn 0이다.
      * 프로세스 그룹·TERM→유예→KILL·자손 정리는 이 범위가 아니다(대장 `C-18`, M5c).
      * ponytail: 여기서는 SIGTERM 1회 + settle 대기까지만 — 강제 종료 사다리는 M5c에서 붙인다.
      */
@@ -456,9 +485,15 @@ export class CodexCliProvider {
         if (!state || !isBoundTo(handle, state))
             return; // 멱등 + 교체 세션 보호(낡은 핸들은 아무것도 하지 않는다)
         state.cancelled = true; // child가 없어도 진행 중 claim을 무효화한다
+        const inflight = state.inflight;
         if (state.status === "running") {
             state.child?.kill("SIGTERM");
             await state.settled; // 종료 result 1건이 큐에 들어간 뒤에만 정리한다
+        }
+        if (inflight) {
+            // 이미 정착한 invocation에는 무해하다(race의 첫 정착만 유효). `settled`는 reject하지 않는다.
+            inflight.cancel(new OrchestrationError("codex_invocation_cancelled", "이 invocation은 stop으로 취소됐다"));
+            await inflight.settled;
         }
         state.status = "stopped";
         state.queue.close();
@@ -522,16 +557,27 @@ export class CodexCliProvider {
         if (prompt.length > MAX_PROMPT_CHARS)
             fail("codex_prompt_too_long", `프롬프트는 ${MAX_PROMPT_CHARS}자 이하여야 한다`);
         const gen = this.claim(state); // 첫 await 전 동기 claim — 겹친 호출은 여기서 갈린다
-        try {
-            await this.runInvocation(state, gen, resumeSessionId, prompt);
-        }
-        catch (err) {
-            // 발행 전 실패는 **내 claim만** 되돌린다. 발행 뒤라면 `settle`이 이미 상태를 정리했고,
-            // 세션이 교체됐다면(`owns` false) 아무것도 건드리지 않는다.
-            if (state.status === "starting" && this.owns(state, gen))
-                state.status = "idle";
-            throw err;
-        }
+        const inner = (async () => {
+            try {
+                await this.runInvocation(state, gen, resumeSessionId, prompt);
+            }
+            catch (err) {
+                // 발행 전 실패는 **내 claim만** 되돌린다. 발행 뒤라면 `settle`이 이미 상태를 정리했고,
+                // 세션이 교체됐다면(`owns` false) 아무것도 건드리지 않는다.
+                if (state.status === "starting" && this.owns(state, gen))
+                    state.status = "idle";
+                throw err;
+            }
+        })();
+        // `C-27`: 취소 신호와 race시켜 `stop`이 이 promise를 **즉시** 정착시킬 수 있게 하고, 그 결과에
+        // **항상 handler를 붙인 그림자**를 남긴다 → 호출자가 promise를 버려도 unhandled rejection이 없고
+        // `stop`은 그림자를 await해 "정착 후 반환"을 지킨다. 취소가 늦으면(이미 정착) 무해하다.
+        let cancel = () => undefined;
+        const cancelled = new Promise((_res, rej) => (cancel = rej));
+        const raced = Promise.race([inner, cancelled]);
+        // 이 대입은 첫 await 이전(동기 구간)에 끝난다 — `stop`이 볼 때 항상 채워져 있다.
+        state.inflight = { settled: raced.then(() => undefined, () => undefined), cancel };
+        return raced;
     }
     /**
      * claim된 invocation 본체. 사전 검증은 계약 위반을 **비동기 작업 전에** 걸러내기 위한 것이고,
@@ -595,6 +641,13 @@ export class CodexCliProvider {
             // **내 generation일 때만** state를 건드린다 — 교체 세션·다음 invocation을 오염시키지 않는다.
             if (this.sessions.get(state.sessionId) === state && state.gen === gen) {
                 state.child = null;
+                // 대장 `C-21`: **비가역 프로토콜 실패로 끝난 turn 뒤에는 resume하지 않는다.** malformed·과대 줄·
+                // 중복/모순 종료·상한 초과·신원 위반은 파서가 되돌릴 수 없는 실패로 기록하는데, 이전 판은
+                // MCP 위반·세션 신원 충돌만 세션을 닫아서 **실패한 turn이 다음 turn의 깨끗한 baseline**이 됐다
+                // (판정이 호출자의 `result.isError` 확인에만 달려 있었다 — `B-8`과 같은 방향의 fail-open).
+                // 이미 더 구체적인 사유로 닫힌 세션은 그 코드를 유지한다.
+                if (parser.protocolFailed && !state.poisoned)
+                    state.poisoned = "codex_protocol_failed";
                 if (state.status !== "stopped")
                     state.status = "idle";
             }

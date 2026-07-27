@@ -1780,6 +1780,75 @@ test("[M4c] 전달 거부: 무관·자기 자신·미상·모호·orchestrator·
   );
 });
 
+test("[M5b] C-16: taskId ↔ roleId 교차 namespace는 taskId를 조용히 고르지 않고 거부한다", () => {
+  // 함정 배치: sibling child의 **taskId**가 "pm"이고, 무관한 root task의 **roleId**도 "pm"이다.
+  // 이전 판은 taskId를 먼저 골라 **성공적으로 route를 남겼다**(kid-a와 sibling이므로 관계 검사도 통과).
+  // 실제 inbox 소비가 생긴 M5b에서는 그 한 번의 추측이 bounded summary·artifact 포인터를 엉뚱한
+  // 관련 task로 보내므로, 해석이 갈리면 거부한다.
+  const ws = makeWorkspace();
+  const k = createOrchestrationRun({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: manifestFor(["parent", "helper", "qa-security"]),
+    clock: fixedClock(),
+  });
+  k.createRootTask(seed("parent", "tech-lead", { ownership: ["src"] }));
+  k.createRootTask(seed("helper", "pm")); // roleId = "pm"
+  k.startTask("parent");
+  for (const kid of ["kid-a", "pm", "pm-x"]) {
+    k.requestSpawn({
+      envelope: envelope("spawn_request", "parent", "tech-lead", { messageId: `spawn-${kid}` }),
+      body: body("spawn_request"),
+      child: seed(kid, "dev-lead", { ownership: [`src/${kid}`] }), // taskId = "pm"
+    });
+  }
+  k.startTask("kid-a");
+  const paths = runPaths(ws, RUN_ID);
+  const revBefore = k.getState().revision;
+  const filesBefore = dirFingerprint(paths.dir);
+  const eventsBefore = readFileSync(paths.eventsFile, "utf8");
+
+  assert.equal(
+    codeOf(() =>
+      k.submitStatusUpdate({
+        envelope: kidEnvelope("status_update", "kid-a", "dev-lead", { messageId: "su-cross" }),
+        body: body("status_update"),
+        summary: "교차 namespace 전달 시도",
+        deliverTo: "pm",
+      }),
+    ),
+    "ambiguous_recipient",
+  );
+  assert.equal(k.getState().revision, revBefore, "실패한 라우팅이 revision을 올렸다");
+  assert.equal(dirFingerprint(paths.dir), filesBefore, "실패한 라우팅이 파일(body 포함)을 바꿨다");
+  assert.equal(readFileSync(paths.eventsFile, "utf8"), eventsBefore, "실패한 라우팅이 이벤트를 남겼다");
+  assert.deepEqual(k.listPendingInbox("pm"), [], "거부됐는데 inbox에 남았다");
+  assert.deepEqual(k.listPendingInbox("helper"), []);
+
+  // 교차 충돌이 없는 taskId 지정은 그대로 동작한다(과잉 차단이 아니다).
+  assert.equal(
+    k.submitStatusUpdate({
+      envelope: kidEnvelope("status_update", "kid-a", "dev-lead", { messageId: "su-ok" }),
+      body: body("status_update"),
+      summary: "충돌 없는 sibling 지정",
+      deliverTo: "pm-x",
+    }).routeToTaskId,
+    "pm-x",
+  );
+  // 자기 taskId와 roleId가 같은 **한 task**는 해석이 하나라 충돌이 아니다.
+  k.createDependentTask({ ...seed("qa-security", "qa-security"), dependsOn: ["kid-a"] });
+  assert.equal(
+    k.submitStatusUpdate({
+      envelope: kidEnvelope("status_update", "kid-a", "dev-lead", { messageId: "su-self-named" }),
+      body: body("status_update"),
+      summary: "taskId와 roleId가 같은 단일 task",
+      deliverTo: "qa-security",
+    }).routeToTaskId,
+    "qa-security",
+  );
+});
+
 test("[M4c] pending inbox는 결정론적이고 재시작 후 같은 다음 전달을 준다 · ack는 좁은 전이", () => {
   const { ws, k } = bootRouting();
   for (const id of ["su-2", "su-1"]) {

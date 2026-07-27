@@ -46,7 +46,8 @@ function cleanReviewer(): MockExecProvider {
     const raw = { type: "mock", session_id: spec.sessionId };
     return [
       { kind: "init", sessionId: spec.sessionId, model: "opus", cwd: spec.cwd, permissionMode: "plan", tools: [], mcpServers: [], raw },
-      { kind: "result", sessionId: spec.sessionId, isError: false, text: "## Risks\n### Critical\n- 없음", numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
+      // M5b(`B-8`): 리뷰 게이트가 명시 verdict를 요구한다(Critical 0건 ↔ pass).
+      { kind: "result", sessionId: spec.sessionId, isError: false, text: "## Risks\n### Critical\n- 없음\n## Verdict: pass", numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw },
     ];
   };
   return new MockExecProvider(script);
