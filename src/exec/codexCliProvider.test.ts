@@ -812,8 +812,9 @@ test("[M5a] 창 안에서 spec이 변조되면 그 spec으로 인자를 만들�
     ["model", (spec: SessionSpec) => (spec.model = "evil-model"), "codex_spec_mutated"],
     ["outputSchemaPath", (spec: SessionSpec) => (spec.codex!.outputSchemaPath = "/tmp/evil.json"), "codex_spec_mutated"],
     ["codexHome", (spec: SessionSpec) => (spec.codex!.codexHome = "/tmp"), "codex_spec_mutated"],
-    // 계약 자체를 어기는 변조는 스냅샷 비교 전에 재해석 단계에서 걸린다(둘 다 fail closed).
-    ["sandbox", (spec: SessionSpec) => (spec.codex!.sandbox = "workspace-write" as never), "codex_sandbox_forbidden"],
+    // 계약 자체를 **무효로 만드는** 변조도 start 이후에는 같은 단일 marker다(5차 리비전).
+    // 초기 start의 native 코드(`codex_sandbox_forbidden`)는 별도 테스트가 그대로 고정한다.
+    ["sandbox", (spec: SessionSpec) => (spec.codex!.sandbox = "workspace-write" as never), "codex_spec_mutated"],
   ] as Array<[string, (s: SessionSpec) => void, string]>) {
     const r = await tamperDuringWindow(({ spec }) => mutate(spec));
     assert.equal(r.code, expected, label);
@@ -1581,17 +1582,27 @@ test("[M5a] stop은 child 없는 claim도 취소한다 — release 후에도 spa
   }
 });
 
-test("[M5a] start 진행 중 send는 spawn 없이 거부된다(claim이 첫 await 전에 잡힌다)", async () => {
+test("[M5a] start 진행 중: 세션은 첫 await 전에 claim되고, 발급되지 않은 핸들은 fail closed다", async () => {
   const h = await gatedHarness();
   try {
     h.gate.arm();
     const starting = h.provider.start(h.spec, "1차");
-    assert.equal(await codeOfCall(() => h.provider.send({ sessionId: "s1", spec: h.spec }, "겹침")), "codex_send_overlap");
-    assert.equal(h.calls.length, 0, "start가 아직 spawn 전인데 send가 프로세스를 띄웠다");
+    // 동기 claim의 증거: 아직 spawn 전인데 같은 id의 start가 거부된다(세션이 이미 등록·점유됐다).
+    assert.equal(await codeOfCall(() => h.provider.start(h.spec, "중복")), "codex_session_exists");
+    // provider가 발급하지 않은 핸들로는 진행 중인 세션을 읽지도 건드리지도 못한다(5차 리비전).
+    assert.equal(await codeOfCall(() => h.provider.send({ sessionId: "s1", spec: h.spec }, "겹침")), "codex_stale_handle");
+    assert.equal(await codeOfCall(() => h.provider.events({ sessionId: "s1", spec: h.spec })), "codex_stale_handle");
+    await h.provider.stop({ sessionId: "s1", spec: h.spec }, "위조 stop"); // 무해해야 한다
+    assert.equal(h.calls.length, 0, "start가 아직 spawn 전인데 다른 호출이 프로세스를 띄웠다");
+
     h.gate.release();
-    const handle = await starting;
+    const handle = await starting; // 위조 stop이 진행 중 start를 취소하지 못했다
     assert.equal(h.calls.length, 1);
     assert.equal(h.calls[0].stdin, "1차");
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
+    // 발급된 핸들은 그대로 동작한다(2차 turn까지).
+    await h.provider.send(handle, "2차");
+    assert.equal(h.calls.length, 2);
     assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
   } finally {
     h.cleanup();
@@ -1601,23 +1612,76 @@ test("[M5a] start 진행 중 send는 spawn 없이 거부된다(claim이 첫 awai
 test("[M5a] stop 뒤 교체 세션: 취소된 invocation의 정리가 교체본을 지우거나 바꾸지 못한다", async () => {
   const h = await gatedHarness();
   try {
+    // 1차 turn을 정상 완료해 **발급된 핸들**을 얻는다(stop 대상도 이 핸들이다).
+    const first = await h.provider.start(h.spec, "1차");
+    assert.equal(resultsOf(await drain(h.provider.events(first))).length, 1);
+    assert.equal(h.calls.length, 1);
+
     h.gate.arm();
-    const stale = h.provider.start(h.spec, "낡은 start"); // claim 후 경계에서 정지
-    await h.provider.stop({ sessionId: "s1", spec: h.spec }, "취소");
-    // 같은 harness 세션 id로 **새 generation**을 만든다(낡은 것은 아직 살아 있다).
+    const stale = h.provider.send(first, "낡은 2차"); // claim 후 경계에서 정지
+    await h.provider.stop(first, "취소");
+    // 같은 harness 세션 id로 **새 generation**을 만든다(낡은 invocation은 아직 살아 있다).
     const fresh = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
     const replacement = h.provider.start(fresh, "교체 세션");
     h.gate.release();
 
     assert.equal(await codeOfCall(() => stale), "codex_invocation_cancelled");
     const handle = await replacement;
-    assert.equal(h.calls.length, 1, "취소된 start는 spawn 0이고 교체 세션만 뜬다");
-    assert.equal(h.calls[0].stdin, "교체 세션");
+    assert.equal(h.calls.length, 2, "취소된 invocation은 spawn 0이고 교체 세션만 더 뜬다");
+    assert.equal(h.calls[1].stdin, "교체 세션");
     assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1, "교체 세션의 큐가 살아 있다");
     // 교체 세션은 여전히 정상 동작한다(낡은 정리가 상태를 망가뜨리지 않았다).
     await h.provider.send(handle, "교체 세션 2차");
-    assert.equal(h.calls.length, 2);
+    assert.equal(h.calls.length, 3);
     assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] 낡은 핸들은 교체 세션을 읽지도·조종하지도·중지하지도 못한다(A/P1 · 5차 리비전)", async () => {
+  const h = await gatedHarness();
+  try {
+    // ── H1: 1차 turn 완료 후 stop → 세션 제거 ──────────────────────────────
+    const h1 = await h.provider.start(h.spec, "H1 1차");
+    assert.equal(resultsOf(await drain(h.provider.events(h1))).length, 1);
+    await h.provider.stop(h1, "H1 종료");
+    assert.equal(h.calls.length, 1);
+    // 교체본이 아직 없을 때는 기존 semantics 그대로다.
+    assert.equal(await codeOfCall(() => h.provider.events(h1)), "codex_unknown_session");
+
+    // ── H2: **같은 harness 세션 id**로 새 세션 ─────────────────────────────
+    const spec2 = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+    const h2 = await h.provider.start(spec2, "H2 1차");
+    assert.equal(h.calls.length, 2);
+    assert.notEqual(h1.providerBinding, h2.providerBinding, "세션 인스턴스마다 다른 신원이어야 한다");
+    assert.equal(h1.sessionId, h2.sessionId, "전제: 같은 harness 세션 id다(구별은 신원으로만 한다)");
+
+    // ⓐ 낡은 H1의 events/send는 H2를 읽지도 건드리지도 않는다.
+    assert.equal(await codeOfCall(() => h.provider.events(h1)), "codex_stale_handle");
+    assert.equal(await codeOfCall(() => h.provider.send(h1, "낡은 지시")), "codex_stale_handle");
+    // sessionId만 베끼거나 spec만 바꾼 위조 핸들도 마찬가지다(신원은 내용이 아니다).
+    assert.equal(await codeOfCall(() => h.provider.send({ sessionId: h2.sessionId, spec: spec2 }, "위조")), "codex_stale_handle");
+    assert.equal(h.calls.length, 2, "낡은/위조 핸들이 프로세스를 띄웠다");
+
+    // ⓑ 낡은 H1의 stop은 무해·멱등이다 — H2에 signal·close·삭제를 하지 않는다.
+    await h.provider.stop(h1, "낡은 stop");
+    await h.provider.stop(h1, "낡은 stop 2회");
+    assert.equal(h.calls.length, 2);
+
+    // ⓒ H2의 스트림과 후속 turn이 전부 살아 있다.
+    const h2Results = resultsOf(await drain(h.provider.events(h2)));
+    assert.equal(h2Results.length, 1, "H2의 종료 결과가 사라졌다");
+    assert.equal(h2Results[0].isError, false, "낡은 stop이 H2에 signal을 보냈다");
+    await h.provider.send(h2, "H2 2차");
+    assert.equal(h.calls.length, 3, "H2의 후속 turn이 spawn되지 않았다");
+    assert.equal(h.calls[2].stdin, "H2 2차");
+    assert.deepEqual(h.calls[2].args.slice(0, 7), ["exec", "--sandbox", "read-only", "--cd", h.repo.root, "resume", TID]);
+    assert.equal(resultsOf(await drain(h.provider.events(h2))).length, 1);
+
+    // ⓓ H2 자신의 stop은 정상 동작한다(낡은 핸들 방어가 정상 경로를 막지 않는다).
+    await h.provider.stop(h2, "H2 종료");
+    assert.equal(await codeOfCall(() => h.provider.events(h2)), "codex_unknown_session");
   } finally {
     h.cleanup();
   }
@@ -1626,8 +1690,12 @@ test("[M5a] stop 뒤 교체 세션: 취소된 invocation의 정리가 교체본�
 // ── turn 사이 spec/opts 드리프트 (재개된 C-23) ─────────────────────────────
 
 interface DriftOpts {
+  /** 호출자가 계속 들고 있는 승인 manifest 참조 — 통째로 갈아끼울 수 있다. */
+  manifest: unknown;
   executablePath: string;
   gitExecutablePath: string;
+  /** 시각 권위. 없을 수도(= `Date.now` 봉인), 나중에 끼워 넣을 수도 있다. */
+  nowMs?: () => number;
 }
 
 /**
@@ -1643,7 +1711,7 @@ async function betweenTurnDrift(
   try {
     const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
     // provider가 들고 있는 **바로 그 opts 객체**를 변조 대상으로 쓴다.
-    const opts = {
+    const opts: DriftOpts & { controllerRepoRoot: string; spawn: SpawnFn } = {
       manifest: manifest(repo.head),
       controllerRepoRoot: repo.root,
       executablePath: TRUSTED_BIN,
@@ -1758,16 +1826,105 @@ test("[M5a] C-23: turn 사이 spec/opts 변조는 새 baseline이 되지 못한�
       },
       "codex_spec_mutated",
     ],
-    // 계약 자체를 어기는 변조는 재해석 단계에서 먼저 걸린다(둘 다 fail closed).
+    // 계약 자체를 **무효로 만드는** 변조도 start 이후에는 같은 단일 marker다(5차 리비전 — 문서·증거 일치).
     [
-      "sandbox",
+      "sandbox(무효화)",
       (s) => {
         s.codex!.sandbox = "workspace-write" as never;
         return () => {
           s.codex!.sandbox = "read-only";
         };
       },
-      "codex_sandbox_forbidden",
+      "codex_spec_mutated",
+    ],
+    [
+      "codexHome 제거(무효화)",
+      (s) => {
+        const prev = s.codex!.codexHome;
+        delete (s.codex as { codexHome?: string }).codexHome;
+        return () => {
+          s.codex!.codexHome = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "manifest 무효화",
+      (_s, o) => {
+        const prev = o.manifest;
+        o.manifest = { milestoneId: "m5a" };
+        return () => {
+          o.manifest = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    // ── 승인 manifest 교체(대장 `C-28`): 봉인 밖이었던 권한 필드까지 canonical digest로 대조된다 ──
+    [
+      "manifest.approvedCommit",
+      (_s, o) => {
+        const prev = o.manifest as Record<string, unknown>;
+        o.manifest = { ...prev, approvedCommit: "b".repeat(40) };
+        return () => {
+          o.manifest = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "manifest.expiresAt(연장)",
+      (_s, o) => {
+        const prev = o.manifest as Record<string, unknown>;
+        o.manifest = { ...prev, expiresAt: "2099-12-31T23:59:59.000Z" };
+        return () => {
+          o.manifest = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "manifest.writableRoots",
+      (_s, o) => {
+        const prev = o.manifest as Record<string, unknown>;
+        o.manifest = { ...prev, writableRoots: ["src", "docs"] };
+        return () => {
+          o.manifest = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "manifest.allowedCommands",
+      (_s, o) => {
+        const prev = o.manifest as Record<string, unknown>;
+        o.manifest = { ...prev, allowedCommands: ["npm test"] };
+        return () => {
+          o.manifest = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "manifest.localMergeAllowed",
+      (_s, o) => {
+        const prev = o.manifest as Record<string, unknown>;
+        o.manifest = { ...prev, localMergeAllowed: true };
+        return () => {
+          o.manifest = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    // ── 시각 권위 교체(5차 리비전): 시계를 갈아끼우는 것 자체가 드리프트다 ──
+    [
+      "nowMs 추가",
+      (_s, o) => {
+        o.nowMs = () => Date.now();
+        return () => {
+          delete o.nowMs;
+        };
+      },
+      "codex_spec_mutated",
     ],
   ];
   for (const [label, mutate, expected] of cases) {
@@ -1777,5 +1934,104 @@ test("[M5a] C-23: turn 사이 spec/opts 변조는 새 baseline이 되지 못한�
     assert.equal(r.leaked, 0, `${label}: 이전 완료 큐가 교체됐다`);
     assert.equal(r.recovered, 1, `${label}: 되돌린 뒤 정상 turn이 돌지 않았다(claim 누수)`);
     assert.equal(r.total, 2, `${label}: spawn 총계가 1차 + 복구 turn 2건이 아니다`);
+  }
+});
+
+test("[M5a] C-23: 시각 권위는 봉인된다 — 시계를 갈아끼워 만료된 승인을 되살릴 수 없다", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    const at = Date.parse("2099-12-31T00:00:00.000Z"); // manifest.expiresAt
+    // **봉인되는 원본 시계**. 같은 함수가 호출 시점마다 다른 값을 준다(시각을 얼리지 않는다).
+    let expired = false;
+    let reads = 0;
+    const sealedClock = () => {
+      reads += 1;
+      return expired ? at + 60_000 : at - 60_000;
+    };
+    const opts: DriftOpts & { controllerRepoRoot: string; spawn: SpawnFn } = {
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      gitExecutablePath: TRUSTED_GIT,
+      spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+      nowMs: sealedClock,
+    };
+    const provider = new CodexCliProvider(opts);
+    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
+
+    // ⓪ 1차 turn: 만료 전이라 정상이다.
+    const handle = await provider.start(spec, "1차");
+    assert.equal(resultsOf(await drain(provider.events(handle))).length, 1);
+    assert.equal(calls.length, 1);
+    assert.ok(reads >= 2, "만료는 경계 진입과 spawn 직전에 각각 확인된다");
+
+    // ⓐ 실제로 승인이 만료된 뒤, 호출자가 **만료 전을 말하는 시계**로 갈아끼운다.
+    expired = true;
+    const readsBefore = reads;
+    opts.nowMs = () => at - 60_000;
+    assert.equal(await codeOfCall(() => provider.send(handle, "2차")), "codex_spec_mutated");
+    assert.equal(calls.length, 1, "갈아끼운 시계로 만료된 승인 아래 resume이 떴다");
+    assert.equal(reads, readsBefore, "드리프트는 시계를 호출하기 전에 잡힌다");
+    assert.equal((await drain(provider.events(handle))).length, 0, "이전 완료 큐가 교체됐다");
+
+    // ⓑ 교체를 되돌리면 **봉인된 그 시계**가 진짜 만료를 보고한다 — 여전히 spawn 0.
+    opts.nowMs = sealedClock;
+    assert.equal(await codeOfCall(() => provider.send(handle, "2차")), "manifest_expired");
+    assert.equal(calls.length, 1);
+    assert.ok(reads > readsBefore, "봉인된 시계가 경계에서 실제로 호출되지 않았다");
+
+    // ⓒ 같은 시계가 다시 만료 전을 보고하면 turn이 돈다 — 시각을 얼려 둔 것이 아니다.
+    expired = false;
+    await provider.send(handle, "2차(정상)");
+    assert.equal(calls.length, 2);
+    assert.equal(resultsOf(await drain(provider.events(handle))).length, 1);
+
+    // ⓓ 시계 **제거**도 드리프트다(기본 `Date.now`로 슬쩍 돌아가지 못한다).
+    delete opts.nowMs;
+    assert.equal(await codeOfCall(() => provider.send(handle, "3차")), "codex_spec_mutated");
+    assert.equal(calls.length, 2);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] 시각 권위 계약: 함수 아닌 nowMs는 start에서 거부되고, spawn seam 교체는 무의미하다", async () => {
+  // ⓐ 시각을 읽을 수 없는 상태로 만료를 판정하지 않는다(초기 start의 native 코드 유지).
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) =>
+      providerWith(repo, repo.root, calls, { nowMs: Date.now() as unknown as () => number }).start(specFor(repo.root, home), "p"),
+    ),
+    "codex_config_invalid",
+  );
+
+  // ⓑ `spawn`은 생성자에서 포착되므로 나중 교체가 실행 대상을 바꾸지 못한다(봉인 대상이 아닌 이유).
+  const repo = await initRepo();
+  const home = codexHome();
+  const sealedCalls: FakeCall[] = [];
+  const swappedCalls: FakeCall[] = [];
+  try {
+    const opts: DriftOpts & { controllerRepoRoot: string; spawn: SpawnFn } = {
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      gitExecutablePath: TRUSTED_GIT,
+      spawn: fakeSpawn(sealedCalls, (c) => c.finish(OK_STREAM, 0)),
+    };
+    const provider = new CodexCliProvider(opts);
+    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
+    const handle = await provider.start(spec, "1차");
+    await drain(provider.events(handle));
+
+    opts.spawn = fakeSpawn(swappedCalls, (c) => c.finish(OK_STREAM, 0));
+    await provider.send(handle, "2차");
+    assert.equal(resultsOf(await drain(provider.events(handle))).length, 1);
+    assert.equal(sealedCalls.length, 2, "생성자에서 포착한 seam으로만 spawn해야 한다");
+    assert.equal(swappedCalls.length, 0, "나중에 끼워 넣은 spawn이 쓰였다");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
   }
 });

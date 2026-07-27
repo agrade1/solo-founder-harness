@@ -114,6 +114,19 @@ export interface CodexSessionOptions {
 export interface SessionHandle {
   readonly sessionId: string;
   readonly spec: SessionSpec;
+  /**
+   * provider가 발급한 **불투명 세션 신원**(선택 · V3 M5a 5차 리비전).
+   *
+   * `sessionId`만으로는 **같은 id로 만들어진 교체 세션**과 낡은 핸들을 구별할 수 없다 —
+   * 세션을 stop한 뒤 같은 id로 다시 start하면 예전 핸들이 새 세션의 이벤트를 읽거나 거기에
+   * 지시를 보내거나 그것을 중지할 수 있었다. 그래서 provider는 **세션 인스턴스 1개당 하나의
+   * 신원 객체**를 만들어 자기가 발급한 핸들에 붙이고, 이후 호출에서 **참조 동일성**으로만 대조한다.
+   *
+   * 값은 **내용이 없는 frozen 객체**다 — 비밀·난수 material이 아니므로 직렬화·로그·문서에 새어도
+   * 잃을 것이 없고(빈 객체로 보인다), 반대로 그 참조를 **이미 가진 쪽**만 그 세션을 조종할 수 있다.
+   * 이 필드를 쓰지 않는 provider(`claude-cli`·`mock-exec`)는 그대로 동작한다(하위 호환).
+   */
+  readonly providerBinding?: object;
 }
 
 /**

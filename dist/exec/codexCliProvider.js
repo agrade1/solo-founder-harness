@@ -4,7 +4,27 @@
  * 기존 `ExecutionProvider` 계약을 그대로 구현한다 — **두 번째 오케스트레이터·상태 시스템을 만들지 않는다.**
  * 세션 수명 모델은 `ClaudeCliProvider`와 같다(호출당 프로세스 1개, 후속 turn은 resume).
  *
- * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3·4차 리비전 반영):
+ * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3·4·5차 리비전 반영):
+ * - **핸들은 세션 인스턴스에 묶인다(5차 리비전 · A/P1).** 이전 판은 `send`/`events`/`stop`이 `sessionId`
+ *   **하나로만** 상태를 찾았다 → H1을 stop하고 같은 id로 H2를 start하면 **낡은 H1이 H2의 이벤트를 읽고,
+ *   H2에 지시를 보내고, H2를 중지·삭제**할 수 있었다(4차의 교체 테스트는 내부 정리만 봤고 이미 반환된
+ *   공개 핸들은 보지 않았다). 이제 세션 인스턴스마다 **내용 없는 frozen 신원 객체**를 만들어 `start`가
+ *   반환하는 핸들에 붙이고(`SessionHandle.providerBinding`), 모든 진입점이 **참조 동일성**으로 대조한다:
+ *   낡은·위조 핸들의 `send`/`events`는 **읽기·발행·spawn·변경·삭제 없이** `codex_stale_handle`로 닫히고,
+ *   `stop`은 **무해·멱등**이다(교체 세션에 signal·close·삭제를 하지 않는다). 신원은 `sessionId`나
+ *   가변 `spec` 내용이 아니라 **오직 그 객체 참조**이며, 비밀 material이 아니라 로그·문서에 남길 것이 없다.
+ * - **실행 권위는 `start()`가 포착한 값뿐이다(5차 리비전 · A/P1 — `C-23`의 마지막 구멍).** 이전 판은
+ *   봉인에 `nowMs`·`manifest`가 없어서 **매 invocation `this.opts`를 다시 읽었다** → 첫 turn 뒤에
+ *   호출자가 `opts.nowMs`를 만료 전 시각을 말하는 시계로 갈아끼우면 **경계 진입·spawn 직전 두 만료
+ *   검사가 모두 통과**해 실제로는 만료된 승인으로 resume이 떴고, `opts.manifest`도 같은 방식으로
+ *   경계 판정에 끼어들 수 있었다. 이제 **시각 권위(clock)와 검증된 manifest 사본을 봉인**하고
+ *   경계에는 **봉인값만** 넘긴다. 봉인된 clock은 **매번 다시 호출**하므로 시간은 자연스럽게 흐르고
+ *   (시각을 얼리지 않는다), `opts.nowMs`의 교체·제거·추가는 **드리프트**로 잡혀 fail closed다.
+ * - **start 이후의 모든 드리프트 marker는 `codex_spec_mutated` 하나다(5차 리비전 · A/문서 불일치).**
+ *   이전 판은 그렇게 문서화해 놓고 드리프트 비교가 `sealCodexSpec`을 먼저 불러 **재해석 단계의 native
+ *   오류**(`codex_sandbox_forbidden` 등)를 그대로 던졌다(테스트도 그 값을 기대해 문서와 어긋났다).
+ *   이제 **초기 `start`는 정확한 native 코드를 그대로 유지**하고, **start 이후** 봉인값이 바뀌거나
+ *   **무효가 되는** 경우는 값·경로를 싣지 않은 `codex_spec_mutated` 하나로 닫는다.
  * - **invocation 소유권은 첫 await 전에 동기로 claim한다(4차 리비전 · A/P1).** 이전 판은 `send`가 상태를
  *   본 뒤 `invoke`가 **비동기 경계 검증이 끝난 다음에야** 세션을 점유했다 → 겹친 두 `send`가 둘 다 통과해
  *   같은 UUID·`CODEX_HOME`으로 **중복 resume 프로세스**를 띄우고 큐·child를 서로 덮어쓸 수 있었고,
@@ -18,6 +38,8 @@
  * - **유효 실행 옵션은 `start()`에서 봉인한다(재개된 `C-23`).** 호출자 `spec`/`opts`는 매 invocation
  *   동기 진입과 spawn 직전 게이트에서 **필드 단위로 대조**만 되고, 드리프트는 `codex_spec_mutated`
  *   하나로 fail closed다. turn 사이 변조가 **새 baseline이 되지 않는다**.
+ *   봉인 대상은 argv·env·경계 입력에 쓰이는 값 **전부**다: 실행 옵션 · 경로 · **시각 권위** ·
+ *   **승인 manifest 정규 사본과 그 canonical digest**(대장 `C-28` — 권한 필드까지 turn 사이에 고정된다).
  * - **실행 파일은 신뢰된 명시 절대경로 하나뿐이다.** 이 모듈은 `process.env`를 **읽지 않는다** —
  *   PATH·`HARNESS_CODEX_BIN` 같은 상속 환경으로 실행 대상을 고르지 않는다(임의 실행 파일 seam 제거).
  *   경로를 고르는 책임은 **controller(호출자)** 에 있고, 여기서는 검증만 한다.
@@ -205,7 +227,11 @@ function sharedFlags(o) {
         args.push("--output-schema", o.outputSchemaPath);
     return args;
 }
-/** 봉인·대조 대상 필드 **전부**. 새 유효 옵션을 더하면 이 목록에도 넣는다. */
+/**
+ * **대조(===) 대상 필드 전부.** 새 유효 옵션을 더하면 이 목록에도 넣는다.
+ * `manifest`만 여기에 없다 — 매 검증이 **새 사본**을 만들어 참조 비교가 불가능하기 때문이고,
+ * 그 내용은 `manifestDigest`가 **한 필드도 빠짐없이** 대조한다.
+ */
 const SEALED_KEYS = [
     "sessionId",
     "model",
@@ -224,10 +250,34 @@ const SEALED_KEYS = [
     "maxSessions",
     "maxTokens",
     "maxElapsedMs",
+    "clock",
+    "manifestDigest",
 ];
 /**
+ * 시각 권위 해석. 함수면 그 참조를 그대로 쓰고(호출은 만료 검사 시점마다), 미지정이면 `Date.now`다.
+ * 그 외 타입은 거부한다 — 시각을 읽을 수 없는 상태로 승인 만료를 판정하지 않는다(fail closed).
+ * **미지정과 `Date.now` 명시는 같은 값으로 봉인되고, 나중에 함수를 끼워 넣으면 드리프트가 된다.**
+ */
+function resolveClock(nowMs) {
+    if (nowMs === undefined)
+        return Date.now;
+    if (typeof nowMs !== "function")
+        fail("codex_config_invalid", "opts.nowMs는 시각(ms)을 돌려주는 함수여야 한다");
+    return nowMs;
+}
+/**
+ * 정규화된 manifest의 **결정론적 digest**. `validateApprovalManifest`가 배열을 정렬·중복 제거하고
+ * 키 순서가 고정된 객체를 만들므로 같은 승인은 항상 같은 문자열이 된다.
+ * (오류 메시지에는 이 값을 싣지 않는다 — 키 이름만 알린다.)
+ */
+function manifestDigestOf(m) {
+    return JSON.stringify(m);
+}
+/**
  * 현재 외부에서 도달 가능한 값들로 봉인 스냅샷을 만든다(freeze — 내부에서 다시 바뀌지 않는다).
- * 계약 자체를 어기는 값은 여기서 **먼저** 거부된다(`resolveCodexOptions` · manifest closed 검증).
+ * 계약 자체를 어기는 값은 여기서 **먼저** 거부된다(`resolveCodexOptions` · manifest closed 검증 ·
+ * 시각 권위 타입). **초기 `start`에서는 그 native 코드가 그대로 호출자에게 간다** —
+ * 드리프트 경로에서만 단일 marker로 접힌다(`assertNoSpecDrift`).
  */
 function sealCodexSpec(spec, opts) {
     const o = resolveCodexOptions(spec);
@@ -247,14 +297,30 @@ function sealCodexSpec(spec, opts) {
         maxSessions: m.maxSessions,
         maxTokens: m.maxTokens,
         maxElapsedMs: m.maxElapsedMs,
+        clock: resolveClock(opts.nowMs),
+        manifest: m,
+        manifestDigest: manifestDigestOf(m),
     });
 }
 /**
  * 봉인값 대조. **모든 invocation의 동기 진입**(turn 간 변조)과 **spawn 직전 동기 게이트**
- * (같은 invocation 안의 변조)에서 각각 부른다. 드리프트 marker는 `codex_spec_mutated` 하나다.
+ * (같은 invocation 안의 변조)에서 각각 부른다.
+ *
+ * **start 이후의 드리프트 marker는 `codex_spec_mutated` 하나다(5차 리비전).** 값이 *바뀐* 경우뿐
+ * 아니라 start 시점에 유효했던 값이 *무효가 된* 경우(예: `sandbox`를 `workspace-write`로 바꿔
+ * 재해석이 `codex_sandbox_forbidden`을 던지는 경우)도 여기서 같은 marker로 접는다 — 이전 판은
+ * 문서로는 단일 marker를 약속하고 실제로는 native 오류를 흘려 **문서와 증거가 어긋났다**.
+ * 초기 `start`의 정밀 코드는 영향을 받지 않는다(그 경로는 `sealCodexSpec`을 직접 부른다).
+ * 어느 쪽이든 **필드 이름만** 알리고 변조된 값·경로는 오류에 싣지 않는다.
  */
 function assertNoSpecDrift(sealed, spec, opts) {
-    const now = sealCodexSpec(spec, opts);
+    let now;
+    try {
+        now = sealCodexSpec(spec, opts);
+    }
+    catch {
+        fail("codex_spec_mutated", "봉인된 실행 옵션이 start 이후 무효가 됐다");
+    }
     for (const k of SEALED_KEYS) {
         if (now[k] !== sealed[k])
             fail("codex_spec_mutated", `봉인된 실행 옵션이 start 이후 바뀌었다: ${k}`);
@@ -293,6 +359,15 @@ function compileResolvedArgs(o, cwd, resumeSessionId) {
 export function compileCodexEnv(codexHome) {
     return { CODEX_HOME: codexHome };
 }
+/**
+ * 이 핸들이 **정확히 이 세션 인스턴스**에 발급된 것인가(5차 리비전).
+ * 판정은 **불투명 신원 객체의 참조 동일성 하나**다 — `sessionId`(교체 세션과 같다)나 가변 `spec`
+ * 내용(호출자가 언제든 바꾼다)은 근거가 되지 못한다. provider가 발급하지 않은 핸들은 신원이 없으므로
+ * 항상 false다(fail closed).
+ */
+function isBoundTo(handle, state) {
+    return !!handle && handle.providerBinding === state.binding;
+}
 export class CodexCliProvider {
     opts;
     id = "codex-cli";
@@ -302,6 +377,7 @@ export class CodexCliProvider {
     nextGen = 1;
     constructor(opts) {
         this.opts = opts;
+        // spawn seam은 **여기서 한 번** 포착한다 — 이후 `opts.spawn`을 바꿔도 실행 대상은 바뀌지 않는다.
         this.spawnFn = opts.spawn ?? nodeSpawn;
     }
     async start(spec, initialPrompt) {
@@ -314,6 +390,7 @@ export class CodexCliProvider {
         const sealed = sealCodexSpec(spec, this.opts);
         const state = {
             sessionId: spec.sessionId,
+            binding: Object.freeze({}),
             sealed,
             spec,
             queue: new AsyncEventQueue(),
@@ -337,9 +414,13 @@ export class CodexCliProvider {
                 this.sessions.delete(state.sessionId);
             throw err;
         }
-        return { sessionId: state.sessionId, spec };
+        // 핸들은 **이 인스턴스에만** 유효하다. `providerBinding`을 들고 있는 쪽만 이 세션을 조종한다.
+        return Object.freeze({ sessionId: state.sessionId, spec, providerBinding: state.binding });
     }
-    /** 후속 지시 = `codex exec … resume <관측된 UUID>`. 관측 전·ephemeral·실행 중·오염 세션은 거부한다. */
+    /**
+     * 후속 지시 = `codex exec … resume <관측된 UUID>`. 관측 전·ephemeral·실행 중·오염 세션은 거부한다.
+     * **핸들 신원이 먼저다**: 낡은·위조 핸들은 대상 세션을 읽지도 건드리지도 않고 `codex_stale_handle`이다.
+     */
     async send(handle, message) {
         const state = this.requireState(handle);
         if (state.poisoned)
@@ -365,13 +446,15 @@ export class CodexCliProvider {
      * 세션 중지. **종료 결과가 정착하기 전에 큐를 닫거나 상태를 지우지 않는다.**
      * **child가 아직 없는 claim(`starting`)도 여기서 취소된다** — 그 invocation은 경계 작업이 끝나도
      * 발행·spawn을 하지 못하고 거부된다(예전에는 그 창에서 추적되지 않는 프로세스가 뜰 수 있었다).
+     * **낡은 핸들의 `stop`은 무해·멱등이다(5차 리비전)**: 같은 id에 이미 **교체 세션**이 있으면
+     * signal·close·상태 변경·삭제를 **하나도** 하지 않고 조용히 돌아온다(없는 세션 stop과 같은 취급).
      * 프로세스 그룹·TERM→유예→KILL·자손 정리는 이 범위가 아니다(대장 `C-18`, M5c).
      * ponytail: 여기서는 SIGTERM 1회 + settle 대기까지만 — 강제 종료 사다리는 M5c에서 붙인다.
      */
     async stop(handle, _reason) {
-        const state = this.sessions.get(handle.sessionId);
-        if (!state)
-            return; // 멱등
+        const state = this.lookup(handle);
+        if (!state || !isBoundTo(handle, state))
+            return; // 멱등 + 교체 세션 보호(낡은 핸들은 아무것도 하지 않는다)
         state.cancelled = true; // child가 없어도 진행 중 claim을 무효화한다
         if (state.status === "running") {
             state.child?.kill("SIGTERM");
@@ -383,10 +466,22 @@ export class CodexCliProvider {
         if (this.sessions.get(state.sessionId) === state)
             this.sessions.delete(state.sessionId);
     }
+    /** 핸들이 가리키는 id의 **현재** 세션(있으면). 신원 대조는 하지 않는다 — 그건 호출부의 몫이다. */
+    lookup(handle) {
+        return handle && typeof handle.sessionId === "string" ? this.sessions.get(handle.sessionId) : undefined;
+    }
+    /**
+     * 상태 조회 + **핸들 신원 대조**. 두 거부를 구분한다:
+     * - 그 id에 세션이 없다 → `codex_unknown_session`(기존 semantics 그대로).
+     * - 세션은 있는데 **이 핸들이 발급된 인스턴스가 아니다**(stop 후 같은 id로 만들어진 교체 세션 ·
+     *   위조·복제 핸들) → `codex_stale_handle`. **읽기·발행·spawn·변경·삭제 없이** 즉시 닫는다.
+     */
     requireState(handle) {
-        const state = handle && typeof handle.sessionId === "string" ? this.sessions.get(handle.sessionId) : undefined;
+        const state = this.lookup(handle);
         if (!state)
             fail("codex_unknown_session", "없는 세션이다");
+        if (!isBoundTo(handle, state))
+            fail("codex_stale_handle", "이 핸들은 현재 세션 인스턴스의 것이 아니다");
         return state;
     }
     /**
@@ -455,12 +550,15 @@ export class CodexCliProvider {
         const preBin = verifyCodexExecutable(s.executablePath);
         // 대장 `B-5`: 승인된 커밋이 controller/실행 checkout HEAD와 정확히 같을 때만 프로세스를 띄운다.
         const boundary = await verifyExecutionBoundary({
-            manifest: this.opts.manifest,
+            // **봉인된 승인 사본**이다(`this.opts.manifest`를 다시 읽지 않는다 — 갈아끼운 승인이 경계 판정에
+            // 끼어들 통로를 없앤다). 경계는 이 사본을 자기 규칙으로 다시 검증한다.
+            manifest: s.manifest,
             controllerRepoRoot: s.controllerRepoRoot,
             targetWorktree: s.cwd,
             gitExecutablePath: s.gitExecutablePath,
-            // clock을 **함수로** 넘긴다 — 경계는 spawn 직전 재검증에서 만료를 다시 본다.
-            nowMs: this.opts.nowMs,
+            // **봉인된 시각 권위**를 함수로 넘긴다 — 경계는 진입과 spawn 직전 재검증에서 이 함수를 각각
+            // 다시 호출한다(시간은 흐르고, 나중에 교체된 `opts.nowMs`는 여기 오지 못한다).
+            nowMs: s.clock,
         });
         // await 직후 첫 문장: 그 사이 `stop`·세션 교체가 있었으면 발행·spawn 없이 끝난다.
         this.assertOwned(state, gen);
