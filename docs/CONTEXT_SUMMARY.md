@@ -2,7 +2,35 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — **V3 M5a 구현: 실행 경계 + CodexCliProvider + JSONL 어댑터** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-27 — **V3 M5a 리비전: fresh Codex 리뷰(REVISE)의 A 9건 수정** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
+  base `85ebe883`. 커밋 3개(`115e0be` feat → `6ae7fd6` docs → `bdd5507` fix, + 이 문서 커밋).
+  **원격 push/PR/merge 0**, amend/rebase/reset 0. Pony Tail(full).
+- **리뷰**: fresh Codex `gpt-5.6-sol` xhigh · read-only · strict empty MCP · 범위 `85ebe883..6ae7fd6` →
+  **REVISE**(A 9 = P0 2 + P1 7, B 2, C 1). playbook §6의 **단 한 번 resume**으로 A 전부 수정.
+  이 리뷰는 supervisor의 **별도 read-only Codex 세션**이며 **새 provider/live 경로로 Codex 추론을 돌린 적은 없다**.
+- **고친 것**: ⓐ 임의 실행 파일 seam 제거(env·PATH 조회 0, 신뢰 절대경로 필수 + spawn 직전 신원 검증)
+  ⓑ `workspace-write` hard deny(read-only 전용) ⓒ fresh/resume argv 배치 분리 + `--strict-config`·
+  `--ignore-user-config`·`--ignore-rules` ⓓ 세션 신원 = 불변 정규 UUID 1개 ⓔ `CODEX_HOME` 검증
+  (정규·비symlink·0700·비어 있음·사용자 홈 아님, 자식 env는 `CODEX_HOME` 하나) ⓕ 실행 신원 TOCTOU
+  (비정규 입력 거부 + spawn 직전 동기 신원·HEAD 재확인, cwd는 `targetRoot`만) ⓖ 비가역 프로토콜 실패
+  (성공 뒤 실패/MCP/중복 종료/오염 줄 = 실패) ⓗ 멱등 invocation 상태 기계 ⓘ `raw`를 bounded sanitized
+  projection으로.
+- **대장**: `B-6` **fixed**(supervisor 실측 codex-cli `0.146.0-alpha.3` parse-only — 플래그 배치 한정) ·
+  `C-20` **철회**(=`C-17` 중복, `C-17`만 유지·기한 M5c 전) · 신규 `B-8`(reviewer가 `isError`/빈 구조화 출력을
+  통과시킨다 — **M5b reviewer 배선 전**) · `B-9`(JSONL payload 필드 live 확인 — **M5b live 전**) ·
+  `B-7` 확장(live 인증 + stderr 폐기/승인된 정확한 secret 값만 redaction — **live만 막고 offline M5b는 막지 않는다**).
+  `C-18`·`C-19`는 그대로 open.
+- **테스트(명령 + 범위)**: 파일 단독 `executionBoundary.test.ts` **12/12** · `codexStreamParser.test.ts` **24/24** ·
+  `codexCliProvider.test.ts` **34/34**(합 70/70) · `npm run test:exec` 전체 **212/212**(186 → 212) ·
+  `tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  **미실행**: `npm test` 전체 · core · acceptance · stress · live · 반복 — **최종 전체 suite 1회는 supervisor가
+  M5 handoff 시점으로 예약**. mutation 2종(실행 파일 게이트 2건 실패 · 프로토콜 실패 게이트 16건 실패) 후 정확히 원복.
+- **M5는 이 리비전 뒤에도 미완료다.** 다음: `B-7`/`B-8`/`B-9` 해소 → M5b 계획 → 사용자 승인.
+
+## 이전 (2026-07-27 — **V3 M5a 구현: 실행 경계 + CodexCliProvider + JSONL 어댑터**
+· 아래 "열린 블로커·env·sandbox" 서술은 리비전 전 기록이다)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
   base `85ebe883ff96fad1070a508f5d4a28f7fc637b8e`. 로컬 커밋만, **원격 push/PR/merge 0**. Pony Tail(full).

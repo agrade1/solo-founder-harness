@@ -3,7 +3,41 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5a 구현 완료(offline)** · **M5 전체는 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5a 리비전 완료(offline)** · **M5 전체는 미완료** · 이 절이 가장 최신이다)
+
+worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` · base `85ebe883`.
+커밋 `115e0be`(feat) → `6ae7fd6`(docs) → `bdd5507`(fix, 리비전) + 이 문서 커밋. **원격 push/PR/merge 0.**
+
+- **독립 리뷰**: fresh Codex `gpt-5.6-sol` xhigh · read-only · strict empty MCP, 범위 `85ebe883..6ae7fd6`,
+  판정 **REVISE** — **A 9건(P0 2 · P1 7)** + B 2건 + C 1건. playbook §6에 따라 작성 세션을 **한 번만 resume**해
+  **A 9건을 전부 fixed**했다(`bdd5507`). 상세 표는 로드맵 §10 M5 → "M5a fresh Codex 독립 리뷰와 리비전".
+  → 이전 판의 "**열린 P0 없음**"은 그 리뷰 **전** 서술이었다. 현행: 리뷰가 P0 2건을 냈고 **지금은 둘 다 fixed**이며
+  **열린 A는 없다**. 열린 항목은 아래 B/C뿐이다.
+- **핵심 계약 변경(리비전)**: 실행 파일은 **신뢰된 명시 절대경로**만(provider 코드에 `process.env` 0,
+  spawn 직전 신원 검증) · 자식 env는 **`CODEX_HOME` 하나** · **`workspace-write` hard deny(read-only 전용)** ·
+  fresh/resume argv 배치 분리(+`--strict-config`·`--ignore-user-config`·`--ignore-rules`) ·
+  세션 신원은 **불변 정규 UUID 1개** · `CODEX_HOME`은 정규·비symlink·0700·**비어 있음**·사용자 홈 아님 ·
+  비정규 입력 경로 거부 + **spawn 직전 동기 신원·HEAD 재확인** · **비가역 프로토콜 실패**(성공 뒤 실패/MCP/
+  중복 종료/오염 줄 = 실패) · 멱등 invocation 상태 기계 · `raw`는 **bounded sanitized projection**.
+- **열린 B(P1) 3건 — 전부 live/배선만 막고 offline M5b는 막지 않는다**:
+  `B-7`(live 인증 미정 + live secret 값 redaction — stderr 폐기 또는 승인된 정확한 값만 전달) ·
+  `B-8`(`reviewer.ts`가 `result.isError`와 빈/무효 구조화 출력을 통과시킨다 — **M5b reviewer 배선 전**) ·
+  `B-9`(codex JSONL payload 필드명 live 확인 — **M5b live 전**). 열린 C: `C-18`(deadline·cancellation) ·
+  `C-19`(`--output-schema` 응답 미검증) · `C-17`(kernel 만료 경계, M5c 전). **`C-20`은 `C-17` 중복이라 철회.**
+- **`B-6`는 fixed**: supervisor가 codex-cli **`0.146.0-alpha.3`** help를 **parse-only로 실측**했고
+  (추론 미실행) fresh/resume 플래그 배치를 argv 컴파일러와 파싱 계약 테스트에 고정했다.
+  **JSONL payload semantics는 provider live로 검증하지 않았다**(`B-9`).
+- **Codex 추론 사실관계**: **새 provider/live 경로로는 0회**. supervisor가 돌린 **별도 fresh read-only Codex
+  리뷰 세션**만 실제 Codex 사용이었다.
+- **검증**: 파일 단독 `executionBoundary.test.ts` **12/12** · `codexStreamParser.test.ts` **24/24** ·
+  `codexCliProvider.test.ts` **34/34**(합 70/70) · `npm run test:exec` **212/212**(142 → 186 → 212) ·
+  `tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  **미실행**: `npm test` 전체 · `test:core` · acceptance · stress · live · 반복 —
+  **최종 전체 suite 1회는 supervisor가 M5 handoff 시점으로 예약**했다.
+  mutation 2종(실행 파일 게이트 → 2건 실패 / 프로토콜 실패 게이트 → 16건 실패) 후 정확히 원복(`MUTATION` grep 0).
+- **M5는 이 리비전 뒤에도 미완료다.** 다음: `B-7`/`B-8`/`B-9` 해소 → M5b 계획 → 사용자 승인.
+
+## 이전 — M5a 구현 세션 기록 (2026-07-27 · 리뷰 전 시점. "열린 P0 없음"·env/sandbox 서술은 위 현행 블록이 대체한다)
 
 격리 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
 base `85ebe883ff96fad1070a508f5d4a28f7fc637b8e`. **로컬 커밋만 만들고 원격 push/PR/merge는 0.**

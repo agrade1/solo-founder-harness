@@ -1,5 +1,57 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M5a 리비전 — fresh Codex 리뷰 REVISE의 A 9건 수정** · playbook §6의 **단 한 번 resume** · **M5 전체는 여전히 미완료**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
+리비전 시작 HEAD `6ae7fd6`. **기존 두 커밋은 유지**했고 amend/rebase/reset은 하지 않았다.
+push/fetch/pull/PR/merge·네트워크·`gh`·패키지 설치·의존성/lockfile 변경·MCP·**live Codex/Claude 추론**·
+deploy·DB·production·live billing **없음**. Pony Tail(full).
+
+- **리뷰**: fresh Codex `gpt-5.6-sol` xhigh · read-only · strict empty MCP, 범위 `85ebe883..6ae7fd6`,
+  판정 **REVISE**. A 9건(P0 2 · P1 7) + B 2건 + C 1건. 이 리뷰는 supervisor가 돌린 **별도 read-only 세션**이며
+  **새 provider/live 경로로 Codex 추론을 돌린 적은 없다**.
+- **① 임의 실행 파일 seam 제거(P0)**: production의 `HARNESS_CODEX_BIN`·PATH 조회를 없앴다. 이제
+  `executablePath`(신뢰된 절대·정규 경로)가 **필수**이고 spawn 직전마다 symlink 아님·일반 파일·실행 비트·
+  group/other 쓰기 없음을 확인한다. 자식 env는 **`CODEX_HOME` 하나**(PATH도 상속하지 않는다).
+  테스트가 provider **코드**에 `process.env`가 없음을 고정하고, env 오염 상태에서도 명시 경로로만 spawn함을 단정한다.
+- **② `workspace-write` hard deny(P0)**: M5a Codex 세션은 read-only 전용이다. 요청 시 spawn 0.
+  쓰기 모드는 manifest task 소유권·writableRoots를 집행하는 권한 계층이 생긴 뒤 별도 승인으로만 되살린다.
+- **③ resume argv 배치(P1)**: supervisor 실측(codex-cli `0.146.0-alpha.3`, parse-only)에 맞춰 fresh와 resume
+  배치를 분리했다 — `--sandbox`/`--cd`는 **`resume` 앞**, resume 뒤에는 subcommand-local 지원 플래그만.
+  `--strict-config`·`--ignore-user-config`·`--ignore-rules`를 양쪽에 추가했고, 자기 자신과 비교하던
+  기대 argv를 실측 근거의 **손으로 적은 기대값 + 파싱 계약 표**로 바꿨다. → 대장 `B-6` **fixed**(플래그 한정).
+- **④ 세션 신원(P1)**: `thread.started`의 **정규 UUID 정확히 1개**만 인정한다. 빈 값·형식 위반(`--last` 포함)·
+  중복·모순·부재·invocation 간 충돌은 전부 **비가역 프로토콜 실패**이고, 검증되지 않은 텍스트로 resume 인자를 만들지 않는다.
+- **⑤ 설정 격리(P1)**: `CODEX_HOME`을 정규·비symlink·0700·**비어 있음**·사용자 홈 아님으로 검증한다.
+  fake CLI 채널을 `CODEX_HOME` → **cwd**로 옮겨 그 계약을 깨지 않으면서 **env 테스트 seam을 만들지 않았다**.
+  auth는 복사·영속화하지 않는다(live 인증은 `B-7`).
+- **⑥ 실행 신원 TOCTOU(P1)**: 비정규·symlink 입력 경로를 **해석하지 않고 거부**하고, argv `--cd`와 native cwd에
+  경계가 확인한 `targetRoot`만 쓴다. `revalidateSync()`가 spawn 직전 마지막 연산으로 디렉터리 신원(dev+ino)과
+  HEAD를 **동기 재확인**한다(shell 미경유 인자 배열). Node 한계상 창은 0이 아니며 최소화 + fail closed다.
+- **⑦ 파서 fail-open(P1)**: malformed·과대 줄, 중복/모순 종료, MCP 관측, 종료 뒤 신원·최종 메시지 변경 시도,
+  이벤트 상한 초과가 **비가역 실패**다. **성공 뒤 실패/error/MCP는 실패**다. 기존 중복-종료 테스트는
+  **삭제·완화 없이 갱신**했고, 전방 호환 unknown은 **형태가 유효한** 모르는 타입에만 남긴다.
+- **⑧ 수명(P1)**: 멱등 invocation 상태 기계를 넣었다 — 검증 통과 뒤에만 큐 발행, harness 세션 id 중복 start ·
+  겹친 send 거부, 실패한 start/send는 오염 큐·잔여 상태 0, 동기 spawn 예외 · error+close 경합 · stdin 오류 ·
+  `stop`(결과 정착 후 정리)이 전부 결정론적으로 **종료 결과 1건**으로 수렴한다. 프로세스 그룹·TERM→유예→KILL·
+  deadline·자손 0은 **M5c**(`C-18`).
+- **⑨ raw 유출(P1)**: `SessionEvent.raw`를 원본 JSON에서 **bounded sanitized metadata projection**으로 바꿨다.
+  명령 문자열은 tool input에서도 제거(상태·exit code·길이만). 전 kind `JSON.stringify` sentinel 테스트와
+  소비자 전달 fixture를 추가했다.
+- **비-A 처리**: `B-8`(reviewer가 `isError`·빈 구조화 출력을 통과시킨다 — **M5b reviewer 배선 전** 하드 게이트) ·
+  `B-7` 확장(live 인증 + **stderr 폐기 또는 승인된 정확한 secret 값만 redaction에 전달**) ·
+  `B-9`(JSONL payload 필드 live 확인) 신규 등록. `C-20`은 `C-17`과 중복이라 **철회**하고 `C-17` 하나만
+  남기며 기한을 **M5c 전**으로 좁혔다. M5a 범위를 controller 통합으로 넓히지 않았다.
+- **검증(실행한 명령과 카운트)**: `npx tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  파일 단독 `executionBoundary.test.ts` **12/12** · `codexStreamParser.test.ts` **24/24** ·
+  `codexCliProvider.test.ts` **34/34**(합 **70/70**) · `npm run test:exec` 전체 **212/212**(186 → 212).
+  **미실행**: `npm test` 전체 · core · acceptance · stress · live · 반복 — **최종 전체 suite 1회는 supervisor가
+  M5 handoff 시점으로 예약**했다.
+  **mutation 2종**: 실행 파일 신원 검증 제거(2건 실패) · 프로토콜 실패 기록 제거(16건 실패) →
+  정확히 원복, `MUTATION` grep 0, focused 70/70 재확인.
+- **정정**: 아래 구현 세션 기록의 "자식 env는 `PATH`/`CODEX_HOME` 둘뿐" · "`workspace-write`는 spec이 명시할
+  때만" · "`B-6` open" · "열린 P0 없음"은 **리비전 전 시점의 기록**이며 현행은 이 블록이다.
+
 ## 2026-07-27 (V3 **M5a 구현 — 실행 경계(`B-5`) + CodexCliProvider + JSONL 어댑터 + offline fake 테스트** · **M5 전체는 미완료**)
 
 격리 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
