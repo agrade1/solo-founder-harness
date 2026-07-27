@@ -3,7 +3,46 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5a 2차 리비전 완료(offline)** · **M5 전체는 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5a 3차 리비전(offline)** · **M5 미완료 · M5a handoff 미승인** · 이 절이 가장 최신이다)
+
+범위 `85ebe883..2627f8f`를 **독립 fresh Codex `gpt-5.6-sol` xhigh read-only**가 리뷰해 **REVISE**를 냈고
+(A 3 = P0 1 + P1 2 · 문서·타입 정정 · 전체 suite 미실행 지적), 작성 세션을 playbook §6대로 **A 처리에만
+한 번 resume**해 전부 고쳤다. 커밋 `d51ec3c`(code/tests/dist) + 이 문서 커밋.
+
+- **A/P0 spawn-adjacent TOCTOU → fixed**: 홈·codex 실행 파일 검증이 `await verifyExecutionBoundary` **앞에만**
+  있었다. 현행은 **await 없는 단일 순서 동기 pre-spawn 게이트**다 — ① `spec` 스냅샷(해석값+`cwd`)
+  ② 승인 만료·**git 실행 파일 신원**·checkout 신원·HEAD ③ `CODEX_HOME`(정규·비symlink·0700·사용자 홈 아님 +
+  **고정 신원**, **첫 invocation은 여전히 비어 있음**) ④ codex 실행 파일(신뢰 조건 + **고정 신원 dev+ino**)
+  → **바로 spawn**. 창 안 훼손(교체·symlink·권한 완화·삭제·inode 교체) 9케이스가 **spawn 0**이다.
+  남는 창은 syscall 몇 개 규모이고 `fexecve`가 없는 Node에서 **0이 아니다**(과대 주장하지 않는다).
+- **A/P1 ambient git 증명 우회 → fixed**: `ExecutionBoundaryInput.gitExecutablePath` /
+  `CodexCliProviderOpts.gitExecutablePath`가 **필수**다(정규·비symlink·일반 파일·실행 비트·타인 쓰기 금지,
+  신원 고정 후 spawn 직전 재확인). async·sync 조회 모두 그 경로만 쓰고 자식 env는 `GIT_SANITIZED_ENV`
+  화이트리스트(**PATH·HOME·상속 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_*`·자격증명 0**, system/global config는
+  사용자 상태를 읽지 않고 off). **`runProcess`의 다른 호출자는 무수정**(경계 범위 한정) — 이후 provider·
+  controller가 경계를 쓸 때 **신뢰된 git 경로를 넘겨야 한다**(호출자 계약 변경점).
+- **A/P1 resume 신원 누출 → fixed**: `CodexParserContext.expectedSessionId`가 있으면 다른 thread id는
+  **`init` 생성 전에** 스트림을 봉인한다 — 같은 chunk 뒷줄까지 방출 0, bounded `session_identity_conflict`
+  marker와 결과 1건만 나가며 둘 다 **기대 UUID**를 싣는다(관측된 다른 id·usage·본문 0). 세션이 닫혀
+  후속 `send`는 **spawn 0**이다.
+- **문서·타입 정정**: 로드맵·provider 헤더는 **순서 있는 동기 게이트**를 서술하고, `types.ts` `codexHome`은
+  "**첫 invocation 비어 있음 + 이후 같은 소유 홈**"이다.
+- **`C-23` 확장 후 fixed**: 가변 `spec` aliasing이 **한 invocation의 비동기 창 안에서도** 문제라는 리뷰 지적을
+  반영해 게이트에서 스냅샷 대조(`codex_spec_mutated`) + **argv 후컴파일**로 닫았다.
+- **열린 항목 정본(현행)**: B = `B-7` · `B-8` · `B-9`(live/배선 하드 게이트, offline M5b는 막지 않는다).
+  C = `C-17` · `C-18` · `C-19` · `C-21` · `C-22` · `C-24` · `C-25`(`C-23`은 이번에 fixed).
+  **열린 A는 없다. 새 B도 없다.**
+- **3차 리비전 검증**: 파일 단독 `npx tsx --test --test-timeout=180000` → boundary **17/17** ·
+  parser **28/28** · provider **45/45**(합 **90/90**) · `npm run test:exec` **232/232**(221 → 232) ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 후 diff 변화 0) · `git diff --check` clean.
+  mutation **6종**(홈 재검증 → 2건 / 실행 파일 신원 → 1 / git async → 1 / git sync → 1 / 파서 봉인 → 2 /
+  spec 스냅샷 → 1건 실패) 후 정확히 원복, `MUTATION` grep 0 · `git diff --numstat` 기준선 일치.
+- **전체 suite는 여전히 미실행이다(리뷰 지적 그대로 정정).** M5a는 **내부 stacked M5 slice**이고,
+  **supervisor가 M5b~M5d 이후 최종 M5 handoff에서 `npm test`를 직렬 1회** 돌린다. 따라서 **M5a handoff는
+  supervisor 리뷰 전까지 승인된 상태가 아니다.** 미실행: `npm test` 전체 · `test:core` · acceptance ·
+  stress · live · 반복 3회. **Codex/Claude provider 추론 0회.**
+
+### 이전 — M5a 2차 리비전 기록 (2026-07-27 · 아래 열린 목록은 그 시점 기록이다)
 
 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` · base `85ebe883`.
 커밋 `115e0be`(feat) → `6ae7fd6`(docs) → `bdd5507`(fix, 1차 리비전) → `450739a`(docs) →

@@ -1351,7 +1351,12 @@ state schema 마이그레이션 도구(`C-9`) · queue/retry/fairness(`C-10`/`C-
 - 진행 이벤트 스트리밍 관측, deadline 초과·cancellation 시 descendant까지 정리되고 잔존 프로세스 0.
 - 전역 상태 관찰 작업의 동시 실행 0(거짓 실패 재현 없음).
 
-#### M5a — 실행 경계 + `CodexCliProvider` + JSONL 어댑터 · **구현·offline 검증 완료 / live 미검증**
+#### M5a — 실행 경계 + `CodexCliProvider` + JSONL 어댑터 · **offline 구현·검증 진행 / live 미검증 / handoff 미승인**
+
+> **상태 정정(2026-07-27, 3차 리비전).** M5a는 **내부 stacked M5 slice**다. 전체 suite(`npm test`)는
+> **아직 돌리지 않았고**(supervisor가 M5b~M5d 이후 **최종 M5 handoff에서 직렬 1회** 예약),
+> **M5a handoff는 supervisor 리뷰 전까지 승인된 것이 아니다.** 아래 "완료" 표기는 **offline focused·exec
+> suite 범위**를 뜻한다.
 
 **상태(2026-07-27): M5a만 완료. M5 전체는 미완료다.** 사용자가 M5a 범위를 명시적으로 승인해 격리 worktree
 `work/m5a-codex-provider`(base `85ebe883ff96fad1070a508f5d4a28f7fc637b8e`)에서 구현했다.
@@ -1376,10 +1381,23 @@ package/lockfile 변경도 **0**이다. 두 번째 오케스트레이터·상태
   ⓔ **controller·실행 checkout 양쪽 HEAD == `approvedCommit`**(같은 checkout이면 1회)를 확인한다.
   provider는 **spawn 직전마다** 이 함수를 부르고, 거부 경로 전부에서 **spawn 횟수 0**을 테스트가 고정한다.
   이 함수는 provider 중립이라 이후 Claude provider·controller가 그대로 재사용한다.
+  **증명 도구도 신뢰 대상이다(3차 리비전 · A/P1)**: `gitExecutablePath`(신뢰된 절대·정규·비-symlink·
+  실행 비트·group/other 쓰기 없음)가 **필수 입력**이고, async·sync 두 조회 모두 그 경로로만 부르며 자식 env는
+  **최소 화이트리스트**(`GIT_SANITIZED_ENV`)다 — `PATH`·`HOME`·상속 `GIT_DIR`/`GIT_WORK_TREE`/`GIT_*`·
+  자격증명이 판정에 끼어들 통로가 없고 system/global config는 **사용자 상태를 읽지 않고** 끈다.
+  git 실행 파일 **신원(dev+ino)** 도 고정해 spawn 직전에 다시 확인한다.
   **만료는 두 번 본다(2026-07-27 2차 리비전).** ⓑ의 첫 검사와 spawn 사이에는 **비동기 git 조회**가 있어
   그 사이에 승인이 만료될 수 있었다. 이제 `nowMs`에 **함수(clock)** 를 주면 `revalidateSync()`(spawn 직전
   마지막 동기 검증)가 **시각을 다시 읽어** `now >= expiresAt`을 재확인하고, 읽을 수 없는 시각도 거부한다
   (fail closed). 숫자를 주면 그 시각으로 고정된다.
+- **신뢰 판정의 근거는 spawn 직전 단일 동기 게이트다(3차 리비전 · A/P0).** 이전 판은 홈·실행 파일을
+  **비동기 경계 작업 전에** 검사하고 그 뒤에는 경계 재검증만 했다 → 그 창에서 홈/실행 파일이 교체·symlink화·
+  권한 완화·inode 교체되면 spawn까지 도달할 수 있었다. 현행: **await가 하나도 남지 않은 상태에서**
+  ① `spec` 스냅샷(해석값 + `cwd`) ② 승인 만료 · git 신원 · checkout 신원 · HEAD ③ `CODEX_HOME`
+  (정규 · 비-symlink · 0700 · 사용자 홈 아님 + **고정 신원**, 첫 invocation은 **여전히 비어 있음**)
+  ④ codex 실행 파일(신뢰 조건 + **고정 신원 dev+ino**)을 순서대로 재확인하고 **바로 다음 문장이 spawn**이다.
+  실행 파일을 경로·mode가 아니라 **신원**으로 묶으므로 **같은 0755 다른 실행 파일로 교체**해도 거부된다.
+  남는 창은 syscall 몇 개 규모이며 `fexecve`·디렉터리 fd 상대 실행이 없는 Node에서 **0이라고 주장하지 않는다**.
 - **실행 파일은 신뢰된 명시 절대경로 하나뿐이다.** provider 코드는 `process.env`를 **읽지 않는다**
   (PATH·`HARNESS_CODEX_BIN` 조회 없음). spawn 직전마다 그 경로가 **정규 · symlink 아님 · 일반 파일 ·
   실행 비트 있음 · group/other 쓰기 없음**임을 확인한다. 경로 선택·신뢰는 **controller의 책임**이다.
@@ -1421,6 +1439,11 @@ package/lockfile 변경도 **0**이다. 두 번째 오케스트레이터·상태
   assistant · unknown · error 포함) **비가역 실패(`missing_session_id`)이고 내용·도구 payload를 전달하지
   않는다.** 뒤늦은 `thread.started`도, 그 뒤의 정상 종료도 이것을 되돌리지 못한다(2026-07-27 2차 리비전).
   **검증되지 않은 텍스트로 resume 인자를 만들지 않는다.**
+  **resume은 파서 수준에서 기대 신원과 대조한다(3차 리비전 · A/P1)**: provider가 `expectedSessionId`를
+  넘기고, 다른 thread id가 오면 **init을 만들기 전에 스트림을 봉인**한다 — 같은 chunk에 뒤따라 오던
+  assistant·status·도구 이벤트까지 방출 0이고, bounded `session_identity_conflict` marker와 결과 1건만
+  나가며 둘 다 **기대 UUID**를 싣는다(관측된 다른 id·usage·본문은 어디에도 남지 않는다).
+  그 세션은 닫히므로 후속 `send`는 **spawn 0**이다.
 - **durable 문자열 위생**: `SessionEvent.raw`는 원본 JSON이 아니라 **bounded sanitized metadata
   projection**이다. 추론 원문 · 명령 문자열 · stderr/error 본문 · secret · 프롬프트 · 환경변수 · 전체 argv ·
   모르는 이벤트 payload는 **어떤 이벤트에도** 실리지 않는다(명령은 상태·exit code·길이만 남는다).
@@ -1495,7 +1518,7 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | `C-19` | C (P2) | **`--output-schema`를 넘겨도 응답 본문을 schema로 검증하지 않는다.** provider는 최종 agent message 텍스트를 그대로 `result.text`로 준다(호출자가 파싱) | 중간 | 구조화 결과 1건의 형태 오류가 호출자에게 넘어간다 | 낮음 — 검증기를 나중에 얹으면 된다(기존 수동 closed validator 방식) | 소~중 | **reviewer 결과를 kernel state로 옮기기 시작할 때(M5c)** | 미정 | `codexStreamParser` `lastMessage` · M5a focused "구조화 최종 출력" | open |
 | `C-21` | C (P2) | **프로토콜 실패로 끝난 invocation 뒤에도 resume이 허용된다**(MCP 위반·세션 신원 충돌만 세션을 닫는다). malformed·oversized·중복 종료로 실패한 turn 뒤에 호출자가 `send`를 부르면 provider는 그 thread를 이어간다 — 판정은 `result.isError`를 보는 호출자 몫이다 | 중간(호출자가 `isError`를 무시할 때) | 세션 1건의 후속 turn | 낮~중 — `B-8`(reviewer가 `isError`를 무시한다)과 같은 방향의 위험이고 그쪽을 닫으면 대부분 사라진다 | 소(실패 사유 화이트리스트로 poison 확장 + 회귀 테스트) | **`B-8`을 닫을 때 같이(= M5b reviewer 배선 전)** | M5b 구현 세션 | `CodexCliProvider.send`/`state.poisoned` · M5a 2차 리비전 focused "MCP 위반을 본 세션은 닫힌다" | open |
 | `C-22` | C (P2) | **`CODEX_HOME` 소유 신원이 in-memory라 controller가 재시작하면 같은 홈으로 resume할 수 없다**(신원을 잃으므로 최초 검증 규칙에 걸려 `codex_home_not_empty`). 방향은 fail closed이지만 self-hosting 재시작 후 진행 중 세션을 이어갈 수 없다 | 중간(M5c self-hosting에서) | 재시작 시점에 열려 있던 codex 세션의 resume | 낮~중 — 재시작 후에는 새 세션으로 다시 시작하면 된다 | 중(소유권을 `run_state.json`에 durable 기록 + 복원 검증) | **self-hosting controller 재시작 경계를 다룰 때(M5c)** | M5c 구현 세션 | `CodexState.homeId` · M5a 2차 리비전 focused "격리 홈 수명" | open |
-| `C-23` | C (P2) | **turn 사이에 호출자가 `spec`을 바꾸면 model·`--output-schema` 경로가 resume에서 달라질 수 있다.** provider는 invocation마다 `spec`을 다시 검증하므로 sandbox·`codexHome`(신원)·경로 계약 위반은 막히지만 model 문자열과 schema 경로 교체는 통과한다 | 낮음 — spec은 controller 소유 객체다 | 세션 1건의 후속 turn 설정 | 낮음 | 소(start 시 해석값을 고정하고 resume에서 대조) | **reviewer/controller가 provider를 실제로 배선할 때(M5b)** | M5b 구현 세션 | `CodexCliProvider.invoke`의 `resolveCodexOptions` 재호출 | open |
+| `C-23` | **C (P2) → fixed(M5a 3차 리비전)** | **호출자 소유 `spec`의 변조.** ⓐ turn 사이 변경으로 model·`--output-schema` 경로가 resume에서 달라질 수 있었다. ⓑ **독립 리뷰가 넓힌 범위**: `spec`은 호출자가 계속 들고 있는 **가변 객체**이므로 **한 invocation의 비동기 경계 작업 중**(첫 invocation 포함) 값이 바뀌면 검증한 값과 argv·env가 갈라질 수 있었다 | 낮음 — spec은 controller 소유 객체다 | 세션 1건의 invocation 설정(argv·env) | 낮음 | 소(스냅샷 대조) | (닫힘 — 원래 기한은 **M5b provider 배선 전**이었다) | M5a 3차 리비전 | **fix**: spawn 직전 동기 게이트가 `resolveCodexOptions` 해석값 + `spec.cwd`를 **스냅샷과 대조**해 다르면 `codex_spec_mutated`로 거부하고, **argv는 대조 통과 후에 컴파일**한다. 계약 자체를 어기는 변조(`sandbox`)는 재해석 단계에서 먼저 걸린다. 증거: M5a 3차 리비전 focused "창 안에서 spec이 변조되면 …"(model·outputSchemaPath·codexHome·sandbox 4케이스 spawn 0) + mutation(스냅샷 비교 제거 → 1건 실패) | **fixed (2026-07-27, M5a 3차 리비전)** |
 | `C-24` | C (P2) | **stderr 버퍼 상한이 chunk 단위로만 적용된다**(`stderr.length < MAX_STDERR_BUFFER` 검사 뒤 chunk 전체를 붙인다 → 한 chunk만큼 초과 가능). 밖으로 나가는 요약은 여전히 `MAX_ERROR_CHARS` + `redactSecrets`로 bounded하다 | 낮음 | 실패 1건의 메모리 상한(정확도) | 낮음 | 소(붙일 때 잘라내기) | **live runner 도입 시(M5c, `C-18`과 함께)** | M5c 구현 세션 | `CodexCliProvider.invoke` stderr 핸들러 | open |
 | `C-25` | C (P2) | **`events(handle)`는 현재 invocation의 큐를 준다** — `send` 전에 잡아 둔 스트림은 그 invocation이 끝나며 닫히고, 후속 turn 이벤트는 **다시 `events()`를 불러야** 나온다. 결과 유실은 아니지만(각 invocation은 종료 결과 1건으로 닫힌다) 소비자 계약이 문서에만 있다 | 중간(오케스트레이션 배선 시 오해하기 쉽다) | 소비자 배선 | 낮~중 — 배선 코드에서 turn마다 다시 구독하면 된다 | 소~중(멀티 turn 하나의 스트림으로 합치기 + 테스트) | **provider를 orchestrator에 배선할 때(M5b)** | M5b 구현 세션 | `CodexCliProvider.events`/`invoke`의 큐 교체 · M5a focused "실행 중 send" | open |
 
@@ -1531,6 +1554,37 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
   최종 전체 suite 1회는 여전히 **supervisor가 M5 handoff 시점으로 예약**했다.
 - **Codex 추론 0회**(이 세션은 fake CLI·in-process seam만 썼다). `B-7`·`B-8`·`B-9`는 **여전히 open**이고
   그 전에는 이 provider로 실제 Codex를 부르지 않는다. 신규 유예: `C-21`~`C-25`(위 대장).
+
+#### M5a 3차 리비전 (2026-07-27, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰 → **REVISE**)
+
+범위 `85ebe883..2627f8f`를 **독립 read-only Codex 리뷰**가 다시 봤고 판정은 **REVISE**였다. 앞선 두 라운드가
+게이트를 하나씩 세웠지만, 이번 findings는 **게이트가 서 있는 위치**(비동기 창 밖)와 **게이트가 신뢰하는
+도구·기대값**(ambient git, 기대 세션 신원 부재)을 지적했다. 작성 세션을 playbook §6에 따라 이 A 처리에만
+resume해 **A 3건을 전부 고쳤고** 문서·타입 정정과 `C-23` 확장/해소를 함께 했다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| 1 | **A (P0)** | **spawn-adjacent TOCTOU**: `CODEX_HOME`·codex 실행 파일을 `await verifyExecutionBoundary` **전에** 검사하고 그 뒤에는 `revalidateSync`만 돌았다 → 비동기 창에서 홈/실행 파일 교체·symlink화·권한 완화·**inode 교체**가 spawn까지 도달할 수 있었다 | **fixed** — await 없는 **단일 순서 동기 pre-spawn 게이트**(spec 스냅샷 → 만료·git·checkout·HEAD → 홈(+고정 신원, 첫 invocation은 여전히 비어 있음) → 실행 파일(+**고정 신원**)) 뒤 바로 spawn. 창 안 훼손 8케이스(홈 4 · 실행 파일 4) + resume 1케이스 **spawn 0** 테스트. 남는 syscall 규모 창은 명시하고 0이라 주장하지 않는다 |
+| 2 | **A (P1)** | **ambient git 증명 우회**: 경계가 `git`을 이름으로 부르고 `runProcess`가 `process.env`를 상속 → 적대적 `PATH`·`GIT_DIR`·`GIT_WORK_TREE`가 **다른 저장소/커밋**을 증명할 수 있었다 | **fixed** — `gitExecutablePath` 필수(정규·비symlink·일반 파일·실행 비트·타인 쓰기 금지·**신원 고정**), async·sync 두 조회 모두 그 경로, 자식 env는 `GIT_SANITIZED_ENV` 화이트리스트(PATH·HOME·상속 `GIT_*` 0, system/global config는 사용자 상태 없이 off). 적대적 PATH+`GIT_DIR`+`GIT_WORK_TREE` 테스트가 승인 checkout 판정 유지를 고정. **`runProcess` 다른 호출자는 무수정**(경계 범위 한정) |
+| 3 | **A (P1)** | **resume 신원 누출**: 파서가 기대 UUID를 몰라 conflicting `init`이 먼저 나가고, **한 chunk가 통째로 파싱**되므로 다른 thread의 assistant·status·도구 payload까지 새어나갈 수 있었으며 결과가 잘못된 UUID를 들 수 있었다 | **fixed** — `CodexParserContext.expectedSessionId`로 **init 생성 전에** 불일치를 잡아 스트림 **봉인**(같은 chunk 뒷줄까지 방출 0). marker·result는 **기대 UUID**에 묶이고 관측된 다른 id·usage·본문은 어디에도 없다. provider는 세션을 닫아 후속 `send`가 spawn 0. 적대적 one-chunk 테스트(sentinel 4종 · init/assistant/status/도구 0 · 결과 1건) |
+| 4 | **C(문서·타입)** | "실행 파일/홈을 spawn 직전에 확인한다"는 서술이 실제 순서와 달랐고, `codexHome` 타입 주석이 "비어 있어야 한다"만 말했다 | **fixed** — 로드맵·provider 헤더는 **순서 있는 동기 게이트**를 서술하고, `types.ts`는 "첫 invocation 비어 있음 + 이후 같은 소유 홈"으로 정정. `B-7`·`B-8`·`B-9`와 `C-17`·`C-18`·`C-19`·`C-21`·`C-22`·`C-24`·`C-25`는 **그대로 유지**하고 `C-23`만 확장 후 fixed |
+
+검증 실측(offline, 2026-07-27 — 3차 리비전 세션):
+
+- 파일 단독 `npx tsx --test --test-timeout=180000` : `executionBoundary.test.ts` **17/17** ·
+  `codexStreamParser.test.ts` **28/28** · `codexCliProvider.test.ts` **45/45**(합 **90/90**, 이전 79).
+- `npm run test:exec` **232/232**(221 → 232). **232는 exec suite 수치이며 파일 단독 focused가 아니다.**
+- `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 후 diff 변화 0) · `git diff --check` clean.
+- **비공허성(mutation) 6종**: 게이트의 홈 재검증 제거 → **2건 실패** / 실행 파일 신원 pin 제거 → **1건** /
+  git 경로·env(async) 되돌림 → **1건** / git 경로·env(sync) 되돌림 → **1건** / 파서 봉인 무효화 → **2건** /
+  spec 스냅샷 비교 제거 → **1건**. 여섯 번 모두 정확히 원복하고 `MUTATION` grep 0 ·
+  `git diff --numstat` 기준선 일치 · focused 90/90 재확인.
+- **전체 suite(`npm test`) 미실행 — 리뷰가 지적한 그대로다.** M5a는 **내부 stacked M5 slice**이고,
+  supervisor가 **M5b~M5d 이후 최종 M5 handoff에서 직렬 1회**를 예약했다. 이 세션은 그것을 돌리지 않았고
+  **M5a handoff는 supervisor 리뷰 전까지 승인된 것이 아니다.** 미실행: `npm test` 전체 · `test:core` ·
+  acceptance · stress · live · 반복 3회.
+- **Codex/Claude provider 추론 0회**(fake CLI·in-process seam만). `B-7`·`B-8`·`B-9`는 여전히 open이며
+  그 전에는 이 provider로 실제 Codex를 부르지 않는다.
 
 ### M6 — Hierarchical Orchestrator + Fresh Context Rotation
 

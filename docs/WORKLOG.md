@@ -1,5 +1,51 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M5a 3차 리비전 — 독립 Codex 리뷰 REVISE의 A 3건 + 문서·타입 정정** · **M5는 미완료, M5a handoff 미승인**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
+시작 HEAD `2627f8f`(clean). 작성 세션을 playbook §6에 따라 **A 처리에만 한 번 resume**했다.
+amend/rebase/reset·push/PR/merge·네트워크·`gh`·패키지 설치·의존성/lockfile 변경·MCP·
+**live Codex/Claude provider 추론**·deploy·DB·production·live billing **없음**.
+`node_modules`(supervisor symlink)는 **stage하지 않았다**. Pony Tail(full).
+
+- **리뷰**: 독립 fresh Codex `gpt-5.6-sol` xhigh · read-only, 범위 `85ebe883..2627f8f` → **REVISE**
+  (A 3 = P0 1 + P1 2, 문서·타입 정정 1, "전체 suite 미실행" 지적 1).
+- **① spawn-adjacent TOCTOU(A/P0)**: 홈·codex 실행 파일 검증이 `await verifyExecutionBoundary` **앞에만**
+  있었고 그 뒤에는 경계 재검증만 돌았다 → 비동기 창에서 **교체·symlink화·권한 완화·inode 교체**가 spawn까지
+  갈 수 있었다. 이제 **await 없는 단일 순서 동기 pre-spawn 게이트**다: ① `spec` 스냅샷(해석값+`cwd`)
+  ② 승인 만료·git 신원·checkout 신원·HEAD ③ `CODEX_HOME`(정규·비symlink·0700·사용자 홈 아님 + **고정 신원**,
+  첫 invocation은 **여전히 비어 있음**) ④ codex 실행 파일(신뢰 조건 + **고정 신원 dev+ino**) → **바로 spawn**.
+  실행 파일을 신원으로 묶었으니 **같은 0755 다른 실행 파일 교체도 거부**된다. 창은 syscall 몇 개 규모로
+  줄인 것이고 `fexecve`가 없는 Node에서 **0이라 주장하지 않는다**.
+- **② ambient git 증명 우회(A/P1)**: 경계가 `git`을 이름으로 부르고 `runProcess`가 `process.env`를 상속해
+  적대적 `PATH`·`GIT_DIR`·`GIT_WORK_TREE`가 다른 저장소/커밋을 증명할 수 있었다. 이제 `gitExecutablePath`가
+  **필수**(정규·비symlink·일반 파일·실행 비트·타인 쓰기 금지·**신원 고정 후 spawn 직전 재확인**)이고,
+  async·sync 조회 모두 그 경로로만 부르며 자식 env는 `GIT_SANITIZED_ENV` 화이트리스트다
+  (PATH·HOME·상속 `GIT_*`·자격증명 0, system/global config는 **사용자 상태를 읽지 않고** off).
+  **`runProcess`의 다른 호출자는 건드리지 않았다**(경계 범위로 한정).
+- **③ resume 신원 누출(A/P1)**: 파서가 기대 UUID를 몰라 conflicting `init`이 먼저 방출되고, **한 chunk가
+  통째로 파싱**되므로 다른 thread의 본문·도구 payload까지 나갈 수 있었다. 이제 `expectedSessionId`로
+  **init 생성 전에** 봉인한다 — 같은 chunk 뒷줄까지 방출 0, bounded marker와 결과 1건만 나가고 둘 다
+  **기대 UUID**를 싣는다(다른 id·usage·본문 0). 세션은 닫혀 후속 `send`가 **spawn 0**이다.
+- **④ 문서·타입 정정**: "실행 파일/홈을 spawn 직전에 확인한다"는 서술을 **순서 있는 동기 게이트**로 바꾸고,
+  `types.ts` `codexHome` 주석을 "**첫 invocation 비어 있음 + 이후 같은 소유 홈**"으로 정정했다.
+  `B-7`·`B-8`·`B-9`와 `C-17`·`C-18`·`C-19`·`C-21`·`C-22`·`C-24`·`C-25`는 **그대로 유지**했다.
+- **`C-23` 확장 후 해소**: 리뷰가 넓힌 범위(가변 `spec` aliasing이 **한 invocation의 비동기 창 안에서도**
+  문제)를 반영하고 **지금 값싸게 닫았다** — 게이트가 해석값+`cwd` 스냅샷을 대조해 `codex_spec_mutated`로
+  거부하고 **argv는 대조 통과 후에 컴파일**한다. 대장에 확장 사유·증거와 함께 **fixed**로 기록.
+- **검증(실행한 명령과 카운트)**: 파일 단독 `npx tsx --test --test-timeout=180000` →
+  `executionBoundary.test.ts` **17/17** · `codexStreamParser.test.ts` **28/28** ·
+  `codexCliProvider.test.ts` **45/45**(합 **90/90**, 이전 79) · `npm run test:exec` **232/232**(221 → 232) ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity**: 재빌드 후 diff 변화 0) · `git diff --check` clean.
+  **mutation 6종**: 게이트 홈 재검증 제거(**2건 실패**) · 실행 파일 신원 pin 제거(**1건**) ·
+  git 경로·env async 되돌림(**1건**) · git 경로·env sync 되돌림(**1건**) · 파서 봉인 무효화(**2건**) ·
+  spec 스냅샷 비교 제거(**1건**) → 전부 정확히 원복, `MUTATION` grep 0, `git diff --numstat` 기준선 일치,
+  focused 90/90 재확인.
+- **전체 suite는 이 세션에서 돌리지 않았다(리뷰 지적 반영·정직한 상태)**: M5a는 **내부 stacked M5 slice**이고
+  **supervisor가 M5b~M5d 이후 최종 M5 handoff에서 `npm test` 직렬 1회**를 돌린다. 그래서 **M5a handoff는
+  supervisor 리뷰 전까지 승인 상태가 아니다.** 미실행: `npm test` 전체 · `test:core` · acceptance · stress ·
+  live · 반복 3회.
+
 ## 2026-07-27 (V3 **M5a 2차 리비전 — 구조적 A 4건 + 문서 정정 1건** · fresh Claude Opus 5 세션 · **M5 전체는 여전히 미완료**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,

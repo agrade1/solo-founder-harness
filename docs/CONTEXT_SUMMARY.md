@@ -2,7 +2,33 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — **V3 M5a 2차 리비전: 구조적 A 4건 + 문서 정정** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-27 — **V3 M5a 3차 리비전: 독립 Codex 리뷰(REVISE) A 3건** · 이 블록이 가장 최신이다)
+
+- **위치**: 같은 worktree/branch, 시작 HEAD `2627f8f` 위에 **로컬 커밋만**. 작성 세션을 playbook §6대로
+  **A 처리에만 한 번 resume**. amend/rebase/reset·원격·네트워크·MCP·live provider 추론 0,
+  `node_modules` stage 0. Pony Tail(full).
+- **리뷰**: 독립 fresh Codex `gpt-5.6-sol` xhigh read-only, 범위 `85ebe883..2627f8f` → **REVISE**
+  (A 3 = P0 1 + P1 2 · 문서·타입 정정 · "전체 suite 미실행" 지적).
+- **고친 것**: ⓐ **spawn-adjacent TOCTOU(P0)** — 홈·실행 파일 검증이 비동기 경계 작업 **앞**에만 있었다.
+  이제 **await 없는 단일 순서 동기 pre-spawn 게이트**(spec 스냅샷 → 만료·git·checkout·HEAD → 홈(+고정 신원,
+  첫 invocation은 여전히 비어 있음) → 실행 파일(+**고정 신원 dev+ino**)) 뒤 바로 spawn. 같은 권한의 다른
+  실행 파일 교체도 거부. 창은 syscall 규모로 축소이며 0이 아니라고 적었다.
+  ⓑ **ambient git 우회(P1)** — `gitExecutablePath` 필수 + async/sync 모두 그 경로 + 자식 env는
+  `GIT_SANITIZED_ENV` 화이트리스트(PATH·HOME·상속 `GIT_*` 0). `runProcess` 다른 호출자 무수정.
+  ⓒ **resume 신원 누출(P1)** — 파서 `expectedSessionId`로 **init 전에 봉인**, 같은 chunk 뒷줄까지 방출 0,
+  marker·result는 기대 UUID, 세션 닫힘 → 후속 send spawn 0.
+- **문서·타입**: 순서 있는 게이트로 서술 정정, `types.ts` `codexHome` = "첫 invocation 비어 있음 + 이후 같은
+  소유 홈". `C-23`은 **비동기 창 내 spec aliasing까지 확장한 뒤 fixed**(스냅샷 대조 + argv 후컴파일).
+  `B-7`·`B-8`·`B-9` · `C-17`·`C-18`·`C-19`·`C-21`·`C-22`·`C-24`·`C-25`는 **그대로 open**.
+- **테스트**: 파일 단독 boundary **17/17** · parser **28/28** · provider **45/45**(합 **90/90**) ·
+  `npm run test:exec` **232/232** · `tsc --noEmit` 0 · `build` PASS(dist parity) · `git diff --check` clean.
+  mutation **6종**(홈 재검증 2 · 실행 파일 신원 1 · git async 1 · git sync 1 · 파서 봉인 2 · spec 스냅샷 1건 실패)
+  후 정확히 원복(`MUTATION` grep 0).
+- **미실행(정직)**: `npm test` 전체 · `test:core` · acceptance · stress · live · 반복 3회.
+  M5a는 **내부 stacked M5 slice**이고 **최종 직렬 `npm test` 1회는 M5b~M5d 이후 supervisor**가 돌린다.
+  → **M5a handoff는 supervisor 리뷰 전까지 승인된 것이 아니다. M5도 미완료.**
+
+## 이전 (2026-07-27 — **V3 M5a 2차 리비전: 구조적 A 4건 + 문서 정정**)
 
 - **위치**: 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
   시작 HEAD `450739a` 위에 **로컬 커밋만** 추가. **새 fresh Claude Opus 5 세션**(이전 세션 resume 안 함),
