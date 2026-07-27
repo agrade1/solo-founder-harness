@@ -15,8 +15,10 @@
  * 애초에 만들지 않기 위해서다. provider는 argv `--cd`와 native spawn cwd 모두에 **여기서 확인한
  * `targetRoot`만** 쓴다(호출자가 준 원본 문자열을 다시 쓰지 않는다).
  *
- * **TOCTOU**: `revalidateSync()`가 spawn **직전 마지막 연산**으로 ⓐ 최종 엔트리 신원(dev+ino, 비-symlink
- * 디렉터리) ⓑ HEAD를 동기로 다시 확인한다. Node 18에는 열린 디렉터리 핸들 상대 실행이 없어 창을
+ * **TOCTOU**: `revalidateSync()`가 spawn **직전 마지막 연산**으로 ⓐ 승인 만료(`now >= expiresAt`)
+ * ⓑ 최종 엔트리 신원(dev+ino, 비-symlink 디렉터리) ⓒ HEAD를 동기로 다시 확인한다. 만료를 두 번 보는 이유는
+ * 첫 검사와 spawn 사이에 **비동기 git 조회**가 있어 그 사이에 승인이 만료될 수 있기 때문이다
+ * (`nowMs`에 함수를 주면 clock으로 취급해 재검증에서 다시 읽는다). Node 18에는 열린 디렉터리 핸들 상대 실행이 없어 창을
  * **0으로 만들 수는 없다** — 창을 syscall 몇 개로 줄이고 어긋나면 fail closed다(활성 설계의 기존 한계 기록과 동일).
  *
  * 오류 문자열에는 argv·환경변수·프롬프트·transcript를 담지 않는다(경로와 커밋만).
@@ -40,8 +42,11 @@ export interface ExecutionBoundaryInput {
   controllerRepoRoot: string;
   /** provider 프로세스의 cwd가 될 실행 checkout 절대·정규 경로. */
   targetWorktree: string;
-  /** 만료 판정용 시각(ms). 미지정 시 `Date.now()`. */
-  nowMs?: number;
+  /**
+   * 만료 판정용 시각. **함수를 주면 clock으로 취급해 재검증에서 다시 읽는다**(비동기 git 조회 중에
+   * 승인이 만료되는 창을 닫는다). 숫자를 주면 그 시각으로 고정하고, 미지정이면 `Date.now`다.
+   */
+  nowMs?: number | (() => number);
 }
 
 /** 최종 엔트리 신원 — 경로 문자열이 아니라 이것으로 "같은 디렉터리인가"를 판정한다. */
@@ -60,7 +65,7 @@ export interface VerifiedExecutionBoundary {
   sameCheckout: boolean;
   approvedCommit: string;
   /**
-   * **spawn 직전 마지막 연산**으로 부른다. 신원(dev+ino)과 HEAD를 동기로 재확인하고
+   * **spawn 직전 마지막 연산**으로 부른다. 승인 만료 · 신원(dev+ino) · HEAD를 동기로 재확인하고
    * 어긋나면 던진다 → 호출자는 프로세스를 띄우지 않는다.
    */
   revalidateSync(): void;
@@ -106,6 +111,24 @@ function identityOf(path: string, what: string): DirIdentity {
 
 function sameIdentity(a: DirIdentity, b: DirIdentity): boolean {
   return a.dev === b.dev && a.ino === b.ino;
+}
+
+/** 숫자는 고정 시각, 함수는 clock, 미지정은 `Date.now`. */
+function clockOf(nowMs: ExecutionBoundaryInput["nowMs"]): () => number {
+  if (typeof nowMs === "function") return nowMs;
+  if (typeof nowMs === "number") return () => nowMs;
+  return Date.now;
+}
+
+/**
+ * 만료 판정(경계 포함 — `now >= expiresAt`면 거부). 읽을 수 없는 시각·만료 시각은 **거부**다(fail closed).
+ * 실행 경계는 kernel보다 좁게 잡는다(대장 `C-17`). 경계 진입과 **spawn 직전 재검증에서 각각** 부른다.
+ */
+function assertNotExpired(manifest: MilestoneApprovalManifest, now: number, when: string): void {
+  const expiresAtMs = Date.parse(manifest.expiresAt);
+  if (!Number.isFinite(now) || !Number.isFinite(expiresAtMs) || now >= expiresAtMs) {
+    throw new OrchestrationError("manifest_expired", `승인 manifest가 만료됐다(expiresAt ${manifest.expiresAt}, ${when})`);
+  }
 }
 
 async function git(cwd: string, args: string[], what: string): Promise<string> {
@@ -170,12 +193,8 @@ async function readCheckoutHead(root: string, what: string): Promise<string> {
 export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Promise<VerifiedExecutionBoundary> {
   const manifest = validateApprovalManifest(input.manifest);
 
-  // 만료 경계는 포함이다(`now >= expiresAt`이면 거부) — 실행 경계는 kernel보다 좁게 잡는다(대장 `C-17`).
-  const now = input.nowMs ?? Date.now();
-  const expiresAtMs = Date.parse(manifest.expiresAt);
-  if (!Number.isFinite(expiresAtMs) || now >= expiresAtMs) {
-    throw new OrchestrationError("manifest_expired", `승인 manifest가 만료됐다(expiresAt ${manifest.expiresAt})`);
-  }
+  const clock = clockOf(input.nowMs);
+  assertNotExpired(manifest, clock(), "경계 진입");
 
   const controller = resolveCanonicalDir(input.controllerRepoRoot, "controllerRepoRoot");
   const target = resolveCanonicalDir(input.targetWorktree, "targetWorktree");
@@ -199,6 +218,9 @@ export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Pr
   }
 
   const revalidateSync = (): void => {
+    // 승인 만료를 **여기서 다시** 본다: 위 만료 검사와 이 지점 사이에 비동기 git 조회가 있어
+    // 그 사이에 승인이 만료될 수 있다. 만료된 승인으로는 프로세스를 띄우지 않는다.
+    assertNotExpired(manifest, clock(), "spawn 직전 재확인");
     const roots: Array<[string, DirIdentity, string]> = sameCheckout
       ? [[controller.path, controller.id, "실행 checkout"]]
       : [

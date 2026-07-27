@@ -168,6 +168,59 @@ test("[M5a] 만료된 manifest는 실행 경계에서 거부(경계 시각 포�
   }
 });
 
+test("[M5a] revalidateSync: 비동기 git 조회 중에 승인이 만료되면 spawn 직전에 거부", async () => {
+  const repo = await initRepo();
+  try {
+    const expiresAt = "2026-07-27T00:00:00.000Z";
+    const at = Date.parse(expiresAt);
+    // clock 함수: 첫 호출(경계 진입)은 만료 전, 두 번째 호출(spawn 직전 재확인)은 만료 시각.
+    const reads: number[] = [];
+    const clock = () => {
+      const t = reads.length === 0 ? at - 1 : at;
+      reads.push(t);
+      return t;
+    };
+    const v = await verifyExecutionBoundary({
+      manifest: manifest({ approvedCommit: repo.head, expiresAt }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+      nowMs: clock,
+    });
+    assert.equal(reads.length, 1, "경계 진입에서 clock을 한 번 읽는다");
+    assert.equal(await code(() => v.revalidateSync()), "manifest_expired", "만료 경계는 재검증에서도 포함이다");
+    assert.equal(reads.length, 2, "재검증이 clock을 다시 읽는다(고정 값 재사용 아님)");
+
+    // 만료 전에 머무르는 clock이면 재검증도 통과한다(게이트가 항상 던지는 게 아니다).
+    const ok = await verifyExecutionBoundary({
+      manifest: manifest({ approvedCommit: repo.head, expiresAt }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+      nowMs: () => at - 1,
+    });
+    ok.revalidateSync();
+
+    // 읽을 수 없는 시각은 fail closed다.
+    const nan = await verifyExecutionBoundary({
+      manifest: manifest({ approvedCommit: repo.head, expiresAt }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+      nowMs: (() => {
+        let first = true;
+        return () => {
+          if (first) {
+            first = false;
+            return at - 1;
+          }
+          return Number.NaN;
+        };
+      })(),
+    });
+    assert.equal(await code(() => nan.revalidateSync()), "manifest_expired");
+  } finally {
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
 test("[M5a] 경로 입력이 계약 밖이면 git을 부르기 전에 거부", async () => {
   const repo = await initRepo();
   try {

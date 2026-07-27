@@ -11,10 +11,15 @@
  *   경로를 고르는 책임은 **controller(호출자)** 에 있고, 여기서는 검증만 한다.
  * - argv는 **배열로 컴파일**하고 shell을 경유하지 않는다. 프롬프트는 **stdin**으로만 넣는다(`-`).
  * - **sandbox는 `read-only` 고정**(M5a hard deny — `workspace-write`도 거부).
- * - **strict empty MCP는 ambient 설정에 의존하지 않는다**: 검증된 격리 `CODEX_HOME`(비어 있는 0700
- *   정규 디렉터리) + `--config mcp_servers={}` + `--strict-config` + `--ignore-user-config` +
- *   `--ignore-rules`, 자식 env는 **`CODEX_HOME` 하나뿐**(PATH조차 상속하지 않는다).
- *   auth 파일·자격증명은 **복사하지도 저장하지도 않는다**. 스트림에서 MCP 호출이 보이면 비가역 실패다(파서).
+ * - **strict empty MCP는 ambient 설정에 의존하지 않는다**: 검증된 격리 `CODEX_HOME` +
+ *   `--config mcp_servers={}` + `--strict-config` + `--ignore-user-config` + `--ignore-rules`,
+ *   자식 env는 **`CODEX_HOME` 하나뿐**(PATH조차 상속하지 않는다).
+ *   auth 파일·자격증명은 **복사하지도 저장하지도 않는다**. 스트림에서 MCP 호출이 보이면 비가역 실패이고
+ *   (파서) 그 세션은 닫힌다 — 오염된 thread를 resume으로 이어가지 않는다.
+ * - **`CODEX_HOME`은 provider가 소유하는 수명이다**: 첫 invocation은 **비어 있는** 0700 정규 디렉터리를
+ *   요구해 ambient config·auth·MCP를 0으로 만들고, 그때 확보한 **신원(dev+ino)** 을 고정한다. resume은
+ *   codex가 그 홈에 남긴 세션 상태를 필요로 하므로 **같은 신원일 때만** 비어 있지 않은 홈을 허용한다
+ *   (교체·symlink화·권한 완화·소유하지 않은 기존 상태는 거부 → spawn 0). strict 플래그는 resume에도 그대로다.
  * - 프로세스를 띄우기 **직전마다** `verifyExecutionBoundary` → `revalidateSync()`로 승인 커밋과
  *   디렉터리 신원을 대조한다(대장 `B-5`). cwd는 **경계가 확인한 `targetRoot`만** 쓴다.
  * - resume은 파서가 검증한 **정규 UUID 하나**로만 하고 `--last`는 쓰지 않는다.
@@ -84,11 +89,22 @@ export function assertTrustedExecutable(path) {
     return p;
 }
 /**
- * 격리 `CODEX_HOME` 검증: 절대·정규·비-symlink 디렉터리 · 0700(그룹/기타 권한 0) · **비어 있음**.
- * 비어 있음을 요구하는 이유는 M5a에서 ambient config·auth·MCP 정의가 하나도 없어야 하기 때문이다.
- * 사용자 홈(및 그 `.codex`)은 절대 쓰지 않는다. **auth를 복사하지 않는다** — live 인증은 대장 `B-7`.
+ * 격리 `CODEX_HOME` 검증 — **provider 소유 수명**이다.
+ *
+ * - **최초 검증(`owned` 없음)**: 절대·정규·비-symlink 디렉터리 · 0700 · **비어 있음** · 사용자 홈 아님.
+ *   비어 있음을 요구하는 이유는 첫 프로세스가 ambient config·auth·MCP 정의를 하나도 못 보게 하려는 것이다.
+ *   여기서 확보한 신원(dev+ino)이 그 홈에 대한 provider의 **소유권**이다.
+ * - **후속 검증(`owned` 있음 = resume)**: 경로 계약·권한·사용자 홈 금지는 **그대로** 요구하고 신원이
+ *   같아야 한다. 신원이 같을 때만 **첫 실행 이후 codex가 남긴 세션 상태를 허용**한다(resume은 그 상태를
+ *   필요로 한다). 홈이 교체·symlink화·권한 완화되면 거부하고, provider가 소유하지 않은 기존 상태로는
+ *   resume하지 않는다(그 경로는 최초 검증에서 `codex_home_not_empty`로 막힌다).
+ *
+ * 어느 경우에도 `--strict-config`·`--ignore-user-config`·`--ignore-rules`·`mcp_servers={}`는 유지되므로
+ * 홈에 무엇이 생기든 ambient MCP·사용자 설정을 상속하지 않는다. **auth를 복사하지 않는다** — live 인증은 `B-7`.
+ * 같은 uid로 동작하는 공격자를 막지는 못한다(소유자 자신은 언제든 홈을 쓸 수 있다) — 막는 것은 **경로 교체·
+ * 권한 완화·소유하지 않은 상태로의 resume**이다.
  */
-export function assertIsolatedCodexHome(path) {
+export function verifyCodexHome(path, owned) {
     const p = requireAbsolute(path, "spec.codex.codexHome");
     let real;
     try {
@@ -120,6 +136,14 @@ export function assertIsolatedCodexHome(path) {
         fail("codex_home_invalid", "codexHome은 symlink 아닌 디렉터리여야 한다");
     if ((st.mode & 0o077) !== 0)
         fail("codex_home_permissive", "codexHome은 0700(소유자 전용)이어야 한다");
+    const id = { dev: st.dev, ino: st.ino };
+    if (owned) {
+        // 이미 소유한 홈: 신원이 같아야 하고, 같으면 codex가 남긴 세션 상태를 허용한다.
+        if (id.dev !== owned.dev || id.ino !== owned.ino) {
+            fail("codex_home_identity_changed", "codexHome의 디렉터리 신원이 첫 실행 이후 바뀌었다");
+        }
+        return { path: p, id };
+    }
     let entries;
     try {
         entries = readdirSync(p);
@@ -131,7 +155,11 @@ export function assertIsolatedCodexHome(path) {
         // 개수만 알린다 — 파일 이름은 오류 문자열에 싣지 않는다.
         fail("codex_home_not_empty", `codexHome에 기존 설정/자격증명 항목이 있다(${entries.length}건)`);
     }
-    return p;
+    return { path: p, id };
+}
+/** 최초 상태(비어 있어야 하는) 검증만 필요한 호출자용 shim. */
+export function assertIsolatedCodexHome(path) {
+    return verifyCodexHome(path).path;
 }
 /** spec의 codex 옵션을 fail-closed로 정규화한다. 계약 밖 값은 기본값으로 눙치지 않고 거부한다. */
 export function resolveCodexOptions(spec) {
@@ -219,6 +247,7 @@ export class CodexCliProvider {
             status: "idle",
             settled: Promise.resolve(),
             codexSessionId: "",
+            homeId: null,
             ephemeral: o.ephemeral,
             poisoned: "",
         };
@@ -285,14 +314,17 @@ export class CodexCliProvider {
         if (prompt.length > MAX_PROMPT_CHARS)
             fail("codex_prompt_too_long", `프롬프트는 ${MAX_PROMPT_CHARS}자 이하여야 한다`);
         const o = resolveCodexOptions(state.spec);
-        const codexHome = assertIsolatedCodexHome(o.codexHome);
+        // 첫 invocation은 빈 홈을 요구하고, 이후 invocation은 **같은 신원의 소유 홈**만 허용한다
+        // (resume은 codex가 그 홈에 남긴 세션 상태를 필요로 한다).
+        const home = verifyCodexHome(o.codexHome, state.homeId ?? undefined);
         const bin = assertTrustedExecutable(this.opts.executablePath);
         // 대장 `B-5`: 승인된 커밋이 controller/실행 checkout HEAD와 정확히 같을 때만 프로세스를 띄운다.
         const boundary = await verifyExecutionBoundary({
             manifest: this.opts.manifest,
             controllerRepoRoot: this.opts.controllerRepoRoot,
             targetWorktree: state.spec.cwd,
-            nowMs: this.opts.nowMs?.(),
+            // clock을 **함수로** 넘긴다 — 경계는 spawn 직전 재검증에서 만료를 다시 본다.
+            nowMs: this.opts.nowMs,
         });
         // cwd는 경계가 확인한 targetRoot만 쓴다(호출자 문자열 재사용 금지 — argv와 native cwd 모두).
         const cwd = boundary.targetRoot;
@@ -327,13 +359,15 @@ export class CodexCliProvider {
         }
         let child;
         try {
-            child = this.spawnFn(bin, args, { cwd, env: compileCodexEnv(codexHome), stdio: ["pipe", "pipe", "pipe"] });
+            child = this.spawnFn(bin, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
         }
         catch (err) {
             // 동기 spawn 예외: 큐를 열어둔 채 두지 않고 종료 결과 1건으로 닫는다.
             settle({ code: null, signal: null, stderr: err?.message ?? "", spawnError: true });
             fail("codex_spawn_failed", "codex 실행을 시작하지 못했다");
         }
+        // 프로세스를 띄운 뒤부터 그 홈은 provider 소유다 — 이후 invocation은 신원이 같은 홈만 쓴다.
+        state.homeId = home.id;
         state.child = child;
         let stderr = "";
         child.stdout?.setEncoding("utf8");
@@ -341,6 +375,9 @@ export class CodexCliProvider {
             for (const e of parser.push(chunk)) {
                 if (e.kind === "init")
                     this.bindSessionIdentity(state, parser, e.sessionId, queue);
+                // strict empty MCP 위반을 본 thread는 **다시 이어가지 않는다**(비가역 실패를 resume으로 우회 금지).
+                else if (e.kind === "unknown" && e.type === "mcp_call_observed")
+                    state.poisoned = "codex_mcp_observed";
                 queue.push(e);
             }
         });

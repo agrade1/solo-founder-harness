@@ -6,16 +6,18 @@
  *  1) 이번 invocation의 계약(argv · cwd · stdin · 상속된 env key)을 **cwd**의 `.fake-codex-invocation.json`에 기록
  *  2) **cwd**의 `.fake-codex-scenario.json`에 적힌 JSONL 줄들을 stdout에 흘리고 지정 코드로 종료
  *
- * 채널이 `CODEX_HOME`이 아니라 **cwd**인 이유: provider가 spawn 전에 `CODEX_HOME`이
- * **비어 있는 0700 디렉터리**임을 요구하므로(ambient config·auth 0), 거기에 파일을 쓰면 두 번째
- * invocation(resume)이 정당하게 거부된다. cwd는 argv `--cd`로 이미 전달되는 값이고
- * **테스트가 소유한 임시 git 체크아웃**이라 production 경로에서는 도달할 수 없다.
- * 새 env·argv 테스트 seam은 만들지 않는다.
+ * 채널이 `CODEX_HOME`이 아니라 **cwd**인 이유: provider는 **첫** invocation에서 `CODEX_HOME`이
+ * **비어 있는 0700 디렉터리**임을 요구하므로(ambient config·auth 0) 시나리오를 거기에 둘 수 없다.
+ * cwd는 argv `--cd`로 이미 전달되는 값이고 **테스트가 소유한 임시 git 체크아웃**이라 production 경로에서는
+ * 도달할 수 없다. 새 env·argv 테스트 seam은 만들지 않는다.
+ *
+ * 실제 codex처럼 **`CODEX_HOME` 아래에 세션 상태를 남긴다**(`sessions/<y>/<m>/<d>/rollout-<uuid>.jsonl`
+ * + `history.jsonl`, 0700). 그래서 resume 경로가 "첫 실행 뒤 홈이 비어 있지 않다"는 현실을 그대로 지난다.
  *
  * scenario: { "runs": [{ "lines": string[], "exitCode"?: number, "stderr"?: string, "selfSignal"?: string }] }
  *           또는 단일 run 객체. 여러 invocation이면 순서대로 소비한다(없으면 마지막 것을 반복).
  */
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 if (!process.env.CODEX_HOME) {
@@ -49,6 +51,15 @@ try {
 
 const index = Math.min(prior.calls.length - 1, scenario.runs.length - 1);
 const run = scenario.runs[index] ?? { lines: [], exitCode: 0 };
+
+// 실제 codex처럼 세션 상태를 CODEX_HOME 아래에 남긴다(resume이 이 상태를 필요로 한다).
+const thread = (run.lines ?? []).join("\n").match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/)?.[0];
+if (thread) {
+  const sessionsDir = join(process.env.CODEX_HOME, "sessions", "2026", "07", "27");
+  mkdirSync(sessionsDir, { recursive: true, mode: 0o700 });
+  appendFileSync(join(sessionsDir, `rollout-${thread}.jsonl`), `${JSON.stringify({ thread, call: prior.calls.length })}\n`);
+  appendFileSync(join(process.env.CODEX_HOME, "history.jsonl"), `${JSON.stringify({ thread })}\n`);
+}
 
 for (const line of run.lines ?? []) process.stdout.write(`${line}\n`);
 if (run.stderr) process.stderr.write(run.stderr);

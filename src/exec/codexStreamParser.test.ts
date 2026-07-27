@@ -327,6 +327,51 @@ test("[M5a] 세션 신원: 이벤트는 흘렀는데 thread.started가 없으면
   assert.equal(r.sessionId, "");
 });
 
+test("[M5a] 세션 신원: 신원 확립 전 이벤트는 비가역 실패이고 내용·도구를 전달하지 않는다", () => {
+  const before: Array<[string, string]> = [
+    ["turn.started", '{"type":"turn.started"}'],
+    ["assistant", '{"type":"item.completed","item":{"id":"i","item_type":"agent_message","text":"EARLY_TEXT_SENTINEL"}}'],
+    ["command", '{"type":"item.completed","item":{"id":"i","item_type":"command_execution","command":"ls /etc/shadow","status":"completed","exit_code":0}}'],
+    ["item.started", '{"type":"item.started","item":{"id":"i","item_type":"reasoning"}}'],
+    ["unknown", '{"type":"vendor.future","payload":{"leak":"EARLY_TEXT_SENTINEL"}}'],
+    ["error", '{"type":"error","message":"EARLY_TEXT_SENTINEL"}'],
+  ];
+  for (const [label, line] of before) {
+    // 신원 확립 전 이벤트 → 뒤늦게 thread.started와 정상 종료가 와도 성공이 아니다.
+    const events = run([
+      line,
+      `{"type":"thread.started","thread_id":"${TID}"}`,
+      '{"type":"item.completed","item":{"id":"i2","item_type":"agent_message","text":"LATE_TEXT_SENTINEL"}}',
+      '{"type":"turn.completed","usage":{"input_tokens":1}}',
+    ]);
+    const r = only(events);
+    assert.equal(r.isError, true, `${label}: 신원 없이 시작한 스트림은 성공이 아니다`);
+    assert.equal(r.terminalReason, "missing_session_id", label);
+    assert.equal(r.sessionId, "", `${label}: 늦은 thread.started도 신원을 세우지 못한다`);
+    assert.deepEqual(markers(events), ["missing_session_id"], `${label}: 실패 표시는 1건이고 뒤 이벤트는 방출되지 않는다`);
+    assert.equal(events.filter((e) => e.kind === "init").length, 0, `${label}: init이 없다`);
+    assert.equal(events.filter((e) => e.kind === "assistant" || e.kind === "status").length, 0, `${label}: 내용·진행 이벤트 0`);
+    assert.deepEqual(events.flatMap((e) => (e.kind === "assistant" ? e.toolUses : [])), [], `${label}: 도구 payload 0`);
+    const blob = JSON.stringify(events);
+    assert.ok(!blob.includes("EARLY_TEXT_SENTINEL") && !blob.includes("LATE_TEXT_SENTINEL"), `${label}: 본문이 새지 않는다`);
+    assert.ok(!blob.includes("/etc/shadow"), `${label}: 명령이 새지 않는다`);
+    assert.equal(r.numTurns, 0, label);
+  }
+});
+
+test("[M5a] 세션 신원: 형식 위반 thread.started 뒤에 정규 UUID가 와도 되돌리지 못한다", () => {
+  const events = run([
+    '{"type":"thread.started","thread_id":"--last"}',
+    `{"type":"thread.started","thread_id":"${TID}"}`,
+    '{"type":"turn.completed","usage":{}}',
+  ]);
+  const r = only(events);
+  assert.equal(r.isError, true);
+  assert.equal(r.terminalReason, "invalid_session_id", "첫 실패가 이긴다");
+  assert.equal(r.sessionId, "");
+  assert.equal(events.filter((e) => e.kind === "init").length, 0);
+});
+
 test("[M5a] 이벤트 수 상한을 넘기면 종료 결과가 실패다", () => {
   const lines = Array.from({ length: MAX_EVENTS + 5 }, () => '{"type":"turn.started"}');
   const events = run([`{"type":"thread.started","thread_id":"${TID}"}`, ...lines, '{"type":"turn.completed","usage":{}}']);

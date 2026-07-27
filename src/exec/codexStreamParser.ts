@@ -12,10 +12,15 @@
  *   합쳐 `result` **하나**를 낸다. silent stream · 정상 종료 뒤 비정상 exit · 중복 종료가 모두 실패다.
  * - **세션 신원은 불변의 정규 UUID 하나다.** `thread.started`가 정규 UUID를 정확히 한 번 줘야 하고,
  *   빈 값·형식 위반(`--last` 같은 텍스트 포함)·중복·모순·부재는 전부 프로토콜 실패다.
+ *   **의미 있는 첫 이벤트가 신원을 세워야 한다** — 신원 확립 전에 온 어떤 이벤트도(status·assistant·
+ *   unknown·error 포함) 내용·도구 payload를 전달하지 않고 `missing_session_id` 비가역 실패가 된다.
+ *   한 번 실패한 뒤의 늦은 `thread.started`도 신원을 세우지 못한다.
  *   종료 이벤트 뒤에 오는 이벤트는 세션 신원도 최종 메시지도 **바꾸지 못한다**.
- * - **raw는 원본 JSON이 아니라 bounded sanitized metadata projection이다.** 추론/본문 텍스트,
- *   agent message 전문, 명령 문자열, stderr/error 본문, secret, 프롬프트, 환경변수, 전체 argv,
- *   모르는 이벤트의 payload는 **어떤 이벤트에도 실리지 않는다**. 이 모듈은 디스크에 아무것도 쓰지 않는다.
+ * - **raw는 원본 JSON이 아니라 bounded sanitized metadata projection이다.** 추론 원문, 명령 문자열,
+ *   stderr/error 본문, secret, 프롬프트, 환경변수, 전체 argv, 모르는 이벤트의 payload는 **어떤 이벤트에도
+ *   실리지 않는다**(`raw`에는 길이·상태·exit code 같은 스칼라만 남는다). 반면 **최종 agent message는
+ *   의도적으로 전달한다** — 상한을 지난 본문이 `assistant.text`와 `result.text`로 나간다(리뷰 판정
+ *   `--output-schema` 본문이 여기로 온다). 이 모듈은 디스크에 아무것도 쓰지 않는다.
  *
  * ⚠ JSONL 필드명은 supervisor가 실측한 `codex exec --help`(0.146.0-alpha.3)의 **플래그**까지만 확정됐고
  * 이벤트 payload 필드명은 provider live 경로로 확인하지 않았다 — 그래서 `thread_id`/`session_id` 같은
@@ -192,6 +197,7 @@ export class CodexJsonlParser {
       permission = this.failure.permission;
     } else if (this.lines > 0 && !this.session) {
       // 이벤트가 흘렀는데 정규 세션 id가 없다 = 프로토콜 위반(resume 근거를 만들 수 없다).
+      // 신원 우선 게이트가 보통 먼저 잡는다 — 여기는 같은 사유의 backstop이다.
       reason = "missing_session_id";
       text = stderr;
     } else if (!this.success) {
@@ -275,6 +281,16 @@ export class CodexJsonlParser {
   }
 
   private event(raw: RawEvent, out: SessionEvent[]): void {
+    // **신원 우선**: 의미 있는 첫 이벤트는 `thread.started`여야 한다. 신원이 서기 전에 온 이벤트는
+    // 비가역 실패이고, 내용·도구 payload를 **전달하지 않는다**(status/assistant/unknown/error 전부).
+    // 실패가 이미 기록됐으면 뒤늦은 `thread.started`도 신원을 세우지 못한다(되돌릴 수 없다).
+    if (!this.session && (raw.type !== "thread.started" || this.failure)) {
+      if (!this.failure) {
+        out.push(this.marker("missing_session_id", { codexType: bounded(raw.type, 64) }));
+        this.fail("missing_session_id", "");
+      }
+      return;
+    }
     // 종료 뒤에 오는 이벤트는 신원·최종 메시지를 바꾸지 못한다(중복 종료는 아래에서 실패로 잡힌다).
     const postTerminal = this.terminalSeen;
     switch (raw.type) {

@@ -9,7 +9,20 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -22,6 +35,7 @@ import {
   compileCodexArgs,
   compileCodexEnv,
   resolveCodexOptions,
+  verifyCodexHome,
   type SpawnFn,
 } from "./codexCliProvider.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
@@ -353,6 +367,34 @@ test("[M5a] 격리 홈 검증: 사용자 홈·비어있지 않음·symlink·느�
   }
 });
 
+test("[M5a] 격리 홈 수명(단위): 최초는 빈 홈 · 소유 신원이 같을 때만 이후 상태를 허용", async () => {
+  const home = codexHome();
+  const other = codexHome();
+  try {
+    const first = verifyCodexHome(home);
+    assert.equal(first.path, home);
+    const st = lstatSync(home);
+    assert.deepEqual(first.id, { dev: st.dev, ino: st.ino }, "신원은 dev+ino다(경로 문자열이 아니다)");
+
+    // codex가 세션 상태를 남긴 상황
+    mkdirSync(join(home, "sessions", "2026", "07", "27"), { recursive: true, mode: 0o700 });
+    writeFileSync(join(home, "sessions", "2026", "07", "27", "rollout-x.jsonl"), "{}\n");
+
+    assert.equal(await codeOfCall(() => verifyCodexHome(home)), "codex_home_not_empty", "소유권 없이는 기존 상태를 받지 않는다");
+    assert.equal(verifyCodexHome(home, first.id).path, home, "소유 신원이 같으면 그 상태를 허용한다");
+    assert.equal(
+      await codeOfCall(() => verifyCodexHome(other, first.id)),
+      "codex_home_identity_changed",
+      "다른 디렉터리는 같은 소유권으로 통과하지 않는다",
+    );
+    chmodSync(home, 0o755);
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, first.id)), "codex_home_permissive", "소유 홈도 권한 검사는 그대로다");
+  } finally {
+    rmSync(other, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 // ── 프로세스는 검증을 다 통과할 때만 뜬다 (spawn 횟수 0 계약) ─────────────
 
 /** 모든 거부 케이스에서 spawn 0을 확인하는 공용 러너. */
@@ -501,6 +543,62 @@ test("[M5a] 격리 홈이 계약을 어기면 spawn 0", async () => {
   }
 });
 
+test("[M5a] 소유하지 않은 기존 세션 상태로는 시작하지 않는다(spawn 0)", async () => {
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) => {
+      // 다른 누군가(또는 이전 실행)가 남긴 codex 세션 상태 = 소유권 없음.
+      mkdirSync(join(home, "sessions", "2026", "07", "27"), { recursive: true, mode: 0o700 });
+      writeFileSync(join(home, "sessions", "2026", "07", "27", "rollout-old.jsonl"), "{}\n");
+      return providerWith(repo, repo.root, calls).start(specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } }), "p");
+    }),
+    "codex_home_not_empty",
+  );
+});
+
+test("[M5a] resume: 홈이 교체·symlink화·권한 완화되면 두 번째 프로세스를 띄우지 않는다", async () => {
+  // 각 케이스: 1차 invocation 성공(소유 신원 고정) → 홈을 훼손 → send는 spawn 0으로 거부.
+  const cases: Array<[string, (home: string, spare: string) => void, string]> = [
+    [
+      "교체(inode 다름)",
+      (home, spare) => {
+        // spare는 home이 살아 있는 동안 만들어졌으므로 inode가 반드시 다르다(우연 일치 없음).
+        rmSync(home, { recursive: true, force: true });
+        renameSync(spare, home);
+      },
+      "codex_home_identity_changed",
+    ],
+    [
+      "symlink 교체",
+      (home, spare) => {
+        rmSync(home, { recursive: true, force: true });
+        symlinkSync(spare, home, "dir");
+      },
+      "codex_home_invalid",
+    ],
+    [
+      "권한 완화",
+      (home) => chmodSync(home, 0o755),
+      "codex_home_permissive",
+    ],
+  ];
+  for (const [label, tamper, expected] of cases) {
+    const h = await harness((c) => c.finish(OK_STREAM, 0));
+    const spare = codexHome();
+    try {
+      const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+      const handle = await h.provider.start(spec, "1차");
+      await drain(h.provider.events(handle));
+      assert.equal(h.calls.length, 1, label);
+      tamper(h.home, spare);
+      assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), expected, label);
+      assert.equal(h.calls.length, 1, `${label}: 거부 경로인데 두 번째 프로세스가 떴다`);
+    } finally {
+      rmSync(spare, { recursive: true, force: true });
+      h.cleanup();
+    }
+  }
+});
+
 test("[M5a] 프롬프트 계약 위반도 spawn 0", async () => {
   assert.equal(
     await expectNoSpawn((repo, home, calls) => providerWith(repo, repo.root, calls).start(specFor(repo.root, home), "x".repeat(300_000))),
@@ -534,6 +632,30 @@ test("[M5a] spawn 직전 HEAD가 움직이면 프로세스를 띄우지 않는�
     const code = await codeOfCall(() => provider.start(specFor(repo.root, home), "p"));
     assert.equal(code, "approved_commit_mismatch");
     assert.equal(calls.length, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] 승인이 경계 검증과 spawn 사이에 만료되면 프로세스를 띄우지 않는다", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    // manifest.expiresAt = 2099-12-31. clock을 그 직전 → 그 시각으로 진행시킨다(비동기 git 조회 동안 만료).
+    const at = Date.parse("2099-12-31T00:00:00.000Z");
+    let reads = 0;
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+      nowMs: () => (++reads === 1 ? at - 1 : at),
+    });
+    assert.equal(await codeOfCall(() => provider.start(specFor(repo.root, home), "p")), "manifest_expired");
+    assert.equal(calls.length, 0, "만료된 승인으로는 spawn하지 않는다");
+    assert.equal(reads, 2, "만료는 경계 진입과 spawn 직전 재검증에서 각각 확인된다");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
@@ -796,6 +918,30 @@ test("[M5a] MCP 호출이 스트림에 보이면 실패 결과다", async () => 
   }
 });
 
+test("[M5a] MCP 위반을 본 세션은 닫힌다 — resume으로 이어갈 수 없다(spawn 추가 0)", async () => {
+  const h = await harness((c) =>
+    c.finish(
+      [
+        `{"type":"thread.started","thread_id":"${TID}"}`,
+        '{"type":"item.completed","item":{"id":"i","item_type":"mcp_tool_call","server":"s","tool":"t"}}',
+        '{"type":"turn.completed","usage":{}}',
+      ],
+      0,
+    ),
+  );
+  try {
+    // ephemeral:false = 원래라면 resume이 가능한 세션. MCP 관측이 그 길을 닫는다.
+    const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+    const handle = await h.provider.start(spec, "1차");
+    const r = resultsOf(await drain(h.provider.events(handle)));
+    assert.equal(r[0].terminalReason, "mcp_call_observed");
+    assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), "codex_mcp_observed");
+    assert.equal(h.calls.length, 1, "오염된 thread를 다시 띄우지 않는다");
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("[M5a] 권한 실패는 permission_required로 올라온다(hang 없음)", async () => {
   const h = await harness((c) =>
     c.finish(
@@ -989,6 +1135,65 @@ test("[M5a] fake CLI 오염 스트림: malformed·과대 줄이 섞이면 프로
     assert.equal(r.length, 1);
     assert.equal(r[0].isError, true);
     assert.equal(r[0].terminalReason, "malformed_line", "첫 프로토콜 실패가 종료 사유다");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] fake CLI 홈 수명: 1차가 홈에 세션 상태를 남기고 resume은 같은 소유 홈으로만 성공한다", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  try {
+    scenario(repo.root, [
+      { lines: OK_STREAM },
+      { lines: [`{"type":"thread.started","thread_id":"${TID}"}`, '{"type":"turn.completed","usage":{}}'] },
+    ]);
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
+    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
+
+    assert.deepEqual(readdirSync(home), [], "1차 전에는 홈이 비어 있다(ambient config·auth 0)");
+    const handle = await provider.start(spec, "1차");
+    const first = resultsOf(await drain(provider.events(handle)));
+    assert.equal(first.length, 1);
+    assert.equal(first[0].isError, false);
+
+    // 실제 codex처럼 세션 상태가 홈 아래에 생겼다 — 이제 홈은 비어 있지 않다.
+    assert.ok(readdirSync(home).length > 0, "1차가 홈에 상태를 남긴다");
+    assert.ok(existsSync(join(home, "sessions", "2026", "07", "27", `rollout-${TID}.jsonl`)));
+    assert.equal(lstatSync(home).mode & 0o077, 0, "홈 권한은 여전히 0700이다");
+    assert.equal(
+      await codeOfCall(() => assertIsolatedCodexHome(home)),
+      "codex_home_not_empty",
+      "소유권 없는 검증(=최초 검증)에게는 이 상태가 여전히 거부 대상이다",
+    );
+
+    // resume: 같은 소유 홈이므로 통과하고, 두 번째 프로세스가 실제로 뜬다.
+    await provider.send(handle, "2차");
+    const second = resultsOf(await drain(provider.events(handle)));
+    assert.equal(second.length, 1);
+    assert.equal(second[0].isError, false);
+
+    const calls = invocations(repo.root).calls;
+    assert.equal(calls.length, 2, "resume이 실제 프로세스로 이어졌다");
+    assert.deepEqual(calls[1].argv.slice(0, 7), ["exec", "--sandbox", "read-only", "--cd", repo.root, "resume", TID]);
+    // resume에서도 strict 격리 플래그는 그대로다(홈에 무엇이 생겨도 ambient 설정·MCP를 상속하지 않는다).
+    for (const flag of ["--strict-config", "--ignore-user-config", "--ignore-rules", "--json"]) {
+      assert.ok(calls[1].argv.includes(flag), `resume argv에 ${flag}가 없다`);
+    }
+    const at = calls[1].argv.indexOf("--config");
+    assert.ok(calls[1].argv.includes("mcp_servers={}") && at > 0, "resume도 mcp_servers={}를 명시한다");
+    assert.deepEqual(
+      calls[1].envKeys.filter((k) => !["CODEX_HOME", "__CF_USER_TEXT_ENCODING"].includes(k)),
+      [],
+      "resume 자식도 CODEX_HOME 외 env를 상속하지 않는다",
+    );
+    assert.ok(!existsSync(join(home, "auth.json")), "provider는 auth를 쓰지 않는다(live 인증은 B-7)");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
