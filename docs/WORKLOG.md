@@ -41,6 +41,9 @@ amend/rebase/reset·push/PR/merge·네트워크·`gh`·패키지 설치·의존�
   git 경로·env async 되돌림(**1건**) · git 경로·env sync 되돌림(**1건**) · 파서 봉인 무효화(**2건**) ·
   spec 스냅샷 비교 제거(**1건**) → 전부 정확히 원복, `MUTATION` grep 0, `git diff --numstat` 기준선 일치,
   focused 90/90 재확인.
+- **인접 감사**: 경계 **밖의** `runProcess` git 호출자(worktree 유틸 등)는 아직 이름 호출 + env 상속이다.
+  리뷰 지시대로 범위를 경계로 한정했고 이들은 **승인 커밋을 증명하지 않으므로** A가 아니다 →
+  대장 `C-26`으로 등록(기한: controller가 worktree 조작을 자동화 경로로 쓰기 전, M5c). 그 밖의 새 A는 없었다.
 - **전체 suite는 이 세션에서 돌리지 않았다(리뷰 지적 반영·정직한 상태)**: M5a는 **내부 stacked M5 slice**이고
   **supervisor가 M5b~M5d 이후 최종 M5 handoff에서 `npm test` 직렬 1회**를 돌린다. 그래서 **M5a handoff는
   supervisor 리뷰 전까지 승인 상태가 아니다.** 미실행: `npm test` 전체 · `test:core` · acceptance · stress ·
