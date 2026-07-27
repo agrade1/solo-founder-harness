@@ -3,7 +3,59 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5a 3차 리비전(offline)** · **M5 미완료 · M5a handoff 미승인** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5a 4차 리비전(offline)** · **M5 미완료 · M5a handoff 미승인** · 이 절이 가장 최신이다)
+
+범위 `85ebe883..3493a2e`를 **새 독립 fresh Codex `gpt-5.6-sol` xhigh read-only**가 리뷰해 다시
+**REVISE**를 냈다. 3차의 A 3건(spawn-adjacent 게이트 · 신뢰된 git · resume UUID 봉인)은 **fixed로
+확인**됐고 계약·테스트를 그대로 보존했다. 이번 A는 **상태 기계**다 — 게이트는 제자리인데 **누가 그
+게이트를 지날 자격이 있는지**를 아무도 원자적으로 정하지 않았다. **새 fresh Claude Opus 5 세션**이
+`3493a2e` 위에 로컬 커밋만 추가했다.
+
+- **A/P1 pre-spawn session-state race → fixed**: `send()`가 상태를 본 뒤 `invoke()`가 **await된
+  `verifyExecutionBoundary` 뒤에야** 세션을 점유했다 → 겹친 두 `send`가 둘 다 통과해 같은 UUID·
+  `CODEX_HOME`으로 **중복 resume 프로세스**를 띄우고 큐·child를 덮어쓸 수 있었고, 같은 창에서 `stop()`이
+  세션을 지워도 뒤늦게 `running`을 발행하며 **추적되지 않는 프로세스**가 뜰 수 있었다. 현행 계약:
+  - **`starting` 상태 + provider 전역 단조 증가 generation 토큰**을 **첫 await 전에 동기로** claim한다.
+  - 겹친 start/send는 spawn·발행 없이 **`codex_send_overlap`** 으로 즉시 거부(소유자 큐·child·events 무변경).
+  - **모든 await 뒤 + spawn 직전 동기 게이트**에서 세션 존재 · **같은 state 객체** · 같은 generation ·
+    미취소 · 미중지를 재확인 → **`codex_invocation_cancelled`**.
+  - **`stop()`은 child가 없어도** claim을 취소하고, 같은 id의 **교체 세션은 지우지 않는다**. 낡은
+    `start` catch와 `settle`도 **소유권 확인 후에만** 상태를 만진다.
+  - 신뢰 검사 → `spawn` 사이 **no-await 동기 게이트** 유지. stop 멱등 · poison · 만료 · 큐 격리 무변경.
+- **A/P1 `C-23` reopen → fixed**: provider가 호출자 소유 `state.spec`을 들고 **매 turn
+  `resolveCodexOptions`를 다시 해석**해서, 1차 turn 완료 후 `send` 전의 변조가 **새 baseline**이 됐다
+  (3차가 fixed로 적은 것은 **overclaim** — 같은 invocation 창만 닫혀 있었다). 현행은 `start()`가 유효 옵션
+  **전부를 봉인**한다(`sessionId`·`model`·`reasoningEffort`·`sandbox`·`codexHome`·`outputSchemaPath`·
+  `ephemeral`·`cwd`·codex/git 실행 파일 경로·`controllerRepoRoot`·manifest `milestoneId`/`approvedCommit`/
+  `expiresAt`/`maxSessions`/`maxTokens`/`maxElapsedMs`, `Object.freeze`). **매 invocation 동기 진입 +
+  spawn 직전 게이트**에서 `SEALED_KEYS` **명시 필드 목록**으로 대조하고(JSON 키 순서 의존 없음) 드리프트는
+  **단일 marker `codex_spec_mutated`** 다. argv·env·경계 입력은 **전부 봉인값에서만** 만든다.
+  → **호출자 계약**: `start()` 이후 `spec`/`opts` 객체를 바꾸면 다음 turn이 fail closed된다(M5b 배선 주의점).
+- **A 발행 순서 정합 → fixed**: 큐·`running` 발행이 동기 게이트 **전**이라 검증 실패가 **이전 invocation의
+  완료된 큐를 교체**하고 가짜 종료 결과를 하나 더 냈다(주석은 반대로 말했다). 발행을 **게이트 뒤로** 옮겼다 —
+  발행 전 실패는 큐·`child`·세션 신원을 하나도 건드리지 않고 rejected promise로만 나가며, 발행 이후 실패
+  (동기 spawn 예외)만 그 invocation의 **bounded 스트림**을 종료 결과 1건으로 닫는다.
+- **열린 항목 정본(4차 기준)**: B = `B-7` · `B-8` · `B-9`(live/배선 하드 게이트, offline M5b는 막지 않는다).
+  C = `C-17` · `C-18` · `C-19` · `C-21` · `C-22` · `C-24` · `C-25` · **`C-26`(경계 밖 `runProcess` git
+  호출자 — 기한: controller가 worktree 조작을 자동화 경로로 쓰기 전, M5c)** · **`C-27`(신규 — `stop()`이
+  `starting`에서 반환한 뒤 취소된 invocation promise가 나중에 reject된다. 기한: M5b 배선 전)** ·
+  **`C-28`(신규 — 봉인 밖 manifest 권한 필드는 turn 간 고정 없음. 현재 provider가 읽지 않는다.
+  기한: 권한 집행 계층 도입 시)**. `C-23`은 **4차에서 fixed**(행에 reopen 사유 명시). **열린 A 없음 · 새 B 없음.**
+- **4차 리비전 검증**: 파일 단독 `npx tsx --test` → boundary **17/17** · parser **28/28** ·
+  provider **50/50**(합 **95/95**, 이전 90) · `npm run test:exec` **237/237**(232 → 237) ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 후 `git status` 변화 0) ·
+  `git diff --check` clean. **동시성 계약을 건드렸으므로 신규 race/spec 5건 반복 3회** → 3회 모두 5/5.
+  mutation **5종**(claim `starting` → 2건 / `owns()` 검사 → 2 / 매 turn 재해석 → 1(**between-turn만** 실패해
+  reopen 사유 재현) / 필드 비교 무력화 → 2 / `start` catch 무조건 삭제 → 1) 후 정확히 원복,
+  `MUTATION` grep 0(소스·dist) · `tsc --noEmit` 0. **정직한 한계**: `cancelled` 단독 제거와 `settle`
+  소유권 가드는 **단독 커버리지가 없다**(서로 중복된 방어 — 셋을 함께 제거하면 2건 실패).
+  race 창은 provider에 테스트 hook을 **더하지 않고** 경계의 git을 **신뢰된 래퍼로 정지**시켜 연다.
+- **전체 suite는 여전히 미실행이다.** M5a는 **내부 stacked M5 slice**이고 **supervisor가 M5b~M5d 이후 최종
+  M5 handoff에서 `npm test`를 직렬 1회** 돌린다. 따라서 **M5a handoff는 supervisor의 다음 fresh 독립 리뷰
+  전까지 승인된 상태가 아니다.** 미실행: `npm test` 전체 · `test:core` · acceptance · stress · live · MCP ·
+  실제 Codex/Claude 추론 · M5b controller · M5c lifecycle · M5d E2E.
+
+### 이전 — M5a 3차 리비전 기록 (2026-07-27)
 
 범위 `85ebe883..2627f8f`를 **독립 fresh Codex `gpt-5.6-sol` xhigh read-only**가 리뷰해 **REVISE**를 냈고
 (A 3 = P0 1 + P1 2 · 문서·타입 정정 · 전체 suite 미실행 지적), 작성 세션을 playbook §6대로 **A 처리에만

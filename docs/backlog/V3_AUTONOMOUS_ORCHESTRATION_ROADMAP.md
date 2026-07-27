@@ -23,8 +23,10 @@
   Codex 독립 리뷰의 **P0 2건은 2026-07-27에 수정 완료**했고 **M4 범위에 열린 P0는 없다**
   (M5a는 별도 리뷰를 받았다 — 아래 M5 항목).
 - **M5는 여전히 미완료다.** 다만 **2026-07-27에 사용자가 M5a 범위를 승인해 구현·offline 검증을 마쳤고,
-  같은 날 fresh Codex 독립 리뷰(REVISE)의 A 항목 9건을 리비전으로 닫았다**
-  (실행 경계 + `CodexCliProvider` + JSONL 어댑터 + fake 테스트 — §10 M5 → M5a). **M5a가 아닌 것**:
+  같은 날 fresh Codex 독립 리뷰 4라운드(전부 REVISE)의 A 항목을 리비전으로 닫았다**
+  (실행 경계 + `CodexCliProvider` + JSONL 어댑터 + fake 테스트 — §10 M5 → M5a).
+  라운드별 A: 1차 9건 → 2차 4건 → 3차 3건 → **4차 3건(pre-spawn race · `C-23` reopen · 발행 순서)**.
+  **4차 이후에도 M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 것이 아니다.** **M5a가 아닌 것**:
   autopilot CLI · Claude↔Codex 자동 전달 · 실제 7-agent 동시 실행 · **live acceptance**.
   이 문서 아래쪽의 "M5 not started" 표기는 M5a 승인 이전 기록이다.
   열린 B(P1)는 `B-7`(live 인증·secret redaction) · `B-8`(reviewer 결과 게이트) · `B-9`(JSONL live 확인)이며
@@ -1518,7 +1520,9 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | `C-19` | C (P2) | **`--output-schema`를 넘겨도 응답 본문을 schema로 검증하지 않는다.** provider는 최종 agent message 텍스트를 그대로 `result.text`로 준다(호출자가 파싱) | 중간 | 구조화 결과 1건의 형태 오류가 호출자에게 넘어간다 | 낮음 — 검증기를 나중에 얹으면 된다(기존 수동 closed validator 방식) | 소~중 | **reviewer 결과를 kernel state로 옮기기 시작할 때(M5c)** | 미정 | `codexStreamParser` `lastMessage` · M5a focused "구조화 최종 출력" | open |
 | `C-21` | C (P2) | **프로토콜 실패로 끝난 invocation 뒤에도 resume이 허용된다**(MCP 위반·세션 신원 충돌만 세션을 닫는다). malformed·oversized·중복 종료로 실패한 turn 뒤에 호출자가 `send`를 부르면 provider는 그 thread를 이어간다 — 판정은 `result.isError`를 보는 호출자 몫이다 | 중간(호출자가 `isError`를 무시할 때) | 세션 1건의 후속 turn | 낮~중 — `B-8`(reviewer가 `isError`를 무시한다)과 같은 방향의 위험이고 그쪽을 닫으면 대부분 사라진다 | 소(실패 사유 화이트리스트로 poison 확장 + 회귀 테스트) | **`B-8`을 닫을 때 같이(= M5b reviewer 배선 전)** | M5b 구현 세션 | `CodexCliProvider.send`/`state.poisoned` · M5a 2차 리비전 focused "MCP 위반을 본 세션은 닫힌다" | open |
 | `C-22` | C (P2) | **`CODEX_HOME` 소유 신원이 in-memory라 controller가 재시작하면 같은 홈으로 resume할 수 없다**(신원을 잃으므로 최초 검증 규칙에 걸려 `codex_home_not_empty`). 방향은 fail closed이지만 self-hosting 재시작 후 진행 중 세션을 이어갈 수 없다 | 중간(M5c self-hosting에서) | 재시작 시점에 열려 있던 codex 세션의 resume | 낮~중 — 재시작 후에는 새 세션으로 다시 시작하면 된다 | 중(소유권을 `run_state.json`에 durable 기록 + 복원 검증) | **self-hosting controller 재시작 경계를 다룰 때(M5c)** | M5c 구현 세션 | `CodexState.homeId` · M5a 2차 리비전 focused "격리 홈 수명" | open |
-| `C-23` | **C (P2) → fixed(M5a 3차 리비전)** | **호출자 소유 `spec`의 변조.** ⓐ turn 사이 변경으로 model·`--output-schema` 경로가 resume에서 달라질 수 있었다. ⓑ **독립 리뷰가 넓힌 범위**: `spec`은 호출자가 계속 들고 있는 **가변 객체**이므로 **한 invocation의 비동기 경계 작업 중**(첫 invocation 포함) 값이 바뀌면 검증한 값과 argv·env가 갈라질 수 있었다 | 낮음 — spec은 controller 소유 객체다 | 세션 1건의 invocation 설정(argv·env) | 낮음 | 소(스냅샷 대조) | (닫힘 — 원래 기한은 **M5b provider 배선 전**이었다) | M5a 3차 리비전 | **fix**: spawn 직전 동기 게이트가 `resolveCodexOptions` 해석값 + `spec.cwd`를 **스냅샷과 대조**해 다르면 `codex_spec_mutated`로 거부하고, **argv는 대조 통과 후에 컴파일**한다. 계약 자체를 어기는 변조(`sandbox`)는 재해석 단계에서 먼저 걸린다. 증거: M5a 3차 리비전 focused "창 안에서 spec이 변조되면 …"(model·outputSchemaPath·codexHome·sandbox 4케이스 spawn 0) + mutation(스냅샷 비교 제거 → 1건 실패) | **fixed (2026-07-27, M5a 3차 리비전)** |
+| `C-23` | **C (P2) → 3차에서 fixed로 적었으나 실제로는 절반만 닫혀 있었다(독립 리뷰가 reopen) → fixed(M5a 4차 리비전)** | **호출자 소유 `spec`/`opts`의 변조.** ⓐ turn 사이 변경으로 model·`--output-schema` 경로가 resume에서 달라질 수 있었다. ⓑ **한 invocation의 비동기 경계 작업 중** 값이 바뀌면 검증한 값과 argv·env가 갈라질 수 있었다. **ⓒ reopen 사유(4차 · 독립 리뷰 A/P1)**: 3차 fix는 **같은 invocation 안의** 스냅샷만 대조하고 provider는 여전히 `state.spec`을 들고 **매 turn `resolveCodexOptions`를 다시 해석**했다 → 1차 turn 완료 후 `send` 전의 변조가 **새 baseline**이 됐다. 즉 ⓐ는 닫히지 않았는데 대장·문서가 fixed라고 적었다(overclaim) | 낮~중 — `spec`/`opts`는 controller 소유 객체이지만 M5b 배선이 정확히 그 경로다 | 세션 1건의 invocation 설정 전체(argv·env·홈·실행 파일·경계 입력) | 중 — M5b provider 배선이 이 계약을 그대로 신뢰한다 | 소(start에서 봉인 + 필드 단위 대조) | (닫힘 — 원래 기한은 **M5b provider 배선 전**이었다) | M5a 4차 리비전 | **fix(4차)**: `start()`가 유효 옵션 **전부**를 봉인한다(`sessionId`·`model`·`reasoningEffort`·`sandbox`·`codexHome`·`outputSchemaPath`·`ephemeral`·`cwd`·codex/git 실행 파일 경로·`controllerRepoRoot`·manifest `milestoneId`/`approvedCommit`/`expiresAt`/`maxSessions`/`maxTokens`/`maxElapsedMs`, `Object.freeze`). **모든 invocation 동기 진입 + spawn 직전 게이트**에서 `SEALED_KEYS` **명시 필드 목록**으로 대조하고(JSON 키 순서 의존 없음) 드리프트는 단일 marker `codex_spec_mutated`다. argv·env·경계 입력은 전부 봉인값에서만 만든다. 증거: focused "C-23: turn 사이 spec/opts 변조 …" **9케이스**(model·outputSchema·cwd·codexHome·ephemeral·sessionId·codexBinaryPath·gitExecutablePath 드리프트 + sandbox는 재해석에서 `codex_sandbox_forbidden`) — 각 케이스 spawn 1차 그대로 · 이전 완료 큐 교체 0 · 되돌린 뒤 정상 turn 1건 + 기존 "창 안에서 spec이 변조되면 …" 4케이스 유지 + mutation(봉인값 대신 매 turn 재해석 → **between-turn 테스트만** 실패 / 필드 비교 무력화 → 2건 실패) | **fixed (2026-07-27, M5a 4차 리비전)** |
+| `C-27` | C (P2) | **`stop()`이 `starting` 상태에서 돌아올 때 그 invocation의 promise는 아직 정착하지 않았다.** `stop`은 claim을 취소하고 즉시 반환하지만, 취소된 `start`/`send`는 진행 중인 비동기 경계 작업이 끝난 뒤에야 `codex_invocation_cancelled`로 **reject**된다. 프로세스는 뜨지 않는다(테스트로 고정) — 남는 것은 "stop 반환 후에도 호출자가 그 promise를 받아야 한다"는 계약이 코드/문서에만 있다는 점이다 | 중간(오케스트레이션 배선에서 promise를 버리면 unhandled rejection) | 취소 경로의 호출자 배선 | 낮~중 — 배선 시 `stop` 전 promise를 잡아두면 된다. 안 잡으면 로그 소음이지 상태 오염은 아니다 | 소~중(취소 시 즉시 settle하거나 `stop`이 진행 중 invocation을 await) | **provider를 orchestrator에 배선할 때(M5b — `C-25`와 같은 게이트)** | M5b 구현 세션 | `CodexCliProvider.stop`/`claim`/`assertOwned` · M5a 4차 리비전 focused "stop은 child 없는 claim도 취소한다" · "stop 뒤 교체 세션 …" | open |
+| `C-28` | C (P2) | **봉인 대상 밖의 manifest 필드는 turn 사이에 고정되지 않는다.** 4차 리비전은 manifest의 신원·TTL·상한(`milestoneId`·`approvedCommit`·`expiresAt`·`maxSessions`·`maxTokens`·`maxElapsedMs`)만 봉인했다. `writableRoots`·`ownershipByTask`·`allowedCommands`·`allowedDependencies`·`allowedNetworkDomains`·`localMergeAllowed`가 turn 사이에 바뀌면 드리프트로 잡히지 않는다. **M5a provider는 이 필드들로 아무 판정도 하지 않으므로**(read-only sandbox · 명령 실행 없음 · 네트워크 없음) 지금은 실행 결정에 영향이 없고, 매 invocation `validateApprovalManifest`를 다시 지나므로 형태 위반은 여전히 fail closed다 | 낮음 — 현재 provider가 읽지 않는 필드다 | 이 필드들을 실제로 집행하는 계층(권한 컴파일러·kernel)이 붙은 뒤의 판정 | 중 — task-bound 권한 계층(`workspace-write` 재도입)에서는 이 필드가 곧 판정 근거가 된다 | 소(`SEALED_KEYS`에 canonical manifest 전체 해시 1개 추가) | **manifest 권한 필드를 실제로 집행하는 계층을 붙일 때(= `workspace-write` 재승인 또는 M5c 권한 컴파일러)** | 해당 구현 세션 | `sealCodexSpec`/`SEALED_KEYS` · `approvalManifest.MANIFEST_KEYS` · M5a 4차 리비전 | open |
 | `C-24` | C (P2) | **stderr 버퍼 상한이 chunk 단위로만 적용된다**(`stderr.length < MAX_STDERR_BUFFER` 검사 뒤 chunk 전체를 붙인다 → 한 chunk만큼 초과 가능). 밖으로 나가는 요약은 여전히 `MAX_ERROR_CHARS` + `redactSecrets`로 bounded하다 | 낮음 | 실패 1건의 메모리 상한(정확도) | 낮음 | 소(붙일 때 잘라내기) | **live runner 도입 시(M5c, `C-18`과 함께)** | M5c 구현 세션 | `CodexCliProvider.invoke` stderr 핸들러 | open |
 | `C-26` | C (P2) | **경계 밖의 `runProcess` git 호출자는 여전히 `git`을 이름으로 부르고 `process.env`를 상속한다**(worktree 유틸·기계 게이트 등). M5a 3차 리비전은 **`executionBoundary`로 범위를 한정**했다(리뷰 지시). 이 호출자들은 **승인 커밋을 증명하지 않으므로** 경계 우회는 아니지만, 적대적 `PATH`·`GIT_*` 아래에서는 worktree 조작·조회가 다른 저장소를 볼 수 있다 | 낮~중 — 로컬 개발 환경 가정에서는 낮다 | worktree 생성·삭제·조회 경로(실행 승인 판정은 아님) | 낮~중 — 지금 함께 바꾸면 M5a 위험 예산을 넘고, 나중에 하면 호출자별 회귀 확인이 필요하다 | 중(공용 `git()` 헬퍼 1개 + 호출자 전환 + 회귀) | **controller가 worktree 조작을 자동화 경로로 쓰기 시작할 때(M5c 자율 실행 전)** | M5c 구현 세션 | `src/exec/runProcess.ts` 호출자 · `executionBoundary`의 `GIT_SANITIZED_ENV` 대비 · 2026-07-27 독립 리뷰 A/P1 범위 한정 | open |
 | `C-25` | C (P2) | **`events(handle)`는 현재 invocation의 큐를 준다** — `send` 전에 잡아 둔 스트림은 그 invocation이 끝나며 닫히고, 후속 turn 이벤트는 **다시 `events()`를 불러야** 나온다. 결과 유실은 아니지만(각 invocation은 종료 결과 1건으로 닫힌다) 소비자 계약이 문서에만 있다 | 중간(오케스트레이션 배선 시 오해하기 쉽다) | 소비자 배선 | 낮~중 — 배선 코드에서 turn마다 다시 구독하면 된다 | 소~중(멀티 turn 하나의 스트림으로 합치기 + 테스트) | **provider를 orchestrator에 배선할 때(M5b)** | M5b 구현 세션 | `CodexCliProvider.events`/`invoke`의 큐 교체 · M5a focused "실행 중 send" | open |
@@ -1586,6 +1590,43 @@ resume해 **A 3건을 전부 고쳤고** 문서·타입 정정과 `C-23` 확장/
   acceptance · stress · live · 반복 3회.
 - **Codex/Claude provider 추론 0회**(fake CLI·in-process seam만). `B-7`·`B-8`·`B-9`는 여전히 open이며
   그 전에는 이 provider로 실제 Codex를 부르지 않는다.
+
+#### M5a 4차 리비전 (2026-07-27, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰 → **REVISE**)
+
+범위 `85ebe883..3493a2e`를 **새 독립 read-only Codex 리뷰**가 다시 봤고 판정은 다시 **REVISE**였다.
+3차의 A 3건(spawn-adjacent 홈/실행 파일/git 게이트 · ambient git 증명 · resume UUID 봉인)은
+**fixed로 확인**됐고 그 계약·테스트는 그대로 보존했다. 이번 findings는 **상태 기계**를 봤다:
+게이트는 제자리에 있었지만 **누가 그 게이트를 지날 자격이 있는지**를 아무도 원자적으로 정하지 않았다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| 1 | **A (P1)** | **pre-spawn session-state race.** `send()`가 상태를 본 뒤 `invoke()`가 **await된 `verifyExecutionBoundary` 뒤에야** 세션을 점유했다 → 겹친 두 `send`가 둘 다 통과해 같은 UUID·`CODEX_HOME`으로 **중복 resume 프로세스**를 띄우고 큐·child를 서로 덮어쓸 수 있었고, 같은 창에서 `stop()`이 세션을 지워도 뒤늦게 `running`을 발행하며 **추적되지 않는 프로세스**가 뜰 수 있었다 | **fixed** — ⓐ `starting` 상태 + provider 전역 **단조 증가 generation 토큰**을 **첫 await 전에 동기로** claim한다 ⓑ 겹친 start/send는 spawn·발행 없이 `codex_send_overlap`으로 즉시 거부(큐·child·events 무변경) ⓒ **모든 await 뒤 + spawn 직전 동기 게이트**에서 세션 존재 · 같은 state 객체 · 같은 generation · 미취소 · 미중지를 재확인 → `codex_invocation_cancelled` ⓓ `stop()`은 **child가 없어도** claim을 취소하고 같은 id의 **교체 세션은 지우지 않는다**(낡은 `start` catch·`settle`도 소유권 확인 후에만 상태를 만진다). 신뢰 검사 → `spawn` 사이 **no-await** 유지, stop 멱등·poison·만료·큐 격리 semantics 무변경 |
+| 2 | **A (P1) — `C-23` reopen** | **세션 spec이 turn 사이에 고정되지 않았다.** provider가 호출자 소유 `state.spec`을 들고 **매 turn `resolveCodexOptions`를 다시 해석**해, 1차 turn 완료 후 `send` 전의 변조가 **새 baseline**이 됐다. 3차가 이를 fixed로 적은 것은 **overclaim**이었다(같은 invocation 안의 창만 닫혀 있었다) | **fixed** — `start()`가 유효 옵션 **전부를 봉인**(`Object.freeze`)하고 `SEALED_KEYS` **명시 필드 목록**으로 매 invocation 동기 진입 + spawn 직전 게이트에서 대조한다. 드리프트 marker는 **`codex_spec_mutated` 하나**(필드 이름만 알리고 경로·내용은 싣지 않는다). argv·env·경계 입력은 전부 봉인값에서만 만든다. 대장 `C-23` 행을 **reopen 사유와 함께** 정정했다 |
+| 3 | **A (문서/구현 불일치)** | `invoke` 주석은 "검증 단계 실패 시 기존 큐·상태는 그대로"라고 말했지만, 구현은 **동기 게이트 전에** 새 큐와 `running`을 발행해 실패가 **이전 invocation의 완료된 큐를 교체**하고 가짜 종료 결과를 하나 더 냈다 | **fixed** — 발행을 **동기 게이트 뒤로** 옮겼다. 발행 전 실패는 큐·`child`·세션 신원을 **하나도 건드리지 않고** claim만 되돌린다(거부는 rejected promise로만). 발행 이후 실패(동기 spawn 예외)만 그 invocation의 **bounded 스트림**을 종료 결과 1건으로 닫는다. 테스트가 `leaked === 0`으로 고정 |
+| 4 | **C (신규 등록)** | 인접 상태 기계 감사에서 나온 두 건 | **유예(대장 등록)** — `C-27`(`stop()`이 `starting`에서 반환한 뒤에도 취소된 invocation promise가 나중에 reject된다 → M5b 배선 전) · `C-28`(봉인 밖 manifest 권한 필드는 turn 사이 고정 없음 — 현재 provider가 읽지 않는다 → 권한 집행 계층 도입 시). `B-7`·`B-8`·`B-9`와 `C-17`·`C-18`·`C-19`·`C-21`·`C-22`·`C-24`·`C-25`·`C-26`은 **전부 그대로 open** |
+
+검증 실측(offline, 2026-07-27 — 4차 리비전 세션):
+
+- 파일 단독 `npx tsx --test` : `executionBoundary.test.ts` **17/17** · `codexStreamParser.test.ts` **28/28** ·
+  `codexCliProvider.test.ts` **50/50**(45 → 50, 합 **95/95**, 이전 90).
+- `npm run test:exec` **237/237**(232 → 237). **237은 exec suite 수치이며 파일 단독 focused가 아니다.**
+- `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 후 `git status` 변화 0) ·
+  `git diff --check` clean.
+- **동시성 계약을 건드렸으므로 신규 race/spec 테스트 5건을 반복 3회**: 3회 모두 5/5.
+- **비공허성(mutation) 5종**: `claim`의 `starting` 전이 제거 → **2건 실패**(겹친 send · start 중 send) /
+  `owns()`의 세션 존재·미취소·미중지 검사 제거 → **2건**(stop 취소 · 교체 세션) /
+  봉인값 대신 매 turn 재해석 → **1건**(between-turn만 실패하고 기존 same-invocation 테스트는 **통과** —
+  reopen 사유를 정확히 재현) / 필드 비교 무력화 → **2건**(same-invocation + between-turn) /
+  `start` catch의 소유권 확인 없는 삭제 → **1건**(교체 세션). 다섯 번 모두 정확히 원복하고
+  `MUTATION` grep 0(소스·dist) · `tsc --noEmit` 0.
+  - **정직한 한계**: `stop()`의 `cancelled` 플래그 **단독 제거는 어떤 테스트도 실패하지 않는다** —
+    `stop`이 세션을 지우고 `status`를 `stopped`로 올리므로 `owns()`의 다른 두 검사가 같은 경로를 잡는다.
+    세 신호는 **서로 중복된 방어**이고, 셋을 함께 제거하면 2건이 실패한다. `settle`의 소유권 가드도
+    같은 이유로 단독 커버리지가 없다(교체 세션이 살아 있는 동안 낡은 child가 존재할 수 없다).
+- **전체 suite(`npm test`) 미실행 — 이전 라운드와 같다.** M5a는 **내부 stacked M5 slice**이고,
+  supervisor가 **M5b~M5d 이후 최종 M5 handoff에서 직렬 1회**를 예약했다. 미실행: `npm test` 전체 ·
+  `test:core` · acceptance · stress · live · MCP · 실제 Codex/Claude 추론.
+  **M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 것이 아니다. M5도 미완료.**
 
 ### M6 — Hierarchical Orchestrator + Fresh Context Rotation
 
