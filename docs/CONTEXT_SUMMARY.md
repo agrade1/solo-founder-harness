@@ -1,8 +1,65 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-26
+최종 갱신: 2026-07-27
 
-## 최신 (2026-07-26 — 여덟 번째 리비전 **재검토 결과 기록 + 배송 우선 리뷰 정책·병렬 세션 정책 도입** · 문서 전용 세션 · **M3d 여전히 미완료**)
+## 최신 (2026-07-27 — V3 **M4a durable orchestration kernel 구현 + Codex P0 2건 수정 완료** · **M3 완료(재개방 금지)** · **M4 전체는 미완료** · 격리 worktree 단일 세션)
+
+> **현행 마일스톤 상태 (이 항목이 최신이며 아래 dated 항목보다 우선한다)**
+> - **M3는 완료다.** M3a/M3b/M3c core와 **실제 live acceptance까지 완료**됐고, M3d.2는 PR #10으로
+>   `ea764a5`에 병합됐다. **M3/M3d를 재개방하지 않는다.**
+> - **`B-1`(부하/stress 재실행) · `B-2`(live runner 재실행·evidence 재생성)는 nonblocking
+>   release-readiness backlog다** — M3 완료 게이트가 **아니고** M4 작업의 선행 조건도 **아니다**.
+>   아래 2026-07-26 이전 항목들이 이 둘을 "차단 게이트 / M3d 완료 전 필수"로 적은 것은
+>   **그 시점의 기록**이며 현행 판정이 아니다.
+> - 현재 열린 차단(P0)은 **없다**. 다음 단계는 M4 잔여 범위의 계획→승인이다.
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m4a` · branch `work/m4a-durable-orchestration` ·
+  base `ea764a5`(PR #10 merge commit). 원본 checkout은 읽기 전용으로만 접근했다.
+  **commit/push/PR/merge 없음** · 네트워크·`gh`·deploy·DB·production·live billing·패키지 설치·신규 의존성 **없음**.
+- **무엇을 했나**: `src/exec` 안에 **state-only/offline** deterministic durable orchestration kernel을
+  추가했다. 기존 `runWorkflow`/`mission`/`ExecutionProvider`와 `projects/<p>/outputs/run_state.json`,
+  `registry/agent_registry.json`은 **복제·교체·마이그레이션 모두 없음**. provider·LLM·프로세스를 하나도
+  띄우지 않는다.
+- **신규 8 + 수정 2**: `orchestrationTypes.ts` · `agentMessage.ts` · `orchestrationStore.ts` ·
+  `orchestrationKernel.ts` · `orchestrationKernel.test.ts` · `schemas/agent_message.schema.json` ·
+  `schemas/orchestration_run_state.schema.json` · `scripts/m4a-offline-acceptance.mjs` /
+  `scripts/acceptance.sh`(Test 13 추가, 기존 무변경) · `.gitignore` 1줄. `dist/exec/*.js` 4개 동반 생성.
+- **계약 요약**: 상태 6개(`pending|ready|running|waiting_children|completed|blocked`) · 메시지 4종
+  (`task_assignment|spawn_request|result|blocker`, 나머지 6종은 schema·runtime 모두 거부) ·
+  §5.1 envelope 유지 + 타입별 필수 Markdown heading·16 KiB 상한 · child 4/depth 3/run 32 상한 ·
+  nested spawn · ownership 정규화(**권한이 아니라 메타데이터**) · result는 bounded summary + 검증된
+  포인터만 운반 · 수락 직전 artifact 재검증(symlink/missing/hash mismatch/workspace 탈출 fail-closed) ·
+  parent/dependent 전파는 kernel만 수행 · **agent가 상태를 직접 바꾸는 API 없음** ·
+  SoR `run_state.json` + 해시 체인 `events.jsonl` + `messages/*.md` + 파생 `snapshot.md` ·
+  load fail-closed 및 invalid input에서 **전이 0** · ready/snapshot 결정론적.
+- **Codex P0 2건 수정(2026-07-27, 이번 세션 후반)**:
+  **P0-1 — 유효한 형태의 run_state 변조가 중앙 전이 계약을 우회했다.** `tasks[0].state="completed"` +
+  `resultSummary="forged"`처럼 **허용 필드만** 고친 state를 load가 받아들였다. 이제 커밋의 **마지막
+  이벤트**가 그 커밋이 남긴 **state 내용 digest**(chain 필드 `lastEventId`/`lastEventHash` 제외 →
+  순환 없음)를 들고 가고, load가 재계산해 대조한다(`assertStateEventBinding`). 불일치는
+  `state_event_binding_mismatch`로 fail-closed다. 커밋마다 이벤트가 최소 1건 필요해졌다.
+  키 없는 digest이므로 **state와 events.jsonl을 모두 일관되게 재작성하는 위조**는 여전히
+  감사 대상이며, 상향 경로(out-of-band 키 HMAC/서명)는 backlog `C-7`이다.
+  **P0-2 — 문서가 완료된 M3를 재개방하고 있었다.** 현행 상태 표기를 위 인용 블록대로 정정했다.
+- **최종 검증(offline)**: focused **37/37** → `npm run build` PASS →
+  `node scripts/m4a-offline-acceptance.mjs` **31/31 PASS(exit 0)** →
+  `npm test` **PASS** = exec **112/112** + core **374/374**(불변) + acceptance **75/75**(71 → 75) →
+  `git diff --check` clean.
+  `npm test` 실행 횟수는 **총 4회**다 — 구현 세션 3회(최초 / 카운트 확인 / 미사용 코드 삭제 후 최종)와
+  이번 P0 수정 세션의 **마지막 코드 변경 후 1회**. **4회 모두 PASS.**
+- **하지 않은 것**: stress·live runner 3종·반복(3회) suite **미실행** — 이것들은 nonblocking
+  release-readiness backlog(`B-1`/`B-2`)이고 M3 완료 게이트도 M4 선행 조건도 아니다.
+  M3/M3d 재개방 없음 · 테스트 삭제·완화 없음.
+- **M4 전체는 미완료**: provider bridge · 7 specialist registry 등록/동시 실행 · 나머지 6개 메시지 타입 ·
+  범용 scheduler · **exclusive resource class**(M4 완료 항목) · 멀티프로세스 writer lock ·
+  approval manifest 전체 · MCP/CLI/UI 미구현. 신규 유예 항목 **`B-3`(exclusive class/scheduler, P1)** ·
+  **`B-4`(멀티프로세스 writer lock, P1)** · `C-4`(커밋 중간 크래시 복구 도구) · `C-5`(경로 TOCTOU 창) ·
+  `C-6`(잔여 메시지 타입·registry) · `C-7`(키 없는 digest의 전체 재작성 위조)을 로드맵 §9.1 대장에
+  기한·비용과 함께 등록했다. **열린 P0는 없다**(Codex P0 2건은 이번에 수정).
+- **다음**: M4 잔여 범위(scheduler · exclusive resource class · sibling/reviewer 메시지 ·
+  approval manifest)의 계획→승인→구현. `B-1`/`B-2`는 **release-readiness 시점의 트리거**로만 남는다.
+
+## 이전 (2026-07-26 — 여덟 번째 리비전 **재검토 결과 기록 + 배송 우선 리뷰 정책·병렬 세션 정책 도입** · 문서 전용 세션 · **M3d 여전히 미완료**)
 
 - **문서·정책 전용 세션이다.** 코드·패키지·schema·script·생성 산출물·의존성 **무수정**,
   commit/push/fetch/pull/PR·설치·네트워크·테스트·stress·live runner **미실행**.

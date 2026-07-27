@@ -1,5 +1,76 @@
 # DECISIONS.md
 
+## 2026-07-27 (V3 M4a — Codex P0 2건 수정: state↔event binding · 완료된 M3 재개방 금지)
+
+- **"형태가 유효한 state"는 신뢰의 근거가 못 된다 — 내용을 append-only 이력에 묶었다.** 기존 load는
+  schema·참조·event 체인을 봤지만 그 셋 다 통과하는 `run_state.json` 편집(예: `state="completed"`)을
+  막지 못했다. 검증기를 더 촘촘히 해도 소용없는 종류의 구멍이다 — **누가 그 내용을 만들었는지**를
+  묻지 않았기 때문이다. 그래서 "state가 kernel 커밋의 산물인가"를 직접 검사하도록 바꿨다.
+- **digest는 event에 넣고 chain 필드는 digest에서 뺐다 — 순환을 구조로 없앴다.** state가 event chain
+  hash를 담는데 event가 state 전체 해시를 담으면 순환한다. state 내용에서 `lastEventId`/`lastEventHash`
+  **두 개만** 제외하면 방향이 한 줄로 정리된다: state 내용 → event digest → chain hash →
+  state.lastEventHash. 별도 sidecar 파일이나 두 번째 해시 파일 같은 대안은 파일과 실패 모드를
+  하나씩 더 늘릴 뿐이라 택하지 않았다.
+- **커밋의 마지막 이벤트에만 digest를 붙인다.** 모든 이벤트에 붙이면 "커밋 경계"라는 정보가 사라지고,
+  중간 이벤트의 digest는 디스크에 대응하는 state가 없어 검증할 수도 없다. 대신 커밋마다 이벤트가
+  최소 1건 있어야 하므로 빈 이벤트 커밋을 명시적으로 거부한다(조용히 binding을 건너뛰는 경로 제거).
+- **키 없는 digest의 한계를 문서에 적고 유예했다.** 두 파일을 모두 일관되게 재작성하는 위조는 이 설계로
+  못 막는다. 그 사실을 "막는다"고 쓰지 않고 `assertStateEventBinding` 주석과 상태 문서 양쪽에 적었으며,
+  상향 경로(out-of-band 키 HMAC/서명)를 대장 `C-7`로 남겼다. **막지 못하는 것을 막았다고 적는 것**이
+  이 수정으로 없애려던 바로 그 종류의 실패다.
+- **완료된 M3를 문서가 재개방하고 있었던 것은 "보수적이라 안전한" 실수가 아니다.** 이전 세션이
+  `B-1`/`B-2`를 "M3d 완료 게이트 · 사용자 액션 대기"로 옮겨 적으면서, 이미 실제 live acceptance까지
+  끝나고 PR #10(`ea764a5`)으로 병합된 M3를 미완료로 되돌렸다. 다음 세션이 이걸 읽으면 닫힌 게이트를
+  다시 열고 M4를 막는다 — **상태 문서의 오류는 그대로 작업 차단으로 번역된다.**
+  그래서 둘을 **nonblocking release-readiness backlog 트리거**로 재분류하고, 로드맵에 `§0-0 현행 상태`
+  블록을 만들어 우선순위를 명시했다.
+- **정정 범위는 "현행 섹션"으로 한정했다.** 과거 dated 항목은 그 시점의 사실 기록이므로 원 문장을 고쳐
+  쓰지 않고, 대신 `§1`·`§10 M3d` 머리에 "이 절은 2026-07-26 스냅샷이며 §0-0이 우선한다"를 붙였다.
+  이력을 소급 수정하면 "언제 무엇을 알고 있었는지"가 사라져 다음 리뷰가 같은 논쟁을 반복한다.
+- **P0만 고치고 M4a를 넓히지 않았다.** exclusive resource class·scheduler·writer lock은 여전히
+  P1이고 이번에 손대지 않았다. P0 수정 세션에서 범위를 넓히면 그 diff에 대한 독립 검수가 다시 필요해진다.
+
+## 2026-07-27 (V3 M4a — durable orchestration kernel의 설계 결정)
+
+M4a 범위 한정 승인을 받아 격리 worktree `work/m4a-durable-orchestration`(base `ea764a5`)에서
+구현하며 내린 결정이다. **M4a 최소 수직 기능은 완료이고 M4 전체는 미완료**라는 구분을 문서 전반에서 유지한다.
+
+- **기존 실행 계층을 복제하지 않고 그 안에 별개 계약을 추가했다.** `runWorkflow`의
+  `projects/<p>/outputs/run_state.json`은 project workflow 실행 상태이고, 새 kernel의
+  `outputs/orchestration/<run-id>/run_state.json`은 self-dev/mission 실행 상태다(로드맵 §4가 이미
+  둘을 분리해 적어 뒀다). 하나로 합치면 v1 acceptance 계약과 V3 오케스트레이션 계약이 같은 파일에서
+  충돌하므로, 기존 파일·schema·마이그레이션을 **건드리지 않는 쪽**을 택했다. `ExecutionProvider`도
+  복사하지 않았다 — M4a는 provider를 실행하지 않으므로 provider 추상화가 필요 없다.
+- **검증 → 커밋 2단계로 "전이 0"을 구조로 보장했다.** 유효성 검사를 커밋 경로 밖에서 끝내고, 통과한
+  경우에만 message body → events append → snapshot → state rename 순으로 쓴다. "쓰다가 실패하면
+  되돌린다"는 보상 로직 대신 **애초에 쓰기 전에 던지는** 구조라 rollback 코드가 없다.
+  대신 커밋 중간 크래시는 fail-closed로 남으므로(다음 load가 `event_count_mismatch`로 거부) 복구
+  도구가 필요하다 — 이건 `C-4`로 유예했다(M4a는 crash hardening 범위가 아니다).
+- **JSON Schema는 계약 문서, 런타임 수동 validator가 보안 경계다.** Ajv 같은 신규 검증 의존성을
+  넣지 않는 기존 `liveEvidence.ts` 방식을 그대로 이어받았다. 두 정의가 갈라지는 것이 진짜 위험이므로
+  enum·required·bounds 동치를 테스트가 강제한다(문서 주장 대신 실행되는 단정).
+- **메시지 타입을 4종으로 좁힌 것은 축소가 아니라 fail-closed 선택이다.** §5.1은 10종을 정의하지만
+  M4a는 4종만 처리한다. 나머지를 "일단 통과시키고 나중에 처리"하면 미구현 경로가 조용히 열린다.
+  그래서 schema enum과 런타임 모두 **거부**하고, 확장은 해당 마일스톤에서 열도록 했다.
+- **ownership을 권한이 아니라 메타데이터로 못 박았다.** 경로를 정규화하고 탈출을 거부하지만, M4a에는
+  이 값을 강제하는 실행 주체가 없다. "권한처럼 보이는 미집행 필드"는 나중에 실제 권한으로 오해되기 쉬워서
+  타입 주석·schema description·로드맵·WORKLOG 네 곳에 같은 문장으로 적었다.
+- **artifact는 등록과 제출을 분리했다.** `registerArtifact`로 해시를 확정한 뒤 `submitResult`에서
+  **다시** 디스크를 검증한다. 한 번에 처리하면 "등록 시점 해시"와 "수락 시점 파일"이 같다는 보장이 없고,
+  등록 후 변조라는 실제 공격 경로를 테스트로 재현할 수도 없다. 분리 덕에 tamper 케이스가 회귀로 남았다.
+- **spawn 상한을 넘긴 parent도 `waiting_children`에서 child를 더 요청할 수 있게 했다.** 첫 spawn 직후
+  parent를 `waiting_children`으로 보내면서 `running`만 허용하면 "task당 child 4개" 상한이 실질적으로
+  1개가 된다. 계약(child 4개)이 상태 기계보다 우선이므로 허용 상태를 둘로 넓혔다.
+- **snapshot은 이벤트를 만들지 않는다.** 재시작 후 `rebuildSnapshot()`이 revision을 올리면
+  "재시작 후 동일 revision" 계약이 깨진다. snapshot은 로드맵 §4대로 **파생물**이므로 state·events를
+  건드리지 않고 파일만 다시 쓴다.
+- **create 경로와 open 경로의 직렬화 바이트를 일치시켰다.** 검증 중 `artifactRecord`의 key 순서가
+  두 경로에서 달라 같은 논리 상태가 다른 바이트로 저장되는 것을 발견했다. 결정성이 M4a의 명시 요건이므로
+  validator의 반환 key 순서를 고정하고 `JSON.stringify` 동일성 단정을 회귀로 추가했다.
+- **P0 없이 완료로 적되, 미구현을 완료로 적지 않는다.** exclusive resource class·scheduler·
+  멀티프로세스 writer lock은 M4 완료 항목이지만 M4a 범위가 아니므로 `B-3`/`B-4`로 기한과 함께 남겼다.
+  provider bridge·7 agent 실행·full scheduler를 "완료"로 쓰지 않는다는 규칙을 문서 전반에 적용했다.
+
 ## 2026-07-26 (배송 우선 리뷰 triage · 유예 무손실 대장 · 테스트 비례 · 안전 병렬 Claude 세션 — 문서 전용)
 
 여덟 번째 리비전 재검토 결과(`APPROVE_FEATURE_PROGRESSION` · Category A 0건 · Category C 1건)를 기록하면서

@@ -135,11 +135,48 @@ harness run idea-validation --project sample-project --vault <vault경로>
 
 ---
 
+---
+
+## 2-2. V3 확장 테스트 (v1 완료 기준 아님)
+
+### Test 13. M4a durable orchestration (offline)
+
+명령:
+
+```bash
+npm run build && node scripts/m4a-offline-acceptance.mjs
+```
+
+확인:
+
+```text
+- 네트워크 / LLM / provider spawn / TTY / git write 없이 exit 0
+- 임시 workspace에서만 동작 (레포에 outputs/orchestration 생성하지 않음)
+- parent running → spawn_request → child 생성 → parent=waiting_children, child=ready
+- child에 의존하는 dependent task = pending
+- kernel 인스턴스를 버리고 같은 run을 다시 열어 state/ready 목록 복원
+- child running → workspace 안 artifact 등록(SHA-256/revision/producer/role) → result 제출
+- child=completed, parent=ready, dependent=ready
+- 재시작 후 동일 ready 목록 / revision / artifact 포인터 / 바이트 동일 snapshot
+- run_state.json · snapshot.md · message index 어디에도 raw artifact 본문·transcript 없음
+- 형태가 유효한 run_state.json 편집(state/resultSummary 위조)은 state↔event binding으로 거부
+  (`state_event_binding_mismatch`), 원상 복구하면 다시 열림
+```
+
+현재 이 스크립트는 **31개 체크**를 수행한다(2026-07-27 P0-1 수정으로 29 → 31).
+
+`scripts/acceptance.sh` Test 13이 위 스크립트의 exit code와 내부 체크 결과를 검증한다
+(기존 Test 1~12는 변경하지 않았다). 세부 계약은
+`docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4a 절을 본다.
+
+---
+
 ## 3. v1 통과 조건
 
 ```text
 위 5개 테스트(Test 1~5)가 모두 통과하면 v1 MVP 완료로 본다.
-(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~6 총 35 checks 검증.)
+(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~13 총 75 checks 검증.
+ 2026-07-27 M4a에서 Test 13 4 checks 추가: 71 → 75. 기존 checks는 변경하지 않았다.)
 ```
 
 ## 4. v1 실패 조건

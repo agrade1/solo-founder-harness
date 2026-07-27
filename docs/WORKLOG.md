@@ -1,5 +1,129 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 M4a — **Codex 독립 리뷰 P0 2건 수정** · 허용된 단일 P0 정정 세션 · **M3 완료 재확인** · **M4 전체 여전히 미완료**)
+
+같은 격리 worktree/branch(`work/m4a-durable-orchestration`, base `ea764a5`)에서 이어서 진행했다.
+**P0 2건만 고쳤고 M4a 범위를 넓히지 않았다.** P1/P2는 구현하지 않고 backlog로 남겼다.
+commit/push/PR/merge/rebase/reset/checkout/switch/worktree 조작 **없음**, 패키지 설치·네트워크·`gh`·
+deploy·DB·production **없음**, stress·live·반복 acceptance **미실행**.
+
+- **① P0-1 — 형태가 유효한 `run_state.json` 변조가 중앙 전이 계약을 우회했다.**
+  재현(빌드된 코드 기준): run/root 생성 → root start → `run_state.json`만 편집해
+  `tasks[0].state="completed"` · `tasks[0].resultSummary="forged"` → `openOrchestrationRun`이 **수락**.
+  기존 load는 형태·참조·event 해시 체인은 봤지만 **검증된 state 내용을 durable event 이력에 묶지 않았다**
+  → 후속 작업이 잘못 풀릴 수 있었다.
+  **수정(최소·의존성 0)**: 커밋의 **마지막 이벤트**에 `stateDigest`를 추가했다. 값은 그 커밋이 남기는
+  state **내용**의 SHA-256이고 chain 필드(`lastEventId`/`lastEventHash`)를 **제외**해 순환을 피한다
+  (state → event digest → chain hash → state.lastEventHash). load가 `assertStateEventBinding`으로
+  재계산·대조하며 불일치는 `state_event_binding_mismatch`, digest 부재는 `state_event_binding_missing`으로
+  fail-closed다. binding을 남길 곳이 반드시 있어야 하므로 `commitRun`이 빈 이벤트 커밋을
+  `commit_without_event`로 거부한다. 결정론적 직렬화, event/message/artifact 기존 계약,
+  invalid-input 전이 0, parent/child acceptance 동작은 그대로다.
+  event 계약이 바뀐 만큼 `schemas/orchestration_run_state.schema.json`과 runtime parity 테스트도 갱신했다.
+  **한계(정직하게 기록)**: 키 없는 digest라 `run_state.json`과 `events.jsonl`을 **모두 일관되게 재작성**하는
+  위조는 막지 못한다 — 그 경우 append-only 감사 로그 자체가 조작되므로 감사 대상이다.
+  상향 경로(out-of-band 키 HMAC/서명)는 대장 **`C-7`** 로 등록했다.
+- **② P0-1 회귀 테스트**: focused 34 → **37건**(삭제·완화 0). 신규 3건 =
+  ⓐ Codex 재현 시나리오 그대로의 위조 거부 + 허용 필드 6종(`state`/`resultSummary`/`ownership`/
+  `revision`/`milestoneId`/`messages[].summary`) 개별 변조 전부 fail-closed + 원상 복구 후 정상 open,
+  ⓑ digest가 chain 필드와 무관함(순환 없음) + 커밋 **마지막** 이벤트에만 붙음(커밋 3건 = digest 3건),
+  ⓒ 이벤트 없는 커밋 거부. 기존 malformed/event/message/artifact fail-closed 테스트는 **전부 유지**했다.
+  offline acceptance도 29 → **31 체크**(위조 state 거부 + 복구 확인)로 늘렸다.
+- **③ P0-2 — 문서가 완료된 M3를 재개방하고 있었다.** 사용자 확정 상태는 이렇다:
+  M3a/M3b/M3c core와 **실제 live acceptance 완료**, M3d.2는 **PR #10으로 `ea764a5` 병합**,
+  **M3는 완료이며 재개방 금지**, stress/live **재실행은 nonblocking release-readiness backlog**로
+  M3 완료 게이트도 M4 선행 조건도 아니다. 그런데 최신 문서들이 `B-1`/`B-2`를 여전히
+  "M3d 완료 게이트 / 사용자 액션 대기 / 차단"으로 적고 있었다.
+  **현행 섹션만 정정했다**: 로드맵에 `§0-0 현행 상태` 블록 신설 · `§1`과 `§10 M3d` 머리에 "이 절은
+  2026-07-26 스냅샷" 표시 · `§9.1` 대장의 `B-1`/`B-2`를 **C(release-readiness)** 로 재분류하고 재분류
+  근거를 명시 · `§12` 항목 7~9를 정정 · CONTEXT_SUMMARY와 CODEX_HANDOFF의 최신 섹션에 같은 취지의
+  현행 상태 블록 추가. **과거 dated 항목의 원 문장은 하나도 고쳐 쓰지 않았다**(이력으로 보존).
+- **④ 최종 검증(offline)**: focused **37/37 PASS** → `npm run build` PASS →
+  `node scripts/m4a-offline-acceptance.mjs` **31/31 PASS(exit 0)** →
+  `npm test` **PASS** = exec **112/112** + core **374/374**(불변) + acceptance **75/75** →
+  `git diff --check` clean.
+- **⑤ `npm test` 실행 횟수(정직한 기록)**: 구현 체인 전체에서 **4회**다 — 구현 세션 3회
+  (최초 / 카운트 확인용 재실행 / 미사용 코드 삭제 후 최종) + 이번 P0 수정 세션의 **마지막 코드 변경 후
+  정확히 1회**. **4회 모두 PASS.** 이번 세션은 카운트 추출 목적의 추가 실행을 하지 않았다.
+- **⑥ 변경 파일**: `src/exec/orchestrationTypes.ts`(event에 `stateDigest`) ·
+  `src/exec/orchestrationStore.ts`(`stateContentDigest`/`assertStateEventBinding`/`commitRun` binding·
+  빈 이벤트 거부/`loadRun` 검증 추가/`EVENT_KEYS`·`validateEvent`) ·
+  `src/exec/orchestrationKernel.ts`(`eventId: 0` placeholder 제거, Mutation 타입 정리) ·
+  `src/exec/orchestrationKernel.test.ts`(+3건) · `schemas/orchestration_run_state.schema.json` ·
+  `scripts/m4a-offline-acceptance.mjs`(+2 체크) · 문서 6건 · `dist/exec/*.js` 재빌드.
+- **⑦ 하지 않은 것**: P1/P2 구현(대장 `B-3`/`B-4`/`C-4`/`C-5`/`C-6`/`C-7`에 비용·트리거와 함께 유예) ·
+  M4a 범위 확대 · stress/live/반복 acceptance · 기존 테스트 삭제·완화.
+- **다음**: M4 잔여 범위(scheduler · exclusive resource class · sibling/reviewer 메시지 ·
+  approval manifest)의 계획 → 사용자 승인 → 구현.
+
+## 2026-07-27 (V3 **M4a** — deterministic durable orchestration kernel 구현·offline 검증 · **M4a 완료 / M4 전체 미완료**)
+
+**격리 worktree 세션이다.** worktree `/private/tmp/solo-founder-harness-m4a` ·
+branch `work/m4a-durable-orchestration` · base `ea764a54108f1715248f3e0ae414ea87eb8ffaa9`
+(PR #10 merge commit). 원본 checkout `/Users/jihun/Developer/solo-founder-harness`는 읽기 전용으로만
+접근했고 수정·초기화하지 않았다. **commit/push/PR/merge/rebase/reset/checkout/switch/worktree 조작 없음.**
+네트워크·`gh`·deploy·DB·production·live billing·패키지 설치·신규 의존성 **없음**.
+subagent/Agent Team 없이 **단일 세션**으로 구현했다.
+
+- **① M4a 최소 수직 기능을 구현했다(M4 전체가 아니다).** 기존 `runWorkflow`/`mission`/
+  `ExecutionProvider`를 복제하거나 교체하지 않고, `src/exec` 안에 **state-only/offline** durable
+  orchestration kernel을 추가했다. 실제 provider·LLM·프로세스는 하나도 띄우지 않는다.
+  `projects/<p>/outputs/run_state.json`과 `registry/agent_registry.json`은 **무수정**이다.
+- **② 신규 파일 8개 + 수정 2개.** 신규: `src/exec/orchestrationTypes.ts` ·
+  `src/exec/agentMessage.ts` · `src/exec/orchestrationStore.ts` · `src/exec/orchestrationKernel.ts` ·
+  `src/exec/orchestrationKernel.test.ts` · `schemas/agent_message.schema.json` ·
+  `schemas/orchestration_run_state.schema.json` · `scripts/m4a-offline-acceptance.mjs`.
+  수정: `scripts/acceptance.sh`(Test 13 추가 — 기존 Test 1~12 무변경) · `.gitignore`
+  (`outputs/orchestration/` 1줄). 빌드 산출물 `dist/exec/*.js` 4개가 함께 생성됐다.
+- **③ 상태·메시지 계약.** task 상태는 `pending|ready|running|waiting_children|completed|blocked`
+  6개뿐, 메시지 타입은 `task_assignment|spawn_request|result|blocker` 4종뿐이다(§5.1의 나머지 6종은
+  schema·runtime 양쪽에서 거부). §5.1 envelope 필드를 유지하고 machine-readable envelope와
+  human-readable Markdown body를 함께 다루며, 타입별 필수 h2 heading 전부 + 계약 밖 h2 금지 +
+  중복 금지 + 16 KiB 상한을 runtime validator가 강제한다.
+- **④ spawn 상한과 nested child.** task당 child 4 · child depth 최대 3(root=0) · run당 task 32.
+  child도 같은 bounded API로 자기 child를 요청할 수 있다(3단 중첩 테스트로 고정).
+  한 번 spawn해 `waiting_children`이 된 parent도 상한 안에서 child를 더 요청할 수 있다.
+- **⑤ ownership.** workspace-relative 정규화(`.` segment만 접음)이고 absolute·`..`·빈 경로·
+  빈 segment·backslash·NUL을 거부한다. **M4a에서 ownership은 기록·검증 메타데이터일 뿐 실제 파일
+  권한이나 provider 실행 권한이 아니다**(문서·주석·schema에 명시).
+- **⑥ artifact는 포인터만 운반한다.** `result`가 중앙 state로 옮기는 것은 bounded summary(≤1000자)와
+  검증된 포인터(workspace-relative path · SHA-256 · revision · producer task · role)뿐이고 raw 본문·
+  raw transcript는 복사하지 않는다. 수락 **직전** 일반 파일 여부 · 상위 디렉터리 symlink를 포함한
+  workspace 탈출 여부(realpath 비교) · 등록 revision/hash 일치를 재검증하며 symlink·missing·
+  hash mismatch·탈출은 fail-closed다. 등록은 조용히 덮어쓰지 않고 revision+`supersedes`를 남긴다.
+- **⑦ 상태 전파는 kernel만 한다.** child가 completed면 모든 child가 완료된 parent를 ready로,
+  의존이 전부 완료된 dependent를 ready로 재계산한다. blocker는 child를 blocked로 만들고 영향받는
+  조상·dependent를 blocked로 갱신하되 completed는 되돌리지 않는다. **agent가 다른 task 상태를
+  직접 바꾸는 API는 없다** — 공개 prototype 메서드 목록을 테스트가 고정하고 읽기 API는 깊은 사본만 준다.
+- **⑧ durable state.** SoR는 `outputs/orchestration/<run-id>/run_state.json`,
+  `events.jsonl`은 append-only 해시 체인, `messages/<message-id>.md`는 검증된 body 저장소,
+  `snapshot.md`는 state에서 재생성하는 파생물이다. state에 `schemaVersion`·monotonic `revision`·
+  `lastEventId`/`lastEventHash`를 두고, 저장은 같은 디렉터리 임시 파일 → rename이다
+  (**과도한 fsync/crash hardening은 이번 범위가 아니다**). load는 state schema·event linkage·
+  message body hash·artifact hash 중 하나라도 어긋나면 던지고 **null/빈 run으로 강등하지 않는다**.
+  유효하지 않은 입력에서는 **state revision과 영속 파일 모두 전이 0**이다(검증 → 커밋 순서).
+- **⑨ 결정성.** ready 목록·snapshot은 taskId 정렬로 고정이고, create 경로와 open 경로가 같은
+  직렬화 바이트를 낸다(검증 중 `artifactRecord` key 순서 불일치를 발견해 고쳤고 회귀 단정을 넣었다).
+  타임스탬프는 주입 clock, ID는 호출자 제공 bounded slug라 테스트가 결정론적이다.
+- **⑩ schema는 계약 문서, runtime validator가 보안 경계다.** 신규 Ajv 등 검증 의존성 0
+  (기존 `liveEvidence.ts`와 같은 수동 closed validator 방식). 두 schema의 enum·required·bounds와
+  runtime 상수의 동치를 테스트 2건이 강제한다.
+- **⑪ 검증 실측(offline)**: focused `src/exec/orchestrationKernel.test.ts` **34/34 PASS** →
+  `npm run build` PASS → `node scripts/m4a-offline-acceptance.mjs` **PASS(29/29, exit 0)** →
+  `npm test` **PASS** = exec **109/109**(75 → 109) + core **374/374**(불변) +
+  acceptance **75/75**(71 → 75) → `git diff --check` clean.
+  (`npm test`는 첫 실행에서 exec/core 카운트가 출력 tail 밖이라 카운트 확인용으로 한 번 더 돌렸다 —
+  **두 번 다 PASS**이며 그 사실을 그대로 적는다.)
+- **⑫ 하지 않은 것.** stress(`acceptance:stress:m3d2`)·live runner 3종·반복(연속 3회) suite는
+  **실행하지 않았다** — release-readiness backlog(`B-1`/`B-2`)로 그대로 열려 있다.
+  M3/M3d는 재개방하지 않았고 기존 테스트를 삭제·완화하지 않았다.
+- **⑬ M4 전체는 미완료다.** provider bridge · 7 specialist registry 등록·동시 실행 · 나머지 6개 메시지 타입 ·
+  범용 scheduler · **exclusive resource class**(M4 완료 항목) · 멀티프로세스 writer lock ·
+  approval manifest 전체 · MCP/CLI/UI는 구현하지 않았다. 신규 유예 항목 `B-3`·`B-4`·`C-4`·`C-5`·`C-6`을
+  로드맵 §9.1 대장에 기한·비용과 함께 등록했다. **P0는 없다.**
+- **다음: fresh Codex P0 검수.** 그 결과에 따라 M4 잔여 범위(scheduler·exclusive class·sibling/reviewer
+  메시지)의 계획→승인→구현으로 넘어간다.
+
 ## 2026-07-26 (여덟 번째 리비전 **재검토 결과 기록** + **배송 우선 리뷰 정책 · 안전 병렬 Claude 세션 정책 도입** — 문서 전용 세션 · **M3d 여전히 미완료**)
 
 **문서·정책 전용 세션이다.** 코드·패키지·schema·script·생성 산출물·의존성을 **한 줄도 바꾸지 않았고**,

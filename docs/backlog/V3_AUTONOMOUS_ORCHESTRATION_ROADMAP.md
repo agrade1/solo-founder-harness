@@ -7,6 +7,19 @@
 
 ---
 
+## 0-0. 현행 상태 (2026-07-27 — 이 블록이 최신이며 아래 dated 서술보다 우선한다)
+
+- **M3는 완료다.** M3a/M3b/M3c core와 **실제 live acceptance까지 완료**됐고, M3d.2는 **PR #10으로
+  `ea764a5`에 병합**됐다. **M3/M3d는 재개방하지 않는다.**
+- **`B-1`(부하/stress 재실행) · `B-2`(live runner 재실행·evidence 재생성)는 nonblocking
+  release-readiness backlog다.** M3 완료 게이트가 **아니고** M4 작업의 선행 조건도 **아니다**.
+  §1·§10 M3d 안의 "차단 게이트 / M3d 완료 전 필수 / pending" 서술은 **2026-07-26 시점의 기록**이며
+  현행 판정이 아니다(원문은 이력으로 보존한다).
+- **M4a는 완료**(state-only/offline durable orchestration kernel — §10 M4 → M4a 참조),
+  **M4 전체는 미완료**. Codex 독립 리뷰의 **P0 2건은 2026-07-27에 수정 완료**했고 **열린 P0는 없다**.
+- 현재 기준 커밋: `ea764a54108f1715248f3e0ae414ea87eb8ffaa9`. M4a 작업 브랜치는
+  `work/m4a-durable-orchestration`(미커밋 working tree).
+
 ## 0. 문서 우선순위와 기존 설계의 처리
 
 M3d 이후 충돌 시 우선순위는 다음과 같다.
@@ -20,6 +33,10 @@ M3d 이후 충돌 시 우선순위는 다음과 같다.
 선택적 확장으로 이동한다.
 
 ## 1. 검증된 출발점
+
+> **이 절은 2026-07-26 시점의 스냅샷이다(원문 보존).** 현행 상태는 위 §0-0을 본다 —
+> M3는 완료이고 `B-1`/`B-2`는 nonblocking release-readiness backlog다. 아래의 HEAD·"미충족"·
+> "차단 게이트" 표기는 당시 기록이며 지금의 판정이 아니다.
 
 - 브랜치/HEAD: `develop` / `af0552e5ba98100b7ae5970b0cb44224e3469c74`.
 - 로컬 `origin/develop`도 동일 커밋이다(remote-tracking reflog: 2026-07-26 13:48:21 +0900 push로 갱신).
@@ -522,11 +539,28 @@ id / 제목
 | `C-1` | C (P3) | 호출부 감사의 **bounded computed dynamic specifier** 판정이, 도달 가능한 조각 각각에는 `fixture-config`가 없지만 런타임에 합성되는 route(예: `"./lib/" + (flag ? "fixture-" : "other-") + "config.mjs"`)를 `safe`로 본다 | 낮음 — 현재 production 호출부 5개는 전부 해당 없음 | 제한적 — 미래에 그런 호출부가 생겼을 때 **소스 레벨 감사에서 누락**되는 것뿐(런타임 계약·lock 계약은 무관) | 낮음 | 소~중 | M4 소스 계약 감사 확장 시 또는 그런 형태의 호출부가 실제로 추가될 때 | 구현 세션(Claude Opus 5) | 여덟 번째 리비전 리뷰 Category C · `src/tools/suiteExclusiveLock.test.ts` 동적 import 케이스 | open |
 | `C-2` | C (P3) | `scripts/lib/fixture-config.mjs` 모듈 주석이 production 진입점을 2개만 예시로 적어 실제 5개와 어긋나 보인다 | — | 문서/주석만 | 낮음 | 소 | production 파일을 여는 다음 승인 범위 | 구현 세션 | 여섯~여덟 번째 리비전 잔여 위험 목록 | open |
 | `C-3` | C (P3) | `parseDiagnostics`는 TypeScript 준공개 필드라 상위 버전에서 이름이 바뀌면 파싱 진단 검사가 조용히 무력화될 수 있다 | 낮음 | 감사 1항목 | 낮음(전용 회귀 2건이 탐지) | 소 | TypeScript major 업그레이드 시 | 구현 세션 | 여덟 번째 리비전 회귀 2건 | open |
-| `B-1` | B (차단 게이트) | 부하(stress) acceptance 미충족 — 고정 5초 child startup deadline 2건 + 호스트 외부 부하 | 재현됨(2/2 FAIL) | M3d 완료 판정 | 높음 | 중(방침 결정 필요) | **M3d 완료 전** | 사용자 + 구현 세션 | 여섯 번째 리비전 세션 실측(§10 M3d.2) | open |
-| `B-2` | B (차단 게이트) | live runner 3종 미실행 · evidence 3건 미생성 | — | M3d 완료 판정 | 높음 | 사용자 실행 | **M3d 완료 전** | 사용자(TTY 필요) | §10 M3d.2 "남은 pending" | open |
+| `B-1` | **C (release-readiness)** | 조용한 호스트에서 부하(stress) acceptance **재실행** — 고정 5초 child startup deadline 2건이 외부 부하에서 넘친 이력 | 낮음(부하 없는 호스트에서는 PASS 이력) | release 준비 판정 | 낮음 | 중(방침 결정 필요) | **release 준비 시점**(트리거) — M3 완료 게이트 **아님**, M4 선행 조건 **아님** | 사용자 + 구현 세션 | 여섯 번째 리비전 세션 실측(§10 M3d.2) | open (nonblocking) |
+| `B-2` | **C (release-readiness)** | live runner **재실행**과 evidence 재생성 | — | release 준비 판정 | 낮음 | 사용자 실행 | **release 준비 시점**(트리거) — M3 완료 게이트 **아님**, M4 선행 조건 **아님** | 사용자(TTY 필요) | §10 M3d.2 | open (nonblocking) |
 
-`B-1`·`B-2`는 기존 M3d 완료 게이트를 대장 형식으로 다시 적은 것이고, 분류가 바뀌었다는 뜻이 아니다 —
-둘 다 **차단**이다.
+**`B-1`·`B-2` 재분류(2026-07-27, 사용자 확정 상태 기준).** M3a/M3b/M3c core와 **실제 live acceptance는
+완료**됐고 M3d.2는 PR #10으로 `ea764a5`에 병합됐다 → **M3는 완료이고 재개방하지 않는다.**
+따라서 이 둘은 **M3 완료 게이트가 아니라 nonblocking release-readiness backlog 트리거**다.
+id는 추적 연속성을 위해 유지하되 분류는 C로 내렸다. 위 표 이전 판(둘 다 "B — 차단")은
+2026-07-26 시점 기록이며 §1·§10 M3d 본문의 그 표현도 같은 이유로 이력으로만 읽는다.
+
+#### M4a에서 추가된 유예 항목 (2026-07-27 기준)
+
+M4a 구현 중 확인한 **비-P0** 항목이다. **P0는 없었고**(있었다면 M4a를 완료로 적지 않았다)
+아래 항목들은 M4a 최소 수직 기능의 완료를 막지 않는다.
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-3` | B (P1) | **exclusive resource class + scheduler 미구현.** durable state가 배타 자원 class를 선언·직렬화하지 못한다 | 확실(미구현) | M4 완료 판정 · M5 bridge가 전역 상태 관찰 테스트를 병렬로 돌릴 위험 | 높음 — M5에서 거짓 실패가 재현되면 그때 state schema를 다시 열어야 한다 | 중 | **M4 완료 전(= M5 bridge 착수 전)** | 다음 구현 세션 | 로드맵 M4 "완료" 4번째 항목 · M3d.1 실측 §1 동시성 제약 | open |
+| `B-4` | B (P1) | **멀티프로세스 writer lock 없음.** kernel은 run 하나당 단일 writer 전제이고, 두 프로세스가 같은 run에 쓰면 마지막 쓰기가 이긴다. load가 event chain 불일치를 fail-closed로 잡지만 그 run은 사람 개입 없이는 다시 열리지 않는다 | 낮음(현재 호출자 1개) | 해당 run 1건 | 중 — 병렬 worker 도입 시점에 반드시 필요 | 중(기존 `suiteExclusiveLock` 계약 재사용 가능) | **실제 병렬 worker/멀티프로세스 writer 도입 시 또는 M4 완료 전** | 다음 구현 세션 | `src/exec/orchestrationStore.ts` commitRun 주석 | open |
+| `C-4` | C (P2) | **커밋 중간 크래시 복구 도구 없음.** event append 후 state rename 전에 죽으면 `event_count_mismatch`로 영구히 열리지 않는다(fail-closed라 손상 데이터를 읽지는 않는다) | 낮음 | 해당 run 1건 | 낮음 — 지금은 run을 버리고 다시 만들면 된다 | 소~중 | **M10 hardening** | 미정 | 로드맵 M4a "저장은 rename, 과도한 crash hardening은 범위 밖" | open |
+| `C-5` | C (P2) | **artifact 검증의 경로 기반 TOCTOU 창.** Node 18에 디렉터리 상대 열기가 없어 lstat/realpath와 read 사이 창을 0으로 만들 수 없다(M3d.2 live evidence와 같은 한계) | 낮음 | artifact 1건의 hash 판정 | 낮음 | 중(런타임 상향 필요) | Node 20+ 채택 또는 M10 hardening | 미정 | `verifyArtifactFile` · M3d.2 동일 한계 기록 §10 | open |
+| `C-6` | C (P3) | **§5.1의 나머지 6개 메시지 타입과 7 specialist registry 미구현.** 계획된 미구현이지 결함이 아니다 | — | 후속 마일스톤 범위 | 낮음 | 중 | M6(hierarchical orchestrator) | 다음 구현 세션 | 로드맵 M4a "M4a가 아닌 것" | open |
+| `C-7` | C (P2) | **state↔event binding이 키 없는 digest다.** `run_state.json`과 `events.jsonl`을 **모두 일관되게 재작성**하는 위조는 막지 못한다(그 경우 append-only 감사 로그 자체가 조작되므로 감사 대상) | 낮음 — 로컬 파일 쓰기 권한을 가진 공격자 전제 | 해당 run의 감사 신뢰도 | 중 | 중(out-of-band 키 관리 필요) | 서명/HMAC 도입 승인 시 또는 M10 hardening | 미정 | `assertStateEventBinding` 주석 · P0-1 수정 | open |
 
 ### 9.2 테스트 비례 원칙
 
@@ -562,7 +596,12 @@ Claude Code 구현 단계는 **작업이 실질적으로 빨라지고 안전할 
 
 ### M3d — Baseline stabilization + roadmap activation
 
-**상태: 진행 중.** M3d.1 완료, M3d.2 구현·offline 검증 완료 / **live acceptance 3종 pending**.
+> **현행 상태(2026-07-27): 완료.** M3d.2는 **PR #10으로 `ea764a5`에 병합**됐고 M3 전체가 완료다 —
+> **재개방하지 않는다.** 아래 본문의 "진행 중 / pending / 차단 게이트 / 미충족" 표현은
+> **2026-07-26 시점의 기록**이며 이력으로 보존한 것이다(§0-0이 우선한다).
+> 부하 재실행·live runner 재실행은 nonblocking release-readiness backlog(`B-1`/`B-2`)로 재분류됐다.
+
+**상태(2026-07-26 당시): 진행 중.** M3d.1 완료, M3d.2 구현·offline 검증 완료 / **live acceptance 3종 pending**.
 아래 원래 M3d 완료 기준은 그대로 유지하며, M3d 전체 완료는 M3d.2의 live evidence 3건까지
 확인했을 때만 선언한다.
 
@@ -917,7 +956,93 @@ npm run build && HARNESS_LIVE_M3C3B=1 node scripts/m3c3b-live-handoff.mjs   # TT
 
 ### M4 — Agent Communication & Durable State
 
-**상태: 구현 not started. 착수에는 별도 사용자 마일스톤 승인이 필요하다.**
+**상태(2026-07-27 갱신): M4a 최소 수직 기능 완료 · M4 전체는 미완료.**
+사용자가 M4a 범위를 명시적으로 승인해 격리 worktree `work/m4a-durable-orchestration`
+(base `ea764a5` = PR #10 merge commit)에서 구현·검증했다. 아래 "M4a" 절이 실제로 들어간 것이고,
+그 뒤의 목표/완료 항목 중 M4a가 덮지 않은 부분은 **여전히 열려 있다**.
+
+#### M4a — deterministic durable orchestration kernel · **완료(offline 검증)**
+
+state-only/offline 수직 슬라이스다. **provider·LLM·프로세스를 하나도 띄우지 않는다.**
+기존 `runWorkflow`/`mission`/`ExecutionProvider`와 `projects/<p>/outputs/run_state.json`은
+**복제도 교체도 마이그레이션도 하지 않았다** — 별개 계약을 `src/exec` 안에 추가한 것이다.
+
+구현 범위(완료):
+
+- `src/exec/orchestrationTypes.ts` — 타입·상한·원시 검증자(slug/timestamp/sha256/path 정규화).
+- `src/exec/agentMessage.ts` — §5.1 envelope + §5.2 타입별 Markdown body의 runtime validator
+  (신규 검증 의존성 0, 기존 `liveEvidence.ts`와 같은 수동 closed validator 방식).
+- `src/exec/orchestrationStore.ts` — 영속화·적재·closed state validator·결정론적 snapshot 렌더.
+- `src/exec/orchestrationKernel.ts` — 상태 기계와 좁은 공개 API.
+- `schemas/agent_message.schema.json` · `schemas/orchestration_run_state.schema.json` — 계약 문서
+  (`additionalProperties:false` · enum · bounds · required). **보안 경계는 runtime validator다.**
+- `scripts/m4a-offline-acceptance.mjs` + `scripts/acceptance.sh` Test 13(기존 테스트 무변경).
+
+확정된 계약:
+
+- task 상태는 `pending | ready | running | waiting_children | completed | blocked` **6개뿐**이다.
+- 메시지 타입은 `task_assignment` · `spawn_request` · `result` · `blocker` **4종만** 구현했고
+  §5.1의 나머지 6종은 schema·runtime 양쪽에서 거부한다(후속 마일스톤 확장).
+- §5.1 envelope 필드를 그대로 유지하고 machine-readable envelope + human-readable Markdown body를
+  함께 다룬다. body는 타입별 필수 h2 heading 전부 + 계약 밖 h2 금지 + 중복 금지 + 16 KiB 상한.
+- spawn 상한: **task당 child 4 · child depth 최대 3(root=0) · run당 task 32**. child도 같은
+  bounded API로 자기 child를 요청한다(nested spawn 테스트로 고정).
+- ownership은 workspace-relative로 정규화하고 absolute·`..`·빈 경로·빈 segment·backslash·NUL을
+  거부한다. **M4a에서 ownership은 기록·검증 메타데이터일 뿐 실제 파일 권한이나 provider 실행 권한이
+  아니다.**
+- `result`가 중앙으로 옮기는 것은 **bounded summary와 검증된 artifact 포인터뿐**이다
+  (raw artifact 본문·raw transcript 복사 없음 — §3.2). 포인터는 workspace-relative path · SHA-256 ·
+  revision · producer task · role을 기록한다.
+- result 수락 **직전** artifact를 재검증한다: workspace 안의 일반 파일인지, 상위 디렉터리 symlink로
+  workspace를 벗어나지 않는지(realpath 비교), 등록 revision/hash와 현재 hash가 같은지.
+  symlink · missing · hash mismatch · workspace 탈출은 fail-closed다.
+- child가 completed면 kernel이 **모든 child가 완료된 parent를 ready로**, **의존이 전부 완료된
+  dependent를 ready로** 재계산한다. blocker는 child를 blocked로 만들고 영향받는 조상·dependent를
+  blocked로 갱신한다(completed는 되돌리지 않는다).
+- **agent가 다른 task 상태를 직접 바꾸는 API는 없다.** 공개 prototype 메서드 목록을 테스트가 고정하고,
+  읽기 API는 전부 깊은 사본을 돌려준다.
+- SoR는 `outputs/orchestration/<run-id>/run_state.json`, `events.jsonl`은 append-only 해시 체인,
+  `messages/<message-id>.md`는 검증된 body 저장소, `snapshot.md`는 state에서 재생성하는 파생물이다.
+- state에 `schemaVersion` · monotonic `revision` · `lastEventId`/`lastEventHash`를 둔다.
+  저장은 **같은 디렉터리 임시 파일 → rename**이며, 과도한 fsync/crash hardening은 이번 범위가 아니다.
+- **state↔event durable binding(2026-07-27 P0-1 수정)**: 커밋의 **마지막 이벤트**가
+  `stateDigest`(그 커밋이 남기는 state **내용**의 SHA-256, chain 필드 `lastEventId`/`lastEventHash`
+  제외 → 순환 없음)를 들고 간다. load는 이를 재계산·대조해(`assertStateEventBinding`)
+  **형태가 유효한 run_state.json 편집만으로는 중앙 전이 계약을 우회할 수 없게** 한다
+  (`state_event_binding_mismatch` / `state_event_binding_missing`). 커밋마다 이벤트가 최소 1건
+  필요하므로 빈 이벤트 커밋은 `commit_without_event`로 거부한다.
+  한계: 키 없는 digest라 state와 events.jsonl을 **모두** 일관되게 재작성하는 위조는 막지 못한다
+  (감사 로그 자체가 조작되므로 감사 대상 — 대장 `C-7`, 상향 경로는 out-of-band 키 HMAC/서명).
+- load는 fail-closed다: state runtime schema · event linkage · **state↔event binding** ·
+  message body hash · artifact hash 중 하나라도 어긋나면 던진다.
+  **실패를 null이나 빈 run으로 강등하지 않는다.**
+  유효하지 않은 입력에서는 **state revision과 영속 파일 모두 전이 0**이다(검증 → 커밋 순서).
+- ready 목록과 snapshot은 taskId 정렬로 결정론적이고, create 경로와 open 경로가 **같은 직렬화
+  바이트**를 낸다(테스트가 단정).
+- `roleId`는 **opaque slug 계약**이라 향후 7개 상위 specialist와 그 하위 specialist를 그대로 수용한다.
+  **registry 등록·동시 실행은 이번에 하지 않았다.**
+
+검증 실측(offline, 2026-07-27 — Codex P0 수정 후 최종):
+
+- focused `src/exec/orchestrationKernel.test.ts` **37/37 PASS**(34 → 37, P0-1 회귀 3건 추가).
+- `npm run build` PASS, `git diff --check` clean.
+- `node scripts/m4a-offline-acceptance.mjs` **PASS(31/31 체크, exit 0)** — 29 → 31,
+  위조 state 거부·복구 2건 추가. 네트워크·LLM·TTY·git write 없음.
+- `npm test` **PASS** = exec **112/112**(75 → 112, M4a 37건) + core **374/374**(불변) +
+  acceptance **75/75**(71 → 75, Test 13 4건).
+- `npm test` 실행 횟수는 구현 체인 전체에서 **4회**다 — 구현 세션 3회(최초 / 카운트 확인 /
+  미사용 코드 삭제 후 최종) + P0 수정 세션의 마지막 코드 변경 후 **1회**. **4회 모두 PASS.**
+- **stress·live·반복 suite는 실행하지 않았다** — 이것들은 **nonblocking release-readiness backlog**
+  (`B-1`/`B-2`)이며 M3 완료 게이트도 M4 선행 조건도 아니다(§0-0).
+
+**M4a가 아닌 것(여전히 미완료)**: 실제 provider/agent spawn · 7 specialist registry 등록·동시 실행 ·
+나머지 6개 메시지 타입 · 범용 scheduler · **exclusive resource class 계약** · 멀티프로세스 writer lock ·
+milestone approval manifest 전체 · provider bridge/MCP · CLI/UI. 이 중 exclusive resource class는
+아래 M4 "완료" 항목에 그대로 남아 있는 **미충족 게이트**다.
+
+#### M4 전체 (M4a 외 잔여)
+
+**상태: 미완료.** 아래 목표·완료 항목 중 M4a가 덮지 않은 부분은 별도 승인·구현이 필요하다.
 배송 우선 원칙(§9.1)에 따라 **M4 계획 준비(계획서·task DAG·영향 파일·승인 manifest 초안 작성)는 지금 해도 된다.**
 계획 준비는 구현이 아니며, 코드·schema·의존성을 건드리지 않는다.
 
@@ -937,12 +1062,17 @@ npm run build && HARNESS_LIVE_M3C3B=1 node scripts/m3c3b-live-handoff.mjs   # TT
   배타 자원 class를 선언할 수 있어야 하고, 같은 class를 요구하는 작업은 lock으로 직렬화한다.
   프로세스 전역 또는 tmp 전역 상태를 관찰하는 테스트·runner는 이 class를 명시적으로 선언하며 동시 실행하지 않는다.
 
-완료:
+완료(항목별 현황 — 2026-07-27):
 
-- mock parent/child/sibling/reviewer 왕복.
-- central process 재시작 후 state만으로 ready task와 다음 전달을 동일하게 복구.
-- raw transcript 없이 결과 전달, schema 오류는 state 전이 0.
-- 동일 exclusive resource class를 요구하는 두 작업이 동시에 실행되지 않음을 scheduler 테스트로 확인.
+- mock parent/child/sibling/reviewer 왕복 → **부분 충족**. parent↔child(중첩 포함)와 dependent 라우팅은
+  M4a에서 충족했다. **sibling 전달과 reviewer 왕복은 미구현**(해당 메시지 타입이 M4a 범위 밖).
+- central process 재시작 후 state만으로 ready task와 다음 전달을 동일하게 복구 → **충족**(M4a).
+- raw transcript 없이 결과 전달, schema 오류는 state 전이 0 → **충족**(M4a).
+- 동일 exclusive resource class를 요구하는 두 작업이 동시에 실행되지 않음을 scheduler 테스트로 확인
+  → **미충족**. scheduler와 exclusive resource class는 M4a 범위 밖이며 M4 완료를 막는 항목으로 남는다.
+
+위 M4a 승인은 **그 범위에 한정된 승인**이다 — 나머지 M4 항목(scheduler·exclusive class·sibling/reviewer
+메시지·approval manifest)의 구현에는 별도 사용자 승인이 필요하고, 위 §M4 절의 중첩 조건 ⓐ~ⓓ도 그대로 유효하다.
 
 ### M5 — Dual-provider Bridge + Autopilot Bootstrap
 
@@ -1040,13 +1170,24 @@ production deploy, live billing, remote direct write, PR merge 자동화는 선�
 6. ~~fresh Codex가 여덟 번째 리비전 diff/test를 재검토~~ → 완료(2026-07-26):
    **`APPROVE_FEATURE_PROGRESSION` · Category A 0건 · Category C 1건은 대장 `C-1`로 유예**.
    **M3d 완료 판정이 아니다.**
-7. **부하 acceptance 재실행**(조용한 호스트) 또는 고정 5초 child startup deadline 방침 결정 — 여섯 번째 리비전
-   세션에서는 외부 부하로 FAIL했고 일곱·여덟 번째 리비전 세션에서는 재실행하지 않았다.
-   **현재 미충족이며 M3d 완료를 막는 차단 게이트다**(대장 `B-1`).
-8. **사용자가 live runner 3종 실행 → evidence 3건 생성 확인**(현재 pending, M3b.2는 사람 TTY 필요 — 대장 `B-2`).
-9. 7·8이 닫히면 fresh Codex 최종 재검토 → **그때** M3d 전체 완료 판정.
-10. **M4 계획 준비는 지금 가능**(배송 우선, §9.1). **M4 구현은 not started**이며 별도 사용자 마일스톤 승인이
-    필요하다. 승인 시에도 계획→승인→구현→fresh review 순서와 M4 절의 중첩 조건을 그대로 따른다.
+7. ~~부하 acceptance 재실행이 M3d 완료를 막는 차단 게이트~~ → **2026-07-27 정정**: 사용자 확정 상태 기준
+   **M3는 완료**다(M3a/M3b/M3c core + 실제 live acceptance 완료, M3d.2는 PR #10 `ea764a5` 병합).
+   부하(stress) 재실행은 **nonblocking release-readiness backlog 트리거**로 재분류했다(대장 `B-1`).
+8. ~~사용자가 live runner 3종 실행 → evidence 3건 생성 확인이 완료 전제~~ → **2026-07-27 정정**:
+   live acceptance는 이미 완료됐고, runner 재실행·evidence 재생성은 **nonblocking release-readiness
+   backlog 트리거**다(대장 `B-2`).
+9. ~~7·8이 닫히면 M3d 전체 완료 판정~~ → **완료. M3는 닫혔고 재개방하지 않는다**(§0-0).
+10. ~~M4 계획 준비는 지금 가능. M4 구현은 not started~~ → **2026-07-27 갱신**: 사용자가 **M4a 범위만**
+    승인해 격리 worktree `work/m4a-durable-orchestration`(base `ea764a5`)에서 구현·offline 검증을 마쳤다
+    (위 M4a 절). **M4 전체는 여전히 미완료**이고, M4a 외 잔여 범위(scheduler · exclusive resource class ·
+    sibling/reviewer 메시지 · approval manifest)는 **별도 사용자 승인**이 필요하다. 승인 시에도
+    계획→승인→구현→fresh review 순서와 M4 절의 중첩 조건 ⓐ~ⓓ를 그대로 따른다.
+11. **M4a에 대한 fresh Codex 독립 리뷰 P0 2건은 2026-07-27에 수정 완료**했다
+    (P0-1 state↔event binding · P0-2 문서의 M3 재개방 표현). **열린 P0는 없다.**
+    구현·수정 세션 모두 commit/push/PR/merge를 하지 않았고 stress·live·반복 suite도 실행하지 않았다
+    (`B-1`/`B-2`는 nonblocking release-readiness backlog 트리거로만 남는다).
+12. 다음 승인 대상: M4 잔여 범위(scheduler · exclusive resource class · sibling/reviewer 메시지 ·
+    approval manifest)의 계획 → 사용자 승인 → 구현.
 
 M5 live acceptance가 통과하면 M6부터는 `autopilot`이 위 전달을 대신한다.
 
