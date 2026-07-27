@@ -32,11 +32,16 @@ finding A/B/C 분류, 테스트 비례 원칙, 병렬 세션 안전 조건)은 �
 ```bash
 claude --model opus --effort high -p \
   --output-format stream-json \
+  --verbose \
   --permission-mode acceptEdits \
   --setting-sources user,project,local \
   --strict-mcp-config \
   --mcp-config <empty-config.json>
 ```
+
+- **`-p --output-format stream-json`은 `--verbose`가 필수다**(없으면 CLI가 거부한다).
+  기존 `src/exec/claudeCliProvider.ts`의 `baseArgs`도 같은 이유로 `--verbose`를 넣는다.
+  (2026-07-27 M5a 정정 — B/P1 운영 문서 오류: 이 예시에 `--verbose`가 빠져 있었다.)
 
 - 프롬프트는 **stdin 또는 임시 파일**로 넣는다. **shell 위치 인자 보간으로 프롬프트를 넘기지 않는다**
   (인용·확장 사고로 프롬프트가 잘리거나 명령으로 해석된다).

@@ -79,6 +79,23 @@ export interface SessionSpec {
   permissionMode?: string; // --permission-mode (기본 acceptEdits)
   settingsPath?: string; // --settings 파일 경로 (권한 컴파일 결과를 materialize한 것)
   budget?: { maxTurns?: number }; // max_turns = 오케스트레이터가 assistant 이벤트로 강제 (CLI 플래그 아님, RECON §2.1)
+  codex?: CodexSessionOptions; // CodexCliProvider 전용 (M5a). 다른 provider는 무시한다
+}
+
+/**
+ * Codex CLI 전용 실행 옵션 (V3 M5a). 다른 provider는 이 필드를 무시한다.
+ * 기본값은 로드맵 §7.1의 리뷰 계약이다: 읽기 전용 sandbox · xhigh · fresh/ephemeral 세션.
+ * `workspace-write`는 **승인된 task가 명시적으로 요구할 때만** 지정한다. bypass 계열 sandbox는 없다.
+ */
+export interface CodexSessionOptions {
+  reasoningEffort?: "low" | "medium" | "high" | "xhigh"; // 기본 xhigh
+  sandbox?: "read-only" | "workspace-write"; // 기본 read-only
+  /** `--output-schema` 파일 절대경로 (구조화 최종 출력이 필요할 때만). */
+  outputSchemaPath?: string;
+  /** 격리된 codex 설정 홈 절대경로. **필수** — 사용자 전역 설정·MCP 상속을 막는 지점이다. */
+  codexHome: string;
+  /** 기본 true(`--ephemeral`). resume이 필요한 세션만 false로 시작한다. */
+  ephemeral?: boolean;
 }
 
 /** provider가 반환하는 세션 핸들. provider별 내부 상태는 provider가 따로 보관. */
