@@ -3,13 +3,48 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
+## 현행 문서 정합성 갱신 (2026-07-27 — **docs-only**, 이 절이 사실 관계에서 가장 최신이다)
+
+격리 worktree `/private/tmp/solo-founder-harness-m4-doc-consistency` · branch `work/m4-doc-consistency` ·
+base `c963cb0832d66a58fefdaa2025a9213966c3cc27`(= M4c 최종 HEAD)에서 **문서만** 고친 단일 세션이다.
+소스·테스트·schema·script·package/lockfile·`dist`·config·`AGENTS.md`·`CLAUDE.md`는 **무수정**이고,
+push/fetch/pull/PR/merge/rebase/reset/checkout/switch/worktree 조작·네트워크·`gh`·패키지 설치·MCP·
+provider 호출·deploy·DB·production·live billing **없음**. Pony Tail(full) 적용. 로컬 커밋 1개만 만든다.
+
+- **커밋 상태 정정**: M4a/M4b/M4c는 **각각 로컬 커밋이 존재하는 stacked 브랜치**다 —
+  M4a `55d99a3`+`805da35` · M4b `11775fd`+`ab63eac` · M4c `3cfdb39`+`c963cb0`.
+  각 구현 세션 본문의 "미커밋 working tree"는 **그 세션 시점 기록**이며 그대로 보존하되 역사 표시를 붙였다.
+  원본 checkout은 `bbb8b72`로 clean·무수정. **원격 push/PR/merge는 여전히 0.**
+- **테스트 범위 라벨 정정**: 파일 단독 `src/exec/orchestrationKernel.test.ts`는 **67/67**(M4a 37 → M4b 50 →
+  M4c 67)이고 **142/142는 `npm run test:exec` 전체 suite**(125 → 142)다. 이전 문서가 142/142를
+  "파일 단독 focused"로 적은 곳을 전부 고쳤다. core **374/374** · acceptance **92/92** ·
+  offline acceptance M4a **31/31** · M4b **42/42** · M4c **77/77** · build PASS는 불변.
+  **stress·live·반복(3회) suite는 이 세션에서도 실행하지 않았다.**
+- **대장 추가**: Codex 최종 리뷰 3건을 로드맵 §9.1에 `B-5`(P1, manifest `approvedCommit`이 실행 checkout
+  HEAD에 묶이지 않음) · `C-16`(P2, taskId↔roleId 교차 모호성) · `C-17`(P2, `expiresAt` 정확히 같은 시각
+  1회 허용)으로 등록했다. **셋 다 backlog 등록이고 지금 코드 리비전 루프를 열지 않는다.**
+- **신규 문서**: `docs/handoff/CLAUDE_CODE_WORKER_PLAYBOOK.md` — Claude Code 구현 세션 운영 표준.
+  **다음 세션들은 이 문서를 공통 기준으로 따른다**(장기 고정 규칙은 `AGENTS.md`, 진행 사실은 이 문서).
+- **검증 실측**: `git diff --check` clean · 소유 밖 변경 0 · `npm test` **1회 직렬 실행 PASS**.
+  최초 시도는 격리 worktree에 `node_modules`가 없어 `tsx: command not found`로 멈췄고, 감독 Codex가
+  **원본 checkout의 기설치 `node_modules`를 ignored 로컬 symlink로 제공**한 뒤 실행했다 —
+  **패키지 설치·네트워크는 없었다**(`node_modules`는 untracked·미커밋).
+  실측: acceptance **PASS=92 FAIL=0**(Test 1~15 전부 OK). `test:inner`가
+  `test:exec && test:core && acceptance` **`&&` 체인**이므로 acceptance 도달이 exec·core 통과를 뜻하지만,
+  **exec·core 개별 카운트는 이 실행에서 캡처하지 못했다** — base `c963cb0` 실측(exec 142/142 ·
+  core 374/374)을 이 세션 실측으로 옮겨 적지 않는다. **stress·live·반복·두 번째 전체 suite 미실행.**
+- **M5는 여전히 not started·미승인**이다. 이 세션은 문서 정합성 승인일 뿐 M5 구현 승인이 아니다.
+
 ## 최신 갱신 (2026-07-27 — V3 **M4c: 중앙 경유 sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 **stacked PR** · **M4 전체 완료 · M5 미완료** · 열린 P0 없음)
 
 이 세션은 **M4c 범위 한정 승인**을 받은 구현 세션이다. 격리 worktree
 `/private/tmp/solo-founder-harness-m4c` · branch `work/m4c-routing-approval` ·
 base `ab63eacc51650deaee0ce92b78a22a7ddcdc27bd`(**리뷰 완료된 M4b 커밋**)에서 단일 세션으로 진행했다.
-**M4a·M4b·M4c는 분리된 stacked PR이며 이 세션은 commit/push/PR/merge/rebase/reset/checkout/switch/
-worktree 조작을 하지 않았다**(미커밋 working tree). 원본 checkout과 M4a/M4b worktree는 수정하지 않았고,
+**M4a·M4b·M4c는 분리된 stacked local 브랜치/PR 단위이며 각각 로컬 커밋이 존재한다**
+(M4a `55d99a3`+`805da35` · M4b `11775fd`+`ab63eac` · M4c `3cfdb39`+`c963cb0`,
+**M4c 최종 HEAD = `c963cb0832d66a58fefdaa2025a9213966c3cc27`**).
+구현 세션 자체는 커밋을 만들지 않았고(그 시점에는 미커밋 working tree였다) 커밋은 리뷰 후 로컬에서 이뤄졌다.
+**push/PR/merge/rebase/reset은 여전히 수행하지 않았다.** 원본 checkout(`bbb8b72`, clean)과 M4a/M4b worktree는 수정하지 않았고,
 네트워크·`gh`·deploy·DB·production·live billing·패키지 설치·신규 런타임/dev 의존성·package/lockfile
 변경·MCP 서버·provider 호출·subagent/Agent Team **없음**. Pony Tail(full) 적용 세션이다.
 
@@ -31,7 +66,7 @@ worktree 조작을 하지 않았다**(미커밋 working tree). 원본 checkout�
 | `src/exec/approvalManifest.ts` | **신규** — §8 manifest closed validator · 7 specialist registry · M5용 순수 조회 술어 3개(실행 없음) |
 | `src/exec/orchestrationStore.ts` | 수정 — key 집합·manifest 검증·`state_pre_m4c_unsupported`·roleId registry·`assertManifestOwnership`/`assertSessionLimit`·`pendingDeliveries`·snapshot 4개 섹션·digest |
 | `src/exec/orchestrationKernel.ts` | 수정 — 필수 `manifest` bind · 만료 게이트 · 좁은 진입점 6개 + `acknowledgeDelivery` + 읽기 3개 · scheduler 세션 예산 |
-| `src/exec/orchestrationKernel.test.ts` | 수정 — focused 125 → **142건**(M4c 17건, 삭제·완화 0) |
+| `src/exec/orchestrationKernel.test.ts` | 수정 — 파일 단독 focused 50 → **67건**(M4c 17건, 삭제·완화 0). exec suite 전체는 125 → 142건 |
 | `schemas/milestone_approval_manifest.schema.json` | **신규** — §8 계약 문서 |
 | `schemas/agent_message.schema.json` | 수정 — type enum 10종 + 타입별 heading |
 | `schemas/orchestration_run_state.schema.json` | 수정 — `manifest` required · route 필드 · `specialistRoleId` · 이벤트 enum |
@@ -68,13 +103,14 @@ worktree 조작을 하지 않았다**(미커밋 working tree). 원본 checkout�
 
 ### 0-2) M4c 검증 실측 (offline)
 
-- focused `src/exec/orchestrationKernel.test.ts` **142/142**(125 → 142) · `npm run build` PASS ·
-  `git diff --check` clean.
+- focused **파일 단독** `src/exec/orchestrationKernel.test.ts` **67/67**(50 → 67, M4c 17건) ·
+  `npm run build` PASS · `git diff --check` clean.
+  (**142/142는 파일 단독 focused가 아니라 `npm run test:exec` 전체 suite 수치**다 — 125 → 142.)
 - offline acceptance: M4c **77/77** · M4a **31/31** · M4b **42/42**(전부 exit 0).
 - `npm test` **PASS(최종 코드 변경 후 1회)** = exec **142/142** + core **374/374** + acceptance **92/92**.
 - **stress·live·반복 suite 미실행**(`B-1`/`B-2` — M4c 게이트 아님).
 - **mutation 4종**(ownership 불변식 / session 불변식 / sibling 관계 검사 / 만료 게이트)으로 비공허성 확인 후
-  **정확히 원복**(파일 SHA-256 일치 · `MUTATION` 흔적 grep 0 · focused 142/142 재확인).
+  **정확히 원복**(파일 SHA-256 일치 · `MUTATION` 흔적 grep 0 · **파일 단독 focused 67/67** 재확인).
 - **문서 정정**: 대장 `C-4` 보강의 "lock 발행 후 write 실패도 잔재를 남긴다"는 부정확 → 커밋 경로의
   잡힌 write 실패는 `finally`가 lock을 해제한다. 잔재는 크래시/kill · 해제 실패 ·
   acquire의 nonce write 실패 창뿐이다. (`maxResourceClasses`는 코드·문서 모두 이미 **4**로 일치했다.)
@@ -90,6 +126,9 @@ base `805da35801a59aeecf436d96d1054483247d643b`(**리뷰 완료된 M4a 커밋**)
 조작을 하지 않았다**(미커밋 working tree). 원본 checkout은 수정하지 않았고,
 네트워크·`gh`·deploy·DB·production·live billing·패키지 설치·신규 런타임/dev 의존성·package/lockfile
 변경·MCP 서버·provider 호출·subagent/Agent Team **없음**. Pony Tail(full) 적용 세션이다.
+
+> **역사 기록 표시 (2026-07-27 정정):** 위 "미커밋 working tree"는 **M4b 세션 시점의 기록**이다.
+> 현행 사실은 M4b가 로컬 커밋 `11775fd`(feat) + `ab63eac`(docs)로 남아 있다는 것이다. push/PR/merge는 없다.
 
 ### 0) M4b가 닫은 것 / 남긴 것 (검수 시작점)
 

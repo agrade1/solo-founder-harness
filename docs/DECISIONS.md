@@ -1,5 +1,18 @@
 # DECISIONS.md
 
+## 2026-07-27 (M4 문서 정합성 — docs-only)
+
+- **`manifest.approvedCommit`을 실행 checkout HEAD에 묶는 것은 M5 실행 경계의 진입 조건으로 못박았다**
+  (대장 `B-5`, P1). 지금 고치지 않은 이유는 M4가 state-only이고 아무 프로세스도 띄우지 않아서다.
+  대신 기한을 "M5 provider/autopilot이 실제 명령을 처음 실행하기 전"으로 고정했다 — 그 시점에
+  `approvedCommit ≠ 실행 worktree/컨트롤러 HEAD`면 **fail closed**여야 한다. 유예 비용이 큰 항목
+  (잘못된 base에서 나온 worker 산출물 전량 폐기 + 실행 경계 재개방)이므로 C가 아니라 **B**로 뒀다.
+- **과거 세션 기록은 고쳐 쓰지 않고 "그 시점 기록"으로 표시한다.** M4a/M4b/M4c 본문의
+  "미커밋 working tree"는 실제로 그때 사실이었다. 원문을 사후 사실로 덮어쓰면 세션 로그가
+  감사 자료로서 쓸모가 없어진다. 현행 사실은 현행 상태 블록에만 둔다.
+- **테스트 수치는 "명령 + 범위"와 함께만 적는다.** 파일 단독 focused(67)와 exec suite(142)를 같은
+  "focused"라는 말로 적어 온 것이 이번 불일치의 원인이었다. 앞으로 카운트는 실행한 명령을 붙여 적는다.
+
 ## 2026-07-27 (V3 M4c — 중앙 경유 라우팅 · 메시지 10종 · milestone approval manifest · specialist registry)
 
 - **route는 envelope가 아니라 중앙 state에 둔다.** 전달 대상을 envelope 필드로 만들면 agent가 자기

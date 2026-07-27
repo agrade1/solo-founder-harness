@@ -2,9 +2,34 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — V3 **M4c 구현 완료: 중앙 경유 sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 **stacked** 격리 worktree · **이로써 M4 전체 완료 · M5는 미완료**)
+## 최신 (2026-07-27 — **M4 문서 정합성 정정 세션(docs-only)** · 이 블록이 사실 관계에서 가장 최신이다)
 
-> **현행 마일스톤 상태 (이 항목이 최신이며 아래 dated 항목보다 우선한다)**
+- **위치**: worktree `/private/tmp/solo-founder-harness-m4-doc-consistency` · branch
+  `work/m4-doc-consistency` · base `c963cb0`(= M4c 최종 HEAD). **문서만 수정**했고 소스·테스트·schema·
+  script·package/lockfile·`dist`·config·`AGENTS.md`·`CLAUDE.md`는 무수정. 원격 조작·네트워크·MCP·
+  provider 호출 **없음**. 로컬 커밋 1개. Pony Tail(full).
+- **현행 커밋 사실**: M4a `55d99a3`+`805da35` · M4b `11775fd`+`ab63eac` · M4c `3cfdb39`+`c963cb0`
+  (**M4c 최종 HEAD `c963cb0`**). 세 브랜치는 clean stacked 로컬 브랜치이고 **원격 push/PR/merge는 0**.
+  원본 checkout은 `bbb8b72`로 clean·무수정. 각 구현 세션 본문의 "미커밋" 표기는 그 시점 기록으로 표시했다.
+- **테스트 범위 라벨**: 파일 단독 `orchestrationKernel.test.ts` **67/67**(37 → 50 → 67) ·
+  `npm run test:exec` 전체 **142/142**(125 → 142) · core **374/374** · acceptance **92/92** ·
+  offline acceptance M4a **31/31** / M4b **42/42** / M4c **77/77** · build PASS.
+  **142/142를 파일 단독 focused로 적지 않는다.** stress·live·반복 suite는 **미실행**.
+- **대장 추가(로드맵 §9.1)**: `B-5`(P1 — `manifest.approvedCommit`이 실행 checkout HEAD에 묶이지 않음,
+  **M5가 실제 명령을 실행하기 전 fail closed 필수**) · `C-16`(P2 — taskId↔roleId 교차 모호성) ·
+  `C-17`(P2 — `expiresAt` 경계 1회 통과). 전부 backlog, 코드 리비전 루프 없음.
+- **신규**: `docs/handoff/CLAUDE_CODE_WORKER_PLAYBOOK.md`(Claude Code 세션 운영 표준, CODEX_HANDOFF에서 링크).
+- **전체 suite**: `npm test` **1회 직렬 — PASS**(acceptance **92/92**, `ALL PASS`). 원본 checkout의
+  기설치 `node_modules`를 ignored symlink로 받은 뒤 실행했고 **패키지 설치·네트워크는 없었다**.
+  `test:inner`가 `&&` 체인이라 acceptance 도달이 exec·core 통과를 뜻하지만 **exec·core 개별 카운트는
+  이 실행에서 캡처하지 못했다**(base 실측 exec 142/142 · core 374/374 — 이 세션 실측으로 적지 않는다).
+  stress·live·반복·두 번째 전체 suite **미실행**.
+- **M5는 not started·미승인.** 다음 단계는 M5 계획 → 사용자 승인.
+
+## 이전 (2026-07-27 — V3 **M4c 구현 완료: 중앙 경유 sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 **stacked** 격리 worktree · **이로써 M4 전체 완료 · M5는 미완료**)
+
+> **현행 마일스톤 상태 (마일스톤 판정은 이 항목이 기준이고 아래 dated 항목보다 우선한다.
+> 커밋·테스트 카운트 등 사실 관계는 위 docs-only "최신" 블록이 우선한다.)**
 > - **M3 완료(재개방 금지)** · **M4a·M4b·M4c 완료 → M4 전체 완료(offline 검증)**.
 > - **M5는 미완료·not started**: provider bridge(`CodexCliProvider`) · autopilot CLI ·
 >   실제 7-agent 동시 실행 · live acceptance. 별도 사용자 승인이 필요하다.
@@ -13,8 +38,9 @@
 > - **열린 P0는 없다.** 다음 단계는 M4c의 fresh Codex 독립 리뷰 → M5 계획 → 사용자 승인.
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m4c` · branch `work/m4c-routing-approval` ·
-  base `ab63eac`(리뷰 완료된 M4b 커밋) — **M4a/M4b와 분리된 stacked PR이고 아직 commit/push/PR 없음**
-  (미커밋 working tree). 원본 checkout·M4a/M4b worktree 무수정. 네트워크·`gh`·deploy·DB·production·
+  base `ab63eac`(리뷰 완료된 M4b 커밋) — **M4a/M4b와 분리된 stacked 브랜치**. 세션 중에는 미커밋
+  working tree였고(그 시점 기록) **현행 M4c는 로컬 커밋 `3cfdb39`+`c963cb0`**(최종 HEAD `c963cb0`)이다.
+  **원격 push/PR/merge 없음.** 원본 checkout·M4a/M4b worktree 무수정. 네트워크·`gh`·deploy·DB·production·
   live billing·패키지 설치·신규 의존성·package/lockfile 변경·MCP·provider 호출·subagent **전부 없음**.
   Pony Tail(full) 적용.
 - **무엇을 했나**: M4b kernel에 **§5.1 메시지 10종 · 중앙 경유 sibling/reviewer/decision 라우팅 ·
@@ -44,11 +70,12 @@
     정확히 pin된 버전만, 하위 도메인 자동 허용 없음). `localMergeAllowed`는 기록 전용 — git 조작 없음.
   · registry 7종(`research`/`pm`/`ux`/`design`/`tech-lead`/`dev-lead`/`qa-security`) + 하위 role 한 겹.
     그 밖은 `unknown_role`. pre-M4c state는 `state_pre_m4c_unsupported`로 fail closed(자동 승인 금지).
-- **검증(offline)**: focused **142/142**(125 → 142) → `npm run build` PASS →
+- **검증(offline)**: **파일 단독** focused **67/67**(50 → 67) → `npm run build` PASS →
   M4c acceptance **77/77** · M4a **31/31** · M4b **42/42** →
-  `npm test` **PASS(최종 코드 변경 후 1회)** = exec **142/142** + core **374/374** + acceptance **92/92**
-  (81 → 92). `git diff --check` clean. mutation 4종(ownership·session·sibling 관계·만료)으로 비공허성
-  확인 후 정확히 원복(파일 해시 일치, 흔적 grep 0).
+  `npm test` **PASS(최종 코드 변경 후 1회)** = exec suite **142/142**(125 → 142) + core **374/374** +
+  acceptance **92/92**(81 → 92). `git diff --check` clean. mutation 4종(ownership·session·sibling 관계·
+  만료)으로 비공허성 확인 후 정확히 원복(파일 해시 일치, 흔적 grep 0, **파일 단독 focused 67/67** 재확인).
+  **142/142는 exec suite 수치이며 파일 단독 focused가 아니다.**
 - **하지 않은 것**: M5 provider bridge/autopilot · 실제 7-agent 동시 실행 · stress/live/반복 suite ·
   UI/dashboard · 크래시·fsync 하드닝 · stale lock 회수 · schema 마이그레이션 도구 · fairness/retry ·
   git 조작 · 테스트 삭제·완화 **0**.

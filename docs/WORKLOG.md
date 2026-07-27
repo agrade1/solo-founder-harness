@@ -1,10 +1,47 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M4 문서 정합성 정정 — docs-only** · M5 착수 전 · **M5는 여전히 not started·미승인**)
+
+격리 worktree `/private/tmp/solo-founder-harness-m4-doc-consistency` · branch `work/m4-doc-consistency` ·
+base `c963cb0832d66a58fefdaa2025a9213966c3cc27`(= M4c 최종 HEAD) 단일 세션. **문서만 수정**했다 —
+소스·테스트·schema·script·package/lockfile·`dist`·config·`AGENTS.md`·`CLAUDE.md` **무수정**.
+push/fetch/pull/PR/merge/rebase/reset/checkout/switch/worktree 조작·네트워크·`gh`·패키지 설치·MCP·
+provider 호출·deploy·DB·production·live billing **없음**. Pony Tail(full) 적용. **로컬 커밋 1개만** 만들었다.
+
+- **① 커밋 상태 정정**: M4a `55d99a3`+`805da35` · M4b `11775fd`+`ab63eac` · M4c `3cfdb39`+`c963cb0`
+  (M4c 최종 HEAD `c963cb0`). 각 구현 세션 본문의 "미커밋 working tree"는 원문을 보존한 채
+  **그 시점 기록임을 명시**했고, 현행 상태 블록은 로컬 커밋 사실로 고쳤다. 원격 push/PR/merge는 **0**이며
+  원본 checkout은 `bbb8b72`로 clean·무수정이다.
+- **② 테스트 범위 라벨 정정**: 파일 단독 `orchestrationKernel.test.ts`는 **67/67**(37 → 50 → 67),
+  **142/142는 `npm run test:exec` 전체 suite**(125 → 142)다. 두 수치를 혼동한 곳을 owned 문서 전부에서
+  고쳤다(요약뿐 아니라 M4c 본문·mutation 원복 문장·활성 V3 문서 3건 머리말 포함).
+  core **374/374** · acceptance **92/92** · offline acceptance 31/42/77 · build PASS는 불변.
+- **③ 대장 등록(로드맵 §9.1)**: M4c 최종 Codex 리뷰 3건 — `B-5`(P1, `manifest.approvedCommit`이 실행
+  checkout HEAD에 묶이지 않음 → **M5가 실제 명령을 처음 실행하기 전 fail closed 필수**) ·
+  `C-16`(P2, taskId↔roleId 교차 모호성 → M5 실제 inbox 소비 전) · `C-17`(P2, `expiresAt` 정확히 같은 시각
+  1회 통과 → 장시간 autopilot/재승인 전). **셋 다 backlog이고 코드 리비전 루프를 열지 않았다.**
+- **④ 신규 문서**: `docs/handoff/CLAUDE_CODE_WORKER_PLAYBOOK.md`(Claude Code 구현 세션 운영 표준).
+  `AGENTS.md`의 장기 규칙을 복제하지 않고 링크하며 세션 운영 절차만 적었다. CODEX_HANDOFF 현행 절에서 링크했다.
+- **검증**: `git diff` 확인 · `git diff --check` **clean** · 소유 밖 변경 **0**(git status로 확인) ·
+  임시 제어 파일(`.codex-doc-worker-prompt.md`·`.mcp-empty.codex.json`)은 untracked·unstaged 유지.
+- **전체 suite**: `npm test` **1회 직렬 실행 — PASS**. 처음에는 이 격리 worktree에 `node_modules`가 없어
+  `tsx: command not found`로 멈췄고(그 시점 블로커), 감독 Codex가 **원본 checkout의 기설치 `node_modules`를
+  이 worktree에 ignored 로컬 symlink로 제공**한 뒤 실행했다. **패키지 설치·네트워크는 없었다.**
+  실측: acceptance **PASS=92 FAIL=0**(Test 1~15 전부 OK, `ALL PASS`). `test:inner`는
+  `test:exec && test:core && acceptance` **`&&` 체인**이므로 acceptance 단계 도달 자체가 exec·core 통과를
+  뜻한다 — 다만 **exec·core의 개별 카운트는 이 실행에서 출력 tail만 캡처해 그대로 옮기지 못했다**(base
+  `c963cb0` 실측은 exec 142/142 · core 374/374). 그 두 숫자를 이 세션 실측으로 적지 않는다.
+  **stress·live·반복(3회)·두 번째 전체 suite는 실행하지 않았다.**
+- **stress·live·반복(3회) suite는 실행하지 않았다**(`B-1`/`B-2` — 이 세션 게이트 아님).
+- **하지 않은 것**: M5 구현 · 코드 변경 · 원격 조작 · 두 번째 오케스트레이션 설계 추가 ·
+  M5 세부 구현 명세 추측. **M5는 not started·미승인이다.**
+
 ## 2026-07-27 (V3 **M4c — sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 stacked 격리 worktree · **이로써 M4 전체 완료 · M5는 미완료**)
 
 격리 worktree `/private/tmp/solo-founder-harness-m4c` · branch `work/m4c-routing-approval` ·
 base `ab63eacc51650deaee0ce92b78a22a7ddcdc27bd`(리뷰 완료된 M4b 커밋) 단일 세션.
-**M4a/M4b와 분리된 stacked PR이며 아직 commit/push/PR 없음**(미커밋 working tree).
+**M4a/M4b와 분리된 stacked 브랜치**다. 세션 중에는 미커밋 working tree였고(그 시점 기록),
+현행 M4c는 로컬 커밋 `3cfdb39`(feat) + `c963cb0`(docs)로 남아 있다 — **최종 HEAD `c963cb0`, 원격 push/PR/merge 없음.**
 원본 checkout과 M4a/M4b worktree는 수정하지 않았다. 패키지 설치·신규 의존성·package/lockfile 변경 **0**,
 네트워크·`gh`·deploy·DB·production·live billing·MCP·provider 호출·subagent/Agent Team **없음**,
 stress·live runner **미실행**. Pony Tail(full) 적용 세션이다.
@@ -43,19 +80,21 @@ stress·live runner **미실행**. Pony Tail(full) 적용 세션이다.
   중복 정의하지 않는다. 기존 테스트/스크립트의 role 픽스처는 registry 값으로 바꿨다(단정은 무변경).
 - **⑧ 하위 호환은 fail closed 하나로.** manifest 없는 pre-M4c state는 마이그레이션하지 않고
   **`state_pre_m4c_unsupported`** 로 거부한다(자동 승인 금지). `schemaVersion`은 `"1"` 유지.
-- **⑨ 테스트(삭제·완화 0)**: focused `orchestrationKernel.test.ts` 125 → **142건**(M4c 17건 추가).
+- **⑨ 테스트(삭제·완화 0)**: **파일 단독** focused `orchestrationKernel.test.ts` 50 → **67건**(M4c 17건 추가).
+  같은 17건으로 `npm run test:exec` 전체 suite는 125 → 142건이 됐다.
   계약 변경으로 손댄 기존 단정은 3곳뿐이다 — ⓐ "미구현 타입 거부"를 **union 밖 타입 거부**로 바꿨고
   (10종이 구현됐으므로), ⓑ 공개 API 목록에 신규 9개를 더했고, ⓒ state 위조 루프에 **manifest 위조
   6종을 추가**하며 거부 코드 집합을 넓혔다(전부 여전히 fail closed). 신규
   `scripts/m4c-offline-acceptance.mjs`(77 체크) + `acceptance.sh` **Test 15**(11 checks),
   **기존 Test 1~14 무변경**. M4a/M4b 스크립트는 manifest 인자 1개만 더했고 체크 수는 31/42 그대로다.
-- **검증 실측(offline)**: focused **142/142** → `npm run build` PASS →
+- **검증 실측(offline)**: **파일 단독** focused **67/67** → `npm run build` PASS →
   M4c acceptance **77/77** · M4a **31/31** · M4b **42/42** →
-  `npm test` **PASS(최종 코드 변경 후 1회)** = exec **142/142** + core **374/374** + acceptance **92/92**
-  (81 → 92). `git diff --check` clean.
+  `npm test` **PASS(최종 코드 변경 후 1회)** = exec suite **142/142** + core **374/374** + acceptance **92/92**
+  (81 → 92). `git diff --check` clean. (**142/142는 exec suite 수치이지 파일 단독 focused가 아니다.**)
 - **비공허성(mutation) 4종**: ① ownership 불변식 호출 제거 ② session 불변식 호출 제거
   ③ sibling 관계 검사 무력화 ④ 만료 게이트 제거 — 각각 해당 M4c 테스트 1건이 실패함을 확인하고
-  **전부 정확히 원복**(원복 후 파일 SHA-256 일치, 소스 내 `MUTATION` 흔적 grep 0, focused 142/142 재확인).
+  **전부 정확히 원복**(원복 후 파일 SHA-256 일치, 소스 내 `MUTATION` 흔적 grep 0,
+  **파일 단독 focused 67/67** 재확인).
 - **하지 않은 것**: M5 provider bridge/autopilot · 실제 7-agent 동시 실행 · stress/live/반복 suite ·
   UI/dashboard · 크래시·fsync 하드닝 · stale lock 회수 · schema 마이그레이션 도구 · fairness/retry ·
   git 조작 · 테스트 삭제·완화 **0**.
@@ -71,7 +110,8 @@ stress·live runner **미실행**. Pony Tail(full) 적용 세션이다.
 
 격리 worktree `/private/tmp/solo-founder-harness-m4b` · branch `work/m4b-resource-scheduler` ·
 base `805da35801a59aeecf436d96d1054483247d643b`(리뷰 완료된 M4a 커밋) 단일 세션.
-**M4a와 분리된 stacked PR이며 아직 commit/push/PR/merge 없음**(미커밋 working tree).
+**M4a와 분리된 stacked 브랜치**다. 세션 중에는 미커밋 working tree였고(그 시점 기록),
+현행 M4b는 로컬 커밋 `11775fd`(feat) + `ab63eac`(docs)로 남아 있다 — **원격 push/PR/merge 없음.**
 원본 checkout은 수정하지 않았다. 패키지 설치·신규 의존성·package/lockfile 변경 **0**,
 네트워크·`gh`·deploy·DB·production·live billing·MCP·provider 호출·subagent **없음**,
 stress·live runner **미실행**. Pony Tail(full) 적용 세션이다.

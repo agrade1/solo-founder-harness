@@ -24,10 +24,16 @@
 - **M5는 여전히 미완료·not started다** — provider bridge(`CodexCliProvider`)·autopilot CLI·
   실제 7-agent 동시 실행은 M4 범위 밖이며 별도 사용자 승인이 필요하다.
 - 현재 기준 커밋: M4a 기준은 `ea764a54108f1715248f3e0ae414ea87eb8ffaa9`.
-  M4a 작업 브랜치는 `work/m4a-durable-orchestration`,
-  **M4b는 그 위에 stack된 `work/m4b-resource-scheduler`(base `805da35` = 리뷰 완료된 M4a 커밋),
-  M4c는 다시 그 위에 stack된 `work/m4c-routing-approval`(base `ab63eac` = 리뷰 완료된 M4b 커밋)이며
-  아직 commit/push/PR 없이 미커밋 working tree다.** 세 PR은 분리된 stacked PR이다.
+  **세 마일스톤은 각각 로컬 커밋이 있는 분리된 stacked 브랜치다**(원격 push/PR/merge는 0):
+  - `work/m4a-durable-orchestration` — `55d99a3`(feat) + `805da35`(docs)
+  - `work/m4b-resource-scheduler`(base `805da35`) — `11775fd`(feat) + `ab63eac`(docs)
+  - `work/m4c-routing-approval`(base `ab63eac`) — `3cfdb39`(feat) + `c963cb0`(docs)
+  **M4c 최종 HEAD = `c963cb0832d66a58fefdaa2025a9213966c3cc27`.** 원본 checkout은 `bbb8b72`로 clean·무수정.
+  이 문서 아래쪽의 "미커밋 working tree / 아직 commit·push·PR 없음" 표기는 **각 구현 세션 시점의 기록**이며
+  현행 사실이 아니다(현행: 로컬 커밋 있음 · 원격 push/PR/merge 없음).
+- 현행 offline 테스트 범위 라벨: **파일 단독** `src/exec/orchestrationKernel.test.ts` **67/67**
+  (M4a 37 → M4b 50 → M4c 67), **`npm run test:exec` 전체 suite 142/142**(125 → 142),
+  core **374/374**, acceptance **92/92**. **142/142를 "파일 단독 focused"로 적지 않는다.**
 
 ## 0. 문서 우선순위와 기존 설계의 처리
 
@@ -593,6 +599,18 @@ pre-M4c state 거부(`state_pre_m4c_unsupported`)가 하나 더 붙어 **여전�
 | `C-13` | C (P3) | **리뷰 대상(subject)은 API 인자이고 message index에는 route만 남는다.** 대상 관계는 `task.dependsOn`으로 재구성해야 하며 "이 review_request가 정확히 어떤 revision을 봤는지"는 body(`## Reviewed Revision and Hash`)와 artifactRefs에만 있다 | 낮음 | 감사 편의 | 낮음 | 소(envelope가 아니라 message index에 필드 1개) | **여러 revision을 병렬 검토하는 흐름이 생길 때** | 미정 | `requestReview`/`requestRevision` · M4c focused "reviewer 게이트" | open |
 | `C-14` | C (P3) | **`allowedCommands` 조회는 문자열 동치**다. shell을 파싱하지 않으므로 인자 순서만 다른 동등 명령은 별도 승인이 필요하다(의도적 — 파싱은 "승인된 것처럼 보이는 명령"을 판정하게 된다) | 중간 | 승인 목록 관리 편의(보안은 강화 방향) | 낮음 | 중(안전한 파서 필요 — 별도 승인 범위) | **M5 executor가 실제로 명령을 돌릴 때 재검토** | 미정 | `commandAllowed` 주석 · M4c focused "조회 API" | open |
 | `C-15` | C (P3) | **7 specialist registry는 코드 상수이고 run별로 좁히거나 넓힐 수 없다.** 하위 role은 `<상위>.<하위>` 한 겹만 허용한다 | 낮음 | role 명명 유연성 | 낮음 | 소 | **M6 hierarchical orchestrator에서 run별 registry가 필요해질 때** | 미정 | `SPECIALIST_ROLES` · `isRegistryRoleId` | open |
+
+#### M4c 최종 Codex 리뷰에서 추가된 유예 항목 (2026-07-27 기준)
+
+M4c 커밋(`3cfdb39`+`c963cb0`) 이후의 **fresh Codex read-only 최종 리뷰** 결과다. **P0는 없다.**
+셋 다 M4 state-only 범위에서는 nonblocking이므로 **지금 코드 리비전 루프를 열지 않고 대장에만 등록**한다.
+`B-5`는 **M5 provider/autopilot이 실제 프로세스를 띄우기 전에 반드시 닫는다.**
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-5` | **B (P1)** | **`manifest.approvedCommit`이 40자 형태만 검증되고 실제 실행 checkout HEAD에 묶이지 않는다.** 승인된 base가 아닌 커밋에서 실행돼도 state 계층은 거부하지 않는다. M4는 아무것도 실행하지 않으므로 지금은 nonblocking이지만, **M5 provider/autopilot이 프로세스를 띄우는 시점에는 `approvedCommit === 실행 worktree/컨트롤러 checkout HEAD`가 아니면 fail closed여야 한다** | 중간 — stacked 브랜치·여러 worktree를 쓰는 현재 방식에서 base가 어긋나기 쉽다 | 실행되는 모든 worker(잘못된 base에서 만들어진 diff 전체) | **높음** — worker가 엉뚱한 base에서 돌면 산출물을 버려야 하고 **M5 실행 경계를 다시 열어야 한다** | 소~중(커밋 경로에 HEAD 대조 불변식 1개) | **M5 provider/autopilot이 실제 명령을 처음 실행하기 전** | 다음 구현 세션(M5) | M4c 최종 Codex 리뷰 · `approvalManifest.ts` `approvedCommit` 검증(형태만) · 로드맵 §8 | open |
+| `C-16` | C (P2) | **taskId ↔ roleId 교차 namespace 모호성.** 어떤 task의 `taskId`가 다른 task의 `roleId`와 같으면 `deliverTo` 해석이 **taskId를 먼저** 고른다. 같은 roleId가 여럿일 때(`ambiguous_recipient`)는 거부하지만 이 교차 충돌은 거부하지 않는다 | 낮음 — 명명 규칙이 겹칠 때만 | 전달 1건의 수신자(정확성) | 중 — **실제 inbox 소비가 생기면 bounded summary·artifact 포인터가 엉뚱한 관련 task로 전달될 수 있다** | 소(해석 전에 교차 충돌을 `ambiguous_recipient`로 거부) | **M5에서 실제 worker가 inbox를 소비하기 시작하기 전** | 다음 구현 세션 | M4c 최종 Codex 리뷰 · `deliverTo` 해석 순서 · `C-13` 인접 | open |
+| `C-17` | C (P2) | **manifest 만료가 `now > expiresAt`이라 `expiresAt`과 정확히 같은 시각의 변경은 1회 통과한다**(경계 포함이 아님) | 낮음 — ms 단위 정확 일치 | 만료 경계에서의 변경 1건 | 낮음 — 지금은 만료 후 새 run이 값싸다 | 소(비교를 `>=`로) | **장시간 autopilot·재승인 동작(`C-11`)을 도입하기 전** | 미정 | M4c 최종 Codex 리뷰 · `assertNotExpired` · M4c focused "만료된 manifest" | open |
 
 ### 9.2 테스트 비례 원칙
 
@@ -1186,7 +1204,8 @@ scheduler/mailbox를 만들지 않았다.** `runWorkflow`/`mission`/`ExecutionPr
 - `schemas/milestone_approval_manifest.schema.json`(**신규**) ·
   `schemas/agent_message.schema.json`(10종 + heading) ·
   `schemas/orchestration_run_state.schema.json`(manifest required · route 필드 · specialistRoleId).
-- `src/exec/orchestrationKernel.test.ts` — focused 50 → **142건 중 M4c 17건 추가**(삭제·완화 0).
+- `src/exec/orchestrationKernel.test.ts` — **파일 단독** focused 50 → **67건**(M4c 17건 추가, 삭제·완화 0).
+  같은 17건으로 `npm run test:exec` 전체 suite는 125 → 142건이 된다.
 - `scripts/m4c-offline-acceptance.mjs`(신규, 77 체크) + `scripts/acceptance.sh` **Test 15**
   (**기존 Test 1~14 무변경**).
 
@@ -1239,7 +1258,8 @@ scheduler/mailbox를 만들지 않았다.** `runWorkflow`/`mission`/`ExecutionPr
 
 검증 실측(offline, 2026-07-27 — M4c 세션):
 
-- focused `src/exec/orchestrationKernel.test.ts` **142/142 PASS**(125 → 142, M4c 17건 추가, 삭제·완화 0).
+- focused **파일 단독** `src/exec/orchestrationKernel.test.ts` **67/67 PASS**(50 → 67, M4c 17건 추가,
+  삭제·완화 0). **142/142는 파일 단독 focused가 아니라 `npm run test:exec` 전체 suite 수치**다(125 → 142).
 - `npm run build` PASS, `git diff --check` clean.
 - `node scripts/m4c-offline-acceptance.mjs` **77/77 PASS(exit 0)** ·
   `node scripts/m4a-offline-acceptance.mjs` **31/31 PASS** ·
@@ -1251,7 +1271,7 @@ scheduler/mailbox를 만들지 않았다.** `runWorkflow`/`mission`/`ExecutionPr
 - **비공허성(mutation) 4종**: ① `assertManifestOwnership` 호출 제거(ownership 게이트 1건 실패)
   ② `assertSessionLimit` 호출 제거(maxSessions 1건 실패) ③ sibling 관계 검사 무력화(전달 거부 1건 실패)
   ④ `#mutate`의 만료 게이트 제거(만료 1건 실패). 넷 다 **정확히 원복**했고 원복 후 파일 SHA-256 일치 ·
-  소스 내 `MUTATION` 흔적 grep 0 · focused 142/142 재확인.
+  소스 내 `MUTATION` 흔적 grep 0 · **파일 단독 focused 67/67** 재확인.
 
 **M4c가 아닌 것(의도적 범위 밖)**: M5 provider bridge/autopilot CLI · 실제 7-agent 동시 실행 ·
 장기 stress/live · UI/dashboard · 크래시·fsync 하드닝(`C-4`) · stale lock 자동 회수(`C-8`) ·
@@ -1419,7 +1439,8 @@ production deploy, live billing, remote direct write, PR merge 자동화는 선�
     approval manifest)~~ → **2026-07-27 갱신**: 그중 **scheduler + exclusive resource class +
     멀티프로세스 writer lock을 M4b로 구현·offline 검증 완료**했다(격리 worktree
     `work/m4b-resource-scheduler`, base `805da35` = 리뷰 완료된 M4a 커밋 위 **stacked PR**,
-    아직 commit/push/PR 없음). 대장 `B-3`·`B-4`는 **fixed**다.
+    당시 미커밋 — **그 시점 기록**이며 현행 M4b는 로컬 커밋 `11775fd`+`ab63eac`다. 원격 push/PR은 없다).
+    대장 `B-3`·`B-4`는 **fixed**다.
 13. 다음 승인 대상: **M4c** = sibling 전달 · reviewer 왕복(나머지 메시지 타입) · milestone approval
     manifest. 그때까지 **M4 전체를 완료로 적지 않는다**. M4b가 남긴 유예 항목은 `C-4`(보강)·`C-8`·
     `C-9`·`C-10`이며 전부 nonblocking이다.

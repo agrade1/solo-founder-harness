@@ -4,13 +4,16 @@
 > **M3는 완료(재개방 금지)** · **M4a·M4b·M4c 완료 → M4 전체 완료(offline 검증)** · **M5는 미완료**
 > (provider bridge · autopilot · 실제 7-agent 동시 실행). **열린 P0 없음.**
 > M4c는 M4b 위 **stacked** 격리 worktree `work/m4c-routing-approval`(base `ab63eac`)에서 구현했고
-> **아직 commit/push/PR 없다.**
+> **로컬 커밋 `3cfdb39`+`c963cb0`으로 남아 있다**(M4c 최종 HEAD `c963cb0` · M4a `55d99a3`+`805da35` ·
+> M4b `11775fd`+`ab63eac`). **원격 push/PR/merge는 없다.**
 > 부하(stress) 재실행과 live runner 재실행은 **nonblocking release-readiness backlog**(`B-1`/`B-2`)이며
 > M3 완료 게이트도 M4 선행 조건도 **아니다** — 아래 2026-07-26 블록의 "차단 게이트 / M4 not started"
 > 표기는 그 시점의 기록이다.
-> 현행 offline 수치: focused `orchestrationKernel.test.ts` **142/142**(M4a 37 → M4b 50 → M4c 142),
-> offline acceptance M4a **31/31** · M4b **42/42** · M4c **77/77**, `npm test` PASS(1회) =
-> exec **142/142** + core **374/374** + acceptance **92/92**, focused lock 테스트 75/75, liveEvidence 24/24.
+> 현행 offline 수치: **파일 단독** focused `orchestrationKernel.test.ts` **67/67**
+> (M4a 37 → M4b 50 → M4c 67), offline acceptance M4a **31/31** · M4b **42/42** · M4c **77/77**,
+> `npm test` PASS(1회) = exec suite **142/142**(125 → 142) + core **374/374** + acceptance **92/92**,
+> focused lock 테스트 75/75, liveEvidence 24/24.
+> **142/142는 `npm run test:exec` 전체 suite 수치이며 파일 단독 focused가 아니다.**
 > **M4c 추가 — 진행 이벤트·handoff 계약의 durable 기반이 생겼다**: agent 간 진행 공유는
 > `status_update`(중앙 경유 sibling 전달), 검토 왕복은 `review_request`/`review_result`/
 > `revision_request`, 사람·중앙 결정은 `decision_request`/`decision`으로 표현하며 **전부 중앙이
