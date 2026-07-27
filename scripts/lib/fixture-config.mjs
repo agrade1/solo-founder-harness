@@ -48,9 +48,12 @@ export class FixtureConfigError extends Error {
  * 다섯 번째 리비전(Codex Sol xhigh P2-5): fd `closeSync` 실패를 무시하지 않으려면 그 경로를
  * 결정론적으로 검증할 수 있어야 한다. 그래서 주입은 **함수의 세 번째 인자**(같은 프로세스에서 이 모듈을
  * import한 코드만 줄 수 있는 값)로만 열어 둔다:
- *   - production 진입점(`scripts/suite-lock.mjs`, `scripts/m3d2-stress-acceptance.mjs`)은 인자 2개로만
- *     호출하므로 **argv·env·설정 파일 내용으로는 도달할 수 없다**. 즉 "외부 주입은 argv 하나뿐"이라는
- *     활성 문서의 계약은 그대로다 — 이 seam은 외부 입력이 아니라 in-process 함수 인자다.
+ *   - production 진입점 **5개 전부**(`scripts/suite-lock.mjs` · `scripts/m3d2-stress-acceptance.mjs` ·
+ *     `scripts/m3a-live-preflight.mjs` · `scripts/m3b2-live-handoff.mjs` · `scripts/m3c3b-live-handoff.mjs`)가
+ *     인자 2개로만 호출하므로 **argv·env·설정 파일 내용으로는 도달할 수 없다**. 즉 "외부 주입은 argv
+ *     하나뿐"이라는 활성 문서의 계약은 그대로다 — 이 seam은 외부 입력이 아니라 in-process 함수 인자다.
+ *     (이 목록은 예시가 아니라 전수다 — 대장 `C-2`가 "2개만 예시"였던 이전 판을 지적했다. 진입점이
+ *     늘면 `suiteExclusiveLock.test.ts`의 소스 감사가 인자 3개 호출을 잡는다.)
  *   - 표면은 fs 함수 4개로 최소이며, 명령 실행·경로 재해석·env 참조를 만들지 않는다.
  *   - 값이 함수가 아니면 즉시 거부한다(부분 주입은 기본 구현으로 채운다).
  */

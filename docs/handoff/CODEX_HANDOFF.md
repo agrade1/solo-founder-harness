@@ -3,7 +3,49 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5b stable controller · 1차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 2차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+
+- **M5b 2차 리비전 커밋 `55b488f`** — `fix(v3-m5b): 봉인 단일 읽기 · 위조 불가 read-only 증명 ·
+  실패 turn 회계 · 닫힌 리뷰/오류 taxonomy` + 이 docs 커밋. base·worktree·branch는 아래와 같다.
+- **⚠ 아래 "1차 리비전이 5건 전부 fixed" 서술은 과장이었다.** 2차 독립 fresh Codex `gpt-5.6-sol` xhigh
+  read-only 재리뷰가 **같은 다섯 자리에서 REVISE(A=5)** 를 냈다 — 넷은 "고쳤다고 적은 코드가 여전히 열려
+  있었다"였고 `B-8`도 다시 열렸다. **A4(포인터 재검증)만 유지**됐다. 2차 리비전이 닫은 것:
+  - **A1** `scheduleReady`/`startScheduledBatch`가 호출 시점 **재읽기 wrapper**였고 생성자 검증도
+    검사-후-재읽기였다(교대 getter/proxy·재진입 `nowMs`로 "검사한 함수 ≠ 실행하는 함수") →
+    caller property를 **정확히 한 번** 읽어 검증·bind·pin 기준을 그 값 하나로 공유한다.
+  - **A2** `READ_ONLY_EXECUTION_CONTRACT`가 **공개 export**라 같은 프로세스의 아무 provider나 자기에게
+    달 수 있었다(집행이 아니라 자기 신고) → **공개 brand 제거** + `codexCliProvider.ts`의 **모듈 사설
+    WeakSet**(등록 = `CodexCliProvider` 생성자 하나 · export = 판정 함수 `attestReadOnlyCodexProvider`
+    하나 · **발급기·토큰·임의 provider factory 없음**) + prototype 동일성 + 메서드 **함수 신원** +
+    `Object.freeze(CodexCliProvider.prototype)`. 심볼/property 복사 · prototype 위조 · subclass(override
+    유무 무관) · 인스턴스 override · `Proxy` wrapper · 임의 scripted provider **전부 거부**.
+    controller 테스트의 provider는 이제 **진짜 `CodexCliProvider` + 주입 spawn seam**이다(live 0).
+    **주장 범위**: 같은 프로세스에서 *공개 API만으로는* 못 들어온다 — **OS 샌드박스 격리가 아니다**.
+  - **A3** 공용 소비자가 `isError`에서 먼저 던져 **실패 turn의 usage가 전역 예산에서 누락**됐다 →
+    종료 1건 확정 뒤 **성공/실패 해석 전에** `onTerminal`로 정확히 한 번 회계한다.
+  - **A5a** 대상 신원 `includes`(라벨 뒤바뀜·접두/접미·"다른 대상 + 기대값 언급") · 펜스가 **여는 길이를
+    잊어** 3-백틱이 4-백틱 블록을 닫음 · findings 미상 줄 무시(`- 없음` + `P1: 승인 우회`) →
+    정확·유일·한 줄 라벨 **완전 일치** / **문자+길이** 있는 펜스(틸드 동등) / 미상 줄 **거부** +
+    본문 nonempty·bounded / heading **순서**까지 계약. **`B-8` 세 번째 close.**
+  - **A5b** provider가 `code: "result_accepted"`를 달면 **성공처럼 보이는 marker를 단 실패**가 됐다 →
+    공용 소비자는 **자기가 만든 오류만** 통과, 경계는 `handoff_failed`/`provider_start_failed`/
+    `provider_send_failed`/`provider_stream_failed`(reviewer는 `reviewer_provider_failed`)로 접는다.
+- **대장 변경**: **`C-2` fixed**(트리거가 M5b에서 이미 발화한 **overdue** 항목 — `fixture-config.mjs`
+  주석이 production 진입점 **5개 전수**를 적는다) · `C-12`의 낡은 C 행은 **superseded**(현행은 B(P1)
+  승격 행 하나) · 신규 **`C-29`**(중첩 handoff schema closed 검증 — **M5c 구조화 필드**) ·
+  **`C-30`**(중복 종료 방어가 codex 경로로 도달 불가 — **M5c 두 번째 provider 배선**) ·
+  **`C-31`**(테스트가 provider 내부 white-box 관측 — **`B-13` 구현 시**).
+  **확정 기한**: `B-7` 첫 live 전 · `B-9` 첫 live 전 · `B-10` M5c Claude/edit provider 전 ·
+  `B-11` M5c autopilot/무인 advance 전 · `B-12` 자동 재시작/resume 전(늦어도 M5c) ·
+  `B-13` live 프로세스를 띄우는 provider 배선 전 · `C-12`(→B) M5c autopilot 전.
+- **2차 리비전 검증(자기보고)**: `stableController` **42/42** · `reviewer` **19/19** ·
+  `suiteExclusiveLock` **75/75** · `npm run test:exec` **306/306** · 권위/타이밍 부분집합 **206/206 직렬 3회** ·
+  `tsc --noEmit` 0 · `build` PASS(dist parity) · **mutation 16종 전부 kill·전부 원복**
+  (1회차에 A2 prototype 검사가 살아남아 **override 없는 subclass** 케이스를 추가해 kill).
+- **상태는 self-approved가 아니다** — 다음 fresh Codex read-only 독립 재리뷰가 게이트이고
+  **위 fixed 판정 전부가 재확인 대상**이다.
+
+### (이하 dated 기록 — 1차 리비전 시점. 위 절이 현행이다.)
 
 - **M5a는 승인됐다**(다섯 번째 fresh 독립 Codex 리뷰가 `409dee2`에 `APPROVE_TO_STACK` · A finding 0).
   아래 절들의 "M5a handoff 미승인" 표기는 그 승인 이전의 dated 기록이다.

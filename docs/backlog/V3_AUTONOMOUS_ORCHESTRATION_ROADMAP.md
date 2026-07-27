@@ -32,22 +32,31 @@
     **M5a 최종 로컬 HEAD `409dee2`는 다섯 번째 fresh 독립 Codex 리뷰에서 `APPROVE_TO_STACK` ·
     A finding 0으로 승인됐다.** 이 문서 아래쪽의 "5차 이후에도 M5a는 다음 fresh 독립 리뷰 전까지 승인된
     것이 아니다"류 표기는 **그 승인 이전 시점의 기록**이며 현행 판정이 아니다(원문은 이력으로 보존한다).
-  - **M5b — 1차 리비전 완료 · 독립 재리뷰 대기.** 승인된 `409dee2` 위에 stable controller bridge를
-    구현했고(로컬 커밋 `1a94261` + `42777d9`), 그 뒤 **독립 fresh Codex `gpt-5.6-sol` xhigh read-only
-    리뷰가 REVISE(A/P1 5건)** 를 냈다 → **리비전 커밋 `6bc390d`가 A 5건을 전부 닫았다**
-    (§10 M5 → M5b · M5b 1차 리비전). A: ⓐ 생성 authority가 실제로 봉인되지 않았다 ⓑ 정책이 자기 선언만
-    검증하고 실행을 집행하지 않았다 ⓒ 소진을 아는 예산으로 다음 batch task가 시작될 수 있었다
-    ⓓ artifact 포인터 검증이 비동기 경계 뒤에서 낡았다 ⓔ 중복 종료/중복 리뷰 섹션이 `B-8`을 다시 열었다.
+  - **M5b — 2차 리비전 완료 · 독립 재리뷰 대기.** 승인된 `409dee2` 위에 stable controller bridge를
+    구현했고(`1a94261` + `42777d9`), **1차 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰가
+    REVISE(A/P1 5건)** → 리비전 `6bc390d`. 그 뒤 **2차 독립 리뷰가 같은 다섯 자리에서 다시 REVISE(A=5)**
+    → **2차 리비전 `55b488f`** (§10 M5 → M5b · M5b 2차 리비전).
+    **1차 리비전의 "A 5건 전부 fixed"는 과장이었다** — A1(재읽기·재진입) · A2(공개 export라 위조 가능한
+    brand) · A3(실패 turn의 usage가 예산에서 누락) · A5a(파서 허위 승인) · A5b(열린 오류 taxonomy)가
+    실제로는 열려 있었고 `B-8`도 다시 열렸다. **A4(포인터 재검증)만 유지**됐다. 2차 리비전이 그 다섯을
+    닫았다: 생성 권위 **단일 읽기** · **모듈 사설 WeakSet 기반 위조 불가 read-only 증명**(공개 brand 제거) ·
+    **성공/실패 해석 전 usage 회계** · **닫힌 리뷰 파서**(정확 라벨 · 길이 있는 펜스 · 미상 줄 거부 · 순서) ·
+    **닫힌 오류 taxonomy**(경계 밖 코드는 결과 코드를 고르지 못한다).
     **M5b의 실제 계약은 "증명 가능한 read-only Codex planning/review bridge"로 좁혀졌다** — 타입 있는
-    edit 가능 실행 집행은 신규 대장 **`B-10`(M5c)** 이다. `B-8`은 새 증거로 다시 닫았다.
-    **아직 독립 재리뷰·승인을 받지 않았다** — supervisor의 다음 fresh Codex read-only 리뷰가 게이트다.
+    edit 가능 실행 집행은 신규 대장 **`B-10`(M5c)** 이다.
+    **아직 독립 재리뷰·승인을 받지 않았다** — supervisor의 다음 fresh Codex read-only 리뷰가 게이트이고
+    **위 fixed 판정 전부가 재확인 대상**이다(이 세션은 스스로를 승인하지 않는다).
     live provider 추론·네트워크·secret 사용은 0이다.
   - **M5c/M5d는 시작하지 않았고 live acceptance도 미실행이다.** M5c는 신규 B 4건
     (`B-10`~`B-13`)을 함께 소유한다.
   **M5a/M5b가 아닌 것**: autopilot CLI · Claude↔Codex 자동 전달 · 실제 7-agent 동시 실행 ·
   **live acceptance**. 이 문서 아래쪽의 "M5 not started" 표기는 M5a 승인 이전 기록이다.
-  열린 B(P1)는 `B-7`(live 인증·secret redaction) · `B-9`(JSONL live 확인)이며 **둘 다 live 착수만 막고
-  offline 작업은 막지 않는다.** `B-8`(reviewer 결과 게이트)은 **M5b에서 fixed**다.
+  열린 B(P1)는 `B-7`(live 인증·secret redaction — **첫 live 전**) · `B-9`(JSONL live 확인 — **첫 live 전**) ·
+  `B-10`(타입 있는 실행 집행 — **M5c Claude/edit 가능 provider 전**) · `B-11`(per-task preflight —
+  **M5c autopilot/무인 advance 전**) · `B-12`(재시작 예산 회계 — **자동 재시작/resume 전, 늦어도 M5c**) ·
+  `B-13`(durable 완료 전 provider 정리 확인 — **live 프로세스를 띄우는 provider 배선 전**) ·
+  `C-12`→B(전달 재시도 — **M5c autopilot 전**). `B-7`·`B-9`는 **live 착수만 막고 offline 작업은 막지
+  않는다.** `B-8`(reviewer 결과 게이트)은 두 번 reopen된 뒤 **M5b 2차 리비전 `55b488f`에서 fixed**다.
 - 현재 기준 커밋: M4a 기준은 `ea764a54108f1715248f3e0ae414ea87eb8ffaa9`.
   **세 마일스톤은 각각 로컬 커밋이 있는 분리된 stacked 브랜치다**(원격 push/PR/merge는 0):
   - `work/m4a-durable-orchestration` — `55d99a3`(feat) + `805da35`(docs)
@@ -583,7 +592,7 @@ id / 제목
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-1` | C (P3) | 호출부 감사의 **bounded computed dynamic specifier** 판정이, 도달 가능한 조각 각각에는 `fixture-config`가 없지만 런타임에 합성되는 route(예: `"./lib/" + (flag ? "fixture-" : "other-") + "config.mjs"`)를 `safe`로 본다 | 낮음 — 현재 production 호출부 5개는 전부 해당 없음 | 제한적 — 미래에 그런 호출부가 생겼을 때 **소스 레벨 감사에서 누락**되는 것뿐(런타임 계약·lock 계약은 무관) | 낮음 | 소~중 | M4 소스 계약 감사 확장 시 또는 그런 형태의 호출부가 실제로 추가될 때 | 구현 세션(Claude Opus 5) | 여덟 번째 리비전 리뷰 Category C · `src/tools/suiteExclusiveLock.test.ts` 동적 import 케이스 | open |
-| `C-2` | C (P3) | `scripts/lib/fixture-config.mjs` 모듈 주석이 production 진입점을 2개만 예시로 적어 실제 5개와 어긋나 보인다 | — | 문서/주석만 | 낮음 | 소 | production 파일을 여는 다음 승인 범위 | 구현 세션 | 여섯~여덟 번째 리비전 잔여 위험 목록 | open |
+| `C-2` | C (P3) → **fixed(M5b 2차 리비전)** | `scripts/lib/fixture-config.mjs` 모듈 주석이 production 진입점을 2개만 예시로 적어 실제 5개와 어긋나 보인다 | — | 문서/주석만 | 낮음 | 소 | (닫힘 — 트리거 "production 파일을 여는 다음 승인 범위"는 **M5b에서 이미 발화했고**(M5b가 `src/exec/*` production을 열었다) 1차 리비전이 그것을 처리하지 않아 **overdue였다**) | 구현 세션 | 여섯~여덟 번째 리비전 잔여 위험 목록 · **fix(2차 리비전 `55b488f` 이후 docs 커밋)**: 주석이 진입점 **5개 전수**(`suite-lock` · `m3d2-stress-acceptance` · `m3a-live-preflight` · `m3b2-live-handoff` · `m3c3b-live-handoff`)를 적고 "예시가 아니라 전수"임을 명시한다. 실제 호출부 수는 `grep -rn loadFixtureConfig scripts src`로 재확인했고(5개) `suiteExclusiveLock.test.ts` **75/75** focused 재실행으로 소스 감사 계약이 그대로임을 확인했다 | **fixed (2026-07-28)** |
 | `C-3` | C (P3) | `parseDiagnostics`는 TypeScript 준공개 필드라 상위 버전에서 이름이 바뀌면 파싱 진단 검사가 조용히 무력화될 수 있다 | 낮음 | 감사 1항목 | 낮음(전용 회귀 2건이 탐지) | 소 | TypeScript major 업그레이드 시 | 구현 세션 | 여덟 번째 리비전 회귀 2건 | open |
 | `B-1` | **C (release-readiness)** | 조용한 호스트에서 부하(stress) acceptance **재실행** — 고정 5초 child startup deadline 2건이 외부 부하에서 넘친 이력 | 낮음(부하 없는 호스트에서는 PASS 이력) | release 준비 판정 | 낮음 | 중(방침 결정 필요) | **release 준비 시점**(트리거) — M3 완료 게이트 **아님**, M4 선행 조건 **아님** | 사용자 + 구현 세션 | 여섯 번째 리비전 세션 실측(§10 M3d.2) | open (nonblocking) |
 | `B-2` | **C (release-readiness)** | live runner **재실행**과 evidence 재생성 | — | release 준비 판정 | 낮음 | 사용자 실행 | **release 준비 시점**(트리거) — M3 완료 게이트 **아님**, M4 선행 조건 **아님** | 사용자(TTY 필요) | §10 M3d.2 | open (nonblocking) |
@@ -626,7 +635,7 @@ pre-M4c state 거부(`state_pre_m4c_unsupported`)가 하나 더 붙어 **여전�
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-11` | C (P2) | **manifest는 run 생성 시 고정이라 승인 범위를 넓히거나 만료를 연장하는 경로가 없다.** 범위를 바꾸려면 새 run을 만들어야 한다(수정 시도는 `state_event_binding_mismatch`, 만료 후 변경은 `manifest_expired`) | 중간(마일스톤이 길어지면) | 운영 편의(안전성은 무관 — fail closed 방향) | 낮음 — 지금은 새 run이 값싸다 | 중(재승인 전이 + 감사 이벤트 설계 필요) | **M5 autopilot이 사람 승인 왕복을 자동화할 때** | 다음 구현 세션 | `assertNotExpired` · M4c focused "만료된 manifest" · acceptance Test 15 | open |
-| `C-12` | C (P3) | **전달 수령(ack)은 호출자가 직접 하는 좁은 전이일 뿐, 재전송·타임아웃·우선순위·starvation 방어가 없다.** 의도적으로 범용 queue를 만들지 않았다(`C-10`과 같은 결정) | 중간(실제 동시 실행 시) | 전달 순서·처리량(정확성은 무관 — 순서는 결정론적) | 낮음 — 규칙이 좁아 정책만 얹으면 된다 | 소~중 | **M5/M9에서 실제 worker가 inbox를 소비하기 시작할 때** | 미정 | `pendingDeliveries` · `acknowledgeDelivery` 주석 | open |
+| ~~`C-12`~~ | **superseded → `C-12` → B(P1) 재분류 행(§9.1 "M5b 1차 리비전" 표)** | ~~전달 수령(ack)은 호출자가 직접 하는 좁은 전이일 뿐, 재전송·타임아웃·우선순위·starvation 방어가 없다~~ | — | — | — | — | **이 행은 더 이상 독립적으로 열려 있지 않다.** 트리거("실제 worker가 inbox를 소비하기 시작할 때")가 M5b controller에서 발화해 **B(P1)로 승격**됐고, 현행 기한·담당·증거는 승격된 행 하나에만 있다(기한: **M5c autopilot 착수 전**) | — | 아래 "M5b 1차 리비전" 표의 `C-12 → B (P1) 재분류` 행 | **superseded (2026-07-27, 2026-07-28 표기 정정)** |
 | `C-13` | C (P3) | **리뷰 대상(subject)은 API 인자이고 message index에는 route만 남는다.** 대상 관계는 `task.dependsOn`으로 재구성해야 하며 "이 review_request가 정확히 어떤 revision을 봤는지"는 body(`## Reviewed Revision and Hash`)와 artifactRefs에만 있다 | 낮음 | 감사 편의 | 낮음 | 소(envelope가 아니라 message index에 필드 1개) | **여러 revision을 병렬 검토하는 흐름이 생길 때** | 미정 | `requestReview`/`requestRevision` · M4c focused "reviewer 게이트" | open |
 | `C-14` | C (P3) | **`allowedCommands` 조회는 문자열 동치**다. shell을 파싱하지 않으므로 인자 순서만 다른 동등 명령은 별도 승인이 필요하다(의도적 — 파싱은 "승인된 것처럼 보이는 명령"을 판정하게 된다) | 중간 | 승인 목록 관리 편의(보안은 강화 방향) | 낮음 | 중(안전한 파서 필요 — 별도 승인 범위) | **M5 executor가 실제로 명령을 돌릴 때 재검토** | 미정 | `commandAllowed` 주석 · M4c focused "조회 API" | open |
 | `C-15` | C (P3) | **7 specialist registry는 코드 상수이고 run별로 좁히거나 넓힐 수 없다.** 하위 role은 `<상위>.<하위>` 한 겹만 허용한다 | 낮음 | role 명명 유연성 | 낮음 | 소 | **M6 hierarchical orchestrator에서 run별 registry가 필요해질 때** | 미정 | `SPECIALIST_ROLES` · `isRegistryRoleId` | open |
@@ -1572,7 +1581,7 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `B-6` | **B (P1) → fixed(M5a 리비전)** | **`codex exec --help` 실측이 없다.** M5a 세션에서 로컬 codex 바이너리 실행 승인이 나지 않아(권한 거부 3회) argv·플래그 철자·`--config` TOML 표기·JSONL 필드명을 **로드맵 §1의 기록**(`0.146.0-alpha.3`)으로만 잡았다. 파서는 `thread_id`/`session_id` 같은 별칭을 받지만 이름이 다르면 세션 id 관측·usage가 비게 된다 | 중간 — alpha CLI의 필드명은 잘 바뀐다 | provider 1개(잘못된 플래그는 codex 비정상 종료 → fail closed. 조용한 오작동은 usage/세션 id 누락뿐) | 중 — 실측 없이 live를 켜면 첫 실행이 전부 실패로 낭비된다 | 소(help 1회 + fixture 갱신) | **M5b live 착수 전(하드 게이트)** | 다음 구현 세션(M5b) | **supervisor 실측(codex-cli `0.146.0-alpha.3`, parse-only·추론 미실행)**: fresh `exec`는 `--config`·`--strict-config`·`--model`·`--sandbox`·`--cd`·`--ephemeral`·`--ignore-user-config`·`--ignore-rules`·`--output-schema`·`--json`·stdin `-`를 받고, `exec resume`는 `--config`·`--strict-config`·`--model`·`--ignore-user-config`·`--ignore-rules`·`--output-schema`·`--json`만 받는다(**subcommand-local `--sandbox`/`--cd` 없음** — `exec resume <uuid> --sandbox … --cd … --help`는 거부, `exec --sandbox … --cd … resume --help`는 파싱). M5a 리비전이 이 배치를 argv 컴파일러와 파싱 계약 테스트에 고정했다. **JSONL payload 필드명은 provider live 경로로 확인하지 않았다 — 그 부분은 `B-9`로 남는다** | **fixed (2026-07-27, M5a 리비전 — 플래그 배치 한정)** |
 | `B-7` | **B (P1)** | **격리 `CODEX_HOME`에는 자격증명이 없어 live 인증 방식이 미정이고, live secret 값 redaction도 미해결이다.** ⓐ 인증: auth 파일 복사·영속화를 금지했으므로 live는 "승인된 env 하나를 명시 전달 / 격리 홈에 사람 1회 로그인 / 다른 방식" 중 하나를 **사람이 결정**해야 한다(M5a 리비전에서 자식 env를 `CODEX_HOME` 하나로 좁혀 이 결정 없이는 live가 아예 인증되지 않는다 = fail closed). ⓑ redaction: 현재 `redactSecrets(stderr)`는 **알려진 secret 값 목록 없이 패턴만** 보므로 실제 토큰이 stderr에 찍히면 못 가릴 수 있다 → live 전에 **stderr를 아예 버리거나** `collectSecretValues`로 **승인된 정확한 값만** 넘겨야 한다 | 확실(설계상) | live 실행 전부 · live 오류 요약의 secret | 중 — 결정 없이 켜면 매 실행이 인증 실패이고, 값 목록 없이 켜면 토큰이 요약에 남을 수 있다 | 소~중(결정 + env allowlist 1개 + redaction 입력 배선) | **첫 live 실행 착수 전(하드 게이트).** **M5b 갱신**: offline M5b는 이 게이트를 지나지 않았다(live provider 추론 0 · secret 사용 0)이므로 트리거는 **M5c/M5d live 착수 시점으로 이월**된다 | 사용자 + live를 켜는 구현 세션(M5c) | `compileCodexEnv` · `summarizeError`/`redactSecrets` · 2026-07-27 fresh Codex 리뷰 P1/B · DECISIONS 2026-07-27(M5a) | open |
-| `B-8` | **B (P1) → M5b `1a94261`의 "fixed"는 불완전(독립 리뷰 A5가 reopen) → fixed(M5b 1차 리비전 `6bc390d`)** | **`src/exec/reviewer.ts`가 리뷰 결과를 무비판적으로 받는다**: `result.isError`를 보지 않고, 비어 있거나 구조화되지 않은 출력도 `extractCriticalRisks`가 Critical 0건으로 읽어 **"통과"가 된다**. 즉 리뷰어 세션이 실패하거나 아무 말도 못 하면 게이트가 조용히 열린다. M5a는 provider 계층만 다뤘고 controller 통합은 범위 밖이라 이번에 고치지 않았다 | 중간 — live 리뷰어는 실패·빈 출력이 드물지 않다 | 리뷰 게이트 전체(잘못된 "통과") | **높음** — 리뷰 게이트를 신뢰한 채 M5b 자동 왕복을 켜면 잘못된 통과가 산출물로 굳는다 | 소~중(`isError`·빈 출력·헤더 부재를 실패로 + 회귀 테스트) | (닫힘 — 원래 기한은 **M5b에서 reviewer를 처음 배선하기 전(하드 게이트)** 이었고 그 전에 닫았다) | M5b 구현 세션 | 2026-07-27 fresh Codex 리뷰 P1/B · `src/exec/reviewer.ts` `reviewDiff` · **fix(M5b)**: `reviewDiff`가 **판정을 만들지 않고 던진다** — 안정 `ReviewGateError` 코드 1개씩: provider throw/스트림 소비 실패 `reviewer_provider_failed` · 종료 결과 부재 `reviewer_no_result` · `isError`/실패 종료 `reviewer_result_error` · 빈 출력 `reviewer_empty_output` · 필수 헤더(`## Risks / Known Limitations` · Critical) 부재 `reviewer_malformed_output` · `## Verdict: pass\|revise\|block` 부재·미상 값·**verdict와 Critical 목록 모순**(pass인데 Critical 있음 / revise·block인데 Critical 없음) `reviewer_verdict_invalid`. 증거: `reviewer.test.ts` focused 회귀 + mutation(fail-open 복원 → 실패). **reopen 사유(독립 리뷰 A5/P1)**: 그 판은 ⓐ `if (e.kind === "result") result = e`로 종료 결과를 **덮었으므로 실패 종료 뒤 성공 종료가 통과**했고 ⓑ 필수 헤더를 `raw.includes(...)` **부분 문자열**로만 봤으므로 코드 펜스 안의 헤더·프롬프트 인용이 헤더로 통했고 ⓒ **첫** verdict·첫 Critical만 읽었으므로 **모순되는 섹션을 중복**으로 넣어 판정을 고를 수 있었다. 게다가 스키마가 **활성 로드맵 §5.2 `review_result`가 아니라** 사고 계층 red_team의 `## Risks`/`### Critical`이었다. **fix(1차 리비전 `6bc390d`)**: 공용 `consumeExactlyOneTerminal`(`types.ts`)이 종료 결과를 **정확히 1건**만 받고 두 번째 종료·종료 뒤 이벤트를 `reviewer_duplicate_terminal`로 거부한다(`StableController`도 같은 소비자를 쓴다 — `provider_duplicate_terminal`). 파서는 **코드 펜스를 걷어낸 뒤** top-level `## ` heading을 뽑아 §5.2 필수 6개(`Reviewed Revision and Hash` · `Findings (P0/P1/P2)` · `Reproduction or Evidence` · `Missing Tests` · `Contract Deviations` · `Verdict`)가 **각각 정확히 1회**여야 하고 **미상 heading·중복 섹션·`없음`과 P0/P1/P2 동시 서술을 거부**하며, verdict는 `pass\|revise\|block` **정확히 1개**여야 하고 `pass`는 **P0·P1 0건**일 때만 성립한다(P2는 pass와 공존). 리뷰 대상은 호출자가 **명시로 준** `subject.revision`/`subject.hash`에 묶는다(`reviewer_subject_mismatch`/`reviewer_subject_invalid`) — 본문 자기 주장만으로는 통과하지 않는다. `buildReviewPrompt`와 **모든 caller/mock**(`sessionRunner.ts`·`sessionRunner.test.ts`·`mission.test.ts`·`parallelMission.test.ts`)을 새 스키마로 갱신했다. 리비전 증거: `reviewer.test.ts` focused **14/14**(중복 종료 2 · 펜스 주입 2 · 중복·모순 5케이스 · 대상 신원 4케이스) + mutation(중복 섹션 거부 제거 → 1건 실패 / 공용 소비자의 중복 종료 거부 제거 → 5건 실패) | **fixed (2026-07-27, M5b 1차 리비전 `6bc390d`)** |
+| `B-8` | **B (P1) → `1a94261` "fixed" 불완전(1차 독립 리뷰 A5가 reopen) → `6bc390d` "fixed"도 불완전(2차 독립 리뷰 A5a가 다시 reopen) → fixed(M5b 2차 리비전 `55b488f`)** | **`src/exec/reviewer.ts`가 리뷰 결과를 무비판적으로 받는다**: `result.isError`를 보지 않고, 비어 있거나 구조화되지 않은 출력도 `extractCriticalRisks`가 Critical 0건으로 읽어 **"통과"가 된다**. 즉 리뷰어 세션이 실패하거나 아무 말도 못 하면 게이트가 조용히 열린다. M5a는 provider 계층만 다뤘고 controller 통합은 범위 밖이라 이번에 고치지 않았다 | 중간 — live 리뷰어는 실패·빈 출력이 드물지 않다 | 리뷰 게이트 전체(잘못된 "통과") | **높음** — 리뷰 게이트를 신뢰한 채 M5b 자동 왕복을 켜면 잘못된 통과가 산출물로 굳는다 | 소~중(`isError`·빈 출력·헤더 부재를 실패로 + 회귀 테스트) | (닫힘 — 원래 기한은 **M5b에서 reviewer를 처음 배선하기 전(하드 게이트)** 이었고 그 전에 닫았다) | M5b 구현 세션 | 2026-07-27 fresh Codex 리뷰 P1/B · `src/exec/reviewer.ts` `reviewDiff` · **fix(M5b)**: `reviewDiff`가 **판정을 만들지 않고 던진다** — 안정 `ReviewGateError` 코드 1개씩: provider throw/스트림 소비 실패 `reviewer_provider_failed` · 종료 결과 부재 `reviewer_no_result` · `isError`/실패 종료 `reviewer_result_error` · 빈 출력 `reviewer_empty_output` · 필수 헤더(`## Risks / Known Limitations` · Critical) 부재 `reviewer_malformed_output` · `## Verdict: pass\|revise\|block` 부재·미상 값·**verdict와 Critical 목록 모순**(pass인데 Critical 있음 / revise·block인데 Critical 없음) `reviewer_verdict_invalid`. 증거: `reviewer.test.ts` focused 회귀 + mutation(fail-open 복원 → 실패). **reopen 사유(독립 리뷰 A5/P1)**: 그 판은 ⓐ `if (e.kind === "result") result = e`로 종료 결과를 **덮었으므로 실패 종료 뒤 성공 종료가 통과**했고 ⓑ 필수 헤더를 `raw.includes(...)` **부분 문자열**로만 봤으므로 코드 펜스 안의 헤더·프롬프트 인용이 헤더로 통했고 ⓒ **첫** verdict·첫 Critical만 읽었으므로 **모순되는 섹션을 중복**으로 넣어 판정을 고를 수 있었다. 게다가 스키마가 **활성 로드맵 §5.2 `review_result`가 아니라** 사고 계층 red_team의 `## Risks`/`### Critical`이었다. **fix(1차 리비전 `6bc390d`)**: 공용 `consumeExactlyOneTerminal`(`types.ts`)이 종료 결과를 **정확히 1건**만 받고 두 번째 종료·종료 뒤 이벤트를 `reviewer_duplicate_terminal`로 거부한다(`StableController`도 같은 소비자를 쓴다 — `provider_duplicate_terminal`). 파서는 **코드 펜스를 걷어낸 뒤** top-level `## ` heading을 뽑아 §5.2 필수 6개(`Reviewed Revision and Hash` · `Findings (P0/P1/P2)` · `Reproduction or Evidence` · `Missing Tests` · `Contract Deviations` · `Verdict`)가 **각각 정확히 1회**여야 하고 **미상 heading·중복 섹션·`없음`과 P0/P1/P2 동시 서술을 거부**하며, verdict는 `pass\|revise\|block` **정확히 1개**여야 하고 `pass`는 **P0·P1 0건**일 때만 성립한다(P2는 pass와 공존). 리뷰 대상은 호출자가 **명시로 준** `subject.revision`/`subject.hash`에 묶는다(`reviewer_subject_mismatch`/`reviewer_subject_invalid`) — 본문 자기 주장만으로는 통과하지 않는다. `buildReviewPrompt`와 **모든 caller/mock**(`sessionRunner.ts`·`sessionRunner.test.ts`·`mission.test.ts`·`parallelMission.test.ts`)을 새 스키마로 갱신했다. 리비전 증거: `reviewer.test.ts` focused **14/14**(중복 종료 2 · 펜스 주입 2 · 중복·모순 5케이스 · 대상 신원 4케이스) + mutation(중복 섹션 거부 제거 → 1건 실패 / 공용 소비자의 중복 종료 거부 제거 → 5건 실패)  **2차 reopen 사유(독립 리뷰 A5a/P1)**: 그 판도 파서가 열려 있었다 — ⓐ 대상 신원을 섹션 전체 문자열의 `includes`로 봐서 **라벨 뒤바뀜 · 접두/접미 · "다른 대상 + 기대값 언급"** 이 통과했고 ⓑ 펜스 파서가 **여는 길이를 잊어** 3-백틱 줄이 4-백틱 블록을 닫아 블록 안의 가짜 `## Verdict: pass`가 본문으로 새어 나올 수 있었고 ⓒ findings 섹션의 **형식을 벗어난 비공백 줄을 조용히 무시**해서 `- 없음` + 불릿 없는 `P1: 승인 우회`가 함께 통과했다. **fix(2차 리비전 `55b488f`)**: 대상 섹션은 비공백 줄이 **정확히 `- revision:` 1개 · `- hash:` 1개**이고 두 값이 호출자 기대값과 **완전 일치**여야 한다(중복 라벨·미상 줄 거부). 펜스는 **문자와 여는 길이**를 기억해 같은 문자 · 여는 길이 이상 · 뒤 공백만인 줄로만 닫는다(틸드 동등). findings의 미상 비공백 줄은 **거부**하고 항목 본문은 비어 있지 않고 `MAX_FINDING_CHARS`(1000) 이하여야 하며, 필수 heading은 각 1회 + **정확한 순서**다. 경계 밖 오류(`start` · `events()` · 스트림 소비 · `stop`)는 전부 `reviewer_provider_failed`로 접힌다(A5b). 증거: `reviewer.test.ts` **19/19**(신규 5건 — 라벨 11케이스 · 펜스 3변형 · findings 5케이스 · heading 순서 · 임의 코드 7케이스) + mutation 7종 전부 kill·원복 | **fixed (2026-07-28, M5b 2차 리비전 `55b488f`)** |
 | `B-9` | **B (P1)** | **codex JSONL payload 필드명·semantics를 provider live 경로로 확인하지 않았다.** supervisor 실측은 **플래그 파싱까지**이고(`B-6` fixed), 이벤트 필드(`thread_id` 등)는 별칭을 받아 두었을 뿐이다. 이름이 다르면 세션 id·usage가 비고 resume이 막힌다(성공으로 오인되지는 않는다 — `missing_session_id`가 실패다) | 중간 — alpha CLI | provider 1개(fail closed 방향) | 중 — 확인 없이 live를 켜면 첫 실행이 전부 실패로 낭비된다 | 소(live 1회 캡처 + fixture 갱신) | **첫 live 실행 착수 전(하드 게이트).** **M5b 갱신**: M5b offline slice는 live를 켜지 않았으므로(실제 Codex 추론 0) 트리거는 소진되지 않았고 **M5c/M5d의 live runner 착수 시점으로 그대로 이월**된다 | 사용자 + live를 켜는 구현 세션(M5c) | `codexStreamParser.ts` 상단 주석 · `B-6` 증거란 | open |
 | `C-18` | C (P2) | **no-progress deadline · wall-clock deadline · cancellation/descendant 정리가 없다.** provider는 `stop()`으로 SIGTERM만 보내고 자손 소멸을 확인하지 않는다. §M5 "bridge 실행 요건"의 나머지 절반이다 | 중간(실제 live 세션에서) | 세션 1건이 오래 매달릴 수 있다(상태 오염은 아님 — 결과는 여전히 1건) | 중 — live 운영 전에는 필요하다 | 중 | **M5c live runner/lifecycle 도입 시**(M5b offline slice는 프로세스 수명을 손대지 않았다 — controller 주석이 명시적으로 M5c로 넘긴다) | **M5c 구현 세션** | `CodexCliProvider.stop()` · 로드맵 §10 M5 목표 · `stableController.ts` 머리말 "이 범위가 아닌 것(M5c/M5d)" | open |
 | `C-19` | C (P2) | **`--output-schema`를 넘겨도 응답 본문을 schema로 검증하지 않는다.** provider는 최종 agent message 텍스트를 그대로 `result.text`로 준다(호출자가 파싱). **M5b 갱신**: controller는 provider 본문을 durable state로 옮기지 않으므로(bounded 안정 summary만 기록) 이 항목은 여전히 M5c 범위이고, `B-8`이 닫힌 지금 **reviewer 판정 자체는 헤더·verdict 계약으로 검증된다**(schema 검증과는 별개다) | 중간 | 구조화 결과 1건의 형태 오류가 호출자에게 넘어간다 | 낮음 — 검증기를 나중에 얹으면 된다(기존 수동 closed validator 방식) | 소~중 | **reviewer 결과를 kernel state로 옮기기 시작할 때(M5c)** | **M5c 구현 세션** | `codexStreamParser` `lastMessage` · M5a focused "구조화 최종 출력" · M5b `reviewer.ts` verdict 게이트 | open |
@@ -1600,6 +1609,19 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 
 > **`C-17`·`C-18`·`C-19`·`C-22`·`C-24`·`C-26`은 리비전이 손대지 않았다 — 전부 기존 M5c 트리거로 open이다.**
 > 리비전 세션은 이들을 fixed로 주장하지 않는다.
+
+##### M5b 2차 리비전 신규 유예 (2026-07-28)
+
+> **1차 리비전의 "A/P1 5건 전부 fixed · 리뷰 finding 전부 closed" 서술은 과장이었다.** 2차 독립 리뷰가
+> 같은 다섯 자리에서 **A=5**를 다시 냈다(A1 재읽기/재진입 · A2 위조 가능 brand · A3 실패 turn 예산 누락 ·
+> A5a 파서 허위 승인 · A5b 열린 오류 taxonomy). 2차 리비전 `55b488f`가 그 다섯을 닫았고 **A4는 유지**했다.
+> **지금 상태도 "self-approved"가 아니다 — 독립 재리뷰가 다음 게이트다.**
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-29` | C (P3) | **handoff 산출물의 중첩 schema는 복사·freeze만 되고 closed 검증은 top-level까지다.** `sealHandoff`는 `handoff`와 `request`의 **미상 top-level 필드**를 거부하지만 `spec`(`SessionSpec`) 내부 필드와 `outputs[]` 항목의 **여분 key**는 거부하지 않는다(형태만 본다). 지금은 위험이 bounded다 — `assertReadOnlySpec`이 권한을 넓히는 알려진 필드를 전부 막고, provider는 **봉인 해석값으로만** argv를 만들며, 여분 key는 어디에도 쓰이지 않는다 | 낮음 — 여분 key를 읽는 소비자가 없다 | handoff 1건의 미래 필드 오타·오해(권한 확대 아님) | 낮음 — 구조화 필드를 도입할 때 같이 닫으면 된다 | 소~중(closed validator를 중첩까지) | **M5c에서 handoff/실행 요청을 구조화 필드로 바꿀 때**(= `B-10` 타입 있는 집행과 같은 승인 범위) | M5c 구현 세션 | 2차 리뷰 잔여 · `stableController.ts` `sealHandoff`/`HANDOFF_KEYS`/`REQUEST_KEYS` · focused "[M5b] A1: handoff 산출물은 closed 검증을 지난다" | open |
+| `C-30` | C (P3) | **controller의 중복 종료·결과 부재·이벤트 상한 방어는 지금 받아들이는 유일한 provider로는 도달할 수 없다.** A2 이후 bridge는 실제 `CodexCliProvider`만 받고, 그 파서가 이미 invocation당 종료를 **1건으로 정규화**한다(중복·모순 종료는 `isError` 1건이 된다). 따라서 controller 층의 `provider_duplicate_terminal`/`provider_no_result`/`provider_stream_unbounded`는 **미래 provider용 defense in depth**이고 end-to-end 경로가 없다 | 확실(설계상) | 없음(현재) — 미래 provider 배선 시 회귀 감지력 | 낮음 — 방어를 지우지 않는 한 위험이 아니다 | 소(새 provider를 붙일 때 e2e 회귀 추가) | **M5c에서 두 번째 실행 provider(Claude/edit 가능)를 bridge에 붙일 때** | M5c 구현 세션 | 2차 리비전 세션 · focused "[M5b] A5: controller 계약 — 종료는 정확히 1건…"(공용 소비자를 **controller가 실제로 쓰는 `CONTROLLER_TERMINAL_CODES`** 로 직접 단정) + "[M5b] A5: codex 파서가 중복·모순 종료를 완료로 만들지 않는다"(실제 provider 경로) | open |
+| `C-31` | C (P3) | **controller 테스트가 provider 내부 상태 두 곳을 white-box로 관측한다**: 세션 map(`sessions` — "닫혔는가")과 `spawnFn`(경계 오류 주입). provider를 감싸거나 subclass하면 A2 증명을 통과하지 못하므로 **의도한 절충**이지만, provider 내부 이름이 바뀌면 그 관측이 조용히 무의미해질 수 있다(테스트는 계속 통과한다) | 낮~중 — provider 리팩터 시 | 테스트 관측력 2건(production 동작 무관) | 낮음 | 소(provider가 정리 결과를 관측 가능한 형태로 내놓게 하거나 — `B-13`이 어차피 그 방향이다) | **`B-13`(durable 완료 전 provider 정리 확인)을 구현할 때 같이** | M5c 구현 세션 | 2차 리비전 세션 · `stableController.test.ts` `CodexHarness`/`ObservedSessions` | open |
 
 > **`C-20` 철회(2026-07-27, fresh Codex 리뷰 P2/C).** M5a가 등록했던 `C-20`("kernel 만료가 여전히 `>`")은
 > 기존 `C-17`과 **같은 항목의 중복 등록**이었다. 중복을 지우고 **`C-17` 하나만** 만료 경계 항목으로 남긴다.
@@ -1745,16 +1767,24 @@ spawn까지 no-await)은 **그대로 유효**하고 이번에도 보존했다. �
 > 기록**이며 현행 판정이 아니다(이력으로 보존한다). 승인된 것은 **M5a slice뿐이고 M5 전체는 여전히
 > 미완료**다 — 전체 suite 1회와 live acceptance는 그대로 최종 M5 handoff에 남는다.
 
-#### M5b — stable controller bridge (offline) · **1차 리비전 완료 / 독립 재리뷰·승인 대기 / live 미검증**
+#### M5b — stable controller bridge (offline) · **2차 리비전 완료 / 독립 재리뷰·승인 대기 / live 미검증**
 
-**상태(2026-07-27): M5b는 offline 구현 + 1차 리비전만 끝났다. 독립 재리뷰를 아직 받지 않았고 M5 전체도
+**상태(2026-07-28): M5b는 offline 구현 + 리비전 2회만 끝났다. 독립 재리뷰를 아직 받지 않았고 M5 전체도
 미완료다.** 승인된 M5a HEAD `409dee2` 위에서 격리 worktree `/private/tmp/solo-founder-harness-m5b` ·
 branch `work/m5b-stable-controller`로 작업했다. 로컬 커밋뿐이고 원격 push/PR/merge는 0이다.
 
 - `1a94261` — `feat(v3-m5b): stable controller bridge + close B-8/C-16/C-21/C-25/C-27`
 - `42777d9` — `docs(v3-m5b): mark pre-durable pointer revalidation as a redundant defense`
 - `6bc390d` — `fix(v3-m5b): seal construction authority, read-only bridge, per-call budget/pointer gates, single terminal`
-  (**1차 리비전** — 독립 fresh Codex 리뷰 REVISE의 A/P1 5건. 아래 별도 절.)
+  (**1차 리비전** — 1차 독립 fresh Codex 리뷰 REVISE의 A/P1 5건. 아래 별도 절.)
+- `ac827bf` — `docs(v3-m5b): record independent REVISE …`
+- `55b488f` — `fix(v3-m5b): 봉인 단일 읽기 · 위조 불가 read-only 증명 · 실패 turn 회계 · 닫힌 리뷰/오류 taxonomy`
+  (**2차 리비전** — 2차 독립 fresh Codex 리뷰 REVISE의 A=5. 아래 별도 절.)
+
+> **정정: "리뷰 finding 전부 closed"는 1차 리비전 시점에 사실이 아니었다.** 2차 독립 리뷰가 **같은 다섯
+> 자리에서 A=5**를 다시 냈다. 아래 "M5b 1차 리비전" 절의 fixed 판정 중 **A1·A2·A3·A5는 부분적이었고**
+> `B-8`도 다시 열렸다. 현행 사실은 **"M5b 2차 리비전"** 절이며, 충돌하면 그 절이 우선한다.
+> **A4(포인터 재검증)만 2차 리뷰에서도 유지됐다.**
 
 > **아래 "범위"·"검증 실측" 문단은 `1a94261`+`42777d9` 시점의 dated 기록이다.** 독립 리뷰가 그중
 > **봉인 · 정책 집행 · usage · "전이 0"** 서술을 반박했다. 정정판은 **"M5b 1차 리비전"** 절에 있고,
@@ -1898,6 +1928,63 @@ fixed로 주장하지 않는다**.
 게이트다 — 위 fixed 판정 전부가 재확인 대상) · 전체 suite 1회 · live · M5c(`B-10`~`B-13` · `C-17`·`C-18`·
 `C-19`·`C-22`·`C-24`·`C-26` · autopilot CLI · pause/recovery) · M5d(offline self-hosting acceptance).
 **M5 전체는 미완료다.**
+
+> **후속(2026-07-28): 위 "fixed" 여섯 판정 중 다섯이 부분적이었다.** 2차 독립 리뷰가 A1·A2·A3·A5를
+> 다시 열었다(A4만 유지). 아래 절이 현행이다.
+
+#### M5b 2차 리비전 (2026-07-28, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰 → **REVISE, A=5**)
+
+같은 다섯 자리를 다시 봤고 **전부 "고쳤다고 적은 곳이 여전히 열려 있었다"** 는 형태였다. 이번 리비전
+`55b488f`가 그 다섯을 닫았고 **A4(포인터 재검증)는 손대지 않고 유지**했다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| A1 | **A (P1)** | **생성 authority가 여전히 재읽기·재진입 가능했다.** `captureKernel`이 대부분은 bind했지만 `scheduleReady`/`startScheduledBatch`는 **호출 시점에 caller 소유 property를 다시 읽는 wrapper**였다. 생성자 검증도 `typeof k[m] === "function"`으로 본 **뒤** `k.m.bind(k)`로 다시 읽었으므로, 교대 getter/proxy면 "검사한 함수"와 "실행하는 함수"가 갈렸다(그리고 pin은 둘 다 두 번째 값이라 통과했다). 재진입 `nowMs`는 pin 통과 **뒤** 메서드를 갈아끼워 교체본을 실행시킬 수 있었다 | **fixed** — caller 소유 property(kernel·provider·handoff·경로·시계·`provider.id`)를 생성자에서 **지역 변수로 정확히 한 번** 읽고, 검증·봉인·실행·pin 기준을 전부 **그 값**으로 한다. `captureMethods`가 메서드를 한 번 읽어 그 값을 검증하고 **그 값을 bind**한다 → 재읽기 wrapper가 남아 있지 않다. 회귀: **재진입 시계**가 게이트 통과 뒤 `scheduleReady`/`startScheduledBatch`를 갈아끼워도 `patched === 0`이고 다음 게이트가 `controller_binding_drift`로 닫는다 · **교대 getter**(첫 읽기만 진짜)는 두 번째 값을 실행하지도 권위로 받아들이지도 않는다 |
+| A2 | **A (P1)** | **read-only provider 권위가 호출자 위조 가능이었다.** `READ_ONLY_EXECUTION_CONTRACT`가 `types.ts`에서 **공개 export** 됐으므로 같은 프로세스의 아무 provider나 import해 자기에게 달 수 있었다 — 집행이 아니라 자기 신고였고, 그때의 "production 경로" 테스트는 **brand가 붙어 있다**는 것만 증명했다 | **fixed(범위는 정직하게 좁게)** — 공개 brand를 **제거**하고 `codexCliProvider.ts`에 **모듈 사설 `WeakSet`** 을 뒀다. 등록 경로는 `CodexCliProvider` 생성자 하나뿐이고, 밖으로 나가는 것은 판정 함수 `attestReadOnlyCodexProvider` 하나다(**발급기·토큰·임의 provider를 증명하는 factory는 내보내지 않는다**). 판정 = WeakSet + `prototype` 동일성 + 4개 메서드 **함수 신원**이고, 통과하면 **그 한 번의 읽기 결과**를 돌려주어 A1의 재읽기 창도 열지 않는다. `CodexCliProvider.prototype`은 얼려 인스턴스 대입 자체가 던지게 했다. 거부 회귀: property/심볼 복사 · `Object.create`/`setPrototypeOf` 위조 · subclass(**override 유무 무관**) · 인스턴스 메서드 override · `Proxy` wrapper · 임의 scripted provider · "증명 표면이 늘지 않았다"(모듈 export 감사). **production 경로 회귀**: 실제 `CodexCliProvider` + **주입 spawn seam**으로 controller가 끝까지 전진한다(live codex/claude·네트워크·자식 프로세스 0). **주장 범위**: 같은 프로세스에서 *공개 API만으로는* 못 들어온다 — **OS 샌드박스 격리가 아니다** |
+| A3 | **A (P1)** | **실패한 terminal의 usage가 전역 예산에서 빠지지 않았다.** 공용 소비자가 `result.isError`에서 **먼저 던졌으므로** controller의 `applyTurn`이 돌지 않았다 → 토큰을 태운 실패 turn 뒤에도 예산이 그대로였고 다음 task가 시작됐다 | **fixed** — `consumeExactlyOneTerminal`이 종료 1건을 확정한 뒤 **`isError`를 해석하기 전에** `onTerminal`을 **정확히 한 번** 부르고 controller가 거기서 bounded usage를 회계한다. A4(정확히 1건 · 종료 뒤 이벤트 거부 · bounded · 닫힌 taxonomy)는 그대로다. 회귀: 실패 turn 5토큰이 상한 5를 소진 → 다음 task는 `budget_tokens_exhausted` · turn 0 · provider 호출 1회뿐이고 다음 advance도 차단 / 실패(5) + 성공(5) = **정확히 10**(이중 회계 없음) |
+| A5a | **A (P1)** | **리뷰 파서가 허위 승인을 계속 받았다.** 대상 신원을 `includes`로 봐서 라벨 뒤바뀜·접두/접미·"다른 대상 + 기대값 언급"이 통과했고, 펜스가 **여는 길이를 잊어** 3-백틱이 4-백틱 블록을 닫았으며(가짜 `## Verdict: pass` 노출), findings의 미상 비공백 줄을 조용히 무시해 `- 없음` + `P1: 승인 우회`가 함께 통과했다 | **fixed** — 대상 섹션은 비공백 줄이 **정확히 `- revision:` 1개 · `- hash:` 1개**이고 값이 기대값과 **완전 일치**여야 한다(중복 라벨·미상 줄·한 줄 두 값 거부). 펜스는 **문자 + 여는 길이**를 기억하고 같은 문자·여는 길이 이상·뒤 공백만인 줄로만 닫는다(정보 문자열이 붙으면 닫는 펜스가 아니다 · 틸드 동등). findings의 미상 비공백 줄은 **거부**하고 항목 본문은 nonempty·`MAX_FINDING_CHARS` 이하다. 필수 heading은 각 1회 + **정확한 순서**다. `B-8`을 **세 번째 증거로** 다시 닫았다 |
+| A5b | **A (P1)** | **임의 provider/reviewer 오류 코드가 닫힌 taxonomy를 빠져나갔다.** `consumeExactlyOneTerminal`이 "문자열 `code`를 가진 Error"면 무엇이든 통과시켰다 → provider가 `code: "result_accepted"`를 달고 던지는 것만으로 **성공처럼 보이는 marker를 단 실패 outcome**을 만들 수 있었다(M5c 분기가 그 marker를 읽는다) | **fixed** — 공용 소비자는 **자기가 만든 오류만**(참조 동일성) 통과시키고 나머지는 전부 `codes.streamFailed`다(`throw null`도 안전하게 접힌다). controller는 handoff·`start`·`send`·`events()`를 각각 `handoff_failed`/`provider_start_failed`/`provider_send_failed`/`provider_stream_failed`로 접고, reviewer는 전부 `reviewer_provider_failed`다. `finally`의 `stop()` **동기 throw**도 삼켜 확정된 결과를 덮지 않는다. kernel(SoR) 코드는 권위이므로 그대로 올라온다 |
+| A4 | **(유지)** | 1차 리비전이 닫은 "포인터를 경계 await 뒤 · provider 호출 직전에 재검증" + "종료는 정확히 1건" 계약 | **그대로 유지** — 실패 결과 처리만 바꿨고(A3) 정확히 1건 · 종료 뒤 이벤트 거부 · bounded event · 결정론적 taxonomy는 회귀로 계속 고정된다 |
+
+**신규 유예(§9.1 "M5b 2차 리비전 신규 유예" 표)**: `C-29`(중첩 handoff schema가 복사·freeze만 되고 closed
+검증은 top-level까지 — 기한 **M5c 구조화 필드**) · `C-30`(중복 종료·결과 부재 방어가 codex 경로로는 도달
+불가 — 기한 **M5c 두 번째 provider 배선**) · `C-31`(테스트가 provider 내부 2곳을 white-box 관측 — 기한
+**`B-13` 구현 시**). **`C-2`는 트리거가 M5b에서 이미 발화했던 overdue 항목으로 이번에 닫았다**(진입점 5개 전수 명시).
+`C-17`·`C-18`·`C-19`·`C-22`·`C-24`·`C-26`은 **손대지 않았고 fixed로 주장하지 않는다.**
+
+**확정 기한(변경 없음 — 다시 명시)**: `B-7` **첫 live 전** · `B-9` **첫 live 전** · `B-10` **M5c에서
+Claude/edit 가능 provider를 켜기 전** · `B-11` **M5c autopilot/무인 advance 착수 전** · `B-12` **자동
+재시작/resume 도입 전, 늦어도 M5c** · `B-13` **live 프로세스를 띄우는 provider 배선 전** ·
+`C-12`(→B(P1)) **M5c autopilot 착수 전**.
+
+**검증 실측(offline, 2026-07-28 — 2차 리비전 세션의 자기보고. 독립 리뷰어가 재실행한 것이 아니다)**
+
+- 파일 단독 `npx tsx --test`: `stableController.test.ts` **42/42**(36 → 42) · `reviewer.test.ts`
+  **19/19**(14 → 19) · `suiteExclusiveLock.test.ts` **75/75**(`C-2` 주석 수정 확인).
+- `npm run test:exec` **306/306**(295 → 306).
+- 권위·타이밍 경계를 건드렸으므로 **권위/타이밍 부분집합을 직렬 3회**:
+  `stableController` + `codexCliProvider` + `executionBoundary` + `orchestrationKernel` + `reviewer`
+  = **206/206**, 3회 모두 동일.
+- `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 시 `git status` 변화 0) ·
+  `git diff --check` clean · `node_modules` stage 0.
+- **비공허성(mutation) 16종 — 전부 죽었고 전부 원문 그대로 원복**(runner는 레포 밖 로직으로 원본 문자열을
+  복원하고 매 케이스 `restored=true`를 확인했다. 종료 후 `git status`에 임시 파일 0):
+  A1 bind 제거→재읽기 wrapper **1건** · A1 단일 읽기 제거(pin 기준을 두 번째 읽기로) **1건** ·
+  A2 WeakSet 검사 제거 **1건** · A2 prototype 검사 제거 **1건** · A2 메서드 신원 검사 제거 **1건** ·
+  A2 `Object.freeze(prototype)` 제거 **1건** · A3 usage 회계를 `isError` 뒤로 **2건** ·
+  A5a 펜스 길이·정보문자열 검사 제거 **1건** · A5a 대상 완전 일치 → `includes` **1건** ·
+  A5a 대상 미상 줄 무시 **1건** · A5a findings 미상 줄 무시 **1건** · A5a findings 본문 상한·nonempty 제거 **1건** ·
+  A5a heading 순서 검사 제거 **1건** · A5b 공용 소비자 코드 passthrough 복원 **2건** ·
+  A5b 경계 오류 passthrough **2건** · A5b reviewer `events()` 래핑 제거 **1건**.
+  (초기 1회차에서 **A2 prototype 검사 제거가 살아남았다** — 회귀가 *override하는* subclass만 봤기 때문이다.
+  **override 없는 subclass** 케이스를 추가해 kill했다. 이 이력을 지우지 않고 남긴다.)
+- **미실행**: `npm test` 전체 · `test:core` · `scripts/acceptance.sh` 전체 · stress · live · MCP ·
+  실제 Codex/Claude 추론 · 원격 push/PR/merge. 전체 suite 1회는 **최종 M5 handoff(M5d 이후) 직렬 1회**로
+  그대로 예약돼 있다.
+
+**이 리비전 이후에도 아닌 것**: **독립 재리뷰·승인** — 다음 fresh Codex `gpt-5.6-sol` xhigh read-only
+리뷰가 게이트이고 **위 fixed 판정 전부가 재확인 대상**이다. 이 세션은 스스로를 승인하지 않는다.
+전체 suite 1회 · live · M5c · M5d는 그대로 남아 있고 **M5 전체는 미완료다.**
 
 ### M6 — Hierarchical Orchestrator + Fresh Context Rotation
 

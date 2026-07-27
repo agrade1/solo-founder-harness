@@ -1,5 +1,73 @@
 # WORKLOG.md
 
+## 2026-07-28 (V3 **M5b 2차 리비전 — 독립 Codex 재리뷰 REVISE(A=5): 재읽기 가능한 authority · 위조 가능한 read-only brand · 실패 turn 예산 누락 · 파서 허위 승인 · 열린 오류 taxonomy** · **독립 재리뷰 대기 · M5 미완료**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
+시작 HEAD `ac827bf`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가
+미상속). amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · 패키지 설치 · 의존성/lockfile 변경 ·
+MCP · **live Codex/Claude provider 추론** · secret 사용 · deploy · DB · production · live billing **없음**.
+`node_modules`(supervisor symlink)는 **stage하지 않았다**. Ponytail(full).
+
+> **정정 — 이전 세션의 과장.** 1차 리비전 기록은 "A/P1 5건 전부 fixed"라고 적었다. **사실이 아니었다.**
+> 2차 독립 리뷰가 **같은 다섯 자리에서 A=5**를 다시 냈고, 그중 넷은 "고쳤다고 적은 코드가 여전히 열려
+> 있었다"였다. **A4(포인터 재검증)만 유지**됐다. 아래가 현행 사실이다.
+
+- **리비전 커밋 `55b488f`** — `fix(v3-m5b): 봉인 단일 읽기 · 위조 불가 read-only 증명 · 실패 turn 회계 ·
+  닫힌 리뷰/오류 taxonomy`. + 이 docs 커밋.
+- **A1 — 생성 권위를 정확히 한 번 읽는다.** `captureKernel`의 `scheduleReady`/`startScheduledBatch`는
+  **호출 시점에 caller 소유 property를 다시 읽는 wrapper**였고, 생성자 검증도 `typeof k[m]`으로 본 **뒤**
+  `k.m.bind(k)`로 다시 읽었다 → 교대 getter/proxy면 검사한 함수와 실행하는 함수가 갈렸고, **재진입
+  `nowMs`** 가 pin 통과 뒤 메서드를 갈아끼우면 그 교체본이 실행됐다. 이제 caller property를 지역 변수로
+  **한 번만** 읽고 그 값을 검증·bind·pin 기준으로 쓴다(`captureMethods`). 회귀 2건: 재진입 시계 ·
+  교대 getter — 둘 다 "교체본 실행 0 + `controller_binding_drift`"를 단정한다.
+- **A2 — read-only 권위를 위조 불가로.** `READ_ONLY_EXECUTION_CONTRACT`가 **공개 export** 였으므로 같은
+  프로세스의 아무 provider나 import해 달 수 있었다(자기 신고였다). 공개 brand를 **제거**하고
+  `codexCliProvider.ts`에 **모듈 사설 WeakSet**을 뒀다 — 등록은 `CodexCliProvider` 생성자 하나,
+  밖으로 나가는 것은 판정 함수 `attestReadOnlyCodexProvider` 하나뿐이다(**발급기·토큰·임의 provider factory
+  없음**). 판정 = WeakSet + prototype 동일성 + 메서드 함수 신원이고, prototype은 얼렸다.
+  **거부**: 심볼/property 복사 · prototype 위조·`setPrototypeOf` · subclass(override 유무 무관) ·
+  인스턴스 override · `Proxy` wrapper · 임의 scripted provider.
+  그 결과 **controller 테스트의 provider를 흉내에서 진짜 `CodexCliProvider` + 주입 spawn seam으로 바꿨다**
+  (live codex/claude·네트워크·자식 프로세스 0 — `FakeChild`는 in-process다). 관측은 자식이 받은
+  argv·cwd·env·stdin으로 한다. **주장 범위는 좁다**: 같은 프로세스에서 *공개 API만으로는* 못 들어온다는
+  것이지 OS 샌드박스가 아니다.
+- **A3 — 실패한 turn의 usage도 예산에서 뺀다.** 공용 소비자가 `isError`에서 **먼저 던져서** 회계가 건너뛰어졌다.
+  이제 종료 1건 확정 뒤 **성공/실패 해석 전에** `onTerminal`을 정확히 한 번 부른다. 회귀 2건:
+  실패 turn이 상한을 소진 → 다음 task는 provider 호출 0 · `budget_tokens_exhausted` / 실패+성공 = 정확히 10(이중 회계 0).
+- **A5a — 리뷰 파서의 허위 승인 경로.** 대상 신원 `includes`(라벨 뒤바뀜·접두/접미·"다른 대상 + 기대값 언급"
+  통과) · 펜스가 **여는 길이를 잊어** 3-백틱이 4-백틱 블록을 닫음(가짜 `## Verdict: pass` 노출) ·
+  findings의 미상 비공백 줄 무시(`- 없음` + `P1: 승인 우회`). 전부 닫았다: 정확·유일·한 줄 라벨 + 완전 일치 /
+  문자+길이 있는 펜스(틸드 동등 · 정보 문자열이 붙으면 닫는 펜스가 아니다) / 미상 줄 거부 + 본문
+  nonempty·bounded / heading **순서**까지 계약. **`B-8` 세 번째 close.**
+- **A5b — 열린 오류 taxonomy.** `consumeExactlyOneTerminal`이 "문자열 `code`를 가진 Error"면 전부
+  통과시켰다 → provider가 `result_accepted`를 달고 던지면 **성공처럼 보이는 marker를 단 실패**가 됐다.
+  이제 소비자는 **자기가 만든 오류만** 통과시키고(참조 동일성 · `throw null`도 안전), controller는
+  handoff·start·send·events를 `handoff_failed`/`provider_start_failed`/`provider_send_failed`/
+  `provider_stream_failed`로, reviewer는 전부 `reviewer_provider_failed`로 접는다.
+  `finally`의 `stop()` 동기 throw도 삼킨다.
+- **`C-2` 닫음(overdue였다)**: 트리거("production 파일을 여는 다음 승인 범위")는 **M5b에서 이미 발화**했는데
+  1차 리비전이 처리하지 않았다. `scripts/lib/fixture-config.mjs` 주석이 진입점 **5개 전수**를 적도록 고치고
+  `suiteExclusiveLock.test.ts` **75/75**로 소스 감사 계약을 확인했다.
+- **신규 유예**: `C-29`(중첩 handoff schema closed 검증 — **M5c 구조화 필드**) · `C-30`(중복 종료 방어가
+  codex 경로로 도달 불가 — **M5c 두 번째 provider 배선**) · `C-31`(테스트가 provider 내부 2곳 white-box
+  관측 — **`B-13` 구현 시**). 세 항목 모두 대장 전 필드(심각도·확률·영향 반경·유예 비용·수정 공수·기한·
+  담당·증거·상태)를 채웠다. `C-12`의 **낡은 C 행은 superseded**로 표기해 독립적으로 열려 있지 않게 했다.
+- **확정 기한(다시 명시)**: `B-7` 첫 live 전 · `B-9` 첫 live 전 · `B-10` M5c Claude/edit provider 전 ·
+  `B-11` M5c autopilot/무인 advance 전 · `B-12` 자동 재시작/resume 전(늦어도 M5c) ·
+  `B-13` live 프로세스를 띄우는 provider 배선 전 · `C-12`(→B) M5c autopilot 전.
+- **검증(이 세션이 실제로 돌린 명령 — 자기보고, 독립 재실행 아님)**: 파일 단독 `stableController`
+  **42/42**(36 → 42) · `reviewer` **19/19**(14 → 19) · `suiteExclusiveLock` **75/75**.
+  `npm run test:exec` **306/306**(295 → 306). 권위·타이밍 경계를 건드렸으므로 **권위/타이밍 부분집합
+  206건(controller·codex·boundary·kernel·reviewer)을 직렬 3회 → 3회 모두 206/206**.
+  `npx tsc --noEmit` 0 · `npm run build` PASS(dist parity) · `git diff --check` clean · `node_modules` stage 0.
+- **mutation 16종 전부 kill · 전부 원문 그대로 원복**(runner가 매 케이스 `restored=true`를 확인했고
+  종료 후 임시 파일 0). **1회차에 A2 prototype 검사 제거가 살아남았다** — 회귀가 *override하는* subclass만
+  봤기 때문이다. **override 없는 subclass** 케이스를 추가해 kill했고 이 이력을 지우지 않는다.
+- **아직 아닌 것**: **독립 재리뷰·승인** — supervisor의 다음 fresh Codex `gpt-5.6-sol` xhigh read-only
+  리뷰가 게이트이고 **위 fixed 판정 전부가 재확인 대상**이다. 이 세션은 스스로를 승인하지 않는다.
+  **`npm test` 전체 미실행**(최종 M5d handoff 직렬 1회 예약) · `test:core` · `acceptance.sh` 전체 ·
+  stress · live · MCP · 실제 추론 미실행. **M5 전체는 미완료다.**
+
 ## 2026-07-27 (V3 **M5b 1차 리비전 — 독립 Codex 리뷰 REVISE: 봉인되지 않은 authority · 집행 아닌 정책 · 소진된 예산으로 다음 task 시작 · 낡은 포인터 · 중복 종료/섹션(`B-8` reopen)** · **독립 재리뷰 대기 · M5 미완료**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
