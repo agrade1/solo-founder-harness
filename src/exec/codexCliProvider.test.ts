@@ -1472,3 +1472,310 @@ test("[M5a] fake CLI resume 왕복: 두 번째 invocation argv가 실측 배치�
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
+
+// ── invocation 소유권 · 상태 기계 (4차 리비전 · A/P1) ──────────────────────
+//
+// 타이밍 추측 없이 "claim 이후 · spawn 이전" 창을 여는 방법: **실행 경계의 비동기 git 조회를
+// 결정론적으로 일시 정지**시킨다. 신뢰된 git 래퍼가 `arm` 파일이 있고 `release` 파일이 없는 동안
+// 블록한 뒤 실제 git에 위임하므로, 테스트가 창을 원하는 만큼 열어 둘 수 있다.
+// (provider에는 테스트 전용 비동기 hook을 **더하지 않았다** — 주입 표면 0.)
+
+interface GateGit {
+  path: string;
+  arm(): void;
+  release(): void;
+  cleanup(): void;
+}
+
+function gateGit(): GateGit {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-gategit-")));
+  const armFile = join(dir, "arm");
+  const relFile = join(dir, "release");
+  const script = join(dir, "git");
+  // 자식은 PATH를 물려받지 않으므로 shebang은 현재 node의 **절대경로**다.
+  // 확장자가 없어 CJS로 로드된다(tmpdir에 package.json이 없다).
+  writeFileSync(
+    script,
+    [
+      `#!${process.execPath}`,
+      'const { existsSync } = require("node:fs");',
+      'const { spawnSync } = require("node:child_process");',
+      "const idle = new Int32Array(new SharedArrayBuffer(4));",
+      `while (existsSync(${JSON.stringify(armFile)}) && !existsSync(${JSON.stringify(relFile)})) {`,
+      "  Atomics.wait(idle, 0, 0, 5);",
+      "}",
+      `const r = spawnSync(${JSON.stringify(TRUSTED_GIT)}, process.argv.slice(2), { stdio: "inherit" });`,
+      "process.exit(r.status === null || r.status === undefined ? 1 : r.status);",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return {
+    path: script,
+    arm: () => writeFileSync(armFile, ""),
+    release: () => writeFileSync(relFile, ""),
+    cleanup: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}
+
+/** 게이트된 git으로 resume 가능한 세션을 준비한다(spawn은 여전히 주입 seam이다). */
+async function gatedHarness(): Promise<Harness & { gate: GateGit; spec: SessionSpec }> {
+  const gate = gateGit();
+  const h = await harness((c) => c.finish(OK_STREAM, 0), { gitExecutablePath: gate.path });
+  const cleanup = h.cleanup;
+  return {
+    ...h,
+    gate,
+    spec: specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } }),
+    cleanup: () => {
+      cleanup();
+      gate.cleanup();
+    },
+  };
+}
+
+test("[M5a] 겹친 send: 소유권 claim은 동기다 — 둘째는 spawn·큐·child 교체 없이 거부된다", async () => {
+  const h = await gatedHarness();
+  try {
+    const handle = await h.provider.start(h.spec, "1차");
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
+    assert.equal(h.calls.length, 1);
+
+    h.gate.arm();
+    const owner = h.provider.send(handle, "2차"); // 동기 prefix에서 claim → 경계 git에서 정지
+    const loser = h.provider.send(handle, "3차"); // 겹침 — 동기로 거부된다
+    assert.equal(await codeOfCall(() => loser), "codex_send_overlap");
+    assert.equal(h.calls.length, 1, "겹친 send가 프로세스를 띄웠다");
+
+    h.gate.release();
+    await owner;
+    assert.equal(h.calls.length, 2, "소유자 하나만 spawn한다(중복 resume 없음)");
+    assert.equal(h.calls[1].stdin, "2차", "패자의 프롬프트로 spawn했다");
+    assert.deepEqual(h.calls[1].args.slice(0, 7), ["exec", "--sandbox", "read-only", "--cd", h.repo.root, "resume", TID]);
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1, "스트림이 교차하거나 결과가 두 번 나왔다");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] stop은 child 없는 claim도 취소한다 — release 후에도 spawn 0, 세션 되살아나지 않음", async () => {
+  const h = await gatedHarness();
+  try {
+    const handle = await h.provider.start(h.spec, "1차");
+    await drain(h.provider.events(handle));
+    assert.equal(h.calls.length, 1);
+
+    h.gate.arm();
+    const pending = h.provider.send(handle, "2차"); // claim만 된 상태(child 없음)
+    await h.provider.stop(handle, "취소");
+    h.gate.release();
+
+    assert.equal(await codeOfCall(() => pending), "codex_invocation_cancelled");
+    assert.equal(h.calls.length, 1, "취소된 claim이 프로세스를 띄웠다");
+    assert.equal(await codeOfCall(() => h.provider.events(handle)), "codex_unknown_session", "세션이 되살아났다");
+    assert.equal(await codeOfCall(() => h.provider.send(handle, "3차")), "codex_unknown_session");
+    await h.provider.stop(handle, "멱등"); // 두 번째 stop은 조용히 통과한다
+    assert.equal(h.calls.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] start 진행 중 send는 spawn 없이 거부된다(claim이 첫 await 전에 잡힌다)", async () => {
+  const h = await gatedHarness();
+  try {
+    h.gate.arm();
+    const starting = h.provider.start(h.spec, "1차");
+    assert.equal(await codeOfCall(() => h.provider.send({ sessionId: "s1", spec: h.spec }, "겹침")), "codex_send_overlap");
+    assert.equal(h.calls.length, 0, "start가 아직 spawn 전인데 send가 프로세스를 띄웠다");
+    h.gate.release();
+    const handle = await starting;
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].stdin, "1차");
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] stop 뒤 교체 세션: 취소된 invocation의 정리가 교체본을 지우거나 바꾸지 못한다", async () => {
+  const h = await gatedHarness();
+  try {
+    h.gate.arm();
+    const stale = h.provider.start(h.spec, "낡은 start"); // claim 후 경계에서 정지
+    await h.provider.stop({ sessionId: "s1", spec: h.spec }, "취소");
+    // 같은 harness 세션 id로 **새 generation**을 만든다(낡은 것은 아직 살아 있다).
+    const fresh = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+    const replacement = h.provider.start(fresh, "교체 세션");
+    h.gate.release();
+
+    assert.equal(await codeOfCall(() => stale), "codex_invocation_cancelled");
+    const handle = await replacement;
+    assert.equal(h.calls.length, 1, "취소된 start는 spawn 0이고 교체 세션만 뜬다");
+    assert.equal(h.calls[0].stdin, "교체 세션");
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1, "교체 세션의 큐가 살아 있다");
+    // 교체 세션은 여전히 정상 동작한다(낡은 정리가 상태를 망가뜨리지 않았다).
+    await h.provider.send(handle, "교체 세션 2차");
+    assert.equal(h.calls.length, 2);
+    assert.equal(resultsOf(await drain(h.provider.events(handle))).length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+// ── turn 사이 spec/opts 드리프트 (재개된 C-23) ─────────────────────────────
+
+interface DriftOpts {
+  executablePath: string;
+  gitExecutablePath: string;
+}
+
+/**
+ * 1차 turn을 완료시킨 뒤 **`send` 전에** spec/opts를 바꾸고, 그 값이 새 baseline이 되지 않음을 본다.
+ * `mutate`는 되돌리는 함수를 반환한다 — 되돌리면 다시 정상 동작해야 한다(claim 누수 없음).
+ */
+async function betweenTurnDrift(
+  mutate: (spec: SessionSpec, opts: DriftOpts) => () => void,
+): Promise<{ code: string; atFail: number; leaked: number; recovered: number; total: number }> {
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
+    // provider가 들고 있는 **바로 그 opts 객체**를 변조 대상으로 쓴다.
+    const opts = {
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      gitExecutablePath: TRUSTED_GIT,
+      spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+    };
+    const provider = new CodexCliProvider(opts);
+    const handle = await provider.start(spec, "1차");
+    assert.equal(resultsOf(await drain(provider.events(handle))).length, 1, "1차 turn이 완료되지 않았다");
+
+    const revert = mutate(spec, opts);
+    const code = await codeOfCall(() => provider.send(handle, "2차"));
+    const atFail = calls.length;
+    // 이전 완료 큐가 교체됐다면 여기서 가짜 종료 결과가 나온다(0이어야 한다).
+    const leaked = (await drain(provider.events(handle))).length;
+
+    revert();
+    await provider.send(handle, "2차(정상)");
+    const recovered = resultsOf(await drain(provider.events(handle))).length;
+    return { code, atFail, leaked, recovered, total: calls.length };
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+}
+
+test("[M5a] C-23: turn 사이 spec/opts 변조는 새 baseline이 되지 못한다(봉인값 대조)", async () => {
+  const cases: Array<[string, (s: SessionSpec, o: DriftOpts) => () => void, string]> = [
+    [
+      "model",
+      (s) => {
+        const prev = s.model;
+        s.model = "evil-model";
+        return () => {
+          s.model = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "outputSchema",
+      (s) => {
+        s.codex!.outputSchemaPath = "/tmp/evil-schema.json";
+        return () => {
+          delete s.codex!.outputSchemaPath;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "cwd",
+      (s) => {
+        const prev = s.cwd;
+        s.cwd = "/private/tmp";
+        return () => {
+          s.cwd = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "codexHome",
+      (s) => {
+        const prev = s.codex!.codexHome;
+        s.codex!.codexHome = "/private/tmp";
+        return () => {
+          s.codex!.codexHome = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "ephemeral",
+      (s) => {
+        s.codex!.ephemeral = true;
+        return () => {
+          s.codex!.ephemeral = false;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "sessionId",
+      (s) => {
+        const prev = s.sessionId;
+        s.sessionId = "다른-세션";
+        return () => {
+          s.sessionId = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "codexBinaryPath",
+      (_s, o) => {
+        const prev = o.executablePath;
+        o.executablePath = "/private/tmp";
+        return () => {
+          o.executablePath = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    [
+      "gitExecutablePath",
+      (_s, o) => {
+        const prev = o.gitExecutablePath;
+        o.gitExecutablePath = "/private/tmp";
+        return () => {
+          o.gitExecutablePath = prev;
+        };
+      },
+      "codex_spec_mutated",
+    ],
+    // 계약 자체를 어기는 변조는 재해석 단계에서 먼저 걸린다(둘 다 fail closed).
+    [
+      "sandbox",
+      (s) => {
+        s.codex!.sandbox = "workspace-write" as never;
+        return () => {
+          s.codex!.sandbox = "read-only";
+        };
+      },
+      "codex_sandbox_forbidden",
+    ],
+  ];
+  for (const [label, mutate, expected] of cases) {
+    const r = await betweenTurnDrift(mutate);
+    assert.equal(r.code, expected, label);
+    assert.equal(r.atFail, 1, `${label}: 변조된 값으로 두 번째 프로세스가 떴다`);
+    assert.equal(r.leaked, 0, `${label}: 이전 완료 큐가 교체됐다`);
+    assert.equal(r.recovered, 1, `${label}: 되돌린 뒤 정상 turn이 돌지 않았다(claim 누수)`);
+    assert.equal(r.total, 2, `${label}: spawn 총계가 1차 + 복구 turn 2건이 아니다`);
+  }
+});

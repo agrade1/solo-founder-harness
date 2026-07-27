@@ -4,7 +4,20 @@
  * 기존 `ExecutionProvider` 계약을 그대로 구현한다 — **두 번째 오케스트레이터·상태 시스템을 만들지 않는다.**
  * 세션 수명 모델은 `ClaudeCliProvider`와 같다(호출당 프로세스 1개, 후속 turn은 resume).
  *
- * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3차 리비전 반영):
+ * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3·4차 리비전 반영):
+ * - **invocation 소유권은 첫 await 전에 동기로 claim한다(4차 리비전 · A/P1).** 이전 판은 `send`가 상태를
+ *   본 뒤 `invoke`가 **비동기 경계 검증이 끝난 다음에야** 세션을 점유했다 → 겹친 두 `send`가 둘 다 통과해
+ *   같은 UUID·`CODEX_HOME`으로 **중복 resume 프로세스**를 띄우고 큐·child를 서로 덮어쓸 수 있었고,
+ *   그 창에서 `stop`이 세션을 지워도 뒤늦게 `running`을 발행하며 **추적되지 않는 프로세스**가 뜰 수 있었다.
+ *   이제 ⓐ `starting` 상태 + **단조 증가 generation 토큰**을 동기로 발급하고 ⓑ 겹친 호출은 spawn·발행
+ *   없이 `codex_send_overlap`으로 즉시 거부되며 ⓒ **모든 await 뒤와 spawn 직전 동기 게이트에서** 세션 존재 ·
+ *   같은 state 객체 · 같은 generation · 미취소를 다시 확인하고 ⓓ `stop`은 **child가 없어도** claim을 취소한다.
+ *   낡은 invocation의 정리는 **교체 세션을 지우거나 바꾸지 못한다**(소유권 확인 후에만 상태를 만진다).
+ * - **큐·`running` 발행은 동기 게이트 뒤다(4차 리비전).** 발행 전 실패는 이전 invocation의 완료된 큐·
+ *   `child`·세션 신원을 **하나도 건드리지 않는다**(거부는 rejected promise로만 나간다).
+ * - **유효 실행 옵션은 `start()`에서 봉인한다(재개된 `C-23`).** 호출자 `spec`/`opts`는 매 invocation
+ *   동기 진입과 spawn 직전 게이트에서 **필드 단위로 대조**만 되고, 드리프트는 `codex_spec_mutated`
+ *   하나로 fail closed다. turn 사이 변조가 **새 baseline이 되지 않는다**.
  * - **실행 파일은 신뢰된 명시 절대경로 하나뿐이다.** 이 모듈은 `process.env`를 **읽지 않는다** —
  *   PATH·`HARNESS_CODEX_BIN` 같은 상속 환경으로 실행 대상을 고르지 않는다(임의 실행 파일 seam 제거).
  *   경로를 고르는 책임은 **controller(호출자)** 에 있고, 여기서는 검증만 한다.
@@ -46,6 +59,7 @@ import { homedir } from "node:os";
 import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { AsyncEventQueue } from "./eventQueue.js";
+import { validateApprovalManifest } from "./approvalManifest.js";
 import { CODEX_SESSION_ID_RE, CodexJsonlParser } from "./codexStreamParser.js";
 import {
   verifyExecutionBoundary,
@@ -264,13 +278,103 @@ function sharedFlags(o: ResolvedCodexOptions): string[] {
 }
 
 /**
+ * `start()`에서 **봉인**하는 유효 실행 옵션 스냅샷 (대장 `C-23` — 재개 후 최종 해소).
+ *
+ * 이전 판은 호출자 소유 `spec`을 그대로 들고 있다가 **매 turn `resolveCodexOptions(state.spec)`을 다시**
+ * 해석했다 → 첫 turn이 끝난 뒤 `send` 전에 호출자가 객체를 바꾸면 그 값이 **새 baseline**이 됐고
+ * (같은 invocation 안의 변조만 스냅샷과 대조됐다) model·`--output-schema`·cwd·홈·실행 파일이
+ * 승인된 계약 밖에서 정해질 수 있었다. 이제 provider의 권위는 **이 봉인값 하나**이고, 호출자가 계속
+ * 들고 있는 `spec`/`opts` 객체는 **매 invocation 동기 진입 + spawn 직전 동기 게이트에서 필드 단위로
+ * 대조**만 된다. 어긋나면 항상 같은 marker인 **`codex_spec_mutated`** 로 fail closed다
+ * (필드 이름만 알리고 경로·내용은 오류에 싣지 않는다 — 기존 sanitize 정책 그대로).
+ *
+ * 비교는 **명시 필드 목록**으로 한다(`JSON.stringify` 키 순서에 의존하지 않는다).
+ */
+export interface SealedCodexSpec extends ResolvedCodexOptions {
+  /** 봉인된 harness 세션 id — map 키·소유권 판정의 근거다. */
+  sessionId: string;
+  cwd: string;
+  executablePath: string;
+  gitExecutablePath: string;
+  controllerRepoRoot: string;
+  /** 승인 manifest의 신원 · TTL · 상한. 승인 자체가 turn 사이에 바뀌면 프로세스를 띄우지 않는다. */
+  milestoneId: string;
+  approvedCommit: string;
+  expiresAt: string;
+  maxSessions: number;
+  maxTokens: number | null;
+  maxElapsedMs: number;
+}
+
+/** 봉인·대조 대상 필드 **전부**. 새 유효 옵션을 더하면 이 목록에도 넣는다. */
+const SEALED_KEYS = [
+  "sessionId",
+  "model",
+  "reasoningEffort",
+  "sandbox",
+  "codexHome",
+  "outputSchemaPath",
+  "ephemeral",
+  "cwd",
+  "executablePath",
+  "gitExecutablePath",
+  "controllerRepoRoot",
+  "milestoneId",
+  "approvedCommit",
+  "expiresAt",
+  "maxSessions",
+  "maxTokens",
+  "maxElapsedMs",
+] as const;
+
+/**
+ * 현재 외부에서 도달 가능한 값들로 봉인 스냅샷을 만든다(freeze — 내부에서 다시 바뀌지 않는다).
+ * 계약 자체를 어기는 값은 여기서 **먼저** 거부된다(`resolveCodexOptions` · manifest closed 검증).
+ */
+function sealCodexSpec(spec: SessionSpec, opts: CodexCliProviderOpts): SealedCodexSpec {
+  const o = resolveCodexOptions(spec);
+  const m = validateApprovalManifest(opts.manifest);
+  return Object.freeze({
+    ...o,
+    sessionId: spec.sessionId,
+    cwd: spec.cwd,
+    // 실행 파일·git·controller 경로는 여기서 검증하지 않는다(각자의 신뢰 검증이 자기 코드로 보고한다).
+    // 봉인은 "turn 사이에 바뀌었는가"만 판정한다.
+    executablePath: opts.executablePath,
+    gitExecutablePath: opts.gitExecutablePath,
+    controllerRepoRoot: opts.controllerRepoRoot,
+    milestoneId: m.milestoneId,
+    approvedCommit: m.approvedCommit,
+    expiresAt: m.expiresAt,
+    maxSessions: m.maxSessions,
+    maxTokens: m.maxTokens,
+    maxElapsedMs: m.maxElapsedMs,
+  });
+}
+
+/**
+ * 봉인값 대조. **모든 invocation의 동기 진입**(turn 간 변조)과 **spawn 직전 동기 게이트**
+ * (같은 invocation 안의 변조)에서 각각 부른다. 드리프트 marker는 `codex_spec_mutated` 하나다.
+ */
+function assertNoSpecDrift(sealed: SealedCodexSpec, spec: SessionSpec, opts: CodexCliProviderOpts): void {
+  const now = sealCodexSpec(spec, opts);
+  for (const k of SEALED_KEYS) {
+    if (now[k] !== sealed[k]) fail("codex_spec_mutated", `봉인된 실행 옵션이 start 이후 바뀌었다: ${k}`);
+  }
+}
+
+/**
  * argv 컴파일. `resumeSessionId`가 있으면 **resume 배치**를 쓴다:
  * `--sandbox`/`--cd`는 `resume` **앞**(부모 위치)에 두고, resume-local 지원 플래그만 뒤에 둔다.
  * resume id는 **정규 UUID**여야 한다 — 검증되지 않은 텍스트로 인자를 만들지 않는다(`--last` 금지).
  * 순수 함수 — 테스트가 argv를 정확히 고정한다.
  */
 export function compileCodexArgs(spec: SessionSpec, cwd: string, resumeSessionId?: string): string[] {
-  const o = resolveCodexOptions(spec);
+  return compileResolvedArgs(resolveCodexOptions(spec), cwd, resumeSessionId);
+}
+
+/** provider 내부 경로: **봉인된 해석값**으로만 argv를 만든다(호출자 객체를 다시 읽지 않는다). */
+function compileResolvedArgs(o: ResolvedCodexOptions, cwd: string, resumeSessionId?: string): string[] {
   requireAbsolute(cwd, "실행 cwd");
   const sandboxAndCd = ["--sandbox", o.sandbox, "--cd", cwd];
 
@@ -295,20 +399,38 @@ export function compileCodexEnv(codexHome: string): NodeJS.ProcessEnv {
   return { CODEX_HOME: codexHome };
 }
 
-/** invocation 수명 상태. `running` 중 send·중복 start는 거부된다. */
-type SessionStatus = "idle" | "running" | "stopped";
+/**
+ * invocation 수명 상태.
+ * - `starting`: **소유권을 claim했고 아직 spawn 전**이다(첫 await 전에 동기로 들어온다).
+ *   이 상태에서도 겹친 send·중복 start는 거부되고, `stop`은 child가 없어도 claim을 취소할 수 있다.
+ * - `running`: 프로세스가 떴고 큐가 발행됐다.
+ */
+type SessionStatus = "idle" | "starting" | "running" | "stopped";
 
 interface CodexState {
-  spec: SessionSpec;
+  /** 봉인된 harness 세션 id. map 키·소유권 판정은 호출자 객체가 아니라 이 값으로 한다. */
+  readonly sessionId: string;
+  /** **provider의 유일한 권위**(`C-23`). 호출자 `spec`/`opts`는 대조 대상일 뿐이다. */
+  readonly sealed: SealedCodexSpec;
+  /** 호출자가 준 spec 참조 — **대조 전용**이다. 이 객체의 값으로 실행하지 않는다. */
+  readonly spec: SessionSpec;
   queue: AsyncEventQueue<SessionEvent>;
   child: ChildProcess | null;
   status: SessionStatus;
   /** 현재 invocation이 종료 결과를 낼 때까지의 promise(멱등 settle). */
   settled: Promise<void>;
+  /**
+   * 현재 invocation을 소유한 generation(provider 전역 **단조 증가**, 재사용 없음. 0 = 소유자 없음).
+   * `start`/`send`는 **첫 await 전에 동기로** 이 토큰을 발급받고, 이후 **모든 await 뒤와 spawn 직전
+   * 동기 게이트에서** "아직 내 것인가"를 다시 확인한다 → 겹친 호출은 spawn 0으로 거부되고,
+   * `stop`·세션 교체 뒤의 낡은 invocation은 발행·spawn을 하지 못한다.
+   */
+  gen: number;
+  /** `stop`이 claim을 무효화했다. child가 아직 없어도 발행·spawn을 막는다. */
+  cancelled: boolean;
   codexSessionId: string;
   /** 첫 프로세스를 띄운 뒤 고정되는 `CODEX_HOME` 소유 신원. 이후 invocation은 같은 홈만 쓴다. */
   homeId: CodexHomeIdentity | null;
-  ephemeral: boolean;
   /** 비가역 세션 오염(세션 신원 충돌 등) — 이후 send를 받지 않는다. */
   poisoned: string;
 }
@@ -317,6 +439,8 @@ export class CodexCliProvider implements ExecutionProvider {
   readonly id = "codex-cli";
   private readonly sessions = new Map<string, CodexState>();
   private readonly spawnFn: SpawnFn;
+  /** invocation generation 발급기 — 단조 증가하며 재사용되지 않는다. */
+  private nextGen = 1;
 
   constructor(private readonly opts: CodexCliProviderOpts) {
     this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
@@ -327,35 +451,44 @@ export class CodexCliProvider implements ExecutionProvider {
       fail("codex_config_invalid", "spec.sessionId가 필요하다");
     }
     if (this.sessions.has(spec.sessionId)) fail("codex_session_exists", `harness 세션 id가 이미 있다: ${spec.sessionId}`);
-    const o = resolveCodexOptions(spec); // 설정 거부는 상태를 만들기 전에 일어난다
+    // 설정·승인 거부는 상태를 만들기 전에 일어난다. 통과하면 그 해석값이 이 세션의 **봉인 baseline**이다.
+    const sealed = sealCodexSpec(spec, this.opts);
     const state: CodexState = {
+      sessionId: spec.sessionId,
+      sealed,
       spec,
       queue: new AsyncEventQueue<SessionEvent>(),
       child: null,
       status: "idle",
       settled: Promise.resolve(),
+      gen: 0,
+      cancelled: false,
       codexSessionId: "",
       homeId: null,
-      ephemeral: o.ephemeral,
       poisoned: "",
     };
-    this.sessions.set(spec.sessionId, state);
+    this.sessions.set(state.sessionId, state);
     try {
       await this.invoke(state, undefined, initialPrompt);
     } catch (err) {
-      this.sessions.delete(spec.sessionId); // 실패한 start는 상태를 남기지 않는다
+      // 실패한 start는 상태를 남기지 않는다 — 단 **내 세션일 때만** 지운다.
+      // stop 뒤에 같은 id로 만들어진 교체 세션을 낡은 invocation의 정리가 지우면 안 된다.
+      if (this.sessions.get(state.sessionId) === state) this.sessions.delete(state.sessionId);
       throw err;
     }
-    return { sessionId: spec.sessionId, spec };
+    return { sessionId: state.sessionId, spec };
   }
 
   /** 후속 지시 = `codex exec … resume <관측된 UUID>`. 관측 전·ephemeral·실행 중·오염 세션은 거부한다. */
   async send(handle: SessionHandle, message: string): Promise<void> {
     const state = this.requireState(handle);
     if (state.poisoned) fail(state.poisoned, "세션이 프로토콜 위반으로 닫혔다");
-    if (state.status === "running") fail("codex_send_overlap", "이전 invocation이 아직 실행 중이다");
+    // `starting`(claim 후 spawn 전)도 실행 중으로 본다 — 겹친 send는 **동기로** 거부되고 spawn 0이다.
+    if (state.status === "starting" || state.status === "running") {
+      fail("codex_send_overlap", "이전 invocation이 아직 실행 중이다");
+    }
     if (state.status === "stopped") fail("codex_session_stopped", "중지된 세션에는 보낼 수 없다");
-    if (state.ephemeral) {
+    if (state.sealed.ephemeral) {
       fail("codex_resume_unavailable", "ephemeral 세션은 resume할 수 없다(resume이 필요하면 ephemeral:false로 시작한다)");
     }
     if (!CODEX_SESSION_ID_RE.test(state.codexSessionId)) {
@@ -370,19 +503,23 @@ export class CodexCliProvider implements ExecutionProvider {
 
   /**
    * 세션 중지. **종료 결과가 정착하기 전에 큐를 닫거나 상태를 지우지 않는다.**
+   * **child가 아직 없는 claim(`starting`)도 여기서 취소된다** — 그 invocation은 경계 작업이 끝나도
+   * 발행·spawn을 하지 못하고 거부된다(예전에는 그 창에서 추적되지 않는 프로세스가 뜰 수 있었다).
    * 프로세스 그룹·TERM→유예→KILL·자손 정리는 이 범위가 아니다(대장 `C-18`, M5c).
    * ponytail: 여기서는 SIGTERM 1회 + settle 대기까지만 — 강제 종료 사다리는 M5c에서 붙인다.
    */
   async stop(handle: SessionHandle, _reason: string): Promise<void> {
     const state = this.sessions.get(handle.sessionId);
-    if (!state) return;
+    if (!state) return; // 멱등
+    state.cancelled = true; // child가 없어도 진행 중 claim을 무효화한다
     if (state.status === "running") {
       state.child?.kill("SIGTERM");
       await state.settled; // 종료 result 1건이 큐에 들어간 뒤에만 정리한다
     }
     state.status = "stopped";
     state.queue.close();
-    this.sessions.delete(handle.sessionId);
+    // 그 사이 같은 id로 만들어진 **교체 세션은 지우지 않는다**(stop 멱등 + 교체 안전).
+    if (this.sessions.get(state.sessionId) === state) this.sessions.delete(state.sessionId);
   }
 
   private requireState(handle: SessionHandle): CodexState {
@@ -392,42 +529,109 @@ export class CodexCliProvider implements ExecutionProvider {
   }
 
   /**
-   * 한 invocation. 순서는 **사전 검증 → 비동기 경계 확인 → 큐 발행 → 동기 pre-spawn 게이트 → spawn**이다.
-   * 검증 단계에서 실패하면 기존 큐·상태는 그대로다(오염된 열린 큐를 남기지 않는다).
+   * **첫 await 전 동기 소유권 claim.** generation을 발급하고 상태를 `starting`으로 올린다 →
+   * 이 순간부터 겹친 start/send는 `codex_send_overlap`으로 즉시 거부되고(spawn 0, 큐·child 교체 없음),
+   * `stop`은 child가 없어도 이 claim을 취소할 수 있다.
+   */
+  private claim(state: CodexState): number {
+    if (state.status !== "idle") fail("codex_send_overlap", "이 세션에는 이미 진행 중인 invocation이 있다");
+    state.cancelled = false;
+    state.gen = this.nextGen++;
+    state.status = "starting";
+    return state.gen;
+  }
+
+  /** 아직 이 invocation이 소유자인가: 세션 존재 · **같은 state 객체** · 같은 generation · 미취소 · 미중지. */
+  private owns(state: CodexState, gen: number): boolean {
+    return (
+      this.sessions.get(state.sessionId) === state && state.gen === gen && !state.cancelled && state.status !== "stopped"
+    );
+  }
+
+  private assertOwned(state: CodexState, gen: number): void {
+    if (!this.owns(state, gen)) fail("codex_invocation_cancelled", "이 invocation은 무효화됐다(stop 또는 세션 교체)");
+  }
+
+  /**
+   * 한 invocation. **소유권 claim이 첫 문장이고, 발행은 마지막이다**:
+   * `동기 claim → 동기 사전 검증 → 비동기 경계 확인 → 동기 pre-spawn 게이트 → 큐/running 발행 → spawn`.
    *
-   * 사전 검증은 계약 위반을 **비동기 작업 전에** 걸러내기 위한 것이고, **신뢰 판정의 근거는 게이트다**:
-   * 홈·실행 파일·git·승인 커밋·만료·spec 스냅샷을 **await가 하나도 남지 않은 상태에서** 한 번에 다시 본다.
+   * 발행을 게이트 뒤로 옮긴 이유(독립 리뷰 A/P1): 예전 판은 게이트 **전에** 새 큐와 `running`을
+   * 발행했으므로 검증 실패가 **이전 invocation의 완료된 큐를 교체**하고 가짜 종료 결과를 하나 더 냈다
+   * (주석은 "기존 큐·상태는 그대로"라고 말했다 — 구현과 문서가 어긋났다). 이제 발행 전 실패는
+   * 큐·`child`·세션 신원을 **하나도 건드리지 않고** claim만 되돌린다(호출자는 rejected promise로 받는다).
+   * 발행 이후의 실패(동기 spawn 예외)만 그 invocation의 **bounded 스트림**을 종료 결과 1건으로 닫는다.
    */
   private async invoke(state: CodexState, resumeSessionId: string | undefined, prompt: string): Promise<void> {
+    // 프롬프트 계약 위반은 claim 전에 거부한다(세션 상태를 건드리지 않는다).
     if (typeof prompt !== "string" || prompt.length === 0) fail("codex_prompt_invalid", "프롬프트가 비어 있다");
     if (prompt.length > MAX_PROMPT_CHARS) fail("codex_prompt_too_long", `프롬프트는 ${MAX_PROMPT_CHARS}자 이하여야 한다`);
 
+    const gen = this.claim(state); // 첫 await 전 동기 claim — 겹친 호출은 여기서 갈린다
+    try {
+      await this.runInvocation(state, gen, resumeSessionId, prompt);
+    } catch (err) {
+      // 발행 전 실패는 **내 claim만** 되돌린다. 발행 뒤라면 `settle`이 이미 상태를 정리했고,
+      // 세션이 교체됐다면(`owns` false) 아무것도 건드리지 않는다.
+      if (state.status === "starting" && this.owns(state, gen)) state.status = "idle";
+      throw err;
+    }
+  }
+
+  /**
+   * claim된 invocation 본체. 사전 검증은 계약 위반을 **비동기 작업 전에** 걸러내기 위한 것이고,
+   * **신뢰 판정의 근거는 게이트다**: 소유권·봉인 spec·홈·실행 파일·git·승인 커밋·만료를
+   * **await가 하나도 남지 않은 상태에서** 한 번에 다시 본다.
+   */
+  private async runInvocation(
+    state: CodexState,
+    gen: number,
+    resumeSessionId: string | undefined,
+    prompt: string,
+  ): Promise<void> {
+    const s = state.sealed; // 권위는 봉인값이다 — 아래 어디서도 `state.spec`의 값으로 실행하지 않는다
     // ── 사전 검증(빠른 거부 + 신원 고정) ──────────────────────────────────
-    const o = resolveCodexOptions(state.spec);
+    // turn 사이 변조는 여기서 먼저 걸린다(`C-23`): 호출자 객체가 새 baseline이 되지 못한다.
+    assertNoSpecDrift(s, state.spec, this.opts);
     const homeExpect: CodexHomeExpectation = state.homeId
       ? { identity: state.homeId } // resume: 소유 홈(상태 있음이 정상)
       : { requireEmpty: true }; // 첫 invocation: 빈 홈
-    const preHome = verifyCodexHome(o.codexHome, homeExpect);
-    const preBin = verifyCodexExecutable(this.opts.executablePath);
-    // cwd 자체는 경계가 확인한 `targetRoot`만 쓰지만, 스냅샷에 넣어 변조를 조용히 넘기지 않는다.
-    const specCwd = state.spec.cwd;
+    const preHome = verifyCodexHome(s.codexHome, homeExpect);
+    const preBin = verifyCodexExecutable(s.executablePath);
 
     // 대장 `B-5`: 승인된 커밋이 controller/실행 checkout HEAD와 정확히 같을 때만 프로세스를 띄운다.
     const boundary: VerifiedExecutionBoundary = await verifyExecutionBoundary({
       manifest: this.opts.manifest,
-      controllerRepoRoot: this.opts.controllerRepoRoot,
-      targetWorktree: state.spec.cwd,
-      gitExecutablePath: this.opts.gitExecutablePath,
+      controllerRepoRoot: s.controllerRepoRoot,
+      targetWorktree: s.cwd,
+      gitExecutablePath: s.gitExecutablePath,
       // clock을 **함수로** 넘긴다 — 경계는 spawn 직전 재검증에서 만료를 다시 본다.
       nowMs: this.opts.nowMs,
     });
+    // await 직후 첫 문장: 그 사이 `stop`·세션 교체가 있었으면 발행·spawn 없이 끝난다.
+    this.assertOwned(state, gen);
 
     // cwd는 경계가 확인한 targetRoot만 쓴다(호출자 문자열 재사용 금지 — argv와 native cwd 모두).
     const cwd = boundary.targetRoot;
     // 파서에 **기대 세션 신원**을 준다: resume 스트림이 다른 thread를 내면 init·본문이 나가기 전에 봉인된다.
-    const parser = new CodexJsonlParser({ model: o.model, cwd, sandbox: o.sandbox, expectedSessionId: resumeSessionId });
+    const parser = new CodexJsonlParser({ model: s.model, cwd, sandbox: s.sandbox, expectedSessionId: resumeSessionId });
 
-    // 여기부터가 "발행" 구간이다 — 검증은 모두 끝났다.
+    // ── spawn 직전 동기 게이트 ────────────────────────────────────────────
+    // 여기부터 spawn까지 **await가 없다.** 비동기 경계 작업 중에 바뀔 수 있는 모든 신뢰 자산을
+    // 순서대로 다시 확인한다: ⓪ 소유권(stop·세션 교체) ① 봉인 spec 대조(호출자 객체 변조)
+    // ② 승인 만료·git 신원·checkout 신원·HEAD ③ `CODEX_HOME`(정규·비symlink·0700·사용자 홈 아님 +
+    // 고정 신원, 첫 invocation은 여전히 비어 있음) ④ codex 실행 파일(신뢰 조건 + 고정 신원 —
+    // 같은 권한의 다른 실행 파일 교체까지 거부).
+    // 남는 창은 syscall 몇 개 규모다(Node에 `fexecve`·디렉터리 fd 상대 실행이 없다) — 0이라고 주장하지 않는다.
+    this.assertOwned(state, gen);
+    assertNoSpecDrift(s, state.spec, this.opts);
+    boundary.revalidateSync();
+    const home = verifyCodexHome(s.codexHome, { ...homeExpect, identity: preHome.id });
+    const bin = verifyCodexExecutable(s.executablePath, preBin.id);
+    // argv는 **봉인값**으로 컴파일한다(중간에 바뀐 호출자 객체로 인자를 만들지 않는다).
+    const args = compileResolvedArgs(s, cwd, resumeSessionId);
+
+    // ── 발행: 검증과 동기 게이트가 전부 끝난 뒤에만 큐/`running`을 바꾼다 ──
     const queue = new AsyncEventQueue<SessionEvent>();
     let resolveSettled: () => void = () => undefined;
     const settledPromise = new Promise<void>((res) => (resolveSettled = res));
@@ -437,38 +641,18 @@ export class CodexCliProvider implements ExecutionProvider {
       settled = true;
       for (const e of parser.finish(exit)) queue.push(e);
       queue.close();
-      state.child = null;
-      state.status = state.status === "stopped" ? "stopped" : "idle";
+      // **내 generation일 때만** state를 건드린다 — 교체 세션·다음 invocation을 오염시키지 않는다.
+      if (this.sessions.get(state.sessionId) === state && state.gen === gen) {
+        state.child = null;
+        if (state.status !== "stopped") state.status = "idle";
+      }
       resolveSettled();
     };
 
+    this.assertOwned(state, gen); // 발행·spawn 직전 마지막 확인(여기서 spawn까지 await 없음)
     state.queue = queue;
     state.settled = settledPromise;
     state.status = "running";
-
-    // ── spawn 직전 동기 게이트 ────────────────────────────────────────────
-    // 여기부터 spawn까지 **await가 없다.** 비동기 경계 작업 중에 바뀔 수 있는 모든 신뢰 자산을
-    // 순서대로 다시 확인한다: ① spec 스냅샷(호출자 객체 변조) ② 승인 만료·git 신원·checkout 신원·HEAD
-    // ③ `CODEX_HOME`(정규·비symlink·0700·사용자 홈 아님 + 고정 신원, 첫 invocation은 여전히 비어 있음)
-    // ④ codex 실행 파일(신뢰 조건 + 고정 신원 — 같은 권한의 다른 실행 파일 교체까지 거부).
-    // 남는 창은 syscall 몇 개 규모다(Node에 `fexecve`·디렉터리 fd 상대 실행이 없다) — 0이라고 주장하지 않는다.
-    let home: { path: string; id: CodexHomeIdentity };
-    let bin: TrustedExecutable;
-    let args: string[];
-    try {
-      const now = resolveCodexOptions(state.spec);
-      if (JSON.stringify(now) !== JSON.stringify(o) || state.spec.cwd !== specCwd) {
-        fail("codex_spec_mutated", "spec 해석값이 검증 이후 바뀌었다(호출자 객체 변조)");
-      }
-      boundary.revalidateSync();
-      home = verifyCodexHome(o.codexHome, { ...homeExpect, identity: preHome.id });
-      bin = verifyCodexExecutable(this.opts.executablePath, preBin.id);
-      // argv는 스냅샷이 확인된 뒤에 컴파일한다(중간에 바뀐 spec으로 인자를 만들지 않는다).
-      args = compileCodexArgs(state.spec, cwd, resumeSessionId);
-    } catch (err) {
-      settle({ code: null, signal: null, stderr: "", spawnError: true });
-      throw err;
-    }
 
     let child: ChildProcess;
     try {
