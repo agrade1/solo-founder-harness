@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://solo-founder-harness/schemas/agent_message.schema.json",
   "title": "AgentMessageEnvelope",
-  "description": "V3 M4a — agent message envelope 계약(로드맵 §5.1). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/agentMessage.ts다(신규 검증 의존성 0). 두 정의의 핵심 동치(type enum · required · bounds · pattern)는 src/exec/orchestrationKernel.test.ts가 강제한다. 로드맵 §5.1의 전체 10종 type union 중 M4a가 구현한 것은 task_assignment/spawn_request/result/blocker 4종뿐이며 나머지는 schema와 런타임 모두 거부한다(후속 마일스톤에서 확장). Markdown body는 이 envelope와 함께 다니는 별도 문서이며 타입별 필수 heading은 messageBodyHeadings에 계약으로 적어 둔다.",
+  "description": "V3 M4a/M4c — agent message envelope 계약(로드맵 §5.1). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/agentMessage.ts다(신규 검증 의존성 0). 두 정의의 핵심 동치(type enum · required · bounds · pattern)는 src/exec/orchestrationKernel.test.ts가 강제한다. M4c에서 §5.1의 **10종 전부**를 구현했고 envelope 필드 집합은 M4a와 동일하다 — routing·권한은 envelope가 아니라 중앙 run state(message index의 routeToTaskId/acknowledgedAt)가 들고 간다. Markdown body는 이 envelope와 함께 다니는 별도 문서이며 타입별 필수 heading은 messageBodyHeadings에 계약으로 적어 둔다.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -28,13 +28,24 @@
     "taskId": { "$ref": "#/definitions/slug" },
     "parentTaskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
     "sender": {
-      "description": "task_assignment는 'orchestrator', 나머지 3종은 대상 task의 roleId. 방향 계약은 런타임 validator가 state와 대조해 강제한다(§5.3).",
+      "description": "중앙→agent 타입(task_assignment/review_request/revision_request/decision)은 'orchestrator', 나머지는 대상 task의 roleId. 방향 계약은 런타임 validator가 state와 대조해 강제한다(§5.3). sibling 전달도 예외가 아니다 — 발신 agent의 recipient는 언제나 'orchestrator'이고 실제 전달 대상은 중앙이 message index에 route로 남긴다.",
       "$ref": "#/definitions/slug"
     },
     "recipient": { "$ref": "#/definitions/slug" },
     "type": {
-      "description": "M4a 구현 범위 4종.",
-      "enum": ["task_assignment", "spawn_request", "result", "blocker"]
+      "description": "로드맵 §5.1의 10종 전부(M4c).",
+      "enum": [
+        "task_assignment",
+        "spawn_request",
+        "status_update",
+        "result",
+        "review_request",
+        "review_result",
+        "revision_request",
+        "blocker",
+        "decision_request",
+        "decision"
+      ]
     },
     "createdAt": { "$ref": "#/definitions/timestamp" },
     "dependsOn": {
@@ -90,10 +101,22 @@
       }
     },
     "messageBodyHeadings": {
-      "description": "타입별 human-readable Markdown body의 필수 h2 heading 계약(로드맵 §5.2). 런타임 validator는 이 heading이 전부 있고, 이 목록 밖의 h2가 없으며, 중복이 없고, body가 16384 바이트 이하일 것을 요구한다. JSON Schema는 Markdown 본문을 검증할 수 없으므로 여기엔 계약만 기록한다.",
+      "description": "타입별 human-readable Markdown body의 필수 h2 heading 계약(로드맵 §5.2). 런타임 validator는 이 heading이 전부 있고, 이 목록 밖의 h2가 없으며, 중복이 없고, body가 16384 바이트 이하일 것을 요구한다. JSON Schema는 Markdown 본문을 검증할 수 없으므로 여기엔 계약만 기록한다. task_assignment·spawn_request·result·review_result·blocker/decision_request(공유)는 §5.2가 지정한 heading 그대로이고, §5.2가 지정하지 않은 status_update·review_request·revision_request·decision은 M4c가 정한 최소 closed set(각 3개)이다.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["maxBodyBytes", "task_assignment", "spawn_request", "result", "blocker"],
+      "required": [
+        "maxBodyBytes",
+        "task_assignment",
+        "spawn_request",
+        "status_update",
+        "result",
+        "review_request",
+        "review_result",
+        "revision_request",
+        "blocker",
+        "decision_request",
+        "decision"
+      ],
       "properties": {
         "maxBodyBytes": { "const": 16384 },
         "task_assignment": {
@@ -138,7 +161,31 @@
             "Required Authority",
             "Safe Default While Waiting"
           ]
-        }
+        },
+        "decision_request": {
+          "description": "§5.2가 blocker와 같은 section을 지정한 타입.",
+          "const": [
+            "Blocking Condition",
+            "Evidence",
+            "Options and Trade-offs",
+            "Required Authority",
+            "Safe Default While Waiting"
+          ]
+        },
+        "review_result": {
+          "const": [
+            "Reviewed Revision and Hash",
+            "Findings (P0/P1/P2)",
+            "Reproduction or Evidence",
+            "Missing Tests",
+            "Contract Deviations",
+            "Verdict: pass | revise | block"
+          ]
+        },
+        "status_update": { "const": ["Current Status", "Progress Since Last Update", "Next Step"] },
+        "review_request": { "const": ["Review Target and Hash", "Review Scope", "Required Checks"] },
+        "revision_request": { "const": ["Findings to Address", "Required Changes", "Verification Required"] },
+        "decision": { "const": ["Decision", "Rationale", "Scope of Effect"] }
       }
     }
   }

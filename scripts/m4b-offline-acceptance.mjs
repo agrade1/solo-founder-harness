@@ -66,6 +66,27 @@ function makeClock() {
   return () => new Date(Date.UTC(2026, 6, 27, 0, 0, n++));
 }
 
+/**
+ * M4c부터 run은 §8 승인 manifest에 bind된다. 이 시나리오가 만드는(또는 거부를 확인하려는)
+ * root task를 전부 명시 승인해 둔다 — 승인 누락이 stale_writer·run_lock_held 판정을 가리지 않게 한다.
+ */
+const MANIFEST = {
+  milestoneId: MILESTONE,
+  approvedCommit: "b".repeat(40),
+  writableRoots: ["src"],
+  ownershipByTask: Object.fromEntries(
+    ["a-stress", "b-live", "c-docs", "d-first", "e-second", "f-third", "g-blocked", "g-unblocked"].map((id) => [id, ["src"]]),
+  ),
+  allowedCommands: ["npm test"],
+  allowedDependencies: [],
+  allowedNetworkDomains: [],
+  maxSessions: 4,
+  maxTokens: null,
+  maxElapsedMs: 3_600_000,
+  localMergeAllowed: false,
+  expiresAt: "2026-12-31T00:00:00.000Z",
+};
+
 function seed(taskId, roleId, resourceClasses = []) {
   return {
     taskId,
@@ -117,6 +138,7 @@ try {
     workspaceRoot: workspace,
     runId: RUN_ID,
     milestoneId: MILESTONE,
+    manifest: MANIFEST,
     clock: makeClock(),
   });
   kernel.createRootTask(seed("a-stress", "qa-security", [CLASS]));

@@ -194,6 +194,27 @@ if [ -d "outputs/orchestration" ]; then false; else true; fi
 check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
 
 echo ""
+echo "== Test 15: M4c 라우팅 · 메시지 10종 · 승인 manifest · specialist registry (offline) =="
+# 임시 workspace 전용. 상세 체크는 스크립트가 자체 출력한다(기존 Test 1~14 무변경).
+M4C_OUT="$(node scripts/m4c-offline-acceptance.mjs 2>&1)"
+M4C_RC=$?
+[ "$M4C_RC" -eq 0 ];                              check "M4c offline acceptance exit 0" $?
+echo "$M4C_OUT" | grep -q " FAIL=0";              check "M4c 내부 체크 전부 통과" $?
+echo "$M4C_OUT" | grep -q "중앙이 sibling inbox로 route"
+check "M4c 중앙 경유 sibling 전달 확인 출력" $?
+echo "$M4C_OUT" | grep -q "route_not_related";    check "M4c 무관한 수신자 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "ambiguous_recipient";  check "M4c 모호한 수신자 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "중앙 → fresh reviewer inbox"
+check "M4c reviewer 왕복 확인 출력" $?
+echo "$M4C_OUT" | grep -q "manifest_expired";     check "M4c 만료 승인 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "max_sessions_exceeded"; check "M4c maxSessions 초과 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "dependency_not_pinned"; check "M4c 미pin dependency 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "state_pre_m4c_unsupported"
+check "M4c pre-M4c state fail-closed 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

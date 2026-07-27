@@ -50,6 +50,7 @@ import {
   OrchestrationError,
   type OrchestrationRunState,
   type OrchestrationTask,
+  SUMMARY_REQUIRED,
   TASK_STATES,
   TRANSITION_REASONS,
   assertSha256,
@@ -61,6 +62,7 @@ import {
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
 import { validateArtifactPointer } from "./agentMessage.js";
+import { SPECIALIST_ROLES, assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 
 /** production 기본 root: `<workspace>/outputs/orchestration`. */
 export const ORCHESTRATION_ROOT = "outputs/orchestration";
@@ -213,6 +215,8 @@ export const MESSAGE_KEYS = [
   "bodyPath",
   "bodySha256",
   "summary",
+  "routeToTaskId",
+  "acknowledgedAt",
 ] as const;
 
 export const ARTIFACT_RECORD_KEYS = [
@@ -245,6 +249,7 @@ export const STATE_KEYS = [
   "schemaVersion",
   "runId",
   "milestoneId",
+  "manifest",
   "revision",
   "lastEventId",
   "lastEventHash",
@@ -269,7 +274,8 @@ function validateTask(raw: unknown): OrchestrationTask {
   closedKeys(o, TASK_KEYS, "task");
   return {
     taskId: assertSlug(o.taskId, "task.taskId"),
-    roleId: assertSlug(o.roleId, "task.roleId"),
+    // M4c — roleId는 여전히 slug지만 **7 specialist registry 소속**이어야 한다(하위 role 한 겹 허용).
+    roleId: assertRegistryRoleId(o.roleId, "task.roleId"),
     title: assertText(o.title, "task.title", LIMITS.maxTextLength),
     scope: assertText(o.scope, "task.scope", LIMITS.maxTextLength),
     ownership: normalizeOwnership(o.ownership, "task.ownership"),
@@ -301,9 +307,22 @@ function validateMessage(raw: unknown): MessageIndexEntry {
   if (bodyPath !== `messages/${messageId}.md`) {
     throw new OrchestrationError("invalid_state", `message.bodyPath는 messages/<messageId>.md여야 한다: ${bodyPath}`);
   }
+  const type = enumValue(o.type, AGENT_MESSAGE_TYPES, "message.type");
+  const summary = o.summary === null ? null : assertText(o.summary, "message.summary", LIMITS.maxSummaryLength);
+  if (SUMMARY_REQUIRED[type] && summary === null) {
+    throw new OrchestrationError("invalid_state", `message.summary는 ${type}에 필수다: ${messageId}`);
+  }
+  if (!SUMMARY_REQUIRED[type] && summary !== null) {
+    throw new OrchestrationError("invalid_state", `message.summary는 ${type}에 null이어야 한다: ${messageId}`);
+  }
+  const routeToTaskId = o.routeToTaskId === null ? null : assertSlug(o.routeToTaskId, "message.routeToTaskId");
+  const acknowledgedAt = o.acknowledgedAt === null ? null : assertTimestamp(o.acknowledgedAt, "message.acknowledgedAt");
+  if (routeToTaskId === null && acknowledgedAt !== null) {
+    throw new OrchestrationError("invalid_state", `전달 대상이 없는 메시지에 수령 시각이 있다: ${messageId}`);
+  }
   return {
     messageId,
-    type: enumValue(o.type, AGENT_MESSAGE_TYPES, "message.type"),
+    type,
     taskId: assertSlug(o.taskId, "message.taskId"),
     parentTaskId: o.parentTaskId === null ? null : assertSlug(o.parentTaskId, "message.parentTaskId"),
     sender: assertSlug(o.sender, "message.sender"),
@@ -314,7 +333,9 @@ function validateMessage(raw: unknown): MessageIndexEntry {
     supersedes: o.supersedes === null ? null : assertSlug(o.supersedes, "message.supersedes"),
     bodyPath,
     bodySha256: assertSha256(o.bodySha256, "message.bodySha256"),
-    summary: o.summary === null ? null : assertText(o.summary, "message.summary", LIMITS.maxSummaryLength),
+    summary,
+    routeToTaskId,
+    acknowledgedAt,
   };
 }
 
@@ -370,6 +391,14 @@ export function validateEvent(raw: unknown): OrchestrationEvent {
  */
 export function validateRunState(raw: unknown): OrchestrationRunState {
   const o = asObject(raw, "run_state");
+  // M4c 이전 state에는 승인 manifest가 없다. 기본값으로 채우면 그것이 곧 **조용한 자동 승인**이므로
+  // 채우지 않고 거부한다(마이그레이션 프레임워크도 만들지 않는다 — 새 run을 만든다).
+  if (!("manifest" in o)) {
+    throw new OrchestrationError(
+      "state_pre_m4c_unsupported",
+      "M4c 이전 orchestration state다(승인 manifest 없음). 자동 승인하지 않으며 새 run을 만들어야 한다",
+    );
+  }
   closedKeys(o, STATE_KEYS, "run_state");
   if (o.schemaVersion !== ORCHESTRATION_SCHEMA_VERSION) {
     throw new OrchestrationError("invalid_state", `run_state.schemaVersion은 "${ORCHESTRATION_SCHEMA_VERSION}"이어야 한다`);
@@ -381,10 +410,20 @@ export function validateRunState(raw: unknown): OrchestrationRunState {
     throw new OrchestrationError("task_limit_exceeded", `run당 task는 ${LIMITS.maxTasksPerRun}개 이하여야 한다`);
   }
 
+  const milestoneId = assertSlug(o.milestoneId, "run_state.milestoneId");
+  const manifest = validateApprovalManifest(o.manifest);
+  if (manifest.milestoneId !== milestoneId) {
+    throw new OrchestrationError(
+      "manifest_milestone_mismatch",
+      `manifest.milestoneId(${manifest.milestoneId})가 run(${milestoneId})과 다르다`,
+    );
+  }
+
   const state: OrchestrationRunState = {
     schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
     runId: assertSlug(o.runId, "run_state.runId"),
-    milestoneId: assertSlug(o.milestoneId, "run_state.milestoneId"),
+    milestoneId,
+    manifest,
     revision: boundedInt(o.revision, "run_state.revision", 1, 1_000_000),
     lastEventId: boundedInt(o.lastEventId, "run_state.lastEventId", 0, 1_000_000),
     lastEventHash: assertSha256(o.lastEventHash, "run_state.lastEventHash"),
@@ -448,9 +487,14 @@ export function assertReferentialIntegrity(state: OrchestrationRunState): void {
 
   assertNoDependencyCycle(state.tasks);
   assertExclusiveResourceClaims(state.tasks);
+  assertManifestOwnership(state);
+  assertSessionLimit(state);
 
   for (const m of state.messages) {
     if (!byId.has(m.taskId)) throw new OrchestrationError("unknown_task", `message ${m.messageId}의 taskId 미상: ${m.taskId}`);
+    if (m.routeToTaskId !== null && !byId.has(m.routeToTaskId)) {
+      throw new OrchestrationError("unknown_task", `message ${m.messageId}의 routeToTaskId 미상: ${m.routeToTaskId}`);
+    }
     if (m.supersedes !== null && !state.messages.some((x) => x.messageId === m.supersedes)) {
       throw new OrchestrationError("unknown_message", `message ${m.messageId}의 supersedes 미상: ${m.supersedes}`);
     }
@@ -474,6 +518,66 @@ export function assertReferentialIntegrity(state: OrchestrationRunState): void {
     if (!artifactIds.has(a.supersedes) || a.supersedes !== `${a.path}@${a.revision - 1}`) {
       throw new OrchestrationError("invalid_state", `artifact ${a.artifactId}의 supersedes가 직전 revision이 아니다: ${a.supersedes}`);
     }
+  }
+}
+
+/**
+ * M4c 핵심 불변식 ①: **모든 task의 ownership이 승인 범위 안이다.**
+ * ⓐ 어떤 task의 ownership도 manifest `writableRoots` 밖일 수 없다.
+ * ⓑ root/dependent task(중앙이 직접 만든 task)는 `ownershipByTask`에 **명시 승인**이 있어야 하고
+ *    그 범위 안이어야 한다.
+ * ⓒ child task는 **parent가 가진 ownership의 부분집합**만 위임받는다(권한 확대 금지).
+ *
+ * M4b의 자원 불변식과 같은 자리에 둔 이유도 같다 — 커밋 경로와 load가 **같은 검사 하나**를 지나므로
+ * 새 전이 경로나 손편집 state가 우회할 수 없다.
+ */
+export function assertManifestOwnership(state: OrchestrationRunState): void {
+  const manifest = state.manifest;
+  const byId = new Map(state.tasks.map((t) => [t.taskId, t]));
+  for (const t of state.tasks) {
+    for (const p of t.ownership) {
+      if (!manifest.writableRoots.some((root) => pathWithin(p, root))) {
+        throw new OrchestrationError(
+          "ownership_outside_writable_root",
+          `task ${t.taskId}의 ownership ${p}가 승인된 writableRoots 밖이다`,
+        );
+      }
+    }
+    if (t.parentTaskId === null) {
+      const approved = Object.prototype.hasOwnProperty.call(manifest.ownershipByTask, t.taskId)
+        ? manifest.ownershipByTask[t.taskId]
+        : undefined;
+      if (approved === undefined) {
+        throw new OrchestrationError("ownership_not_approved", `task ${t.taskId}의 ownership이 manifest에 승인되어 있지 않다`);
+      }
+      for (const p of t.ownership) {
+        if (!approved.some((a) => pathWithin(p, a))) {
+          throw new OrchestrationError("ownership_not_approved", `task ${t.taskId}의 ownership ${p}가 승인 범위 밖이다`);
+        }
+      }
+      continue;
+    }
+    const parent = byId.get(t.parentTaskId);
+    if (!parent) throw new OrchestrationError("unknown_parent", `task ${t.taskId}의 parent 미상: ${t.parentTaskId}`);
+    for (const p of t.ownership) {
+      if (!parent.ownership.some((a) => pathWithin(p, a))) {
+        throw new OrchestrationError(
+          "ownership_not_delegated",
+          `child ${t.taskId}의 ownership ${p}는 parent ${parent.taskId}가 가진 범위 밖이다`,
+        );
+      }
+    }
+  }
+}
+
+/** M4c 핵심 불변식 ②: 동시에 `running`인 task 수는 manifest `maxSessions`를 넘지 않는다. */
+export function assertSessionLimit(state: OrchestrationRunState): void {
+  const running = state.tasks.filter((t) => t.state === "running").length;
+  if (running > state.manifest.maxSessions) {
+    throw new OrchestrationError(
+      "max_sessions_exceeded",
+      `동시 running task ${running}건이 승인된 maxSessions(${state.manifest.maxSessions})를 넘는다`,
+    );
   }
 }
 
@@ -535,6 +639,19 @@ export function assertNoDependencyCycle(tasks: OrchestrationTask[]): void {
   }
 }
 
+/**
+ * M4c — 아직 수령되지 않은 전달 목록. **durable state에서만** 계산하므로 재시작 후에도 같은 순서다.
+ * 정렬은 `createdAt` → `messageId`(동시각 tie-break)이며 둘 다 state 안의 값이다.
+ * `taskId`를 주면 그 task의 inbox만 돌려준다.
+ */
+export function pendingDeliveries(state: OrchestrationRunState, taskId?: string): MessageIndexEntry[] {
+  return state.messages
+    .filter((m) => m.routeToTaskId !== null && m.acknowledgedAt === null && (taskId === undefined || m.routeToTaskId === taskId))
+    .sort((a, b) =>
+      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0,
+    );
+}
+
 // ── snapshot (파생물) ───────────────────────────────────────────────────────
 
 /**
@@ -554,6 +671,33 @@ export function renderSnapshot(state: OrchestrationRunState): string {
   lines.push(`- revision: ${state.revision}`);
   lines.push(`- lastEventId: ${state.lastEventId}`);
   lines.push(`- updatedAt: ${state.updatedAt}`);
+  lines.push("");
+
+  // 승인 envelope는 **bounded·비밀 아님**만 싣는다(경로·상한·만료). secret·토큰·자격증명은 계약에 없다.
+  const m = state.manifest;
+  lines.push("## Milestone Approval");
+  lines.push(`- milestone: ${m.milestoneId}`);
+  lines.push(`- approvedCommit: ${m.approvedCommit}`);
+  lines.push(`- writableRoots: ${m.writableRoots.join(", ")}`);
+  lines.push(`- maxSessions: ${m.maxSessions}`);
+  lines.push(`- maxTokens: ${m.maxTokens === null ? "(none)" : m.maxTokens}`);
+  lines.push(`- maxElapsedMs: ${m.maxElapsedMs}`);
+  lines.push(`- localMergeAllowed: ${m.localMergeAllowed} (기록 전용 — kernel은 git 조작을 하지 않는다)`);
+  lines.push(`- expiresAt: ${m.expiresAt}`);
+  lines.push(`- allowedCommands: ${m.allowedCommands.length > 0 ? m.allowedCommands.join(" | ") : "(none)"}`);
+  lines.push(
+    `- allowedDependencies: ${
+      m.allowedDependencies.length > 0 ? m.allowedDependencies.map((d) => `${d.name}@${d.version}`).join(", ") : "(none)"
+    }`,
+  );
+  lines.push(`- allowedNetworkDomains: ${m.allowedNetworkDomains.length > 0 ? m.allowedNetworkDomains.join(", ") : "(none)"}`);
+  for (const taskId of Object.keys(m.ownershipByTask).sort()) {
+    lines.push(`- ownership[${taskId}]: ${m.ownershipByTask[taskId].join(", ")}`);
+  }
+  lines.push("");
+
+  lines.push("## Specialist Registry");
+  for (const r of SPECIALIST_ROLES) lines.push(`- ${r.roleId} — ${r.title}`);
   lines.push("");
 
   lines.push("## Ready Tasks");
@@ -594,12 +738,22 @@ export function renderSnapshot(state: OrchestrationRunState): string {
 
   lines.push("## Messages");
   if (state.messages.length === 0) lines.push("- (none)");
-  for (const m of state.messages) {
+  for (const msg of state.messages) {
     lines.push(
-      `- ${m.messageId} type=${m.type} task=${m.taskId} ${m.sender}→${m.recipient} body=${m.bodyPath} sha256=${m.bodySha256}`,
+      `- ${msg.messageId} type=${msg.type} task=${msg.taskId} ${msg.sender}→${msg.recipient} body=${msg.bodyPath} sha256=${msg.bodySha256}`,
     );
-    if (m.summary !== null) lines.push(`  - summary: ${m.summary}`);
+    if (msg.routeToTaskId !== null) {
+      lines.push(`  - routedTo: ${msg.routeToTaskId} ack=${msg.acknowledgedAt ?? "(pending)"}`);
+    }
+    if (msg.summary !== null) lines.push(`  - summary: ${msg.summary}`);
   }
+  lines.push("");
+
+  // 재시작 후에도 같은 순서가 나오는지 눈으로 확인할 수 있게 파생 목록도 남긴다(state만으로 계산).
+  lines.push("## Pending Deliveries");
+  const pending = pendingDeliveries(state);
+  if (pending.length === 0) lines.push("- (none)");
+  for (const p of pending) lines.push(`- ${p.messageId} → ${p.routeToTaskId} type=${p.type} at=${p.createdAt}`);
   lines.push("");
   return lines.join("\n");
 }
@@ -641,6 +795,8 @@ export function stateContentDigest(state: OrchestrationRunState): string {
       schemaVersion: state.schemaVersion,
       runId: state.runId,
       milestoneId: state.milestoneId,
+      // manifest도 digest에 들어간다 → 승인 범위를 손으로 넓히면 state↔event binding에서 거부된다.
+      manifest: state.manifest,
       revision: state.revision,
       createdAt: state.createdAt,
       updatedAt: state.updatedAt,

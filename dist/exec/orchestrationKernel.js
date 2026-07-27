@@ -6,8 +6,16 @@
  * 반환값을 수정해도 내부 state는 바뀌지 않는다.
  *
  * 이 커널은 **state-only/offline**이다: provider도 LLM도 프로세스도 띄우지 않는다.
- * 실제 agent 실행·7 specialist registry·sibling/reviewer 라우팅·approval manifest는 아직 범위 밖이며,
- * roleId는 그것들을 나중에 그대로 수용하도록 **opaque slug 계약**으로 둔다.
+ * 실제 agent 실행·provider bridge·autopilot은 M5 범위이고 여기서는 하지 않는다.
+ *
+ * M4c가 더한 것 — **중앙 경유 라우팅과 승인 envelope**:
+ * - §5.1 메시지 10종 전부. 새 6종은 타입마다 **좁은 진입점 하나씩**이며 공용 API가 아니다.
+ * - sibling/reviewer 전달은 전부 중앙을 지난다. 발신자는 자기 task에 대해서만 제출할 수 있고,
+ *   수신자는 **중앙이** 관계(같은 parent · 의존)와 상태를 검증한 뒤 message index의 route로 남긴다 →
+ *   **다른 task의 상태를 바꾸거나 남의 mailbox에 직접 쓰는 API는 여전히 없다.**
+ * - run 생성 시 §8 승인 manifest를 bind한다. ownership 승인 · writable root · child 위임 ·
+ *   `maxSessions` · 만료는 **커밋 경로 공용 불변식**으로 강제되므로 어떤 전이 경로도 우회할 수 없다.
+ * - `roleId`는 7 specialist registry(+ 하위 role 한 겹) 안에서만 유효하다.
  *
  * M4b가 더한 것 — **배타 자원 class와 결정론적 scheduler**(두 번째 오케스트레이터를 만들지 않고
  * 이 커널 안에 좁은 API 2개만 추가했다):
@@ -22,9 +30,10 @@
  * - 같은 배타 자원 class를 요구하는 두 task는 **동시에 running이 되지 않는다**(커밋·load 양쪽 검사).
  * - 중앙이 운반하는 것은 bounded summary와 **검증된 artifact 포인터**뿐 — raw 본문·transcript 없음.
  */
-import { ARTIFACT_ROLES, LIMITS, ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, OrchestrationError, assertSlug, assertText, formatTimestamp, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
+import { ARTIFACT_ROLES, CENTRAL_MESSAGE_TYPES, LIMITS, ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, OrchestrationError, SUMMARY_REQUIRED, assertSlug, assertText, formatTimestamp, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
 import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
-import { assertReferentialIntegrity, commitRun, ensureRunDir, loadRun, runExists, runPaths, sha256Hex, verifyArtifactFile, writeSnapshot, } from "./orchestrationStore.js";
+import { assertRegistryRoleId, validateApprovalManifest } from "./approvalManifest.js";
+import { assertReferentialIntegrity, commitRun, ensureRunDir, loadRun, pendingDeliveries, runExists, runPaths, sha256Hex, verifyArtifactFile, writeSnapshot, } from "./orchestrationStore.js";
 const clone = (v) => structuredClone(v);
 export class OrchestrationKernel {
     paths;
@@ -35,7 +44,10 @@ export class OrchestrationKernel {
         this.#state = state;
         this.#clock = clock;
     }
-    /** 새 run 생성. 이미 있으면 거부한다(조용한 덮어쓰기 금지). */
+    /**
+     * 새 run 생성. 이미 있으면 거부한다(조용한 덮어쓰기 금지).
+     * **manifest는 필수다** — 기본값을 두면 그것이 곧 조용한 자동 승인이다.
+     */
     static create(opts) {
         const paths = runPaths(opts.workspaceRoot, opts.runId);
         if (runExists(paths)) {
@@ -44,10 +56,16 @@ export class OrchestrationKernel {
         const clock = opts.clock ?? (() => new Date());
         const now = formatTimestamp(clock());
         const milestoneId = assertSlug(opts.milestoneId, "milestoneId");
+        const manifest = validateApprovalManifest(opts.manifest);
+        if (manifest.milestoneId !== milestoneId) {
+            throw new OrchestrationError("manifest_milestone_mismatch", `manifest.milestoneId(${manifest.milestoneId})가 run(${milestoneId})과 다르다`);
+        }
+        assertNotExpired(manifest, now);
         const seed = {
             schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
             runId: paths.runId,
             milestoneId,
+            manifest,
             revision: 1,
             lastEventId: 0,
             lastEventHash: "0".repeat(64),
@@ -88,6 +106,25 @@ export class OrchestrationKernel {
     // ── 읽기 (전부 깊은 사본) ────────────────────────────────────────────────
     getState() {
         return clone(this.#state);
+    }
+    /**
+     * 이 run에 bind된 승인 envelope(깊은 사본). M5 executor는 이 값과
+     * `approvalManifest.ts`의 순수 술어(`commandAllowed`/`dependencyAllowed`/`networkDomainAllowed`)로
+     * 권한을 **조회만** 한다 — kernel은 명령·설치·네트워크·merge를 실행하지 않는다.
+     */
+    getManifest() {
+        return clone(this.#state.manifest);
+    }
+    /**
+     * 이 task의 inbox에서 아직 수령하지 않은 전달(순서 고정). durable state만 보므로 재시작 후에도 동일하다.
+     */
+    listPendingInbox(taskId) {
+        return pendingDeliveries(this.#state, assertSlug(taskId, "taskId")).map(clone);
+    }
+    /** run 전체에서 다음에 전달할 메시지 1건(없으면 null). 같은 state면 항상 같은 답이다. */
+    nextPendingDelivery() {
+        const next = pendingDeliveries(this.#state)[0];
+        return next ? clone(next) : null;
     }
     getTask(taskId) {
         const t = this.#state.tasks.find((x) => x.taskId === taskId);
@@ -292,7 +329,150 @@ export class OrchestrationKernel {
         });
         return clone(blocked);
     }
+    // ── M4c: 나머지 6개 메시지 타입과 중앙 경유 라우팅 ─────────────────────────
+    /**
+     * agent → 중앙 진행 보고. `deliverTo`를 주면 **중앙이** 관계를 검증한 뒤 그 sibling의 inbox로
+     * route를 남긴다(직접 mailbox 쓰기 아님). 관계는 **같은 parent**이거나 **둘 사이의 의존**뿐이고,
+     * 자기 자신·미상·모호(같은 roleId 다수)·종료된 수신자는 거부한다. task 상태는 바꾸지 않는다.
+     */
+    submitStatusUpdate(input) {
+        return this.#acceptRouted("status_update", input, (draft, sender) => {
+            assertActive(sender, "status_update");
+            if (input.deliverTo === undefined)
+                return null;
+            const recipient = resolveRecipientTask(draft, input.deliverTo, sender);
+            if (!isRelated(sender, recipient)) {
+                throw new OrchestrationError("route_not_related", `${sender.taskId} → ${recipient.taskId}는 같은 parent도 의존 관계도 아니다 — 중앙은 임의 전달을 하지 않는다`);
+            }
+            return recipient.taskId;
+        });
+    }
+    /**
+     * 중앙 → **fresh reviewer** task. reviewer는 검토 대상(`subjectTaskId`)에 의존해야 하고,
+     * 아직 아무 결과도 내지 않은 상태여야 한다(저자와 분리된 새 세션 — §3.3).
+     * 검토 대상은 이미 `completed`(result가 수락된 산출물)여야 한다.
+     */
+    requestReview(input) {
+        return this.#acceptRouted("review_request", input, (draft, reviewer) => {
+            const subject = requireSubject(draft, input.subjectTaskId, reviewer);
+            if (subject.state !== "completed") {
+                throw new OrchestrationError("subject_not_completed", `검토 대상 ${subject.taskId}가 completed가 아니다 (${subject.state})`);
+            }
+            assertDependsOnSubject(reviewer, subject, "reviewer");
+            assertFresh(reviewer, "reviewer");
+            return reviewer.taskId;
+        });
+    }
+    /** reviewer → 중앙. 받은 `review_request`가 있어야 하고, 중앙에서 끝난다(전달 대상 없음). */
+    submitReviewResult(input) {
+        return this.#acceptRouted("review_result", input, (draft, reviewer) => {
+            assertActive(reviewer, "review_result");
+            if (!draft.messages.some((m) => m.type === "review_request" && m.taskId === reviewer.taskId)) {
+                throw new OrchestrationError("review_request_missing", `${reviewer.taskId}는 review_request를 받은 적이 없다`);
+            }
+            return null;
+        });
+    }
+    /**
+     * 중앙 → **fresh revision worker**. 검토 대상에 대한 `review_result`가 이미 수락되어 있어야 한다 —
+     * 리뷰 없이 수정 지시를 만들어 내는 경로를 막는다.
+     */
+    requestRevision(input) {
+        return this.#acceptRouted("revision_request", input, (draft, worker) => {
+            const subject = requireSubject(draft, input.subjectTaskId, worker);
+            const reviewed = draft.messages.some((m) => {
+                if (m.type !== "review_result")
+                    return false;
+                const reviewer = draft.tasks.find((t) => t.taskId === m.taskId);
+                return reviewer !== undefined && reviewer.dependsOn.includes(subject.taskId);
+            });
+            if (!reviewed) {
+                throw new OrchestrationError("review_result_missing", `${subject.taskId}에 대한 review_result가 없다`);
+            }
+            assertDependsOnSubject(worker, subject, "revision worker");
+            assertFresh(worker, "revision worker");
+            return worker.taskId;
+        });
+    }
+    /** agent → 중앙 결정 요청. 상태는 바꾸지 않는다(§5.2 body의 "Safe Default While Waiting" 계약). */
+    submitDecisionRequest(input) {
+        return this.#acceptRouted("decision_request", input, (_draft, task) => {
+            assertActive(task, "decision_request");
+            return null;
+        });
+    }
+    /** 중앙 → 요청한 task로 결정 회신. 미응답 `decision_request`가 있을 때만 가능하다. */
+    recordDecision(input) {
+        return this.#acceptRouted("decision", input, (draft, task) => {
+            const requested = draft.messages.filter((m) => m.type === "decision_request" && m.taskId === task.taskId).length;
+            const answered = draft.messages.filter((m) => m.type === "decision" && m.taskId === task.taskId).length;
+            if (answered >= requested) {
+                throw new OrchestrationError("decision_request_missing", `${task.taskId}에 응답할 decision_request가 없다`);
+            }
+            return task.taskId;
+        });
+    }
+    /**
+     * 전달 수령. 좁은 중앙 전이 하나이며 durable event(`delivery_acknowledged`)를 남긴다.
+     * task 상태는 바꾸지 않고, 남의 inbox 항목은 수령할 수 없다. 범용 queue/retry는 만들지 않는다.
+     */
+    acknowledgeDelivery(input) {
+        const messageId = assertSlug(input.messageId, "messageId");
+        this.#mutate((draft, now) => {
+            const task = requireTask(draft, assertSlug(input.taskId, "taskId"));
+            assertActive(task, "acknowledgeDelivery", true);
+            const entry = draft.messages.find((m) => m.messageId === messageId);
+            if (!entry)
+                throw new OrchestrationError("unknown_message", `미상 messageId: ${messageId}`);
+            if (entry.routeToTaskId !== task.taskId) {
+                throw new OrchestrationError("delivery_not_addressed", `${messageId}는 ${task.taskId}에게 전달된 메시지가 아니다`);
+            }
+            if (entry.acknowledgedAt !== null) {
+                throw new OrchestrationError("delivery_already_acknowledged", `이미 수령한 전달이다: ${messageId}`);
+            }
+            entry.acknowledgedAt = now;
+            return {
+                events: [
+                    {
+                        at: now,
+                        type: "delivery_acknowledged",
+                        revision: draft.revision,
+                        taskId: task.taskId,
+                        messageId,
+                        fromState: null,
+                        toState: null,
+                        reason: null,
+                        artifactId: null,
+                    },
+                ],
+                bodies: [],
+            };
+        });
+        return clone(this.#state.messages.find((m) => m.messageId === messageId));
+    }
     // ── 내부 ────────────────────────────────────────────────────────────────
+    /**
+     * M4c 메시지 6종의 공통 골격: envelope 검증 → 타입 대조 → summary 검증 → 발신/수신 task 확인 →
+     * **타입별 규칙**(`check`)이 route 대상을 정한다 → 수락. 검증이 하나라도 실패하면 전이 0이다.
+     * `check`는 draft를 읽기만 하고 route할 taskId(또는 null)를 돌려준다.
+     */
+    #acceptRouted(type, input, check) {
+        let messageId = "";
+        this.#mutate((draft, now) => {
+            const envelope = validateEnvelope(input.envelope);
+            if (envelope.type !== type) {
+                throw new OrchestrationError("message_type_mismatch", `이 진입점에는 ${type}만 제출할 수 있다`);
+            }
+            const summary = assertText(input.summary, `${type} summary`, LIMITS.maxSummaryLength);
+            const task = requireTask(draft, envelope.taskId);
+            const routeToTaskId = check(draft, task);
+            const mutation = { events: [], bodies: [] };
+            acceptMessage(draft, now, mutation, this.paths, envelope, input.body, summary, routeToTaskId);
+            messageId = envelope.messageId;
+            return mutation;
+        });
+        return clone(this.#state.messages.find((m) => m.messageId === messageId));
+    }
     #createTask(seed, parentTaskId) {
         let created = null;
         this.#mutate((draft, now) => {
@@ -312,6 +492,8 @@ export class OrchestrationKernel {
      */
     #mutate(fn) {
         const now = formatTimestamp(this.#clock());
+        // 만료된 승인으로는 어떤 변경도 하지 않는다(읽기는 계속 가능하다). 전이 0.
+        assertNotExpired(this.#state.manifest, now);
         const base = {
             revision: this.#state.revision,
             lastEventId: this.#state.lastEventId,
@@ -343,12 +525,15 @@ function heldResourceClasses(state) {
 /**
  * 결정론적 선택: `state.tasks`는 taskId 오름차순 불변식이므로 같은 state면 항상 같은 목록이 나온다.
  * 이미 점유된 class와 **이 batch에서 앞서 고른** class를 모두 피하므로 batch 내부도 충돌이 없다.
+ * M4c: 남은 세션 여유(`maxSessions` − 현재 running)도 상한이라 batch가 승인 범위를 넘지 않는다.
  */
 function selectSchedulable(state, limit) {
     const held = heldResourceClasses(state);
+    const running = state.tasks.filter((t) => t.state === "running").length;
+    const budget = Math.min(limit, Math.max(0, state.manifest.maxSessions - running));
     const picked = [];
     for (const t of state.tasks) {
-        if (picked.length >= limit)
+        if (picked.length >= budget)
             break;
         if (t.state !== "ready")
             continue;
@@ -372,6 +557,74 @@ function requireTask(state, taskId) {
     if (!t)
         throw new OrchestrationError("unknown_task", `미상 task: ${taskId}`);
     return t;
+}
+/** 승인 만료 확인. 타임스탬프는 고정 폭 UTC라 문자열 비교로 충분하다. */
+function assertNotExpired(manifest, now) {
+    if (now > manifest.expiresAt) {
+        throw new OrchestrationError("manifest_expired", `승인 manifest가 만료됐다(expiresAt ${manifest.expiresAt}, now ${now}) — 재승인 없이는 변경하지 않는다`);
+    }
+}
+/** 메시지를 제출·수신할 수 있는 활성 task인가. 종료 상태(completed/blocked)는 거부한다. */
+function assertActive(task, what, allowIdle = false) {
+    const ok = allowIdle
+        ? task.state !== "completed" && task.state !== "blocked"
+        : task.state === "running" || task.state === "waiting_children";
+    if (!ok) {
+        throw new OrchestrationError("invalid_transition", `${what}는 이 상태의 task가 할 수 없다 (현재 ${task.state})`);
+    }
+}
+/**
+ * 전달 대상 해석: taskId 우선, 없으면 roleId로 찾되 **유일할 때만** 인정한다.
+ * 자기 자신·미상·모호는 전부 거부하고, 종료된 task도 수신자가 될 수 없다.
+ */
+function resolveRecipientTask(state, raw, sender) {
+    const id = assertSlug(raw, "deliverTo");
+    if (id === ORCHESTRATOR_ID) {
+        throw new OrchestrationError("invalid_recipient", "orchestrator는 전달 대상 task가 아니다(중앙은 이미 수신자다)");
+    }
+    const byTaskId = state.tasks.find((t) => t.taskId === id);
+    const matches = byTaskId ? [byTaskId] : state.tasks.filter((t) => t.roleId === id);
+    if (matches.length === 0)
+        throw new OrchestrationError("unknown_recipient", `미상 전달 대상: ${id}`);
+    if (matches.length > 1) {
+        throw new OrchestrationError("ambiguous_recipient", `전달 대상 ${id}가 task 여럿과 맞는다 — taskId로 지정해야 한다`);
+    }
+    const recipient = matches[0];
+    if (recipient.taskId === sender.taskId) {
+        throw new OrchestrationError("route_self", "자기 자신에게 전달할 수 없다");
+    }
+    if (recipient.state === "completed" || recipient.state === "blocked") {
+        throw new OrchestrationError("recipient_unavailable", `수신 task가 종료 상태다: ${recipient.taskId} (${recipient.state})`);
+    }
+    return recipient;
+}
+/** 중앙이 인정하는 sibling 관계: 같은 parent(둘 다 root가 아님) 또는 둘 사이의 직접 의존. */
+function isRelated(a, b) {
+    if (a.parentTaskId !== null && a.parentTaskId === b.parentTaskId)
+        return true;
+    return a.dependsOn.includes(b.taskId) || b.dependsOn.includes(a.taskId);
+}
+function requireSubject(state, rawId, target) {
+    const subject = requireTask(state, assertSlug(rawId, "subjectTaskId"));
+    if (subject.taskId === target.taskId) {
+        throw new OrchestrationError("route_self", "검토·수정 대상과 수신 task가 같을 수 없다");
+    }
+    return subject;
+}
+function assertDependsOnSubject(target, subject, what) {
+    if (!target.dependsOn.includes(subject.taskId)) {
+        throw new OrchestrationError("route_not_related", `${what} ${target.taskId}가 대상 ${subject.taskId}에 의존하지 않는다 — 임의 task에 지시하지 않는다`);
+    }
+}
+/** fresh 세션 계약(§3.3): 아직 아무 산출물·결과도 내지 않은 task만 reviewer/revision worker가 된다. */
+function assertFresh(task, what) {
+    const fresh = (task.state === "pending" || task.state === "ready") &&
+        task.resultSummary === null &&
+        task.blockerSummary === null &&
+        task.artifactRefs.length === 0;
+    if (!fresh) {
+        throw new OrchestrationError("task_not_fresh", `${what} ${task.taskId}가 fresh하지 않다 (상태 ${task.state})`);
+    }
 }
 function setState(draft, now, mutation, task, to, reason) {
     if (task.state === to)
@@ -418,7 +671,8 @@ function addTask(draft, now, mutation, seed, parentTaskId, depth) {
     }
     const task = {
         taskId,
-        roleId: assertSlug(seed.roleId, "roleId"),
+        // 중앙만 task를 만들고, role은 registry 안에서만 고를 수 있다(agent의 self-grant 경로 없음).
+        roleId: assertRegistryRoleId(seed.roleId, "roleId"),
         title: assertText(seed.title, "title", LIMITS.maxTextLength),
         scope: assertText(seed.scope, "scope", LIMITS.maxTextLength),
         ownership: normalizeOwnership(seed.ownership, "ownership"),
@@ -472,9 +726,12 @@ function addTask(draft, now, mutation, seed, parentTaskId, depth) {
  * unknown dependsOn/message, artifact 포인터의 registry·디스크 재검증까지 여기서 fail-closed로 처리한다.
  * `paths`가 null이면 artifact 재검증 대상이 없는 kernel 내부 발신 메시지다.
  */
-function acceptMessage(draft, now, mutation, paths, rawEnvelope, rawBody, summary) {
+function acceptMessage(draft, now, mutation, paths, rawEnvelope, rawBody, summary, routeToTaskId = null) {
     const envelope = rawEnvelope;
     const body = validateMessageBody(envelope.type, rawBody);
+    if (SUMMARY_REQUIRED[envelope.type] !== (summary !== null)) {
+        throw new OrchestrationError("invalid_summary", `${envelope.type}의 bounded summary 계약이 어긋났다(필수=${SUMMARY_REQUIRED[envelope.type]})`);
+    }
     if (draft.messages.some((m) => m.messageId === envelope.messageId)) {
         throw new OrchestrationError("duplicate_message_id", `이미 존재하는 messageId: ${envelope.messageId}`);
     }
@@ -525,6 +782,8 @@ function acceptMessage(draft, now, mutation, paths, rawEnvelope, rawBody, summar
         bodyPath: `messages/${envelope.messageId}.md`,
         bodySha256: sha256Hex(body),
         summary,
+        routeToTaskId,
+        acknowledgedAt: null,
     };
     draft.messages.push(entry);
     mutation.bodies.push({ messageId: envelope.messageId, body });
@@ -540,9 +799,12 @@ function acceptMessage(draft, now, mutation, paths, rawEnvelope, rawBody, summar
         artifactId: null,
     });
 }
-/** 통신 방향 계약(§5.3): task_assignment는 중앙→agent, 나머지 3종은 agent→중앙뿐이다. */
+/**
+ * 통신 방향 계약(§5.3): `CENTRAL_MESSAGE_TYPES`는 중앙→agent, 나머지는 agent→중앙뿐이다.
+ * sibling 전달도 이 규칙 안에 있다 — 발신 agent는 **중앙에게** 보내고 route는 중앙이 정한다.
+ */
 function assertDirection(envelope, task) {
-    const central = ["task_assignment"];
+    const central = CENTRAL_MESSAGE_TYPES;
     if (central.includes(envelope.type)) {
         if (envelope.sender !== ORCHESTRATOR_ID || envelope.recipient !== task.roleId) {
             throw new OrchestrationError("invalid_direction", `${envelope.type}은 orchestrator → ${task.roleId} 방향이어야 한다`);

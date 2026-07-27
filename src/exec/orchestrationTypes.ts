@@ -1,7 +1,7 @@
 /**
- * V3 M4a/M4b — durable orchestration kernel의 타입 · 상한 · 원시 검증자.
+ * V3 M4a/M4b/M4c — durable orchestration kernel의 타입 · 상한 · 원시 검증자.
  *
- * 로드맵 §3.1/§4/§5 기준. 이 계층은 **state-only/offline**이다: provider도 LLM도 실행하지 않고,
+ * 로드맵 §3.1/§4/§5/§8 기준. 이 계층은 **state-only/offline**이다: provider도 LLM도 실행하지 않고,
  * 향후 provider가 소비할 결정론적 task DAG · 상태 · 메시지 · artifact 포인터만 다룬다.
  * 기존 `types.ts`의 `ExecutionProvider`나 `runWorkflow`의 `run_state.json`과는 별개 계약이며
  * 둘 중 어느 것도 대체·복제하지 않는다.
@@ -9,9 +9,13 @@
  * M4b가 더한 것: task별 **exclusive resource class 선언**(durable), 결정론적 scheduler,
  * run 단위 writer lock + stale writer 거부(`orchestrationStore.ts` / `orchestrationKernel.ts`).
  *
- * 여전히 범위 밖(의도적 미구현): 실제 agent spawn, 7 specialist registry 등록,
- * sibling/reviewer 라우팅과 나머지 6개 메시지 타입, milestone approval manifest 전체,
- * 범용 queue/retry/priority/fairness, 크래시 복구·stale lock 회수.
+ * M4c가 더한 것: §5.1 메시지 타입 **10종 전부**, 중앙 경유 sibling/reviewer 라우팅의 durable
+ * route 메타데이터(message index), §8 **milestone approval manifest**(run에 bind), 7 specialist
+ * registry(`approvalManifest.ts`). envelope 필드 집합은 **무변경**이다 — route·권한은 envelope가
+ * 아니라 중앙 state가 들고 있다(agent가 자기 권한·경로를 만들 수 없다).
+ *
+ * 여전히 범위 밖(의도적 미구현): 실제 agent spawn·동시 실행, provider bridge/autopilot(M5),
+ * 범용 queue/retry/priority/fairness, 크래시 복구·stale lock 회수, schema 마이그레이션 도구.
  */
 
 /** state 파일과 message envelope 공통 schema 버전. */
@@ -28,13 +32,49 @@ export const TASK_STATES = [
 ] as const;
 export type TaskState = (typeof TASK_STATES)[number];
 
-/**
- * M4a가 구현하는 메시지 타입 4종.
- * 로드맵 §5.1의 전체 10종 union 중 나머지(status_update / review_request / review_result /
- * revision_request / decision_request / decision)는 M4a 범위가 아니며 runtime·schema 모두 거부한다.
- */
-export const AGENT_MESSAGE_TYPES = ["task_assignment", "spawn_request", "result", "blocker"] as const;
+/** 로드맵 §5.1 메시지 타입 **10종 전부**(M4c에서 4종 → 10종으로 닫았다). */
+export const AGENT_MESSAGE_TYPES = [
+  "task_assignment",
+  "spawn_request",
+  "status_update",
+  "result",
+  "review_request",
+  "review_result",
+  "revision_request",
+  "blocker",
+  "decision_request",
+  "decision",
+] as const;
 export type AgentMessageType = (typeof AGENT_MESSAGE_TYPES)[number];
+
+/**
+ * 중앙(orchestrator) → agent 방향으로만 존재하는 타입. 나머지는 agent → 중앙뿐이다(§5.3).
+ * sibling 전달도 예외가 아니다 — 발신 agent는 **중앙에 제출**하고, 중앙이 관계를 검증한 뒤
+ * 수신 task의 inbox에 route를 남긴다(직접 mailbox 쓰기 없음).
+ */
+export const CENTRAL_MESSAGE_TYPES = [
+  "task_assignment",
+  "review_request",
+  "revision_request",
+  "decision",
+] as const satisfies readonly AgentMessageType[];
+
+/**
+ * bounded summary를 **반드시** 갖는 타입(= true)과 **반드시 null**인 타입(= false).
+ * 중앙 state로 옮기는 서술은 이 summary뿐이고 raw 본문·transcript는 어떤 타입도 옮기지 않는다.
+ */
+export const SUMMARY_REQUIRED: Record<AgentMessageType, boolean> = {
+  task_assignment: false,
+  spawn_request: false,
+  status_update: true,
+  result: true,
+  review_request: true,
+  review_result: true,
+  revision_request: true,
+  blocker: true,
+  decision_request: true,
+  decision: true,
+};
 
 /** 로드맵 §5.1 artifactRefs[].role. */
 export const ARTIFACT_ROLES = ["input", "contract", "output", "evidence", "diff", "test"] as const;
@@ -47,6 +87,8 @@ export const EVENT_TYPES = [
   "message_accepted",
   "artifact_registered",
   "task_state_changed",
+  /** M4c — 수신 task가 자기 inbox의 전달을 수령했다(상태 전이 없음). */
+  "delivery_acknowledged",
 ] as const;
 export type OrchestrationEventType = (typeof EVENT_TYPES)[number];
 
@@ -92,6 +134,26 @@ export const LIMITS = {
   maxResourceClasses: 4,
   /** scheduler가 한 커밋으로 시작할 수 있는 task 수. */
   maxScheduleBatch: 8,
+
+  // ── M4c: milestone approval manifest 상한 (로드맵 §8) ──
+  /** manifest가 승인할 수 있는 writable root 수. */
+  maxWritableRoots: 8,
+  /** manifest `allowedCommands` 항목 수. */
+  maxAllowedCommands: 16,
+  /** manifest `allowedDependencies` 항목 수(전부 정확히 pin된 버전). */
+  maxAllowedDependencies: 16,
+  /** manifest `allowedNetworkDomains` 항목 수. */
+  maxAllowedNetworkDomains: 8,
+  /** 승인 가능한 동시 세션(= 동시에 running일 수 있는 task) 상한의 상한. */
+  maxManifestSessions: 16,
+  /** allowedCommands 항목 1개의 길이. */
+  maxCommandLength: 80,
+  /** 도메인 이름 길이(RFC 1035 상한). */
+  maxDomainLength: 253,
+  /** manifest `maxTokens` 상한(있을 때). */
+  maxManifestTokens: 100_000_000,
+  /** manifest `maxElapsedMs` 상한 = 24h. */
+  maxManifestElapsedMs: 86_400_000,
 } as const;
 
 /** slug 규칙: 소문자·숫자로 시작하고 `[a-z0-9._-]`만 허용, 1..64자. */
@@ -113,9 +175,15 @@ export const GENESIS_HASH = "0".repeat(64);
 export const ORCHESTRATOR_ID = "orchestrator";
 
 /**
- * 타입별 Markdown body 필수 heading (로드맵 §5.2 그대로).
+ * 타입별 Markdown body 필수 heading.
  * validator는 이 목록의 `## <heading>`이 **전부** 있고, 이 목록 **밖의 h2가 없고**,
  * 중복이 없을 것을 요구한다(closed set — schema의 additionalProperties:false와 같은 취지).
+ *
+ * `task_assignment` · `spawn_request` · `result` · `review_result` · `blocker`/`decision_request`는
+ * **로드맵 §5.2가 지정한 heading 그대로**다(공유 blocker/decision_request 포함).
+ * 나머지 4종(`status_update` · `review_request` · `revision_request` · `decision`)은 §5.2가 지정하지
+ * 않았으므로 **M4c가 정한 최소 closed set**이며 각 3개다 — 라우팅 판단에 필요한 최소 항목만 두고,
+ * 자유 서술은 body 안에 남기되 h2는 늘리지 않는다(늘리면 계약이 아니라 템플릿이 된다).
  */
 export const REQUIRED_BODY_HEADINGS: Record<AgentMessageType, readonly string[]> = {
   task_assignment: [
@@ -153,6 +221,27 @@ export const REQUIRED_BODY_HEADINGS: Record<AgentMessageType, readonly string[]>
     "Required Authority",
     "Safe Default While Waiting",
   ],
+  // §5.2가 blocker와 **같은 section**을 지정한 타입.
+  decision_request: [
+    "Blocking Condition",
+    "Evidence",
+    "Options and Trade-offs",
+    "Required Authority",
+    "Safe Default While Waiting",
+  ],
+  review_result: [
+    "Reviewed Revision and Hash",
+    "Findings (P0/P1/P2)",
+    "Reproduction or Evidence",
+    "Missing Tests",
+    "Contract Deviations",
+    "Verdict: pass | revise | block",
+  ],
+  // 아래 4종은 M4c가 정한 최소 closed set(§5.2 미지정).
+  status_update: ["Current Status", "Progress Since Last Update", "Next Step"],
+  review_request: ["Review Target and Hash", "Review Scope", "Required Checks"],
+  revision_request: ["Findings to Address", "Required Changes", "Verification Required"],
+  decision: ["Decision", "Rationale", "Scope of Effect"],
 };
 
 /** 모든 거부는 안정적인 `code`를 가진 이 오류로 올린다(테스트가 code로 단정). */
@@ -230,6 +319,42 @@ export interface OrchestrationTask {
   artifactRefs: ArtifactPointer[];
 }
 
+/** manifest가 승인한 dependency 1건 — 버전은 **정확히 pin된 값**만 유효하다(범위·tag·latest 거부). */
+export interface ApprovedDependency {
+  name: string;
+  version: string;
+}
+
+/**
+ * 로드맵 §8 milestone approval manifest. run 생성 시 **반드시** bind되고 durable state에 들어간다
+ * (=> `stateContentDigest` → state↔event binding으로 손편집이 거부된다).
+ *
+ * 이 계약이 다루는 것은 **state 관련 권한**뿐이다: ownership 승인 · writable root · 동시 세션 ·
+ * 만료. `allowedCommands`/`allowedDependencies`/`allowedNetworkDomains`/`maxTokens`/`maxElapsedMs`/
+ * `localMergeAllowed`는 **기록·조회 전용**이며 M4c는 아무것도 실행하지 않는다(M5 executor가 순수
+ * 조회 API로 물어본다 — `approvalManifest.ts`). repo의 hard deny는 manifest보다 항상 강하다.
+ */
+export interface MilestoneApprovalManifest {
+  milestoneId: string;
+  /** 승인 시점의 구체적인 commit hash(40자 소문자 hex). */
+  approvedCommit: string;
+  /** 쓰기가 허용된 workspace-relative root(정규화·사전순·중복 없음). */
+  writableRoots: string[];
+  /** taskId → 명시적으로 승인된 ownership 경로. 없는 taskId의 root/dependent task는 만들 수 없다. */
+  ownershipByTask: Record<string, string[]>;
+  allowedCommands: string[];
+  allowedDependencies: ApprovedDependency[];
+  allowedNetworkDomains: string[];
+  /** 동시에 running일 수 있는 task 수의 상한. */
+  maxSessions: number;
+  /** 선택 예산. 없으면 null(키는 durable 계약이라 항상 존재한다). */
+  maxTokens: number | null;
+  maxElapsedMs: number;
+  /** **기록·조회 전용** — 이 값이 true여도 kernel은 git 조작을 하지 않는다. */
+  localMergeAllowed: boolean;
+  expiresAt: string;
+}
+
 /** message index 항목. Markdown body 전문은 `messages/<id>.md`에만 있고 여기엔 hash만 둔다. */
 export interface MessageIndexEntry {
   messageId: string;
@@ -245,8 +370,16 @@ export interface MessageIndexEntry {
   /** run 디렉터리 상대 경로. */
   bodyPath: string;
   bodySha256: string;
-  /** result/blocker의 bounded summary. 그 외 타입은 null. */
+  /** `SUMMARY_REQUIRED`가 true인 타입의 bounded summary. 나머지 타입은 null. */
   summary: string | null;
+  /**
+   * M4c — 중앙이 이 메시지를 **어느 task의 inbox로 전달했는지**(durable route 메타데이터).
+   * null이면 중앙에서 끝나는 메시지다(예: reviewer → orchestrator `review_result`).
+   * envelope에는 이 필드가 없다 — route는 agent가 아니라 **중앙 state**가 정한다.
+   */
+  routeToTaskId: string | null;
+  /** 수신 task가 수령한 시각. 전달 대상이 아니거나 미수령이면 null. */
+  acknowledgedAt: string | null;
 }
 
 /** append-only event log 1줄. */
@@ -277,6 +410,11 @@ export interface OrchestrationRunState {
   schemaVersion: string;
   runId: string;
   milestoneId: string;
+  /**
+   * M4c — 이 run에 bind된 승인 envelope(§8). run 생성 시 정해지고 이후 바뀌지 않는다.
+   * 이 필드가 없는 pre-M4c state는 마이그레이션하지 않고 `state_pre_m4c_unsupported`로 거부한다.
+   */
+  manifest: MilestoneApprovalManifest;
   /** 성공한 kernel 변경 1회당 +1 (monotonic). */
   revision: number;
   /** events.jsonl의 줄 수 (monotonic). */

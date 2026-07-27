@@ -2,13 +2,14 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://solo-founder-harness/schemas/orchestration_run_state.schema.json",
   "title": "OrchestrationRunState",
-  "description": "V3 M4a/M4b — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4). M4b가 task.resourceClasses(배타 자원 class 선언)를 **필수 필드로** 더했다: 같은 class를 요구하는 두 task는 동시에 running이 될 수 없고(런타임 검사 assertExclusiveResourceClaims), 점유는 running 동안만이며 waiting_children은 점유하지 않는다. 이 필드가 없는 M4a 상태 파일은 마이그레이션하지 않고 state_pre_m4b_unsupported로 거부한다. orchestration 실행 상태의 SoR이며, 기존 projects/<p>/outputs/run_state.json(workflow 실행 상태)과는 **별개 계약**이다(변경·마이그레이션 없음). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의의 핵심 동치(state/type/role enum · required · bounds)는 src/exec/orchestrationKernel.test.ts가 강제한다. events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript는 어떤 레벨에서도 담지 않는다(§3.2).",
+  "description": "V3 M4a/M4b/M4c — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4). M4c가 더한 것: ⓐ 필수 manifest(§8 승인 envelope — 없는 pre-M4c state는 state_pre_m4c_unsupported로 fail-closed, 자동 승인·마이그레이션 없음) ⓑ message.routeToTaskId/acknowledgedAt(중앙이 정한 durable route — envelope에는 없다) ⓒ messageType 10종 ⓓ task.roleId의 7 specialist registry 소속 요구 ⓔ 이벤트 delivery_acknowledged. 아래 M4b 서술도 그대로 유효하다. M4b가 task.resourceClasses(배타 자원 class 선언)를 **필수 필드로** 더했다: 같은 class를 요구하는 두 task는 동시에 running이 될 수 없고(런타임 검사 assertExclusiveResourceClaims), 점유는 running 동안만이며 waiting_children은 점유하지 않는다. 이 필드가 없는 M4a 상태 파일은 마이그레이션하지 않고 state_pre_m4b_unsupported로 거부한다. orchestration 실행 상태의 SoR이며, 기존 projects/<p>/outputs/run_state.json(workflow 실행 상태)과는 **별개 계약**이다(변경·마이그레이션 없음). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의의 핵심 동치(state/type/role enum · required · bounds)는 src/exec/orchestrationKernel.test.ts가 강제한다. events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript는 어떤 레벨에서도 담지 않는다(§3.2).",
   "type": "object",
   "additionalProperties": false,
   "required": [
     "schemaVersion",
     "runId",
     "milestoneId",
+    "manifest",
     "revision",
     "lastEventId",
     "lastEventHash",
@@ -22,6 +23,10 @@
     "schemaVersion": { "const": "1" },
     "runId": { "$ref": "#/definitions/slug" },
     "milestoneId": { "$ref": "#/definitions/slug" },
+    "manifest": {
+      "description": "M4c — 이 run에 bind된 §8 승인 envelope. 전체 계약은 schemas/milestone_approval_manifest.schema.json에 있고(런타임 validator는 src/exec/approvalManifest.ts), stateContentDigest에 포함되므로 승인 범위를 손으로 넓히면 state↔event binding에서 거부된다.",
+      "$ref": "https://solo-founder-harness/schemas/milestone_approval_manifest.schema.json"
+    },
     "revision": {
       "description": "성공한 kernel 변경 1회당 +1 (monotonic). 유효하지 않은 입력에서는 올라가지 않는다.",
       "type": "integer",
@@ -87,7 +92,27 @@
       "description": "M4a가 쓰는 task 상태 전부. 이 6개 외의 상태는 존재하지 않는다.",
       "enum": ["pending", "ready", "running", "waiting_children", "completed", "blocked"]
     },
-    "messageType": { "enum": ["task_assignment", "spawn_request", "result", "blocker"] },
+    "messageType": {
+      "enum": [
+        "task_assignment",
+        "spawn_request",
+        "status_update",
+        "result",
+        "review_request",
+        "review_result",
+        "revision_request",
+        "blocker",
+        "decision_request",
+        "decision"
+      ]
+    },
+    "specialistRoleId": {
+      "description": "M4c — task.roleId는 이 registry의 role이거나 그 하위 role(<상위>.<하위> 한 겹)이어야 한다. 정본은 src/exec/approvalManifest.ts의 SPECIALIST_ROLES이고 계약 문서는 schemas/milestone_approval_manifest.schema.json의 specialistRegistry다.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^(research|pm|ux|design|tech-lead|dev-lead|qa-security)(\\.[a-z0-9][a-z0-9_-]{0,31})?$"
+    },
     "artifactRole": { "enum": ["input", "contract", "output", "evidence", "diff", "test"] },
     "artifactPointer": {
       "type": "object",
@@ -125,8 +150,8 @@
       "properties": {
         "taskId": { "$ref": "#/definitions/slug" },
         "roleId": {
-          "description": "opaque role 식별자. 향후 7개 상위 specialist와 그 하위 specialist를 그대로 수용한다(M4a는 registry 등록·동시 실행을 하지 않는다).",
-          "$ref": "#/definitions/slug"
+          "description": "M4c — 7 specialist registry의 role 또는 그 하위 role(한 겹). 중앙만 task를 만들므로 agent가 role을 self-grant할 수 없다. 실제 동시 실행·프로세스 spawn은 여전히 범위 밖이다.",
+          "$ref": "#/definitions/specialistRoleId"
         },
         "title": { "$ref": "#/definitions/boundedText" },
         "scope": { "$ref": "#/definitions/boundedText" },
@@ -193,7 +218,9 @@
         "supersedes",
         "bodyPath",
         "bodySha256",
-        "summary"
+        "summary",
+        "routeToTaskId",
+        "acknowledgedAt"
       ],
       "properties": {
         "messageId": { "$ref": "#/definitions/slug" },
@@ -212,8 +239,16 @@
         },
         "bodySha256": { "$ref": "#/definitions/sha256" },
         "summary": {
-          "description": "result/blocker의 bounded summary. 그 외 타입은 null.",
+          "description": "task_assignment·spawn_request는 null이고 나머지 8종은 bounded summary가 필수다(SUMMARY_REQUIRED). 중앙이 옮기는 유일한 서술이며 raw 본문·transcript는 담지 않는다.",
           "oneOf": [{ "$ref": "#/definitions/boundedSummary" }, { "type": "null" }]
+        },
+        "routeToTaskId": {
+          "description": "M4c — 중앙이 이 메시지를 전달한 task(inbox). null이면 중앙에서 끝나는 메시지다. envelope에는 없는 필드다: 전달 대상은 agent가 아니라 중앙이 관계·상태를 검증해 정한다.",
+          "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }]
+        },
+        "acknowledgedAt": {
+          "description": "수신 task가 수령한 시각. routeToTaskId가 null이면 반드시 null이다. 미수령 전달은 createdAt→messageId 순으로 결정론적 inbox를 이룬다.",
+          "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
         }
       }
     },
@@ -267,7 +302,14 @@
         },
         "at": { "$ref": "#/definitions/timestamp" },
         "type": {
-          "enum": ["run_created", "task_created", "message_accepted", "artifact_registered", "task_state_changed"]
+          "enum": [
+            "run_created",
+            "task_created",
+            "message_accepted",
+            "artifact_registered",
+            "task_state_changed",
+            "delivery_acknowledged"
+          ]
         },
         "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
         "taskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },

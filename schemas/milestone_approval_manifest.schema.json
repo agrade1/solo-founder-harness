@@ -1,0 +1,119 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/milestone_approval_manifest.schema.json",
+  "title": "MilestoneApprovalManifest",
+  "description": "V3 M4c — 로드맵 §8 milestone 승인 envelope. run 생성 시 반드시 bind되고 outputs/orchestration/<run-id>/run_state.json의 manifest 필드로 durable하게 저장된다(= stateContentDigest에 포함 → 손편집은 state_event_binding_mismatch로 거부). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/approvalManifest.ts의 validateApprovalManifest다(신규 검증 의존성 0). 두 정의의 동치는 src/exec/orchestrationKernel.test.ts가 강제한다. M4c가 **강제**하는 것은 state 관련 권한뿐이다: ownership 명시 승인 · writableRoots · child 위임(부모 부분집합) · maxSessions · expiresAt. allowedCommands/allowedDependencies/allowedNetworkDomains/maxTokens/maxElapsedMs/localMergeAllowed는 **기록·조회 전용**이며 M4c는 명령 실행·패키지 설치·네트워크 접근·git merge·provider 호출을 하지 않는다(M5 executor가 순수 술어 commandAllowed/dependencyAllowed/networkDomainAllowed로 조회만 한다, deny-by-default). 레포의 hard deny(production deploy · live billing · 원격 저장소 직접 쓰기 · PR merge 자동화 · MCP @latest)는 manifest 내용과 무관하게 항상 더 강하다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "milestoneId",
+    "approvedCommit",
+    "writableRoots",
+    "ownershipByTask",
+    "allowedCommands",
+    "allowedDependencies",
+    "allowedNetworkDomains",
+    "maxSessions",
+    "maxTokens",
+    "maxElapsedMs",
+    "localMergeAllowed",
+    "expiresAt"
+  ],
+  "properties": {
+    "milestoneId": {
+      "description": "bind되는 run의 milestoneId와 같아야 한다(다르면 manifest_milestone_mismatch).",
+      "$ref": "#/definitions/slug"
+    },
+    "approvedCommit": {
+      "description": "승인 시점의 구체적인 commit hash. 40자 소문자 hex만 — 짧은 해시·브랜치·tag는 거부한다.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "writableRoots": {
+      "description": "쓰기가 허용된 workspace-relative root(정규화·사전순·중복 없음). 모든 task ownership은 이 안에 있어야 한다.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/workspacePath" }
+    },
+    "ownershipByTask": {
+      "description": "taskId → 명시적으로 승인된 ownership 경로. 여기에 없는 taskId로는 root/dependent task를 만들 수 없다(ownership_not_approved). child task는 이 표가 아니라 **parent가 가진 ownership의 부분집합**만 위임받는다(ownership_not_delegated).",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/definitions/slug" },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "uniqueItems": true,
+        "items": { "$ref": "#/definitions/workspacePath" }
+      }
+    },
+    "allowedCommands": {
+      "description": "정확히 이 문자열인 명령만 승인된다. kernel은 shell을 파싱하지 않고 실행하지도 않는다.",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:@/+-]{0,79}$" }
+    },
+    "allowedDependencies": {
+      "description": "정확히 pin된 버전만 승인한다. latest·범위(^ ~ >=)·x·dist-tag·2자리 버전은 dependency_not_pinned로 거부한다(레포 hard deny의 MCP @latest 금지와 같은 규칙).",
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$" },
+          "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$" }
+        }
+      }
+    },
+    "allowedNetworkDomains": {
+      "description": "소문자 도메인만(scheme·port·path·wildcard·trailing dot 금지). 하위 도메인은 자동 허용하지 않는다.",
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 3, "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" }
+    },
+    "maxSessions": {
+      "description": "동시에 running일 수 있는 task 수의 상한. 커밋·load 공용 불변식(assertSessionLimit)이 강제한다.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "maxTokens": {
+      "description": "선택 예산. 없으면 null이지만 키는 durable 계약이라 항상 존재한다. M4c는 기록만 한다.",
+      "oneOf": [{ "type": "integer", "minimum": 1, "maximum": 100000000 }, { "type": "null" }]
+    },
+    "maxElapsedMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+    "localMergeAllowed": {
+      "description": "기록·조회 전용. true여도 kernel은 어떤 git 조작도 하지 않는다.",
+      "type": "boolean"
+    },
+    "expiresAt": {
+      "description": "만료 후에는 모든 변경이 manifest_expired로 거부된다(전이 0). 읽기는 계속 가능하다.",
+      "$ref": "#/definitions/timestamp"
+    }
+  },
+  "definitions": {
+    "slug": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "workspacePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^/\\\\][^\\\\]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "specialistRegistry": {
+      "description": "로드맵 §6의 기본 상위 specialist 7종 — 이 레포의 정본 registry(src/exec/approvalManifest.ts의 SPECIALIST_ROLES)다. task.roleId는 이 목록의 값이거나 그 하위 role(<상위>.<하위>, 한 겹, 하위는 ^[a-z0-9][a-z0-9_-]{0,31}$)이어야 한다. 중앙이 들고 있는 서술 metadata이며 run마다 7개 task를 요구하지 않고 실제 프로세스도 띄우지 않는다. 모델·provider 라우팅은 여기서 다루지 않는다.",
+      "const": ["research", "pm", "ux", "design", "tech-lead", "dev-lead", "qa-security"]
+    }
+  }
+}

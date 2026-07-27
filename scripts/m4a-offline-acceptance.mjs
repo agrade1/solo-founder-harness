@@ -72,6 +72,25 @@ function makeClock() {
   return () => new Date(Date.UTC(2026, 6, 27, 0, 0, n++));
 }
 
+/**
+ * M4c부터 run은 §8 승인 manifest에 bind된다(기본값 = 조용한 자동 승인이므로 필수 인자다).
+ * M4a 시나리오가 만드는 root/dependent task만 명시 승인한다 — child는 parent 위임으로 검사된다.
+ */
+const MANIFEST = {
+  milestoneId: MILESTONE,
+  approvedCommit: "a".repeat(40),
+  writableRoots: ["docs", "src"],
+  ownershipByTask: { parent: ["src/exec"], dependent: ["docs/qa"] },
+  allowedCommands: ["npm test"],
+  allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
+  allowedNetworkDomains: [],
+  maxSessions: 4,
+  maxTokens: null,
+  maxElapsedMs: 3_600_000,
+  localMergeAllowed: false,
+  expiresAt: "2026-12-31T00:00:00.000Z",
+};
+
 function envelope(type, taskId, roleId, over = {}) {
   const agentSent = type !== "task_assignment";
   return {
@@ -105,6 +124,7 @@ try {
     workspaceRoot: workspace,
     runId: RUN_ID,
     milestoneId: MILESTONE,
+    manifest: MANIFEST,
     clock: makeClock(),
   });
   kernel.createRootTask({

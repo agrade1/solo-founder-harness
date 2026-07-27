@@ -1,5 +1,7 @@
 /**
- * V3 M4a — agent message 계약의 runtime validator (로드맵 §5.1/§5.2).
+ * V3 M4a/M4c — agent message 계약의 runtime validator (로드맵 §5.1/§5.2).
+ * M4c에서 타입 union이 4종 → **10종 전부**로 닫혔다. envelope 필드 집합은 **무변경**이다:
+ * route·권한을 envelope에 밀어 넣지 않고 중앙 state(message index)가 들고 간다.
  *
  * `schemas/agent_message.schema.json`은 **계약 문서**이고 실제 보안 경계는 이 파일이다
  * (신규 Ajv 등 검증 의존성 0 — 기존 liveEvidence.ts와 같은 수동 closed validator 방식).
@@ -75,7 +77,7 @@ export function validateEnvelope(raw) {
         throw new OrchestrationError("invalid_envelope", `envelope.schemaVersion은 "${ORCHESTRATION_SCHEMA_VERSION}"이어야 한다`);
     }
     if (typeof o.type !== "string" || !AGENT_MESSAGE_TYPES.includes(o.type)) {
-        throw new OrchestrationError("unsupported_message_type", `M4a가 구현한 메시지 타입은 ${AGENT_MESSAGE_TYPES.join("|")}뿐이다`);
+        throw new OrchestrationError("unsupported_message_type", `메시지 타입은 §5.1의 ${AGENT_MESSAGE_TYPES.join("|")} 중 하나여야 한다`);
     }
     const parentTaskId = o.parentTaskId === null ? null : assertSlug(o.parentTaskId, "envelope.parentTaskId");
     const supersedes = o.supersedes === null ? null : assertSlug(o.supersedes, "envelope.supersedes");
