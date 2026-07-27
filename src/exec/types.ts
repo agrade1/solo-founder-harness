@@ -97,8 +97,13 @@ export interface CodexSessionOptions {
   /** `--output-schema` 파일 절대경로 (구조화 최종 출력이 필요할 때만). */
   outputSchemaPath?: string;
   /**
-   * provider 전용 격리 codex 설정 홈 **절대·정규 경로**. **필수**이며 비어 있고 0700이어야 한다 —
-   * 사용자 전역 설정·MCP·자격증명 상속을 막는 지점이다(auth 복사·영속화 없음).
+   * provider 전용 격리 codex 설정 홈 **절대·정규 경로**(비-symlink 디렉터리 · 0700 · 사용자 홈 아님).
+   * **필수**이며 사용자 전역 설정·MCP·자격증명 상속을 막는 지점이다(auth 복사·영속화 없음).
+   *
+   * 수명은 **provider 소유**다: **첫 invocation에서는 비어 있어야 하고**(ambient config·auth·MCP 0),
+   * 그때 고정된 **디렉터리 신원(dev+ino)** 이 소유권이 된다. **이후 invocation(resume)은 같은 신원의
+   * 같은 홈**이어야 하며 그때는 codex가 남긴 세션 상태가 있는 것이 정상이다 — 교체·symlink화·권한 완화·
+   * provider가 소유하지 않은 기존 상태는 프로세스를 띄우지 않는다.
    */
   codexHome: string;
   /** 기본 true(`--ephemeral`). resume이 필요한 세션만 false로 시작한다. */

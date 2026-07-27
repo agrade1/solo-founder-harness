@@ -4,14 +4,47 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProcess } from "./runProcess.js";
-import { verifyExecutionBoundary } from "./executionBoundary.js";
+import { GIT_SANITIZED_ENV, verifyExecutionBoundary, type ExecutionBoundaryInput } from "./executionBoundary.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
 
 const FUTURE = "2099-12-31T00:00:00.000Z";
+
+/**
+ * 테스트용 신뢰 git 경로. **테스트 안에서만** `PATH`를 훑어 찾고, 찾은 뒤 realpath로 정규화한다
+ * (production 코드는 여전히 이름 조회를 하지 않는다 — 경로는 호출자가 준다).
+ */
+function findGit(): string {
+  for (const dir of (process.env.PATH ?? "").split(":")) {
+    if (!dir) continue;
+    try {
+      const real = realpathSync(join(dir, "git"));
+      if (lstatSync(real).isFile()) return real;
+    } catch {
+      /* 다음 후보 */
+    }
+  }
+  throw new Error("테스트용 git 실행 파일을 PATH에서 찾지 못했다");
+}
+const GIT = findGit();
+
+/** 모든 호출에 신뢰된 git 경로를 채워 주는 래퍼(계약은 그대로 — 인자만 채운다). */
+function verify(input: Omit<ExecutionBoundaryInput, "gitExecutablePath"> & { gitExecutablePath?: string }) {
+  return verifyExecutionBoundary({ gitExecutablePath: input.gitExecutablePath ?? GIT, ...input });
+}
 
 function manifest(over: Record<string, unknown> = {}) {
   return {
@@ -67,7 +100,7 @@ async function code(fn: () => Promise<unknown> | unknown): Promise<string> {
 test("[M5a] controller = 실행 checkout이고 HEAD가 승인 커밋이면 통과(대조 1회)", async () => {
   const repo = await initRepo();
   try {
-    const v = await verifyExecutionBoundary({
+    const v = await verify({
       manifest: manifest({ approvedCommit: repo.head }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -87,7 +120,7 @@ test("[M5a] HEAD가 승인 커밋이 아니면 approved_commit_mismatch", async 
   try {
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({ manifest: manifest(), controllerRepoRoot: repo.root, targetWorktree: repo.root }),
+        verify({ manifest: manifest(), controllerRepoRoot: repo.root, targetWorktree: repo.root }),
       ),
       "approved_commit_mismatch",
     );
@@ -103,7 +136,7 @@ test("[M5a] controller와 실행 worktree가 다르면 양쪽 HEAD를 모두 대
     await runProcess("git", ["-C", repo.root, "worktree", "add", "-q", "-b", "work/m5a-test", wt]);
     const wtReal = realpathSync(wt);
 
-    const ok = await verifyExecutionBoundary({
+    const ok = await verify({
       manifest: manifest({ approvedCommit: repo.head }),
       controllerRepoRoot: repo.root,
       targetWorktree: wtReal,
@@ -115,7 +148,7 @@ test("[M5a] controller와 실행 worktree가 다르면 양쪽 HEAD를 모두 대
     await advance(wtReal); // 실행 worktree만 앞서 나가면 거부
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({
+        verify({
           manifest: manifest({ approvedCommit: repo.head }),
           controllerRepoRoot: repo.root,
           targetWorktree: wtReal,
@@ -133,7 +166,7 @@ test("[M5a] manifest 누락·형태 위반은 승인 규칙 그대로 거부한�
   const repo = await initRepo();
   try {
     const call = (m: unknown) =>
-      verifyExecutionBoundary({ manifest: m, controllerRepoRoot: repo.root, targetWorktree: repo.root });
+      verify({ manifest: m, controllerRepoRoot: repo.root, targetWorktree: repo.root });
     assert.equal(await code(() => call(undefined)), "invalid_manifest");
     assert.equal(await code(() => call({})), "invalid_manifest");
     assert.equal(await code(() => call(manifest({ approvedCommit: repo.head.slice(0, 7) }))), "invalid_manifest");
@@ -151,12 +184,12 @@ test("[M5a] 만료된 manifest는 실행 경계에서 거부(경계 시각 포�
     const at = Date.parse("2026-07-27T00:00:00.000Z");
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({ manifest: m, controllerRepoRoot: repo.root, targetWorktree: repo.root, nowMs: at }),
+        verify({ manifest: m, controllerRepoRoot: repo.root, targetWorktree: repo.root, nowMs: at }),
       ),
       "manifest_expired",
       "expiresAt과 정확히 같은 시각도 거부한다",
     );
-    const before = await verifyExecutionBoundary({
+    const before = await verify({
       manifest: m,
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -180,7 +213,7 @@ test("[M5a] revalidateSync: 비동기 git 조회 중에 승인이 만료되면 s
       reads.push(t);
       return t;
     };
-    const v = await verifyExecutionBoundary({
+    const v = await verify({
       manifest: manifest({ approvedCommit: repo.head, expiresAt }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -191,7 +224,7 @@ test("[M5a] revalidateSync: 비동기 git 조회 중에 승인이 만료되면 s
     assert.equal(reads.length, 2, "재검증이 clock을 다시 읽는다(고정 값 재사용 아님)");
 
     // 만료 전에 머무르는 clock이면 재검증도 통과한다(게이트가 항상 던지는 게 아니다).
-    const ok = await verifyExecutionBoundary({
+    const ok = await verify({
       manifest: manifest({ approvedCommit: repo.head, expiresAt }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -200,7 +233,7 @@ test("[M5a] revalidateSync: 비동기 git 조회 중에 승인이 만료되면 s
     ok.revalidateSync();
 
     // 읽을 수 없는 시각은 fail closed다.
-    const nan = await verifyExecutionBoundary({
+    const nan = await verify({
       manifest: manifest({ approvedCommit: repo.head, expiresAt }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -221,11 +254,129 @@ test("[M5a] revalidateSync: 비동기 git 조회 중에 승인이 만료되면 s
   }
 });
 
+test("[M5a] git 실행 파일은 신뢰된 절대·정규 경로여야 한다(이름 조회·symlink·비실행 거부)", async () => {
+  const repo = await initRepo();
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-gitbin-")));
+  try {
+    const call = (gitExecutablePath: unknown) =>
+      verify({
+        manifest: manifest({ approvedCommit: repo.head }),
+        controllerRepoRoot: repo.root,
+        targetWorktree: repo.root,
+        gitExecutablePath: gitExecutablePath as string,
+      });
+    assert.equal(await code(() => call("git")), "boundary_git_path_invalid", "이름으로는 부르지 않는다");
+    assert.equal(await code(() => call(undefined)), "boundary_git_path_invalid");
+    assert.equal(await code(() => call("")), "boundary_git_path_invalid");
+    assert.equal(await code(() => call(join(dir, "missing"))), "boundary_git_untrusted");
+    assert.equal(await code(() => call(dir)), "boundary_git_untrusted", "디렉터리 거부");
+
+    const link = join(dir, "git-link");
+    symlinkSync(GIT, link);
+    assert.equal(await code(() => call(link)), "boundary_git_untrusted", "symlink 거부");
+
+    const fake = join(dir, "git");
+    writeFileSync(fake, "#!/bin/sh\necho 0000000000000000000000000000000000000000\n", { mode: 0o644 });
+    assert.equal(await code(() => call(fake)), "boundary_git_untrusted", "실행 비트 없음");
+    chmodSync(fake, 0o777);
+    assert.equal(await code(() => call(fake)), "boundary_git_untrusted", "타인 쓰기 가능");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] 적대적 PATH·GIT_DIR·GIT_WORK_TREE는 경계 판정에 끼어들지 못한다", async () => {
+  const repo = await initRepo();
+  const decoy = await initRepo("m5a-decoy-env-", "decoy-env");
+  const evilDir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-evilpath-")));
+  const saved = { PATH: process.env.PATH, GIT_DIR: process.env.GIT_DIR, GIT_WORK_TREE: process.env.GIT_WORK_TREE };
+  try {
+    // PATH에는 승인 커밋을 위조하는 가짜 git만 둔다.
+    const evilGit = join(evilDir, "git");
+    writeFileSync(evilGit, `#!/bin/sh\necho ${"c".repeat(40)}\n`, { mode: 0o755 });
+    process.env.PATH = evilDir;
+    // ambient git 변수는 **다른 저장소**를 가리킨다(상속되면 decoy HEAD가 증명된다).
+    process.env.GIT_DIR = join(decoy.root, ".git");
+    process.env.GIT_WORK_TREE = decoy.root;
+
+    const ok = await verify({
+      manifest: manifest({ approvedCommit: repo.head }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+    });
+    assert.equal(ok.approvedCommit, repo.head, "승인된 checkout이 그대로 검증된다");
+    ok.revalidateSync(); // 동기 재확인도 ambient env를 쓰지 않는다
+
+    // decoy를 승인 커밋으로 주면 여전히 거부다(위조 git·ambient GIT_DIR로 통과하지 않는다).
+    assert.equal(
+      await code(() =>
+        verify({
+          manifest: manifest({ approvedCommit: decoy.head }),
+          controllerRepoRoot: repo.root,
+          targetWorktree: repo.root,
+        }),
+      ),
+      "approved_commit_mismatch",
+    );
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+    rmSync(evilDir, { recursive: true, force: true });
+    rmSync(decoy.root, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] git 자식 env는 최소 화이트리스트다(PATH·HOME·상속 GIT_* 없음)", () => {
+  assert.deepEqual(Object.keys(GIT_SANITIZED_ENV).sort(), [
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_OPTIONAL_LOCKS",
+    "GIT_TERMINAL_PROMPT",
+    "LC_ALL",
+  ]);
+  for (const forbidden of ["PATH", "HOME", "GIT_DIR", "GIT_WORK_TREE", "GIT_ASKPASS", "GIT_SSH", "GIT_CONFIG"]) {
+    assert.ok(!(forbidden in GIT_SANITIZED_ENV), `${forbidden}가 git 자식 env에 있다`);
+  }
+  assert.equal(GIT_SANITIZED_ENV.GIT_CONFIG_NOSYSTEM, "1", "system config를 끈다");
+  assert.equal(GIT_SANITIZED_ENV.GIT_CONFIG_GLOBAL, "/dev/null", "global config를 사용자 상태 없이 끈다");
+});
+
+test("[M5a] revalidateSync: git 실행 파일이 교체되면 spawn 직전에 거부", async () => {
+  const repo = await initRepo();
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-gitpin-")));
+  const pinned = join(dir, "git");
+  try {
+    // 신뢰된 git으로 exec하는 wrapper를 만들어 그것으로 경계를 통과시킨다(절대경로 exec — PATH 불필요).
+    const wrapper = `#!/bin/sh\nexec ${GIT} "$@"\n`;
+    writeFileSync(pinned, wrapper, { mode: 0o755 });
+    const v = await verify({
+      manifest: manifest({ approvedCommit: repo.head }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+      gitExecutablePath: pinned,
+    });
+    v.revalidateSync();
+
+    // 같은 경로·같은 권한·같은 내용, **다른 inode**로 교체(rename) → 신원 불일치로 거부.
+    const other = join(dir, "git-other");
+    writeFileSync(other, wrapper, { mode: 0o755 });
+    renameSync(other, pinned);
+    assert.equal(await code(() => v.revalidateSync()), "boundary_git_identity_changed");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
 test("[M5a] 경로 입력이 계약 밖이면 git을 부르기 전에 거부", async () => {
   const repo = await initRepo();
   try {
     const call = (controller: unknown, target: unknown) =>
-      verifyExecutionBoundary({
+      verify({
         manifest: manifest({ approvedCommit: repo.head }),
         controllerRepoRoot: controller as string,
         targetWorktree: target as string,
@@ -250,7 +401,7 @@ test("[M5a] 비정규(symlink) 입력 경로는 해석하지 않고 거부한다
     symlinkSync(other.root, link, "dir");
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({
+        verify({
           manifest: manifest({ approvedCommit: repo.head }),
           controllerRepoRoot: repo.root,
           targetWorktree: link,
@@ -264,7 +415,7 @@ test("[M5a] 비정규(symlink) 입력 경로는 해석하지 않고 거부한다
     symlinkSync(repo.root, selfLink, "dir");
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({
+        verify({
           manifest: manifest({ approvedCommit: repo.head }),
           controllerRepoRoot: selfLink,
           targetWorktree: repo.root,
@@ -284,7 +435,7 @@ test("[M5a] checkout 루트가 아니면(하위 디렉터리) 거부", async () 
   try {
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({
+        verify({
           manifest: manifest({ approvedCommit: repo.head }),
           controllerRepoRoot: repo.root,
           targetWorktree: join(repo.root, "src"),
@@ -303,7 +454,7 @@ test("[M5a] git이 아닌 디렉터리는 boundary_git_failed", async () => {
   try {
     assert.equal(
       await code(() =>
-        verifyExecutionBoundary({
+        verify({
           manifest: manifest({ approvedCommit: repo.head }),
           controllerRepoRoot: plain,
           targetWorktree: plain,
@@ -320,7 +471,7 @@ test("[M5a] git이 아닌 디렉터리는 boundary_git_failed", async () => {
 test("[M5a] revalidateSync: 검증 이후 HEAD가 움직이면 spawn 직전에 거부", async () => {
   const repo = await initRepo();
   try {
-    const v = await verifyExecutionBoundary({
+    const v = await verify({
       manifest: manifest({ approvedCommit: repo.head }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -338,7 +489,7 @@ test("[M5a] revalidateSync: 디렉터리가 다른 실체로 바뀌면 신원 �
   const decoy = await initRepo("m5a-decoy-", "decoy");
   const parked = `${repo.root}-parked`;
   try {
-    const v = await verifyExecutionBoundary({
+    const v = await verify({
       manifest: manifest({ approvedCommit: repo.head }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -359,7 +510,7 @@ test("[M5a] revalidateSync: 경로가 symlink로 교체되면 거부", async () 
   const other = await initRepo("m5a-other2-", "other2");
   const parked = `${repo.root}-parked2`;
   try {
-    const v = await verifyExecutionBoundary({
+    const v = await verify({
       manifest: manifest({ approvedCommit: repo.head }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,

@@ -16,6 +16,10 @@
  *   unknown·error 포함) 내용·도구 payload를 전달하지 않고 `missing_session_id` 비가역 실패가 된다.
  *   한 번 실패한 뒤의 늦은 `thread.started`도 신원을 세우지 못한다.
  *   종료 이벤트 뒤에 오는 이벤트는 세션 신원도 최종 메시지도 **바꾸지 못한다**.
+ * - **resume은 기대 신원과 대조한다(`ctx.expectedSessionId`)**: 다른 thread id가 오면 **init을 만들기 전에**
+ *   스트림을 **봉인**한다 — 같은 chunk에 뒤따라 오던 assistant·status·도구 이벤트까지 한 건도 방출하지 않고,
+ *   bounded `session_identity_conflict` marker와 `finish()`의 결과 1건만 나가며 둘 다 **기대 UUID**를 싣는다
+ *   (관측된 다른 id는 어디에도 싣지 않는다).
  * - **raw는 원본 JSON이 아니라 bounded sanitized metadata projection이다.** 추론 원문, 명령 문자열,
  *   stderr/error 본문, secret, 프롬프트, 환경변수, 전체 argv, 모르는 이벤트의 payload는 **어떤 이벤트에도
  *   실리지 않는다**(`raw`에는 길이·상태·exit code 같은 스칼라만 남는다). 반면 **최종 agent message는
@@ -27,6 +31,7 @@
  * 별칭을 함께 받는다. live 확정은 M5b 게이트다.
  */
 import { redactSecrets } from "../tools/redact.js";
+import { OrchestrationError } from "./orchestrationTypes.js";
 import type { RawEvent, SessionEvent, SessionUsage, ToolUse } from "./types.js";
 
 /** 한 줄 최대 길이(문자). 넘으면 내용을 버리고 프로토콜 실패로 본다. */
@@ -94,6 +99,12 @@ export interface CodexParserContext {
   cwd: string;
   /** sandbox 모드를 기존 permissionMode 자리에 싣는다(provider 중립 필드 재사용). */
   sandbox: string;
+  /**
+   * **resume에서 기대하는 세션 UUID**(fresh invocation은 미지정). 주면 `thread.started`가 이 값과
+   * 다른 UUID를 낼 때 **init을 만들기 전에** 스트림을 봉인한다 — 다른 thread의 본문·도구 payload가
+   * 한 줄도 나가지 않고, 실패 marker와 종료 결과는 **기대 UUID에 묶인다**.
+   */
+  expectedSessionId?: string;
 }
 
 export interface CodexExitInfo {
@@ -124,8 +135,18 @@ export class CodexJsonlParser {
   private closed = false;
   private session = "";
   private terminalSeen = false;
+  /**
+   * 스트림 봉인. 기대 세션 신원과 다른 thread를 본 순간 서고, 그 뒤에는 **같은 chunk에 남아 있던 줄까지**
+   * 한 건도 방출하지 않는다(bounded 실패 marker와 `finish()`의 결과 1건만 나간다).
+   */
+  private sealed = false;
 
-  constructor(private readonly ctx: CodexParserContext) {}
+  constructor(private readonly ctx: CodexParserContext) {
+    // 기대 신원은 정규 UUID여야 한다 — 검증 안 된 텍스트를 신원 비교의 기준으로 쓰지 않는다.
+    if (ctx.expectedSessionId !== undefined && !CODEX_SESSION_ID_RE.test(ctx.expectedSessionId)) {
+      throw new OrchestrationError("codex_resume_id_invalid", "expectedSessionId는 정규 codex session UUID여야 한다");
+    }
+  }
 
   /** 관측된 codex thread(session) id — 정규 UUID이거나 빈 문자열이다. */
   get sessionId(): string {
@@ -152,6 +173,10 @@ export class CodexJsonlParser {
 
   push(chunk: string): SessionEvent[] {
     if (this.closed) return [];
+    if (this.sealed) {
+      this.buf = ""; // 봉인 이후 도착한 chunk는 붙잡지도 파싱하지도 않는다.
+      return [];
+    }
     this.buf += chunk;
     const out: SessionEvent[] = [];
     let nl: number;
@@ -160,8 +185,9 @@ export class CodexJsonlParser {
       this.buf = this.buf.slice(nl + 1);
       this.consume(line, out);
     }
+    if (this.sealed) this.buf = ""; // chunk 중간에 봉인됐으면 남은 부분도 버린다.
     // 개행 없이 상한을 넘긴 buffer는 붙잡지 않는다(메모리 상한) — 그리고 그것도 프로토콜 실패다.
-    if (this.buf.length > MAX_LINE_CHARS) {
+    if (!this.sealed && this.buf.length > MAX_LINE_CHARS) {
       this.buf = "";
       this.malformed++;
       out.push(this.marker("oversized_line", { chars: MAX_LINE_CHARS }));
@@ -247,6 +273,7 @@ export class CodexJsonlParser {
   }
 
   private consume(line: string, out: SessionEvent[]): void {
+    if (this.sealed) return; // 봉인된 스트림: 파싱조차 하지 않는다(payload가 나갈 경로 0).
     const t = line.trim();
     if (!t) return;
     if (++this.lines > MAX_EVENTS) {
@@ -305,6 +332,15 @@ export class CodexJsonlParser {
         if (typeof id !== "string" || !CODEX_SESSION_ID_RE.test(id)) {
           out.push(this.marker("invalid_session_id"));
           this.fail("invalid_session_id", "");
+          return;
+        }
+        // resume 기대 신원과 다른 thread다 → **init을 만들기 전에** 봉인한다. marker·result는 기대 UUID에 묶고,
+        // 관측된 id는 어떤 이벤트에도 싣지 않는다(다른 thread의 신원조차 흘리지 않는다).
+        if (this.ctx.expectedSessionId !== undefined && id !== this.ctx.expectedSessionId) {
+          this.session = this.ctx.expectedSessionId;
+          this.sealed = true;
+          out.push(this.marker("session_identity_conflict"));
+          this.fail("session_identity_conflict", "");
           return;
         }
         if (this.session && this.session !== id) {

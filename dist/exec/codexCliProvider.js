@@ -4,11 +4,17 @@
  * 기존 `ExecutionProvider` 계약을 그대로 구현한다 — **두 번째 오케스트레이터·상태 시스템을 만들지 않는다.**
  * 세션 수명 모델은 `ClaudeCliProvider`와 같다(호출당 프로세스 1개, 후속 turn은 resume).
  *
- * 확정 계약(2026-07-27 fresh Codex 리뷰 반영):
+ * 확정 계약(2026-07-27 fresh Codex 리뷰 · 2·3차 리비전 반영):
  * - **실행 파일은 신뢰된 명시 절대경로 하나뿐이다.** 이 모듈은 `process.env`를 **읽지 않는다** —
  *   PATH·`HARNESS_CODEX_BIN` 같은 상속 환경으로 실행 대상을 고르지 않는다(임의 실행 파일 seam 제거).
- *   spawn 직전에 그 경로가 **symlink 아닌 일반 실행 파일**이고 group/other 쓰기가 없음을 확인한다.
  *   경로를 고르는 책임은 **controller(호출자)** 에 있고, 여기서는 검증만 한다.
+ * - **spawn 직전 동기 게이트가 신뢰 판정의 근거다(3차 리비전 · A/P0).** 이전 판은 홈·실행 파일을
+ *   **비동기 경계 작업 전에** 검사하고 그 뒤에는 경계 재검증만 했다 → 그 창에서 홈·실행 파일이 교체·
+ *   symlink화·권한 완화되면 spawn까지 도달할 수 있었다. 이제 **await가 하나도 남지 않은 상태에서**
+ *   ① spec 스냅샷 ② 승인 만료·git 신원·checkout 신원·HEAD ③ `CODEX_HOME`(+고정 신원, 첫 invocation은
+ *   여전히 비어 있음) ④ codex 실행 파일(+**고정 신원** — 같은 권한의 다른 실행 파일 교체도 거부)을
+ *   순서대로 다시 확인하고, **바로 다음 문장이 spawn**이다. 남는 창은 syscall 몇 개 규모이며
+ *   `fexecve`가 없는 Node에서 **0이라고 주장하지 않는다**.
  * - argv는 **배열로 컴파일**하고 shell을 경유하지 않는다. 프롬프트는 **stdin**으로만 넣는다(`-`).
  * - **sandbox는 `read-only` 고정**(M5a hard deny — `workspace-write`도 거부).
  * - **strict empty MCP는 ambient 설정에 의존하지 않는다**: 검증된 격리 `CODEX_HOME` +
@@ -20,9 +26,11 @@
  *   요구해 ambient config·auth·MCP를 0으로 만들고, 그때 확보한 **신원(dev+ino)** 을 고정한다. resume은
  *   codex가 그 홈에 남긴 세션 상태를 필요로 하므로 **같은 신원일 때만** 비어 있지 않은 홈을 허용한다
  *   (교체·symlink화·권한 완화·소유하지 않은 기존 상태는 거부 → spawn 0). strict 플래그는 resume에도 그대로다.
- * - 프로세스를 띄우기 **직전마다** `verifyExecutionBoundary` → `revalidateSync()`로 승인 커밋과
+ * - 프로세스를 띄우기 **직전마다** `verifyExecutionBoundary` → 동기 게이트의 `revalidateSync()`로 승인 커밋과
  *   디렉터리 신원을 대조한다(대장 `B-5`). cwd는 **경계가 확인한 `targetRoot`만** 쓴다.
- * - resume은 파서가 검증한 **정규 UUID 하나**로만 하고 `--last`는 쓰지 않는다.
+ *   경계가 쓰는 **git 실행 파일도 신뢰된 절대경로 + 상속 없는 env**다(ambient `PATH`/`GIT_*` 우회 차단).
+ * - resume은 파서가 검증한 **정규 UUID 하나**로만 하고 `--last`는 쓰지 않는다. 파서에 **기대 UUID**를 넘겨
+ *   다른 thread의 init·본문이 나가기 전에 봉인하고, 그 세션은 닫아 후속 `send`가 spawn 0이 되게 한다.
  *
  * argv 배치 근거(supervisor 실측, codex-cli **0.146.0-alpha.3**, parse-only — 추론 미실행):
  *   fresh `exec`  : --config · --strict-config · --model · --sandbox · --cd · --ephemeral ·
@@ -39,7 +47,7 @@ import { lstatSync, readdirSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { AsyncEventQueue } from "./eventQueue.js";
 import { CODEX_SESSION_ID_RE, CodexJsonlParser } from "./codexStreamParser.js";
-import { verifyExecutionBoundary } from "./executionBoundary.js";
+import { verifyExecutionBoundary, verifyTrustedExecutable, } from "./executionBoundary.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
 export const MAX_PROMPT_CHARS = 262_144;
@@ -58,53 +66,44 @@ function requireAbsolute(v, what) {
     }
     return v;
 }
+const CODEX_BIN_CODES = {
+    path: "codex_config_invalid",
+    invalid: "codex_executable_invalid",
+    identity: "codex_executable_identity_changed",
+};
 /**
- * 실행 파일 신원 검증. **symlink 아닌 일반 파일**·실행 비트 있음·group/other 쓰기 없음·정규 경로.
- * spawn 직전마다 다시 부른다(검사와 사용 사이의 창을 줄인다 — Node에 fexecve가 없어 0은 아니다).
+ * codex 실행 파일 신원 검증(경계와 **같은 구현**을 쓴다): 정규 · symlink 아님 · 일반 파일 ·
+ * 실행 비트 · group/other 쓰기 없음, 그리고 `pinned`를 주면 **신원(dev+ino)** 까지 같아야 한다.
+ * 사전 검증에서 신원을 고정하고 **spawn 직전 동기 게이트에서 다시** 부른다 — 같은 권한의 다른 실행 파일로
+ * 교체되는 창까지 막는다(Node에 `fexecve`가 없어 창은 0이 아니고 syscall 몇 개로 줄인 것이다).
  */
+export function verifyCodexExecutable(path, pinned) {
+    return verifyTrustedExecutable(path, "executablePath", CODEX_BIN_CODES, pinned);
+}
+/** 경로만 필요한 호출자용 shim(신원 고정이 필요하면 `verifyCodexExecutable`을 쓴다). */
 export function assertTrustedExecutable(path) {
-    const p = requireAbsolute(path, "executablePath");
-    let real;
-    try {
-        real = realpathSync(p);
-    }
-    catch {
-        fail("codex_executable_invalid", "executablePath의 realpath를 확인할 수 없다");
-    }
-    if (real !== p)
-        fail("codex_executable_invalid", "executablePath는 정규 경로여야 한다(symlink 미해석)");
-    let st;
-    try {
-        st = lstatSync(p);
-    }
-    catch {
-        fail("codex_executable_invalid", "executablePath의 상태를 확인할 수 없다");
-    }
-    if (st.isSymbolicLink() || !st.isFile())
-        fail("codex_executable_invalid", "executablePath는 symlink 아닌 일반 파일이어야 한다");
-    if ((st.mode & 0o111) === 0)
-        fail("codex_executable_invalid", "executablePath에 실행 비트가 없다");
-    if ((st.mode & 0o022) !== 0)
-        fail("codex_executable_invalid", "executablePath가 group/other 쓰기 가능이다");
-    return p;
+    return verifyCodexExecutable(path).path;
 }
 /**
  * 격리 `CODEX_HOME` 검증 — **provider 소유 수명**이다.
  *
- * - **최초 검증(`owned` 없음)**: 절대·정규·비-symlink 디렉터리 · 0700 · **비어 있음** · 사용자 홈 아님.
+ * - **첫 invocation**: 절대·정규·비-symlink 디렉터리 · 0700 · **비어 있음** · 사용자 홈 아님.
  *   비어 있음을 요구하는 이유는 첫 프로세스가 ambient config·auth·MCP 정의를 하나도 못 보게 하려는 것이다.
- *   여기서 확보한 신원(dev+ino)이 그 홈에 대한 provider의 **소유권**이다.
- * - **후속 검증(`owned` 있음 = resume)**: 경로 계약·권한·사용자 홈 금지는 **그대로** 요구하고 신원이
- *   같아야 한다. 신원이 같을 때만 **첫 실행 이후 codex가 남긴 세션 상태를 허용**한다(resume은 그 상태를
- *   필요로 한다). 홈이 교체·symlink화·권한 완화되면 거부하고, provider가 소유하지 않은 기존 상태로는
- *   resume하지 않는다(그 경로는 최초 검증에서 `codex_home_not_empty`로 막힌다).
+ *   여기서 확보한 신원(dev+ino)이 그 홈에 대한 provider의 **소유권**이고, **spawn 직전 동기 게이트에서
+ *   같은 신원 + 여전히 비어 있음**을 다시 확인한다(비동기 경계 작업 중 교체·오염을 막는다).
+ * - **resume**: 경로 계약·권한·사용자 홈 금지는 **그대로** 요구하고 **소유 신원이 같아야** 한다.
+ *   같을 때만 **codex가 남긴 세션 상태를 허용**한다(resume은 그 상태를 필요로 한다). 홈이 교체·symlink화·
+ *   권한 완화되면 거부하고, provider가 소유하지 않은 기존 상태로는 resume하지 않는다
+ *   (그 경로는 첫 검증에서 `codex_home_not_empty`로 막힌다).
  *
  * 어느 경우에도 `--strict-config`·`--ignore-user-config`·`--ignore-rules`·`mcp_servers={}`는 유지되므로
  * 홈에 무엇이 생기든 ambient MCP·사용자 설정을 상속하지 않는다. **auth를 복사하지 않는다** — live 인증은 `B-7`.
  * 같은 uid로 동작하는 공격자를 막지는 못한다(소유자 자신은 언제든 홈을 쓸 수 있다) — 막는 것은 **경로 교체·
  * 권한 완화·소유하지 않은 상태로의 resume**이다.
  */
-export function verifyCodexHome(path, owned) {
+export function verifyCodexHome(path, expect = {}) {
+    const owned = expect.identity;
+    const requireEmpty = expect.requireEmpty ?? owned === undefined;
     const p = requireAbsolute(path, "spec.codex.codexHome");
     let real;
     try {
@@ -137,13 +136,11 @@ export function verifyCodexHome(path, owned) {
     if ((st.mode & 0o077) !== 0)
         fail("codex_home_permissive", "codexHome은 0700(소유자 전용)이어야 한다");
     const id = { dev: st.dev, ino: st.ino };
-    if (owned) {
-        // 이미 소유한 홈: 신원이 같아야 하고, 같으면 codex가 남긴 세션 상태를 허용한다.
-        if (id.dev !== owned.dev || id.ino !== owned.ino) {
-            fail("codex_home_identity_changed", "codexHome의 디렉터리 신원이 첫 실행 이후 바뀌었다");
-        }
-        return { path: p, id };
+    if (owned && (id.dev !== owned.dev || id.ino !== owned.ino)) {
+        fail("codex_home_identity_changed", "codexHome의 디렉터리 신원이 검증 이후 바뀌었다");
     }
+    if (!requireEmpty)
+        return { path: p, id };
     let entries;
     try {
         entries = readdirSync(p);
@@ -305,31 +302,39 @@ export class CodexCliProvider {
         return state;
     }
     /**
-     * 한 invocation. 순서는 **전체 검증 → 경계 확인 → 큐 발행 → 신원 재확인 → spawn**이다.
+     * 한 invocation. 순서는 **사전 검증 → 비동기 경계 확인 → 큐 발행 → 동기 pre-spawn 게이트 → spawn**이다.
      * 검증 단계에서 실패하면 기존 큐·상태는 그대로다(오염된 열린 큐를 남기지 않는다).
+     *
+     * 사전 검증은 계약 위반을 **비동기 작업 전에** 걸러내기 위한 것이고, **신뢰 판정의 근거는 게이트다**:
+     * 홈·실행 파일·git·승인 커밋·만료·spec 스냅샷을 **await가 하나도 남지 않은 상태에서** 한 번에 다시 본다.
      */
     async invoke(state, resumeSessionId, prompt) {
         if (typeof prompt !== "string" || prompt.length === 0)
             fail("codex_prompt_invalid", "프롬프트가 비어 있다");
         if (prompt.length > MAX_PROMPT_CHARS)
             fail("codex_prompt_too_long", `프롬프트는 ${MAX_PROMPT_CHARS}자 이하여야 한다`);
+        // ── 사전 검증(빠른 거부 + 신원 고정) ──────────────────────────────────
         const o = resolveCodexOptions(state.spec);
-        // 첫 invocation은 빈 홈을 요구하고, 이후 invocation은 **같은 신원의 소유 홈**만 허용한다
-        // (resume은 codex가 그 홈에 남긴 세션 상태를 필요로 한다).
-        const home = verifyCodexHome(o.codexHome, state.homeId ?? undefined);
-        const bin = assertTrustedExecutable(this.opts.executablePath);
+        const homeExpect = state.homeId
+            ? { identity: state.homeId } // resume: 소유 홈(상태 있음이 정상)
+            : { requireEmpty: true }; // 첫 invocation: 빈 홈
+        const preHome = verifyCodexHome(o.codexHome, homeExpect);
+        const preBin = verifyCodexExecutable(this.opts.executablePath);
+        // cwd 자체는 경계가 확인한 `targetRoot`만 쓰지만, 스냅샷에 넣어 변조를 조용히 넘기지 않는다.
+        const specCwd = state.spec.cwd;
         // 대장 `B-5`: 승인된 커밋이 controller/실행 checkout HEAD와 정확히 같을 때만 프로세스를 띄운다.
         const boundary = await verifyExecutionBoundary({
             manifest: this.opts.manifest,
             controllerRepoRoot: this.opts.controllerRepoRoot,
             targetWorktree: state.spec.cwd,
+            gitExecutablePath: this.opts.gitExecutablePath,
             // clock을 **함수로** 넘긴다 — 경계는 spawn 직전 재검증에서 만료를 다시 본다.
             nowMs: this.opts.nowMs,
         });
         // cwd는 경계가 확인한 targetRoot만 쓴다(호출자 문자열 재사용 금지 — argv와 native cwd 모두).
         const cwd = boundary.targetRoot;
-        const args = compileCodexArgs(state.spec, cwd, resumeSessionId);
-        const parser = new CodexJsonlParser({ model: o.model, cwd, sandbox: o.sandbox });
+        // 파서에 **기대 세션 신원**을 준다: resume 스트림이 다른 thread를 내면 init·본문이 나가기 전에 봉인된다.
+        const parser = new CodexJsonlParser({ model: o.model, cwd, sandbox: o.sandbox, expectedSessionId: resumeSessionId });
         // 여기부터가 "발행" 구간이다 — 검증은 모두 끝났다.
         const queue = new AsyncEventQueue();
         let resolveSettled = () => undefined;
@@ -349,9 +354,25 @@ export class CodexCliProvider {
         state.queue = queue;
         state.settled = settledPromise;
         state.status = "running";
-        // 마지막 경계 연산: 디렉터리 신원 + HEAD 동기 재확인 → 바로 다음 문장이 spawn이다.
+        // ── spawn 직전 동기 게이트 ────────────────────────────────────────────
+        // 여기부터 spawn까지 **await가 없다.** 비동기 경계 작업 중에 바뀔 수 있는 모든 신뢰 자산을
+        // 순서대로 다시 확인한다: ① spec 스냅샷(호출자 객체 변조) ② 승인 만료·git 신원·checkout 신원·HEAD
+        // ③ `CODEX_HOME`(정규·비symlink·0700·사용자 홈 아님 + 고정 신원, 첫 invocation은 여전히 비어 있음)
+        // ④ codex 실행 파일(신뢰 조건 + 고정 신원 — 같은 권한의 다른 실행 파일 교체까지 거부).
+        // 남는 창은 syscall 몇 개 규모다(Node에 `fexecve`·디렉터리 fd 상대 실행이 없다) — 0이라고 주장하지 않는다.
+        let home;
+        let bin;
+        let args;
         try {
+            const now = resolveCodexOptions(state.spec);
+            if (JSON.stringify(now) !== JSON.stringify(o) || state.spec.cwd !== specCwd) {
+                fail("codex_spec_mutated", "spec 해석값이 검증 이후 바뀌었다(호출자 객체 변조)");
+            }
             boundary.revalidateSync();
+            home = verifyCodexHome(o.codexHome, { ...homeExpect, identity: preHome.id });
+            bin = verifyCodexExecutable(this.opts.executablePath, preBin.id);
+            // argv는 스냅샷이 확인된 뒤에 컴파일한다(중간에 바뀐 spec으로 인자를 만들지 않는다).
+            args = compileCodexArgs(state.spec, cwd, resumeSessionId);
         }
         catch (err) {
             settle({ code: null, signal: null, stderr: "", spawnError: true });
@@ -359,7 +380,7 @@ export class CodexCliProvider {
         }
         let child;
         try {
-            child = this.spawnFn(bin, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
+            child = this.spawnFn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
         }
         catch (err) {
             // 동기 spawn 예외: 큐를 열어둔 채 두지 않고 종료 결과 1건으로 닫는다.
@@ -378,6 +399,11 @@ export class CodexCliProvider {
                 // strict empty MCP 위반을 본 thread는 **다시 이어가지 않는다**(비가역 실패를 resume으로 우회 금지).
                 else if (e.kind === "unknown" && e.type === "mcp_call_observed")
                     state.poisoned = "codex_mcp_observed";
+                // 파서가 기대 신원과 다른 thread를 봤다(init·본문은 이미 봉인돼 나오지 않는다) → 세션을 닫는다.
+                else if (e.kind === "unknown" && e.type === "session_identity_conflict") {
+                    state.poisoned = "codex_session_identity_conflict";
+                    state.child?.kill("SIGTERM");
+                }
                 queue.push(e);
             }
         });

@@ -372,6 +372,60 @@ test("[M5a] 세션 신원: 형식 위반 thread.started 뒤에 정규 UUID가 �
   assert.equal(events.filter((e) => e.kind === "init").length, 0);
 });
 
+test("[M5a] resume 기대 신원: 다른 thread는 init 전에 봉인되고 같은 chunk의 뒷줄까지 막힌다", () => {
+  const p = new CodexJsonlParser({ ...CTX, expectedSessionId: TID });
+  const hostile = [
+    `{"type":"thread.started","thread_id":"${TID2}"}`,
+    '{"type":"turn.started"}',
+    '{"type":"item.completed","item":{"id":"h","item_type":"agent_message","text":"HIJACK_SENTINEL"}}',
+    '{"type":"item.completed","item":{"id":"h2","item_type":"command_execution","command":"HIJACK_CMD","status":"completed","exit_code":0}}',
+    '{"type":"turn.completed","usage":{"input_tokens":77}}',
+  ];
+  // 한 번의 push에 전부 들어온다(최악의 경우).
+  const emitted = p.push(`${hostile.join("\n")}\n`);
+  assert.deepEqual(emitted.map((e) => e.kind), ["unknown"], "봉인 뒤에는 아무것도 방출하지 않는다");
+  assert.ok(emitted[0].kind === "unknown" && emitted[0].type === "session_identity_conflict");
+  assert.equal(emitted[0].sessionId, TID, "marker는 기대 UUID에 묶인다");
+  assert.equal(p.sessionId, TID, "관측된 다른 id가 신원을 대체하지 않는다");
+  assert.equal(p.protocolFailed, true);
+
+  // 봉인 이후 도착한 chunk도 무시된다.
+  assert.deepEqual(p.push('{"type":"item.completed","item":{"item_type":"agent_message","text":"LATE_SENTINEL"}}\n'), []);
+
+  const out = p.finish({ code: 0, signal: null });
+  assert.equal(out.length, 1);
+  const r = out[0];
+  assert.ok(r.kind === "result");
+  assert.equal(r.isError, true);
+  assert.equal(r.terminalReason, "session_identity_conflict");
+  assert.equal(r.sessionId, TID);
+  assert.equal(r.numTurns, 0);
+  assert.equal(r.usage.inputTokens, 0, "하이재킹된 usage를 채택하지 않는다");
+  const blob = JSON.stringify([...emitted, ...out]);
+  for (const bad of ["HIJACK_SENTINEL", "HIJACK_CMD", "LATE_SENTINEL", TID2]) {
+    assert.ok(!blob.includes(bad), `'${bad}'가 새어나갔다`);
+  }
+});
+
+test("[M5a] resume 기대 신원: 같은 UUID면 정상 진행하고, 기대값 자체는 정규 UUID여야 한다", () => {
+  const p = new CodexJsonlParser({ ...CTX, expectedSessionId: TID });
+  const out: SessionEvent[] = [];
+  for (const l of SUCCESS) for (const e of p.push(`${l}\n`)) out.push(e);
+  for (const e of p.finish({ code: 0, signal: null })) out.push(e);
+  const init = out.find((e) => e.kind === "init");
+  assert.ok(init && init.kind === "init" && init.sessionId === TID, "기대 신원과 같으면 init이 정상 발행된다");
+  const r = out.filter((e) => e.kind === "result")[0];
+  assert.ok(r && r.kind === "result" && r.isError === false);
+
+  for (const bad of ["--last", "", "not-a-uuid", `${TID} --last`]) {
+    assert.throws(
+      () => new CodexJsonlParser({ ...CTX, expectedSessionId: bad }),
+      (err: unknown) => (err as { code?: string }).code === "codex_resume_id_invalid",
+      `기대값 거부: ${bad}`,
+    );
+  }
+});
+
 test("[M5a] 이벤트 수 상한을 넘기면 종료 결과가 실패다", () => {
   const lines = Array.from({ length: MAX_EVENTS + 5 }, () => '{"type":"turn.started"}');
   const events = run([`{"type":"thread.started","thread_id":"${TID}"}`, ...lines, '{"type":"turn.completed","usage":{}}']);
