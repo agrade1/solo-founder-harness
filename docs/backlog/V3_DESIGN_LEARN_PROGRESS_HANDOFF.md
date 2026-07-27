@@ -1,5 +1,22 @@
 # V3_DESIGN — 프로젝트 간 학습 · 실행 가시성 · Claude Code 자동 핸드오프
 
+> **2026-07-27 현행 상태 (이 블록이 최신이며 아래 2026-07-26 서술보다 우선한다 — 아래는 이력으로 보존):**
+> **M3는 완료(재개방 금지)** · **M4a 완료** · **M4b 완료(offline 검증 — 배타 자원 class + deterministic
+> scheduler + run writer lock, 대장 `B-3`/`B-4` fixed)** · **M4 전체는 미완료**(M4c 잔여 =
+> sibling 전달 · reviewer 왕복 · milestone approval manifest). **열린 P0 없음.**
+> M4b는 M4a 위 **stacked** 격리 worktree `work/m4b-resource-scheduler`(base `805da35`)에서 구현했고
+> **아직 commit/push/PR 없다.**
+> 부하(stress) 재실행과 live runner 재실행은 **nonblocking release-readiness backlog**(`B-1`/`B-2`)이며
+> M3 완료 게이트도 M4 선행 조건도 **아니다** — 아래 2026-07-26 블록의 "차단 게이트 / M4 not started"
+> 표기는 그 시점의 기록이다.
+> 현행 offline 수치: focused `orchestrationKernel.test.ts` **50/50**(M4a 최종 37 → M4b 50),
+> offline acceptance M4a **31/31** · M4b **42/42**, `npm test` PASS(1회) = exec **125/125** +
+> acceptance **81/81**, focused lock 테스트 75/75, liveEvidence 24/24.
+> **디스크에 상태를 쓰는 산출물에는 M4b 계약도 함께 적용한다**: 쓰기 경로는 run 단위 배타 lock 안에서만
+> 진행하고(대기 없이 fail closed), **커밋 기준(revision/이력 tail)을 lock 안에서 디스크와 대조**해
+> 늦은 writer가 앞선 결과를 덮지 못하게 하며, 정리는 **자기 acquire만**(`O_NOFOLLOW` + nonce 대조,
+> 남의 lock 보존) 한다. 하위 호환은 **조용한 기본값 채우기 대신 전용 코드로 거부**한다.
+>
 > **2026-07-26 상태 갱신:** F2/F3 및 V3 M0~M3는 구현·live acceptance 완료.
 > M3d 이후 순서, agent 통신, fresh-session, Codex↔Claude 자동화는
 > `V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`가 우선한다. 이 문서의 미구현 전제와 파일 단위

@@ -2,7 +2,61 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — V3 **M4a durable orchestration kernel 구현 + Codex P0 2건 수정 완료** · **M3 완료(재개방 금지)** · **M4 전체는 미완료** · 격리 worktree 단일 세션)
+## 최신 (2026-07-27 — V3 **M4b 구현 완료: 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 **stacked** 격리 worktree · **M4 전체는 여전히 미완료(M4c 잔여)**)
+
+> **현행 마일스톤 상태 (이 항목이 최신이며 아래 dated 항목보다 우선한다)**
+> - **M3 완료(재개방 금지)** · **M4a 완료** · **M4b 완료(offline 검증)** · **M4 전체는 미완료**.
+>   남은 것은 **M4c**: sibling 전달 · reviewer 왕복(나머지 6개 메시지 타입) · milestone approval manifest.
+> - `B-1`/`B-2`는 여전히 **nonblocking release-readiness backlog**다(M4 선행 조건 아님).
+> - 대장 **`B-3`(exclusive class + scheduler) · `B-4`(멀티프로세스 writer lock)는 이번에 fixed**.
+> - **열린 P0는 없다.** 다음 단계는 M4c 계획 → 사용자 승인.
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m4b` · branch `work/m4b-resource-scheduler` ·
+  base `805da35`(리뷰 완료된 M4a 커밋) — **M4a와 분리된 stacked PR이고 아직 commit/push/PR/merge 없음**
+  (미커밋 working tree). 원본 checkout 무수정. 네트워크·`gh`·deploy·DB·production·live billing·
+  패키지 설치·신규 의존성·package/lockfile 변경·MCP·provider 호출·subagent **전부 없음**.
+  Pony Tail(full) 적용.
+- **무엇을 했나**: M4a kernel에 **배타 자원 class 계약 + 결정론적 scheduler + run 단위 writer lock**을
+  더했다. 두 번째 오케스트레이터를 만들지 않았고 `runWorkflow`/`mission`/`ExecutionProvider`/
+  `projects/<p>/outputs/run_state.json`은 **무수정**이다.
+- **변경 파일 9 + 신규 1**: `orchestrationTypes.ts` · `orchestrationStore.ts` · `orchestrationKernel.ts` ·
+  `orchestrationKernel.test.ts` · `schemas/orchestration_run_state.schema.json` ·
+  `scripts/acceptance.sh`(Test 14 추가, 기존 1~13 무변경) · `scripts/m4b-offline-acceptance.mjs`(신규) ·
+  `dist/exec/*.js` 3개(build 산출물).
+- **계약 요약**:
+  · task가 배타 자원 class **0..4개** 선언(`resourceClasses` — slug·사전순·중복 거부·빈 배열 = 병렬 안전).
+    state·schema(required)·snapshot·`stateContentDigest`에 반영되므로 **선언 위조는 binding으로 거부**된다.
+    선언 주체는 **중앙**이고 §5.1 envelope는 무변경(agent가 자기 자원 권한을 못 만든다).
+  · **점유는 `running` 동안만**, `waiting_children`은 중단 상태라 미점유(명시 결정).
+  · `scheduleReady(limit?)` = `taskId` 오름차순 greedy(이미 점유된 class + 같은 batch에서 앞서 고른
+    class 회피, state 변경 0) · `startScheduledBatch(limit?)` = **커밋 1회**로 batch 시작 · 상한 1..8.
+  · 충돌 규칙은 **커밋 경로 공용 불변식 하나**(`assertExclusiveResourceClaims`)라 직접 `startTask`도,
+    앞으로 생길 어떤 전이 경로도, load도 같은 검사를 받는다(`resource_conflict`, 전이 0).
+  · 커밋 전 과정을 `run_state.lock`(`O_CREAT|O_EXCL`) 안에서 수행하고 **대기하지 않는다**
+    (`run_lock_held`). 해제는 `O_NOFOLLOW` 읽기 + nonce 대조라 **남의 lock은 보존**
+    (`run_lock_owner_mismatch`). 정상 커밋 후 잔재 0.
+  · **stale writer 거부**: `CommitInput.base`(직전 디스크 state의 revision/lastEventId/lastEventHash)를
+    lock 안에서 대조 → 같은 revision에서 열린 두 kernel 중 늦은 쪽은 `stale_writer`(전이 0)이고
+    먼저 쓴 결과는 온전하다. `base`는 optional이 아니다.
+  · **하위 호환**: `resourceClasses`가 없는 M4a state는 마이그레이션하지 않고
+    **`state_pre_m4b_unsupported`로 거부**(새 run 생성). `schemaVersion`은 `"1"` 유지(메시지 envelope와 공용).
+- **검증(offline)**: focused **50/50**(37 → 50) → `npm run build` PASS →
+  M4b offline acceptance **42/42(exit 0)** · M4a offline acceptance **31/31(불변)** →
+  `npm test` **PASS(최종 코드 변경 후 1회)** = exec → core → acceptance **81/81**(75 → 81).
+  `npm run test:exec` 단독 **125/125**(112 → 125). core 카운트는 이 세션에서 별도 캡처하지 않았다
+  (`test:inner`가 `&&` 체인이라 acceptance 도달 = exec·core 통과). `git diff --check` clean.
+  **두 번째 `npm test`는 중복 실행이라 Codex가 시작 직후 중단시켰고 결과로 세지 않는다.**
+  mutation 4종으로 신규 방어의 비공허성 확인 후 원복(그중 1종은 중복 검사임이 드러나 **삭제**).
+- **하지 않은 것**: stress·live runner·반복(3회) suite **미실행**(`B-1`/`B-2` — M4b 게이트 아님) ·
+  실제 7-agent 동시 실행 · provider/LLM 호출 · 크래시 복구/fsync 하드닝 · stale lock 자동 회수 ·
+  schema 마이그레이션 도구 · queue/retry/priority/fairness · 테스트 삭제·완화 **0**.
+- **새 유예 항목**: `C-4` 보강(writer lock 크래시 잔재 → 사람이 지워야 함) · `C-8`(stale lock 자동 회수
+  없음) · `C-9`(schema 마이그레이션 도구 없음) · `C-10`(priority/fairness/starvation 방어 없음).
+  전부 nonblocking이며 로드맵 §9.1 대장에 확률·영향 반경·유예 비용·공수·트리거와 함께 등록했다.
+- **다음**: **M4c**(sibling 전달 · reviewer 왕복 · approval manifest) 계획 → 사용자 승인 → 구현.
+  M4b는 fresh Codex 독립 리뷰 대상이다.
+
+## 이전 (2026-07-27 — V3 **M4a durable orchestration kernel 구현 + Codex P0 2건 수정 완료** · **M3 완료(재개방 금지)** · **M4 전체는 미완료** · 격리 worktree 단일 세션)
 
 > **현행 마일스톤 상태 (이 항목이 최신이며 아래 dated 항목보다 우선한다)**
 > - **M3는 완료다.** M3a/M3b/M3c core와 **실제 live acceptance까지 완료**됐고, M3d.2는 PR #10으로

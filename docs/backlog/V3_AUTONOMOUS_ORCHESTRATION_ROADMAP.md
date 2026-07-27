@@ -16,9 +16,14 @@
   §1·§10 M3d 안의 "차단 게이트 / M3d 완료 전 필수 / pending" 서술은 **2026-07-26 시점의 기록**이며
   현행 판정이 아니다(원문은 이력으로 보존한다).
 - **M4a는 완료**(state-only/offline durable orchestration kernel — §10 M4 → M4a 참조),
-  **M4 전체는 미완료**. Codex 독립 리뷰의 **P0 2건은 2026-07-27에 수정 완료**했고 **열린 P0는 없다**.
-- 현재 기준 커밋: `ea764a54108f1715248f3e0ae414ea87eb8ffaa9`. M4a 작업 브랜치는
-  `work/m4a-durable-orchestration`(미커밋 working tree).
+  **M4b도 구현·offline 검증 완료**(배타 자원 class + deterministic scheduler + run writer lock —
+  §10 M4 → M4b 참조 · 대장 `B-3`/`B-4` fixed), **M4 전체는 여전히 미완료**(sibling/reviewer 라우팅과
+  approval manifest = M4c 잔여). Codex 독립 리뷰의 **P0 2건은 2026-07-27에 수정 완료**했고
+  **열린 P0는 없다**.
+- 현재 기준 커밋: M4a 기준은 `ea764a54108f1715248f3e0ae414ea87eb8ffaa9`.
+  M4a 작업 브랜치는 `work/m4a-durable-orchestration`,
+  **M4b는 그 위에 stack된 `work/m4b-resource-scheduler`(base `805da35` = 리뷰 완료된 M4a 커밋)이며
+  아직 commit/push/PR 없이 미커밋 working tree다.** 두 PR은 분리된 stacked PR이다.
 
 ## 0. 문서 우선순위와 기존 설계의 처리
 
@@ -548,18 +553,27 @@ id / 제목
 id는 추적 연속성을 위해 유지하되 분류는 C로 내렸다. 위 표 이전 판(둘 다 "B — 차단")은
 2026-07-26 시점 기록이며 §1·§10 M3d 본문의 그 표현도 같은 이유로 이력으로만 읽는다.
 
-#### M4a에서 추가된 유예 항목 (2026-07-27 기준)
+#### M4a/M4b에서 추가된 유예 항목 (2026-07-27 기준)
+
+> **M4b 갱신(2026-07-27):** `B-3`·`B-4`는 **fixed**다(아래 표에 증거·상태로 반영). M4b가 새로 등록한
+> 항목은 `C-8`(stale lock 자동 회수 없음) · `C-9`(schema 마이그레이션 도구 없음) ·
+> `C-10`(priority/fairness/retry 없음)이고, `C-4`에는 writer lock 크래시 잔재 보강 항목을 붙였다.
+> **M4b에서 발견한 P0는 없다** — 있었다면 M4b를 완료로 적지 않았다.
 
 M4a 구현 중 확인한 **비-P0** 항목이다. **P0는 없었고**(있었다면 M4a를 완료로 적지 않았다)
 아래 항목들은 M4a 최소 수직 기능의 완료를 막지 않는다.
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-3` | B (P1) | **exclusive resource class + scheduler 미구현.** durable state가 배타 자원 class를 선언·직렬화하지 못한다 | 확실(미구현) | M4 완료 판정 · M5 bridge가 전역 상태 관찰 테스트를 병렬로 돌릴 위험 | 높음 — M5에서 거짓 실패가 재현되면 그때 state schema를 다시 열어야 한다 | 중 | **M4 완료 전(= M5 bridge 착수 전)** | 다음 구현 세션 | 로드맵 M4 "완료" 4번째 항목 · M3d.1 실측 §1 동시성 제약 | open |
-| `B-4` | B (P1) | **멀티프로세스 writer lock 없음.** kernel은 run 하나당 단일 writer 전제이고, 두 프로세스가 같은 run에 쓰면 마지막 쓰기가 이긴다. load가 event chain 불일치를 fail-closed로 잡지만 그 run은 사람 개입 없이는 다시 열리지 않는다 | 낮음(현재 호출자 1개) | 해당 run 1건 | 중 — 병렬 worker 도입 시점에 반드시 필요 | 중(기존 `suiteExclusiveLock` 계약 재사용 가능) | **실제 병렬 worker/멀티프로세스 writer 도입 시 또는 M4 완료 전** | 다음 구현 세션 | `src/exec/orchestrationStore.ts` commitRun 주석 | open |
+| `B-3` | B (P1) | **exclusive resource class + scheduler 미구현.** durable state가 배타 자원 class를 선언·직렬화하지 못한다 | 확실(미구현) | M4 완료 판정 · M5 bridge가 전역 상태 관찰 테스트를 병렬로 돌릴 위험 | 높음 — M5에서 거짓 실패가 재현되면 그때 state schema를 다시 열어야 한다 | 중 | **M4 완료 전(= M5 bridge 착수 전)** | 다음 구현 세션 | **M4b: `task.resourceClasses` durable 선언 + `scheduleReady`/`startScheduledBatch` + focused 13건 + acceptance Test 14(42 체크)** | **fixed (2026-07-27, M4b)** |
+| `B-4` | B (P1) | **멀티프로세스 writer lock 없음.** kernel은 run 하나당 단일 writer 전제이고, 두 프로세스가 같은 run에 쓰면 마지막 쓰기가 이긴다. load가 event chain 불일치를 fail-closed로 잡지만 그 run은 사람 개입 없이는 다시 열리지 않는다 | 낮음(현재 호출자 1개) | 해당 run 1건 | 중 — 병렬 worker 도입 시점에 반드시 필요 | 중(기존 `suiteExclusiveLock` 계약 재사용 가능) | **실제 병렬 worker/멀티프로세스 writer 도입 시 또는 M4 완료 전** | 다음 구현 세션 | **M4b: `run_state.lock`(O_EXCL, 대기 없음) + `CommitInput.base` 대조로 `stale_writer` 거부 + focused/acceptance 증거.** 남는 크래시·stale lock 한계는 `C-4`/`C-8`로 이관 | **fixed (2026-07-27, M4b)** |
 | `C-4` | C (P2) | **커밋 중간 크래시 복구 도구 없음.** event append 후 state rename 전에 죽으면 `event_count_mismatch`로 영구히 열리지 않는다(fail-closed라 손상 데이터를 읽지는 않는다) | 낮음 | 해당 run 1건 | 낮음 — 지금은 run을 버리고 다시 만들면 된다 | 소~중 | **M10 hardening** | 미정 | 로드맵 M4a "저장은 rename, 과도한 crash hardening은 범위 밖" | open |
 | `C-5` | C (P2) | **artifact 검증의 경로 기반 TOCTOU 창.** Node 18에 디렉터리 상대 열기가 없어 lstat/realpath와 read 사이 창을 0으로 만들 수 없다(M3d.2 live evidence와 같은 한계) | 낮음 | artifact 1건의 hash 판정 | 낮음 | 중(런타임 상향 필요) | Node 20+ 채택 또는 M10 hardening | 미정 | `verifyArtifactFile` · M3d.2 동일 한계 기록 §10 | open |
 | `C-6` | C (P3) | **§5.1의 나머지 6개 메시지 타입과 7 specialist registry 미구현.** 계획된 미구현이지 결함이 아니다 | — | 후속 마일스톤 범위 | 낮음 | 중 | M6(hierarchical orchestrator) | 다음 구현 세션 | 로드맵 M4a "M4a가 아닌 것" | open |
+| `C-4` 보강 | C (P2) | (M4b) 위 `C-4`의 크래시 창이 **writer lock에도 적용된다**: 커밋 도중 프로세스가 죽으면 `run_state.lock`이 남아 그 run의 이후 커밋을 전부 `run_lock_held`로 거부한다(사람이 지워야 한다). lock 발행 후 write 실패 경로도 같은 잔재를 남긴다 | 낮음 | 해당 run 1건(그 run만 정지, 손상 없음) | 낮음 — 지금은 lock 파일을 지우거나 run을 다시 만들면 된다 | 소~중 | **M10 hardening** 또는 실제 멀티프로세스 writer 운영 시작 시 | 미정 | `acquireRunWriterLock` ponytail 주석 · M4b acceptance Test 14 | open |
+| `C-8` | C (P2) | **stale lock 자동 회수·소유자 생존 확인이 없다.** M4b writer lock은 nonce 파일 하나이며 죽은 소유자를 판별하지 않는다(항상 거부 = fail closed). 기존 suite lock의 guard/격리/inode 신원 계약은 **재사용하지 않았다** — suite 전용 의미(ownership token 상속·pgid 스캔·격리)를 orchestration에 끌어오지 않기 위해서다 | 낮음 | 해당 run 1건 | 중 — 상시 운영 orchestrator가 생기면 운영 부담이 된다 | 중 | **M10 hardening** 또는 상시 orchestrator 프로세스 도입 시 | 미정 | `orchestrationStore.ts` writer lock 주석 · `scripts/lib/suite-exclusive-lock.mjs` 비교 | open |
+| `C-9` | C (P3) | **state schema 마이그레이션 도구가 없다.** M4a 상태 파일은 `state_pre_m4b_unsupported`로 거부하고 새 run을 만들게 한다. 앞으로 필드가 또 늘면 같은 판단을 반복해야 한다 | 확실(설계상) | 기존 orchestration run(현재 운영 중인 실 run 없음 — offline 테스트 run뿐) | 낮음 — 지금은 버릴 수 있는 run만 있다 | 중(마이그레이션 프레임워크는 별도 승인 범위) | **실제 운영 중인 orchestration run이 생긴 뒤 첫 state 필드 추가 시** | 미정 | `validateTask`의 pre-M4b 거부 · M4b focused 테스트 1건 | open |
+| `C-10` | C (P3) | **scheduler에 priority·fairness·retry·starvation 방어가 없다.** 선택은 `taskId` 오름차순 greedy이므로 자원을 요구하는 뒷순위 task가 계속 유예될 수 있다(결정론은 보장) | 중간(자원 경합이 잦아지면) | scheduling 순서·처리량(안전성은 무관) | 낮음 — 규칙이 좁고 결정론적이라 나중에 정책만 얹으면 된다 | 소~중 | **실제 동시 실행(M5/M9 worker 병렬)에서 starvation이 실측될 때** | 미정 | `selectSchedulable` 주석 · M4b focused "limit는 앞에서부터 자른다" | open |
 | `C-7` | C (P2) | **state↔event binding이 키 없는 digest다.** `run_state.json`과 `events.jsonl`을 **모두 일관되게 재작성**하는 위조는 막지 못한다(그 경우 append-only 감사 로그 자체가 조작되므로 감사 대상) | 낮음 — 로컬 파일 쓰기 권한을 가진 공격자 전제 | 해당 run의 감사 신뢰도 | 중 | 중(out-of-band 키 관리 필요) | 서명/HMAC 도입 승인 시 또는 M10 hardening | 미정 | `assertStateEventBinding` 주석 · P0-1 수정 | open |
 
 ### 9.2 테스트 비례 원칙
@@ -1035,14 +1049,100 @@ state-only/offline 수직 슬라이스다. **provider·LLM·프로세스를 하�
 - **stress·live·반복 suite는 실행하지 않았다** — 이것들은 **nonblocking release-readiness backlog**
   (`B-1`/`B-2`)이며 M3 완료 게이트도 M4 선행 조건도 아니다(§0-0).
 
-**M4a가 아닌 것(여전히 미완료)**: 실제 provider/agent spawn · 7 specialist registry 등록·동시 실행 ·
+**M4a가 아닌 것(당시 미완료)**: 실제 provider/agent spawn · 7 specialist registry 등록·동시 실행 ·
 나머지 6개 메시지 타입 · 범용 scheduler · **exclusive resource class 계약** · 멀티프로세스 writer lock ·
-milestone approval manifest 전체 · provider bridge/MCP · CLI/UI. 이 중 exclusive resource class는
-아래 M4 "완료" 항목에 그대로 남아 있는 **미충족 게이트**다.
+milestone approval manifest 전체 · provider bridge/MCP · CLI/UI.
+이 중 **exclusive resource class와 writer lock은 아래 M4b에서 닫았고**, 나머지는 그대로 열려 있다.
 
-#### M4 전체 (M4a 외 잔여)
+#### M4b — exclusive resource class + deterministic scheduler + run writer lock · **완료(offline 검증)**
 
-**상태: 미완료.** 아래 목표·완료 항목 중 M4a가 덮지 않은 부분은 별도 승인·구현이 필요하다.
+M4a 위에 **stack된 별개 PR**이다(branch `work/m4b-resource-scheduler`, base `805da35` = 리뷰 완료된
+M4a 커밋). 이 세션도 state-only/offline이며 **provider·LLM·프로세스·두 번째 오케스트레이터를 만들지
+않았다.** `runWorkflow`/`mission`/`ExecutionProvider`와 `projects/<p>/outputs/run_state.json`은
+**무수정**이고 신규 런타임/dev 의존성·package/lockfile 변경도 **0**이다.
+대장 `B-3`(exclusive class + scheduler) · `B-4`(멀티프로세스 writer lock)를 닫는 수직 슬라이스다.
+
+구현 범위(완료 — 신규 파일 1개 + 기존 5개 확장):
+
+- `src/exec/orchestrationTypes.ts` — `OrchestrationTask.resourceClasses` 필드 · 상한
+  (`maxResourceClasses: 4`, `maxScheduleBatch: 8`) · `normalizeResourceClasses()`.
+- `src/exec/orchestrationStore.ts` — state validator·`TASK_KEYS`·snapshot 렌더에 자원 선언 반영,
+  공용 불변식 `assertExclusiveResourceClaims()`, run writer lock
+  (`acquireRunWriterLock`/`releaseRunWriterLock` + `RunPaths.lockFile`), `CommitInput.base`와
+  lock 안 base 대조(`stale_writer`).
+- `src/exec/orchestrationKernel.ts` — `TaskSeed.resourceClasses?` · `scheduleReady()` ·
+  `startScheduledBatch()` · `#mutate`가 직전 state를 커밋 기준으로 전달.
+- `schemas/orchestration_run_state.schema.json` — `task.resourceClasses`(required, maxItems 4,
+  uniqueItems, slug items) + 계약 설명.
+- `src/exec/orchestrationKernel.test.ts` — focused 37 → **50건**(M4b 13건 추가, **삭제·완화 0**).
+- `scripts/m4b-offline-acceptance.mjs`(신규, 42 체크) + `scripts/acceptance.sh` **Test 14**
+  (**기존 Test 1~13 무변경**).
+
+확정된 계약:
+
+- **자원 선언은 durable이다.** task는 배타 자원 class를 **0..4개** 선언한다(slug · 사전순 · 중복
+  거부 · 빈 배열 = 병렬 안전). state·schema·snapshot·`stateContentDigest`(→ state↔event binding)에
+  모두 들어가므로 선언을 손으로 고치면 `state_event_binding_mismatch`로 거부된다.
+- **점유는 `running` 동안만이다.** `waiting_children`은 중단 상태라 자원을 들고 있지 않는다
+  (명시적 결정 — DECISIONS 참조). class 이름을 자유 문자열이 아니라 slug로 좁힌 것도 같은 이유다:
+  정규화되지 않은 두 이름이 같은 자원을 뜻하면 직렬화 계약이 조용히 깨진다.
+- **선언 주체는 중앙이다.** `resourceClasses`는 task 생성 입력이며 **agent가 envelope로 스스로
+  선언하는 값이 아니다**(§5.1 envelope 필드 집합 무변경 — agent가 자기 자원 권한을 만들 수 없다).
+- **scheduler는 kernel 안의 좁은 API 2개다**(두 번째 오케스트레이터 없음):
+  `scheduleReady(limit?)`는 `taskId` 오름차순으로 훑어 ① running task가 점유한 class와
+  ② **같은 batch에서 앞서 고른** class를 모두 피해 고른다(state·파일 변경 없음, 같은 state면 같은 답).
+  `startScheduledBatch(limit?)`는 그 batch를 **커밋 1회**로 running으로 올린다(부분 적용 없음).
+  batch 상한은 1..8이며 범위 밖은 `invalid_batch_limit`다.
+- **직접 `startTask()`도 같은 규칙을 받는다.** 충돌 규칙은 메서드마다 복제하지 않고 **커밋 경로의
+  공용 불변식**(`assertExclusiveResourceClaims`, `assertReferentialIntegrity` 안)에 한 번만 뒀다 →
+  `startTask`든 앞으로 추가되는 어떤 전이 경로든 우회로가 없고, load도 같은 검사를 받는다
+  (`resource_conflict`, 전이 0). mutation 테스트로 이 불변식이 실제 게이트임을 확인했다.
+- **커밋은 run 단위 배타 writer lock 안에서만 일어난다.** `outputs/orchestration/<run-id>/run_state.lock`
+  을 `O_CREAT|O_EXCL`로 발행하며 **대기하지 않는다**(`run_lock_held`, retry loop 없음).
+  lock을 쥔 채 ⓐ 디스크 base 확인 → ⓑ message body → ⓒ events append → ⓓ snapshot → ⓔ state를 모두
+  수행하고 정상·실패 모두 해제한다(정상 커밋 후 lock 파일 잔재 0).
+- **stale writer는 fail closed다.** 호출자는 자기 커밋의 기준(직전 디스크 state의
+  `revision`/`lastEventId`/`lastEventHash`)을 `CommitInput.base`로 넘기고, lock 안에서 디스크와
+  대조한다. 같은 revision에서 열린 두 kernel 중 늦은 쪽은 `stale_writer`로 거부되며 **먼저 쓴
+  writer의 결과를 덮지도 남의 event tail에 이어 붙이지도 않는다**(파일 전이 0). `base`는 optional이
+  아니다 — 기본값을 두면 새 호출부가 조용히 lost-update 보호 밖으로 나간다.
+- **정리는 자기 acquire만 한다.** 해제는 최종 엔트리를 `O_RDONLY|O_NOFOLLOW`로만 읽어 nonce를
+  대조하고, 다르면 **남의 lock을 보존**한 채 `run_lock_owner_mismatch`로 올린다.
+- **하위 호환 규칙(선택·문서화): M4a state는 마이그레이션하지 않고 거부한다.** `task.resourceClasses`가
+  없는 상태 파일은 기본값으로 조용히 채우지 않고 `state_pre_m4b_unsupported`로 fail-closed하며,
+  운영자는 **새 run을 만든다**. 기본값으로 채우면 ⓐ 그 state의 `stateDigest`가 어차피 어긋나 원인이
+  불분명한 실패가 되고 ⓑ 선언이 없는 task를 "병렬 안전"으로 오해할 여지가 남는다. `schemaVersion`은
+  `"1"`을 유지했다 — 그 상수는 메시지 envelope와 공용이라 올리면 M4a 계약·Test 13까지 흔든다.
+  광범위한 마이그레이션 프레임워크는 만들지 않았다.
+
+검증 실측(offline, 2026-07-27 — M4b 세션):
+
+- focused `src/exec/orchestrationKernel.test.ts` **50/50 PASS**(37 → 50, M4b 13건 추가).
+- `npm run build` PASS.
+- `node scripts/m4b-offline-acceptance.mjs` **PASS(42/42 체크, exit 0)**.
+  `node scripts/m4a-offline-acceptance.mjs` **PASS(31/31, 불변)**.
+- `npm test` **PASS(1회)** = `test:exec` → `test:core` → acceptance 순서 통과,
+  acceptance **81/81**(75 → 81, Test 14 6 checks). focused `npm run test:exec`는 이 세션에서
+  **125/125**로 별도 확인했다(112 → 125). core 카운트는 이 세션에서 별도 캡처하지 않았으나
+  `test:inner`가 `&&` 체인이므로 acceptance 단계 도달 자체가 exec·core 통과를 뜻한다.
+  **`npm test`는 최종 코드 변경 후 1회만 유효 실행이다** — 두 번째 실행은 중복이라
+  Codex가 시작 직후 중단시켰고 **결과로 세지 않는다**(부분 출력 없음).
+- **stress·live·반복(3회) suite는 실행하지 않았다** — nonblocking release-readiness backlog
+  (`B-1`/`B-2`)이며 M4b 게이트가 아니다.
+- **비공허성(mutation) 4종**: ① 커밋 경로 공용 불변식 제거(M4b 3건 실패) ② stale base 대조 제거
+  (stale writer 1건 실패) ③ lock EEXIST를 성공으로 처리(lock 2건 실패) ④ `startTask`의 중복 사전
+  검사 제거(**0건 실패** → 그 검사는 공용 불변식과 중복이므로 **삭제했다**). ①~③은 정확히 원복했고
+  원복 후 focused 50/50 재확인 · 소스 내 `MUTATION` 흔적 grep 0.
+
+**M4b가 아닌 것(여전히 미완료 = M4c 잔여)**: sibling 전달·reviewer 왕복과 나머지 6개 메시지 타입 ·
+milestone approval manifest · 7 specialist registry 등록·**실제 7-agent 동시 실행** · provider
+bridge/MCP · CLI/UI. 그리고 이번에 **의도적으로 넣지 않은 것**: 커밋 중간 크래시 복구·fsync 하드닝
+(`C-4`) · stale lock 자동 회수/소유자 생존 확인(`C-8`) · state schema 마이그레이션 도구(`C-9`) ·
+queue/retry/priority/fairness 프레임워크(`C-10`).
+
+#### M4 전체 (M4a·M4b 외 잔여 = M4c)
+
+**상태: 미완료.** 아래 목표·완료 항목 중 M4a·M4b가 덮지 않은 부분은 별도 승인·구현이 필요하다.
 배송 우선 원칙(§9.1)에 따라 **M4 계획 준비(계획서·task DAG·영향 파일·승인 manifest 초안 작성)는 지금 해도 된다.**
 계획 준비는 구현이 아니며, 코드·schema·의존성을 건드리지 않는다.
 
@@ -1062,17 +1162,24 @@ milestone approval manifest 전체 · provider bridge/MCP · CLI/UI. 이 중 exc
   배타 자원 class를 선언할 수 있어야 하고, 같은 class를 요구하는 작업은 lock으로 직렬화한다.
   프로세스 전역 또는 tmp 전역 상태를 관찰하는 테스트·runner는 이 class를 명시적으로 선언하며 동시 실행하지 않는다.
 
-완료(항목별 현황 — 2026-07-27):
+완료(항목별 현황 — 2026-07-27, M4b 반영):
 
 - mock parent/child/sibling/reviewer 왕복 → **부분 충족**. parent↔child(중첩 포함)와 dependent 라우팅은
-  M4a에서 충족했다. **sibling 전달과 reviewer 왕복은 미구현**(해당 메시지 타입이 M4a 범위 밖).
+  M4a에서 충족했다. **sibling 전달과 reviewer 왕복은 여전히 미구현**(해당 메시지 타입이 M4a·M4b 범위 밖 →
+  M4c).
 - central process 재시작 후 state만으로 ready task와 다음 전달을 동일하게 복구 → **충족**(M4a).
+  M4b에서 **점유 중인 배타 자원과 scheduling 결정까지** 재시작 후 동일함을 확인했다.
 - raw transcript 없이 결과 전달, schema 오류는 state 전이 0 → **충족**(M4a).
+  M4b의 lock 경합·stale writer 거부도 **전이 0**이다.
 - 동일 exclusive resource class를 요구하는 두 작업이 동시에 실행되지 않음을 scheduler 테스트로 확인
-  → **미충족**. scheduler와 exclusive resource class는 M4a 범위 밖이며 M4 완료를 막는 항목으로 남는다.
+  → **충족(M4b)**. focused 13건 + offline acceptance Test 14(42 체크)가 ⓐ 같은 class 두 ready 중 하나만
+  시작 ⓑ disjoint/자원 없는 task는 같은 batch 동반 ⓒ 직접 `startTask`도 같은 불변식 ⓓ 재시작 후 동일
+  결정 ⓔ holder 완료 시 해제를 고정한다. **이것으로 대장 `B-3`을 닫았고, 같은 세션에서 `B-4`(멀티프로세스
+  writer lock)도 닫았다.**
 
-위 M4a 승인은 **그 범위에 한정된 승인**이다 — 나머지 M4 항목(scheduler·exclusive class·sibling/reviewer
-메시지·approval manifest)의 구현에는 별도 사용자 승인이 필요하고, 위 §M4 절의 중첩 조건 ⓐ~ⓓ도 그대로 유효하다.
+**M4 전체를 완료로 적지 않는다** — sibling/reviewer 라우팅과 milestone approval manifest가 남아 있다(M4c).
+M4a·M4b 승인은 각각 **그 범위에 한정된 승인**이다. 잔여 범위 구현에는 별도 사용자 승인이 필요하고,
+위 §M4 절의 중첩 조건 ⓐ~ⓓ도 그대로 유효하다.
 
 ### M5 — Dual-provider Bridge + Autopilot Bootstrap
 
@@ -1186,8 +1293,14 @@ production deploy, live billing, remote direct write, PR merge 자동화는 선�
     (P0-1 state↔event binding · P0-2 문서의 M3 재개방 표현). **열린 P0는 없다.**
     구현·수정 세션 모두 commit/push/PR/merge를 하지 않았고 stress·live·반복 suite도 실행하지 않았다
     (`B-1`/`B-2`는 nonblocking release-readiness backlog 트리거로만 남는다).
-12. 다음 승인 대상: M4 잔여 범위(scheduler · exclusive resource class · sibling/reviewer 메시지 ·
-    approval manifest)의 계획 → 사용자 승인 → 구현.
+12. ~~다음 승인 대상: M4 잔여 범위(scheduler · exclusive resource class · sibling/reviewer 메시지 ·
+    approval manifest)~~ → **2026-07-27 갱신**: 그중 **scheduler + exclusive resource class +
+    멀티프로세스 writer lock을 M4b로 구현·offline 검증 완료**했다(격리 worktree
+    `work/m4b-resource-scheduler`, base `805da35` = 리뷰 완료된 M4a 커밋 위 **stacked PR**,
+    아직 commit/push/PR 없음). 대장 `B-3`·`B-4`는 **fixed**다.
+13. 다음 승인 대상: **M4c** = sibling 전달 · reviewer 왕복(나머지 메시지 타입) · milestone approval
+    manifest. 그때까지 **M4 전체를 완료로 적지 않는다**. M4b가 남긴 유예 항목은 `C-4`(보강)·`C-8`·
+    `C-9`·`C-10`이며 전부 nonblocking이다.
 
 M5 live acceptance가 통과하면 M6부터는 `autopilot`이 위 전달을 대신한다.
 

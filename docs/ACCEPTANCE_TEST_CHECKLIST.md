@@ -171,12 +171,48 @@ npm run build && node scripts/m4a-offline-acceptance.mjs
 
 ---
 
+### Test 14. M4b 배타 자원 class · deterministic scheduler · run writer lock (offline)
+
+명령:
+
+```bash
+npm run build && node scripts/m4b-offline-acceptance.mjs
+```
+
+확인:
+
+```text
+- 네트워크 / LLM / provider spawn / TTY / git write 없이 exit 0
+- 임시 workspace에서만 동작 (레포에 outputs/orchestration 생성하지 않음)
+- 같은 배타 class(suite-lock)를 요구하는 ready task 2건 + 자원 요구 없는 ready task 1건
+- 선언이 run_state.json과 snapshot.md에 durable하게 남음(task.resourceClasses)
+- 결정론적 schedule(scheduleReady)은 같은 class 중 taskId가 앞선 하나만 고르고,
+  자원 요구가 없는 task는 같은 batch에서 함께 고른다 → startScheduledBatch는 커밋 1회
+- 같은 class를 요구하는 나머지 task는 ready로 유예된다(동시 running 0)
+- scheduler를 거치지 않는 직접 startTask도 같은 규칙을 받는다(`resource_conflict`, 전이 0)
+- 재시작(같은 run을 새로 열기) 후 점유·class 선언·schedule 결정이 동일
+- holder가 completed되면 class가 풀리고 대기 task가 다시 schedulable해진다
+- 같은 revision에서 열린 두 kernel: 첫 커밋 성공, 낡은 기준의 두 번째 커밋은 `stale_writer`로
+  거부(파일 전이 0), 다시 열면 첫 writer 결과가 온전하고 정상 커밋이 가능
+- 보유 중인 run writer lock은 mutation을 대기 없이 `run_lock_held`로 거부하고 state/event/body
+  전이가 0이다. 남의 lock은 `run_lock_owner_mismatch`로 보존하며, 해제 후에는 정상 커밋된다
+```
+
+현재 이 스크립트는 **42개 체크**를 수행한다(2026-07-27 M4b 신규).
+
+`scripts/acceptance.sh` Test 14가 위 스크립트의 exit code와 내부 체크 결과를 검증한다
+(**기존 Test 1~13은 변경하지 않았다**). 세부 계약은
+`docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4b 절을 본다.
+
+---
+
 ## 3. v1 통과 조건
 
 ```text
 위 5개 테스트(Test 1~5)가 모두 통과하면 v1 MVP 완료로 본다.
-(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~13 총 75 checks 검증.
- 2026-07-27 M4a에서 Test 13 4 checks 추가: 71 → 75. 기존 checks는 변경하지 않았다.)
+(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~14 총 81 checks 검증.
+ 2026-07-27 M4a에서 Test 13 4 checks 추가: 71 → 75.
+ 2026-07-27 M4b에서 Test 14 6 checks 추가: 75 → 81. 기존 checks는 변경하지 않았다.)
 ```
 
 ## 4. v1 실패 조건

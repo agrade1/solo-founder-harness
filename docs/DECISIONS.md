@@ -1,5 +1,48 @@
 # DECISIONS.md
 
+## 2026-07-27 (V3 M4b — 배타 자원 class · deterministic scheduler · run writer lock)
+
+- **자원 점유는 `running` 동안만이고 `waiting_children`은 들고 있지 않는다.** 중단된 parent가 자원을
+  계속 점유하면 child가 도는 내내 같은 class의 다른 task가 전부 막히고, child가 그 자원을 필요로 하면
+  **자기 parent와 교착**한다. "점유 = 실행 중"이라는 한 줄 규칙이 교착 회피 로직보다 싸고 검증하기 쉽다.
+  대가는 명시적이다: parent가 `waiting_children` 동안 남이 그 class를 잡을 수 있으므로 parent가
+  다시 ready가 되어도 즉시 시작되지 않을 수 있다(결정론은 유지). 그 대가를 로드맵·타입 주석에 적었다.
+- **충돌 규칙은 메서드마다 두지 않고 커밋 경로의 공용 불변식 하나로 뒀다.** 처음엔 `startTask` 안에
+  사전 검사를 넣었는데 mutation으로 지워도 **아무 테스트도 실패하지 않았다** — `assertReferentialIntegrity`
+  안의 `assertExclusiveResourceClaims`가 이미 같은 판정을 내리고 있었기 때문이다. 중복 검사는 "우회 불가"를
+  증명하지 못하면서 두 곳이 갈라질 위험만 만든다. 그래서 중복을 **삭제**하고 불변식 하나만 남겼다:
+  모든 전이 경로와 load가 같은 문을 지난다. **한 곳에 두는 것이 방어를 줄이는 게 아니라 우회로를 줄인다.**
+- **scheduler는 새 오케스트레이터가 아니라 kernel 메서드 2개다.** 별도 scheduler 모듈·queue·priority·
+  fairness·retry는 지금 필요 없다(실제 동시 실행이 아직 없다). 대신 좁은 계약만 고정했다:
+  결정론(`taskId` 오름차순 greedy) · batch 내부 충돌 없음 · batch는 커밋 1회 · 상한 1..8.
+  starvation·priority는 **실측된 뒤에** 정책으로 얹는다(대장 `C-10`).
+- **자원 선언은 중앙이 하고 agent envelope는 건드리지 않았다.** agent가 envelope로 자기 자원 class를
+  선언할 수 있으면 그것은 자기 실행 권한을 스스로 넓히는 경로다. §5.1 envelope 필드 집합을 유지하고
+  선언을 task 생성 입력에만 뒀다. class 이름을 자유 문자열이 아니라 **slug**로 좁힌 이유도 같다 —
+  정규화되지 않은 두 이름이 같은 자원을 뜻하면 직렬화 계약이 조용히 깨진다.
+- **writer lock은 기존 suite lock을 재사용하지 않고 최소 primitive를 새로 썼다.**
+  `suite-exclusive-lock.mjs`는 검증된 계약이지만 suite 전용 의미(ownership token 부모→자식 상속,
+  pgid 자손 스캔, 격리/quarantine, guard 상태 기계)를 함께 들고 온다. 그것을 orchestration 커밋 경로에
+  끌어오면 **orchestration이 suite 실행 모델에 결합**되고 실패 모드가 두 배가 된다. 필요한 계약은
+  "같은 run에 동시 커밋 금지 + 자기 lock만 정리"뿐이라 `O_CREAT|O_EXCL` + nonce로 충분했다.
+  대신 **못 하는 것을 명시**했다: stale 회수·소유자 생존 확인·크래시 복구 없음(대장 `C-4` 보강/`C-8`).
+- **lock만으로는 lost update를 막지 못하므로 base 대조를 함께 넣었다.** 두 프로세스가 시간차로
+  lock을 잡으면 각자 "혼자"라고 믿고 순차적으로 쓴다 — 늦은 쪽이 앞선 revision을 덮는다.
+  그래서 lock 안에서 디스크의 `revision`/`lastEventId`/`lastEventHash`를 호출자 기준과 대조하고
+  다르면 `stale_writer`로 거부한다. **`CommitInput.base`는 optional로 두지 않았다**: 기본값이 있으면
+  새 호출부가 아무 경고 없이 보호 밖으로 나간다. 필수 필드는 컴파일 시점에 그 사실을 강제한다.
+- **M4a state는 마이그레이션하지 않고 거부한다(`state_pre_m4b_unsupported`).** 세 선택지를 놓고
+  판단했다. ⓐ 없는 필드를 `[]`로 채우기 → 그 state의 `stateDigest`가 어차피 어긋나 **원인이 불분명한
+  실패**가 되고, 선언 없는 task를 "병렬 안전"으로 오해할 여지가 남는다. ⓑ `schemaVersion` 올리기 →
+  그 상수는 메시지 envelope와 **공용**이라 M4a 계약과 acceptance Test 13까지 흔든다.
+  ⓒ 전용 코드로 fail-closed → 모호함 0, 마이그레이션 프레임워크 0, 조용한 수락 0. ⓒ를 택했다.
+  현재 실 운영 run이 없어(offline 테스트 run뿐) 유예 비용이 낮다는 점도 근거다(대장 `C-9`).
+  **M4a와 M4b는 분리된 stacked PR이므로 이 규칙을 문서에 명시**한다 — M4a만 병합된 상태의 run을
+  M4b 코드가 조용히 읽는 일이 없어야 한다.
+- **M4 전체를 완료로 적지 않는다.** `B-3`/`B-4`는 테스트가 증명했으므로 fixed로 적었지만
+  sibling/reviewer 라우팅과 approval manifest는 그대로 열려 있다(M4c). 닫힌 항목만 닫혔다고 적는 것이
+  이 대장의 유일한 유지 조건이다.
+
 ## 2026-07-27 (V3 M4a — Codex P0 2건 수정: state↔event binding · 완료된 M3 재개방 금지)
 
 - **"형태가 유효한 state"는 신뢰의 근거가 못 된다 — 내용을 append-only 이력에 묶었다.** 기존 load는

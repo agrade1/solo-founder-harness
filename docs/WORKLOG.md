@@ -1,5 +1,74 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M4b — 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 stacked 격리 worktree · **M4 전체는 여전히 미완료**)
+
+격리 worktree `/private/tmp/solo-founder-harness-m4b` · branch `work/m4b-resource-scheduler` ·
+base `805da35801a59aeecf436d96d1054483247d643b`(리뷰 완료된 M4a 커밋) 단일 세션.
+**M4a와 분리된 stacked PR이며 아직 commit/push/PR/merge 없음**(미커밋 working tree).
+원본 checkout은 수정하지 않았다. 패키지 설치·신규 의존성·package/lockfile 변경 **0**,
+네트워크·`gh`·deploy·DB·production·live billing·MCP·provider 호출·subagent **없음**,
+stress·live runner **미실행**. Pony Tail(full) 적용 세션이다.
+
+- **① 배타 자원 class를 durable 계약으로 만들었다(대장 `B-3` 절반).** task가 배타 자원 class를
+  **0..4개** 선언한다(`OrchestrationTask.resourceClasses` — slug · 사전순 · 중복 거부 ·
+  빈 배열 = 병렬 안전). runtime validator · `TASK_KEYS` · JSON schema(required) · snapshot ·
+  `stateContentDigest`(→ state↔event binding)에 모두 반영했으므로 선언을 손으로 고치면
+  `state_event_binding_mismatch`로 거부된다. 선언 주체는 **중앙**이다 — §5.1 envelope 필드 집합은
+  건드리지 않았고 **agent가 자기 자원 권한을 선언할 경로는 없다**.
+  점유는 **`running` 동안만**이고 `waiting_children`은 중단 상태라 자원을 들고 있지 않다(명시 결정).
+- **② deterministic scheduler를 kernel 안 좁은 API 2개로 넣었다(대장 `B-3` 나머지).**
+  `scheduleReady(limit?)`는 `taskId` 오름차순으로 훑어 ⓐ running task가 점유한 class와
+  ⓑ **같은 batch에서 앞서 고른** class를 모두 피해 고른다(state·파일 변경 0, 같은 state면 같은 답).
+  `startScheduledBatch(limit?)`는 그 batch를 **커밋 1회**로 running으로 올린다. batch 상한 1..8.
+  **두 번째 오케스트레이터·queue·retry·priority·fairness·실제 동시 실행은 만들지 않았다.**
+- **③ 충돌 규칙은 한 곳에만 뒀다 — 직접 `startTask`도 우회할 수 없다.** 처음에는 `startTask` 안에
+  사전 검사를 뒀는데 **mutation 테스트에서 그 검사를 지워도 아무 테스트도 실패하지 않았다**:
+  커밋 경로의 공용 불변식(`assertExclusiveResourceClaims` ← `assertReferentialIntegrity`)이 이미
+  같은 판정을 내리고 있었다. 그래서 중복 검사를 **삭제**하고 불변식 하나만 남겼다 →
+  `startTask`든 앞으로 추가되는 어떤 전이 경로든, 그리고 load까지 같은 검사를 받는다
+  (`resource_conflict`, 전이 0).
+- **④ run 단위 writer lock + stale writer 거부(대장 `B-4`).**
+  커밋 전 과정(디스크 base 확인 → body → events append → snapshot → state)을
+  `outputs/orchestration/<run-id>/run_state.lock` **하나 안에서** 수행한다.
+  lock은 `O_CREAT|O_EXCL`이고 **대기하지 않는다**(`run_lock_held`, retry loop 없음).
+  호출자는 커밋 기준(직전 디스크 state의 `revision`/`lastEventId`/`lastEventHash`)을
+  `CommitInput.base`로 넘기고 lock 안에서 디스크와 대조한다 → 같은 revision에서 열린 두 kernel 중
+  늦은 쪽은 `stale_writer`로 거부되고 **먼저 쓴 결과를 덮지도, 남의 event tail에 이어 붙이지도 않는다**.
+  `base`는 optional이 아니다(기본값을 두면 새 호출부가 조용히 보호 밖으로 나간다).
+  해제는 최종 엔트리를 `O_RDONLY|O_NOFOLLOW`로 읽어 nonce를 대조하고 다르면 **남의 lock을 보존**한 채
+  `run_lock_owner_mismatch`로 올린다. 정상 커밋 후 lock 잔재 0.
+  **자동 stale 회수·크래시 복구·fsync 하드닝·분산 lock·retry는 넣지 않았다**(→ `C-4` 보강 / `C-8`).
+  기존 suite lock(`scripts/lib/suite-exclusive-lock.mjs`)은 **재사용하지 않았다** — guard·ownership
+  token 상속·pgid 스캔·격리 같은 suite 전용 의미를 orchestration에 끌어오지 않기 위해서다.
+- **⑤ 하위 호환: M4a state는 마이그레이션 없이 거부한다.** `task.resourceClasses`가 없는 상태 파일은
+  기본값으로 조용히 채우지 않고 `state_pre_m4b_unsupported`로 fail-closed하며 새 run을 만들게 한다.
+  기본값으로 채우면 ⓐ 그 state의 `stateDigest`가 어차피 어긋나 원인이 불분명한 실패가 되고
+  ⓑ 선언 없는 task를 "병렬 안전"으로 오해할 여지가 남는다. `schemaVersion`은 `"1"`을 유지했다 —
+  그 상수는 메시지 envelope와 공용이라 올리면 M4a 계약과 acceptance Test 13까지 흔든다.
+  **마이그레이션 프레임워크는 만들지 않았다**(→ `C-9`).
+- **⑥ 테스트(삭제·완화 0)**: focused `orchestrationKernel.test.ts` 37 → **50건**(M4b 13건 추가) =
+  선언 정규화/상한/durable 왕복 · scheduler 결정론 · batch 커밋 1회·limit 검증 · 직접 start 동일 규칙 ·
+  `waiting_children` 미점유 · holder 완료 시 해제 · 재시작 후 동일 결정 · 선언 위조 거부 ·
+  pre-M4b state 거부 · running 둘 충돌 state 거부 · stale writer · lock 경합 · lock 소유자 보존.
+  기존 M4a 테스트는 **전부 유지**했고 계약 변경으로 손댄 것은 2곳뿐이다(공개 API 목록에 신규 2개 추가,
+  `commitRun` 호출에 `base` 전달). 신규 `scripts/m4b-offline-acceptance.mjs`(42 체크)와
+  `scripts/acceptance.sh` **Test 14**(6 checks)를 추가했고 **기존 Test 1~13은 무변경**이다.
+- **검증 실측(offline)**: focused **50/50** → `npm run build` PASS →
+  `node scripts/m4b-offline-acceptance.mjs` **42/42 PASS(exit 0)** ·
+  `node scripts/m4a-offline-acceptance.mjs` **31/31 PASS(불변)** →
+  `npm test` **PASS(최종 코드 변경 후 1회)** = `test:exec` → `test:core` → acceptance **81/81**
+  (75 → 81). `npm run test:exec` 단독은 이 세션에서 **125/125**로 확인(112 → 125).
+  core 카운트는 별도 캡처하지 않았지만 `test:inner`가 `&&` 체인이라 acceptance 도달 자체가
+  exec·core 통과를 뜻한다. **두 번째 `npm test`는 중복이라 Codex가 시작 직후 중단시켰고 결과로 세지
+  않는다**(부분 출력 없음). `git diff --check` clean.
+- **비공허성(mutation) 4종**: ① 공용 자원 불변식 제거 → M4b 3건 실패, ② stale base 대조 제거 →
+  stale writer 1건 실패, ③ lock EEXIST를 성공 처리 → lock 2건 실패, ④ `startTask` 중복 사전 검사 제거 →
+  **0건 실패(중복 확인 → 삭제)**. ①~③은 정확히 원복하고 원복 후 focused **50/50** 재확인,
+  소스 내 `MUTATION` 흔적 grep 0.
+- **M4 전체는 여전히 미완료**: sibling 전달 · reviewer 왕복(나머지 6개 메시지 타입) ·
+  milestone approval manifest · 7 specialist registry 등록·**실제 7-agent 동시 실행** ·
+  provider bridge/MCP · CLI/UI가 **M4c 잔여**다. **M4b에서 발견한 P0는 없다.**
+
 ## 2026-07-27 (V3 M4a — **Codex 독립 리뷰 P0 2건 수정** · 허용된 단일 P0 정정 세션 · **M3 완료 재확인** · **M4 전체 여전히 미완료**)
 
 같은 격리 worktree/branch(`work/m4a-durable-orchestration`, base `ea764a5`)에서 이어서 진행했다.
