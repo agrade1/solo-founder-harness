@@ -20,3 +20,6 @@ projects/*/outputs/runtime/
 
 # [M3b.2] handoff tool-trace JSONL (정규화 trace, raw payload 미포함) — 커밋 금지
 projects/*/outputs/tool-trace/
+
+# [M4a] orchestration run 상태 (run_state.json / events.jsonl / messages / snapshot) — 커밋 금지
+outputs/orchestration/

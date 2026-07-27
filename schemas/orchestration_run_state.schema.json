@@ -1,0 +1,291 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/orchestration_run_state.schema.json",
+  "title": "OrchestrationRunState",
+  "description": "V3 M4a — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4). orchestration 실행 상태의 SoR이며, 기존 projects/<p>/outputs/run_state.json(workflow 실행 상태)과는 **별개 계약**이다(변경·마이그레이션 없음). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의의 핵심 동치(state/type/role enum · required · bounds)는 src/exec/orchestrationKernel.test.ts가 강제한다. events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript는 어떤 레벨에서도 담지 않는다(§3.2).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "milestoneId",
+    "revision",
+    "lastEventId",
+    "lastEventHash",
+    "createdAt",
+    "updatedAt",
+    "tasks",
+    "messages",
+    "artifacts"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "runId": { "$ref": "#/definitions/slug" },
+    "milestoneId": { "$ref": "#/definitions/slug" },
+    "revision": {
+      "description": "성공한 kernel 변경 1회당 +1 (monotonic). 유효하지 않은 입력에서는 올라가지 않는다.",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    },
+    "lastEventId": {
+      "description": "events.jsonl의 줄 수 (monotonic). 불일치는 load 시 fail-closed.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1000000
+    },
+    "lastEventHash": {
+      "description": "events.jsonl 마지막 줄의 SHA-256. 이벤트 0개면 64개의 '0'.",
+      "$ref": "#/definitions/sha256"
+    },
+    "createdAt": { "$ref": "#/definitions/timestamp" },
+    "updatedAt": { "$ref": "#/definitions/timestamp" },
+    "tasks": {
+      "description": "taskId 오름차순 고정 — ready 목록·snapshot 결정성의 근거.",
+      "type": "array",
+      "maxItems": 32,
+      "items": { "$ref": "#/definitions/task" }
+    },
+    "messages": {
+      "description": "messageId 오름차순 고정. Markdown body 전문은 messages/<id>.md에만 있고 여기엔 hash와 bounded summary만 둔다.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/message" }
+    },
+    "artifacts": {
+      "description": "artifactId 오름차순 고정. 조용한 덮어쓰기 없이 revision/supersedes 관계를 남긴다.",
+      "type": "array",
+      "items": { "$ref": "#/definitions/artifactRecord" }
+    }
+  },
+  "definitions": {
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "workspacePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^/\\\\][^\\\\]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "boundedText": { "type": "string", "minLength": 1, "maxLength": 500 },
+    "boundedSummary": {
+      "description": "중앙 state로 옮기는 유일한 서술 필드. raw transcript·artifact 본문 금지.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "taskState": {
+      "description": "M4a가 쓰는 task 상태 전부. 이 6개 외의 상태는 존재하지 않는다.",
+      "enum": ["pending", "ready", "running", "waiting_children", "completed", "blocked"]
+    },
+    "messageType": { "enum": ["task_assignment", "spawn_request", "result", "blocker"] },
+    "artifactRole": { "enum": ["input", "contract", "output", "evidence", "diff", "test"] },
+    "artifactPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "revision", "producerTaskId", "role"],
+      "properties": {
+        "path": { "$ref": "#/definitions/workspacePath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "producerTaskId": { "$ref": "#/definitions/slug" },
+        "role": { "$ref": "#/definitions/artifactRole" }
+      }
+    },
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "taskId",
+        "roleId",
+        "title",
+        "scope",
+        "ownership",
+        "parentTaskId",
+        "childTaskIds",
+        "dependsOn",
+        "state",
+        "depth",
+        "createdAt",
+        "updatedAt",
+        "resultSummary",
+        "blockerSummary",
+        "artifactRefs"
+      ],
+      "properties": {
+        "taskId": { "$ref": "#/definitions/slug" },
+        "roleId": {
+          "description": "opaque role 식별자. 향후 7개 상위 specialist와 그 하위 specialist를 그대로 수용한다(M4a는 registry 등록·동시 실행을 하지 않는다).",
+          "$ref": "#/definitions/slug"
+        },
+        "title": { "$ref": "#/definitions/boundedText" },
+        "scope": { "$ref": "#/definitions/boundedText" },
+        "ownership": {
+          "description": "workspace-relative 정규화 경로(사전순·중복 없음). M4a에서는 기록·검증 메타데이터일 뿐 실제 파일 권한이나 provider 실행 권한이 아니다.",
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/workspacePath" }
+        },
+        "parentTaskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "childTaskIds": {
+          "description": "task당 child 4개 상한.",
+          "type": "array",
+          "maxItems": 4,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/slug" }
+        },
+        "dependsOn": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/slug" }
+        },
+        "state": { "$ref": "#/definitions/taskState" },
+        "depth": {
+          "description": "root=0. child depth 상한 3.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 3
+        },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "updatedAt": { "$ref": "#/definitions/timestamp" },
+        "resultSummary": { "oneOf": [{ "$ref": "#/definitions/boundedSummary" }, { "type": "null" }] },
+        "blockerSummary": { "oneOf": [{ "$ref": "#/definitions/boundedSummary" }, { "type": "null" }] },
+        "artifactRefs": {
+          "type": "array",
+          "maxItems": 16,
+          "items": { "$ref": "#/definitions/artifactPointer" }
+        }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "messageId",
+        "type",
+        "taskId",
+        "parentTaskId",
+        "sender",
+        "recipient",
+        "createdAt",
+        "dependsOn",
+        "artifactRefs",
+        "supersedes",
+        "bodyPath",
+        "bodySha256",
+        "summary"
+      ],
+      "properties": {
+        "messageId": { "$ref": "#/definitions/slug" },
+        "type": { "$ref": "#/definitions/messageType" },
+        "taskId": { "$ref": "#/definitions/slug" },
+        "parentTaskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "sender": { "$ref": "#/definitions/slug" },
+        "recipient": { "$ref": "#/definitions/slug" },
+        "createdAt": { "$ref": "#/definitions/timestamp" },
+        "dependsOn": { "type": "array", "maxItems": 16, "uniqueItems": true, "items": { "$ref": "#/definitions/slug" } },
+        "artifactRefs": { "type": "array", "maxItems": 16, "items": { "$ref": "#/definitions/artifactPointer" } },
+        "supersedes": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "bodyPath": {
+          "description": "run 디렉터리 상대 경로. 반드시 messages/<messageId>.md.",
+          "$ref": "#/definitions/workspacePath"
+        },
+        "bodySha256": { "$ref": "#/definitions/sha256" },
+        "summary": {
+          "description": "result/blocker의 bounded summary. 그 외 타입은 null.",
+          "oneOf": [{ "$ref": "#/definitions/boundedSummary" }, { "type": "null" }]
+        }
+      }
+    },
+    "artifactRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["artifactId", "path", "sha256", "revision", "producerTaskId", "role", "registeredAt", "supersedes"],
+      "properties": {
+        "artifactId": {
+          "description": "<path>@<revision>. registry 안에서 유일.",
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 528
+        },
+        "path": { "$ref": "#/definitions/workspacePath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "producerTaskId": { "$ref": "#/definitions/slug" },
+        "role": { "$ref": "#/definitions/artifactRole" },
+        "registeredAt": { "$ref": "#/definitions/timestamp" },
+        "supersedes": {
+          "description": "직전 revision의 artifactId. 최초 등록이면 null.",
+          "oneOf": [{ "type": "string", "minLength": 3, "maxLength": 528 }, { "type": "null" }]
+        }
+      }
+    },
+    "event": {
+      "description": "events.jsonl 한 줄의 계약. prevHash는 직전 줄 텍스트의 SHA-256이며 첫 줄은 64개의 '0'이다. state.lastEventId/lastEventHash와 어긋나면 load에서 fail-closed. stateDigest는 커밋의 마지막 이벤트에만 있는 state 내용 해시로, load가 재계산해 대조한다 — 문법적으로 유효한 run_state.json 편집만으로 kernel 상태 전이를 우회할 수 없게 하는 durable binding이다(키 없는 digest이므로 state와 events.jsonl을 모두 일관되게 재작성하는 위조는 감사 대상으로 남는다).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "eventId",
+        "prevHash",
+        "stateDigest",
+        "at",
+        "type",
+        "revision",
+        "taskId",
+        "messageId",
+        "fromState",
+        "toState",
+        "reason",
+        "artifactId"
+      ],
+      "properties": {
+        "eventId": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "prevHash": { "$ref": "#/definitions/sha256" },
+        "stateDigest": {
+          "description": "커밋의 마지막 이벤트만 값을 갖고 나머지는 null. state의 lastEventId/lastEventHash를 제외한 내용의 SHA-256(순환 없음).",
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        },
+        "at": { "$ref": "#/definitions/timestamp" },
+        "type": {
+          "enum": ["run_created", "task_created", "message_accepted", "artifact_registered", "task_state_changed"]
+        },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "taskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "messageId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "fromState": { "oneOf": [{ "$ref": "#/definitions/taskState" }, { "type": "null" }] },
+        "toState": { "oneOf": [{ "$ref": "#/definitions/taskState" }, { "type": "null" }] },
+        "reason": {
+          "oneOf": [
+            {
+              "enum": [
+                "created",
+                "spawn_requested",
+                "started",
+                "result_accepted",
+                "blocker_accepted",
+                "children_completed",
+                "dependencies_completed",
+                "child_blocked",
+                "dependency_blocked"
+              ]
+            },
+            { "type": "null" }
+          ]
+        },
+        "artifactId": { "oneOf": [{ "type": "string", "minLength": 3, "maxLength": 528 }, { "type": "null" }] }
+      }
+    }
+  }
+}

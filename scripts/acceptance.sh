@@ -169,6 +169,17 @@ OUT="$($HARNESS handoff --project "$PROJ" 2>&1)"
 echo "$OUT" | grep -q "상태가 아닙니다"; check "not_completed → handoff 거부" $?
 
 echo ""
+echo "== Test 13: M4a durable orchestration (offline — network/LLM/provider/TTY 미사용) =="
+# 임시 workspace에서만 도는 kernel 수직 슬라이스. 상세 체크는 스크립트가 자체 출력한다.
+M4A_OUT="$(node scripts/m4a-offline-acceptance.mjs 2>&1)"
+M4A_RC=$?
+[ "$M4A_RC" -eq 0 ];                        check "M4a offline acceptance exit 0" $?
+echo "$M4A_OUT" | grep -q " FAIL=0";        check "M4a 내부 체크 전부 통과" $?
+echo "$M4A_OUT" | grep -q "child completed"; check "M4a result 전파 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
