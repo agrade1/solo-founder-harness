@@ -1,31 +1,39 @@
 /**
- * V3 M4a — orchestration durable state의 저장·적재 계층 (로드맵 §4).
+ * V3 M4a/M4b — orchestration durable state의 저장·적재 계층 (로드맵 §4).
  *
  * ```text
  * outputs/orchestration/<run-id>/run_state.json   # SoR (실행 상태)
  * outputs/orchestration/<run-id>/events.jsonl     # append-only 감사 이력(해시 체인)
  * outputs/orchestration/<run-id>/messages/<id>.md # 검증된 Markdown body
  * outputs/orchestration/<run-id>/snapshot.md      # state에서 결정론적으로 재생성한 파생물
+ * outputs/orchestration/<run-id>/run_state.lock   # M4b — run 단위 배타 writer lock(커밋 동안만 존재)
  * ```
  *
  * 계약:
  * - state 저장은 **같은 디렉터리 임시 파일 → rename**으로 교체한다. 과도한 fsync/crash hardening은
- *   M4a 범위가 아니다(로드맵 M10 hardening 대상).
+ *   M4a/M4b 범위가 아니다(로드맵 M10 hardening 대상).
+ * - **커밋은 run 단위 배타 writer lock 안에서만 일어나고**(M4b), lock 안에서 디스크 state의
+ *   revision·event tail이 호출자의 커밋 기준과 같은지 확인한다. 다르면 `stale_writer`로 거부하며
+ *   **먼저 쓴 writer의 결과를 덮지 않는다**. lock 경합은 대기 없이 `run_lock_held`로 fail-closed다.
  * - load는 fail-closed다: state runtime schema · event linkage · message body hash · artifact hash
  *   중 하나라도 어긋나면 던진다. **실패를 null이나 빈 run으로 바꾸지 않는다.**
  * - `artifacts/` 디렉터리는 만들지 않는다 — M4a의 artifact는 workspace 안 실제 파일이고
  *   중앙이 보관하는 것은 포인터뿐이다(§3.2).
  */
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import {
   appendFileSync,
+  closeSync,
+  constants as fsConstants,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
   realpathSync,
   renameSync,
   rmSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
@@ -49,6 +57,7 @@ import {
   assertText,
   assertTimestamp,
   normalizeOwnership,
+  normalizeResourceClasses,
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
 import { validateArtifactPointer } from "./agentMessage.js";
@@ -64,6 +73,8 @@ export interface RunPaths {
   eventsFile: string;
   messagesDir: string;
   snapshotFile: string;
+  /** M4b — run 단위 배타 writer lock 경로. 커밋 중에만 존재한다. */
+  lockFile: string;
 }
 
 export function runPaths(workspaceRoot: string, runId: string): RunPaths {
@@ -80,6 +91,7 @@ export function runPaths(workspaceRoot: string, runId: string): RunPaths {
     eventsFile: join(dir, "events.jsonl"),
     messagesDir: join(dir, "messages"),
     snapshotFile: join(dir, "snapshot.md"),
+    lockFile: join(dir, "run_state.lock"),
   };
 }
 
@@ -174,6 +186,7 @@ export const TASK_KEYS = [
   "title",
   "scope",
   "ownership",
+  "resourceClasses",
   "parentTaskId",
   "childTaskIds",
   "dependsOn",
@@ -244,6 +257,15 @@ export const STATE_KEYS = [
 
 function validateTask(raw: unknown): OrchestrationTask {
   const o = asObject(raw, "task");
+  // M4b 이전(M4a) state에는 resourceClasses가 없다. 기본값으로 조용히 채우지 않고 **거부**한다 —
+  // 채우면 그 state의 stateDigest가 어차피 어긋나 원인이 불분명한 실패가 되고, 배타 자원 선언이
+  // 없는 task를 "병렬 안전"으로 오해할 여지도 남는다. 마이그레이션 프레임워크는 만들지 않는다.
+  if (!("resourceClasses" in o)) {
+    throw new OrchestrationError(
+      "state_pre_m4b_unsupported",
+      "M4b 이전 orchestration state다(task.resourceClasses 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다",
+    );
+  }
   closedKeys(o, TASK_KEYS, "task");
   return {
     taskId: assertSlug(o.taskId, "task.taskId"),
@@ -251,6 +273,7 @@ function validateTask(raw: unknown): OrchestrationTask {
     title: assertText(o.title, "task.title", LIMITS.maxTextLength),
     scope: assertText(o.scope, "task.scope", LIMITS.maxTextLength),
     ownership: normalizeOwnership(o.ownership, "task.ownership"),
+    resourceClasses: normalizeResourceClasses(o.resourceClasses, "task.resourceClasses"),
     parentTaskId: o.parentTaskId === null ? null : assertSlug(o.parentTaskId, "task.parentTaskId"),
     childTaskIds: slugArray(o.childTaskIds, "task.childTaskIds", LIMITS.maxChildrenPerTask),
     dependsOn: slugArray(o.dependsOn, "task.dependsOn", LIMITS.maxDependsOn),
@@ -424,6 +447,7 @@ export function assertReferentialIntegrity(state: OrchestrationRunState): void {
   }
 
   assertNoDependencyCycle(state.tasks);
+  assertExclusiveResourceClaims(state.tasks);
 
   for (const m of state.messages) {
     if (!byId.has(m.taskId)) throw new OrchestrationError("unknown_task", `message ${m.messageId}의 taskId 미상: ${m.taskId}`);
@@ -449,6 +473,29 @@ export function assertReferentialIntegrity(state: OrchestrationRunState): void {
     // supersedes는 같은 path의 **더 낮은** revision이어야 한다(문자열 정렬과 무관하게 판정).
     if (!artifactIds.has(a.supersedes) || a.supersedes !== `${a.path}@${a.revision - 1}`) {
       throw new OrchestrationError("invalid_state", `artifact ${a.artifactId}의 supersedes가 직전 revision이 아니다: ${a.supersedes}`);
+    }
+  }
+}
+
+/**
+ * M4b 핵심 불변식: **같은 배타 자원 class를 `running` task 둘이 동시에 점유할 수 없다.**
+ * 점유는 `running` 동안만이고 `waiting_children`은 중단 상태라 점유하지 않는다.
+ * kernel이 만든 state와 디스크에서 읽은 state 모두 이 검사를 통과해야 하므로,
+ * scheduler를 우회한 전이나 손으로 고친 state는 커밋·load 어느 쪽에서도 통과하지 못한다.
+ */
+export function assertExclusiveResourceClaims(tasks: OrchestrationTask[]): void {
+  const holder = new Map<string, string>();
+  for (const t of tasks) {
+    if (t.state !== "running") continue;
+    for (const r of t.resourceClasses) {
+      const other = holder.get(r);
+      if (other !== undefined) {
+        throw new OrchestrationError(
+          "resource_conflict",
+          `배타 자원 class '${r}'를 running task 둘이 점유한다: ${other}, ${t.taskId}`,
+        );
+      }
+      holder.set(r, t.taskId);
     }
   }
 }
@@ -527,6 +574,7 @@ export function renderSnapshot(state: OrchestrationRunState): string {
     lines.push(`- children: ${t.childTaskIds.length > 0 ? t.childTaskIds.join(", ") : "(none)"}`);
     lines.push(`- dependsOn: ${t.dependsOn.length > 0 ? t.dependsOn.join(", ") : "(none)"}`);
     lines.push(`- ownership: ${t.ownership.join(", ")}`);
+    lines.push(`- resourceClasses: ${t.resourceClasses.length > 0 ? t.resourceClasses.join(", ") : "(none — 병렬 안전)"}`);
     lines.push(`- resultSummary: ${t.resultSummary ?? "(none)"}`);
     lines.push(`- blockerSummary: ${t.blockerSummary ?? "(none)"}`);
     for (const a of t.artifactRefs) {
@@ -603,6 +651,126 @@ export function stateContentDigest(state: OrchestrationRunState): string {
   );
 }
 
+// ── M4b: run 단위 배타 writer lock ──────────────────────────────────────────
+
+/**
+ * 한 번의 acquire를 식별하는 handle. `nonce`를 모르면 이 lock을 해제할 수 없다 —
+ * 정리는 **이 acquire가 만든 lock에 대해서만** 하고 남의 lock은 보존한다.
+ */
+export interface RunWriterLock {
+  file: string;
+  nonce: string;
+}
+
+const O_NOFOLLOW_SUPPORTED = typeof fsConstants.O_NOFOLLOW === "number";
+
+/**
+ * run 하나의 커밋을 직렬화하는 배타 lock. `O_CREAT|O_EXCL`(= `wx`) 하나로 성립하며
+ * **대기하지 않는다**: 이미 있으면 즉시 `run_lock_held`로 fail-closed다(retry loop 없음).
+ *
+ * ponytail: 최소 파일 lock이다. **stale lock 자동 회수·소유자 생존 확인·크래시 복구·분산 lock은 넣지 않았다** —
+ * writer가 커밋 도중 죽으면 lock이 남아 그 run의 이후 커밋을 전부 거부하고 사람이 지워야 한다(fail closed).
+ * 상향 경로는 기존 suite lock(`scripts/lib/suite-exclusive-lock.mjs`)의 guard/격리 계약이며 별도 승인 범위다.
+ * 그 계약은 suite 전용 의미(ownership token 상속·pgid 스캔·격리)를 함께 들고 오므로 여기서는 재사용하지 않았다.
+ */
+export function acquireRunWriterLock(paths: RunPaths): RunWriterLock {
+  ensureRunDir(paths);
+  const nonce = randomBytes(16).toString("hex");
+  let fd: number;
+  try {
+    fd = openSync(paths.lockFile, "wx", 0o600);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new OrchestrationError(
+        "run_lock_held",
+        `이 run에 다른 writer가 커밋 중이다(대기하지 않는다): ${paths.runId}`,
+      );
+    }
+    throw e;
+  }
+  try {
+    writeFileSync(fd, `${nonce}\n`, { encoding: "utf8" });
+  } finally {
+    closeSync(fd);
+  }
+  return { file: paths.lockFile, nonce };
+}
+
+/**
+ * **이 acquire가 만든 lock만** 해제한다. 최종 엔트리는 `O_NOFOLLOW`로만 읽고(symlink 교체 거부),
+ * nonce가 다르면 남의 lock이므로 **지우지 않고** `run_lock_owner_mismatch`로 올린다.
+ *
+ * ponytail: Node 18에 compare-and-unlink가 없어 "확인 → unlink" 창을 0으로 만들 수 없다
+ * (대장 `C-5`와 같은 한계 — 창 최소화 + 사후 탐지).
+ */
+export function releaseRunWriterLock(paths: RunPaths, lock: RunWriterLock): void {
+  if (!O_NOFOLLOW_SUPPORTED) {
+    throw new OrchestrationError("run_lock_nofollow_unsupported", "이 플랫폼은 O_NOFOLLOW를 지원하지 않는다");
+  }
+  let text: string;
+  let fd: number;
+  try {
+    fd = openSync(paths.lockFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch {
+    throw new OrchestrationError("run_lock_release_failed", "해제할 writer lock을 읽을 수 없다(교체·삭제됨)");
+  }
+  try {
+    text = readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+  if (text.trim() !== lock.nonce) {
+    throw new OrchestrationError("run_lock_owner_mismatch", "writer lock 소유자가 다르다 — 남의 lock은 지우지 않는다");
+  }
+  unlinkSync(paths.lockFile);
+}
+
+/** 커밋을 올릴 기준이 되는 **디스크 state**의 신원. create(최초 커밋)는 null이다. */
+export interface CommitBase {
+  revision: number;
+  lastEventId: number;
+  lastEventHash: string;
+}
+
+/**
+ * lock을 쥔 상태에서 디스크가 아직 호출자의 기준과 같은지 확인한다.
+ * 다르면 **아무것도 쓰지 않고** `stale_writer`로 거부한다 — 늦은 writer가 먼저 쓴 결과를 덮거나
+ * 남의 event tail에 이어 붙여 체인을 깨뜨리는 경로를 없앤다.
+ */
+function assertDurableBase(paths: RunPaths, base: CommitBase | null): void {
+  if (base === null) {
+    if (runExists(paths)) {
+      throw new OrchestrationError("run_already_exists", `이미 존재하는 run이다: ${paths.runId}`);
+    }
+    return;
+  }
+  if (!runExists(paths)) {
+    throw new OrchestrationError("stale_writer", "커밋 기준 run_state.json이 디스크에서 사라졌다");
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(paths.stateFile, "utf8"));
+  } catch {
+    throw new OrchestrationError("state_unparsable", "run_state.json이 JSON이 아니다");
+  }
+  const o = asObject(parsed, "run_state");
+  if (o.revision !== base.revision || o.lastEventId !== base.lastEventId || o.lastEventHash !== base.lastEventHash) {
+    throw new OrchestrationError(
+      "stale_writer",
+      `디스크 state가 커밋 기준과 다르다 (기준 revision ${base.revision}/event ${base.lastEventId}, 디스크 revision ${String(o.revision)}/event ${String(o.lastEventId)})`,
+    );
+  }
+  const tail = existsSync(paths.eventsFile)
+    ? readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0).length
+    : 0;
+  if (tail !== base.lastEventId) {
+    throw new OrchestrationError(
+      "stale_writer",
+      `events.jsonl 줄 수(${tail})가 커밋 기준(${base.lastEventId})과 다르다`,
+    );
+  }
+}
+
 export interface CommitInput {
   /** lastEventId/lastEventHash를 제외한 나머지가 채워진 다음 state. */
   state: OrchestrationRunState;
@@ -610,6 +778,12 @@ export interface CommitInput {
   events: Array<Omit<OrchestrationEvent, "prevHash" | "eventId" | "stateDigest">>;
   /** 이번 커밋에서 새로 저장할 message body. */
   bodies: Array<{ messageId: string; body: string }>;
+  /**
+   * 호출자가 이 커밋을 올린 **직전 디스크 state**의 신원(최초 커밋은 null).
+   * lock 안에서 디스크와 대조하며, 어긋나면 `stale_writer`다. 생략 가능한 값이 아니다 —
+   * 기본값을 두면 새 호출부가 조용히 lost-update 보호 밖으로 나간다.
+   */
+  base: CommitBase | null;
 }
 
 /**
@@ -620,6 +794,10 @@ export interface CommitInput {
  * 커밋의 **마지막** 이벤트가 이 커밋이 남기는 state 내용의 digest를 들고 가고, load가 그것을
  * 재계산해 대조한다 → 문법적으로 유효한 state 편집(예: `state`/`resultSummary` 손대기)만으로는
  * kernel을 우회할 수 없다. 그래서 커밋마다 이벤트가 최소 1건 필요하다.
+ *
+ * M4b: 위 전 과정(디스크 기준 확인 → body → events → snapshot → state)을 **run 단위 배타 writer
+ * lock 하나 안에서** 수행한다. 다른 프로세스가 커밋 중이면 대기 없이 `run_lock_held`, 디스크가
+ * 이미 앞서 있으면 `stale_writer`이며 두 경우 다 파일 전이가 0이다.
  */
 export function commitRun(paths: RunPaths, input: CommitInput): OrchestrationRunState {
   ensureRunDir(paths);
@@ -630,35 +808,44 @@ export function commitRun(paths: RunPaths, input: CommitInput): OrchestrationRun
   // chain 필드를 뺀 내용은 아래 finalState와 동일하므로 append 전에 미리 계산할 수 있다.
   const digest = stateContentDigest(state);
 
-  for (const b of bodies) {
-    writeAtomic(join(paths.messagesDir, `${b.messageId}.md`), b.body);
-  }
+  const lock = acquireRunWriterLock(paths);
+  try {
+    assertDurableBase(paths, input.base);
 
-  let prevHash = state.lastEventHash;
-  let eventId = state.lastEventId;
-  let appended = "";
-  for (let i = 0; i < events.length; i++) {
-    eventId += 1;
-    const full: OrchestrationEvent = {
-      ...events[i],
-      eventId,
-      prevHash,
-      stateDigest: i === events.length - 1 ? digest : null,
-    };
-    const line = JSON.stringify(full);
-    appended += `${line}\n`;
-    prevHash = sha256Hex(line);
-  }
-  appendFileSync(paths.eventsFile, appended, { encoding: "utf8", mode: 0o600 });
+    for (const b of bodies) {
+      writeAtomic(join(paths.messagesDir, `${b.messageId}.md`), b.body);
+    }
 
-  const finalState: OrchestrationRunState = { ...state, lastEventId: eventId, lastEventHash: prevHash };
-  assertReferentialIntegrity(finalState);
-  if (stateContentDigest(finalState) !== digest) {
-    throw new OrchestrationError("state_digest_drift", "커밋 중 state 내용이 바뀌었다");
+    let prevHash = state.lastEventHash;
+    let eventId = state.lastEventId;
+    let appended = "";
+    for (let i = 0; i < events.length; i++) {
+      eventId += 1;
+      const full: OrchestrationEvent = {
+        ...events[i],
+        eventId,
+        prevHash,
+        stateDigest: i === events.length - 1 ? digest : null,
+      };
+      const line = JSON.stringify(full);
+      appended += `${line}\n`;
+      prevHash = sha256Hex(line);
+    }
+    appendFileSync(paths.eventsFile, appended, { encoding: "utf8", mode: 0o600 });
+
+    const finalState: OrchestrationRunState = { ...state, lastEventId: eventId, lastEventHash: prevHash };
+    assertReferentialIntegrity(finalState);
+    if (stateContentDigest(finalState) !== digest) {
+      throw new OrchestrationError("state_digest_drift", "커밋 중 state 내용이 바뀌었다");
+    }
+    writeAtomic(paths.snapshotFile, renderSnapshot(finalState));
+    writeAtomic(paths.stateFile, `${JSON.stringify(finalState, null, 2)}\n`);
+    return finalState;
+  } finally {
+    // ponytail: 해제 실패(남의 lock으로 교체 등)는 원 오류를 가릴 수 있지만 삼키지 않는다 —
+    // 그 경로는 외부 조작이며 조용히 넘기면 다음 writer가 남의 lock 위에서 커밋한다.
+    releaseRunWriterLock(paths, lock);
   }
-  writeAtomic(paths.snapshotFile, renderSnapshot(finalState));
-  writeAtomic(paths.stateFile, `${JSON.stringify(finalState, null, 2)}\n`);
-  return finalState;
 }
 
 /**

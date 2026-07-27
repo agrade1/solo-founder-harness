@@ -1,13 +1,17 @@
 /**
- * V3 M4a — durable orchestration kernel의 타입 · 상한 · 원시 검증자.
+ * V3 M4a/M4b — durable orchestration kernel의 타입 · 상한 · 원시 검증자.
  *
  * 로드맵 §3.1/§4/§5 기준. 이 계층은 **state-only/offline**이다: provider도 LLM도 실행하지 않고,
  * 향후 provider가 소비할 결정론적 task DAG · 상태 · 메시지 · artifact 포인터만 다룬다.
  * 기존 `types.ts`의 `ExecutionProvider`나 `runWorkflow`의 `run_state.json`과는 별개 계약이며
  * 둘 중 어느 것도 대체·복제하지 않는다.
  *
- * M4a 범위 밖(의도적 미구현): 실제 agent spawn, 7 specialist registry 등록, scheduler,
- * exclusive resource class, 멀티프로세스 writer lock, milestone approval manifest 전체.
+ * M4b가 더한 것: task별 **exclusive resource class 선언**(durable), 결정론적 scheduler,
+ * run 단위 writer lock + stale writer 거부(`orchestrationStore.ts` / `orchestrationKernel.ts`).
+ *
+ * 여전히 범위 밖(의도적 미구현): 실제 agent spawn, 7 specialist registry 등록,
+ * sibling/reviewer 라우팅과 나머지 6개 메시지 타입, milestone approval manifest 전체,
+ * 범용 queue/retry/priority/fairness, 크래시 복구·stale lock 회수.
  */
 
 /** state 파일과 message envelope 공통 schema 버전. */
@@ -84,6 +88,10 @@ export const LIMITS = {
   maxOwnershipPaths: 16,
   maxArtifactRefs: 16,
   maxDependsOn: 16,
+  /** task 하나가 선언할 수 있는 배타 자원 class 수(0개 = 병렬 안전). */
+  maxResourceClasses: 4,
+  /** scheduler가 한 커밋으로 시작할 수 있는 task 수. */
+  maxScheduleBatch: 8,
 } as const;
 
 /** slug 규칙: 소문자·숫자로 시작하고 `[a-z0-9._-]`만 허용, 1..64자. */
@@ -204,6 +212,12 @@ export interface OrchestrationTask {
   title: string;
   scope: string;
   ownership: string[];
+  /**
+   * 이 task가 요구하는 **배타 자원 class**(정규화·정렬·중복 없음, 0..4개). 빈 배열은 병렬 안전이다.
+   * 점유는 task가 `running`인 동안에만 유효하고 `waiting_children`은 중단 상태라 점유하지 않는다
+   * (M4b 결정 — DECISIONS 참조). 같은 class를 요구하는 두 task는 동시에 running이 될 수 없다.
+   */
+  resourceClasses: string[];
   parentTaskId: string | null;
   childTaskIds: string[];
   dependsOn: string[];
@@ -367,6 +381,31 @@ export function normalizeWorkspacePath(raw: unknown, what: string): string {
     throw new OrchestrationError("path_empty", `${what}가 정규화 후 비었다`);
   }
   return out.join("/");
+}
+
+/**
+ * 배타 자원 class 배열 정규화 — slug 검증 · 중복 거부 · 사전순 고정(결정성).
+ * **빈 배열은 유효하다**(자원 요구 없음 = 병렬 안전). class 이름은 자유 문자열이 아니라 slug다:
+ * 정규화되지 않은 이름 두 개가 같은 자원을 뜻하면 직렬화 계약이 조용히 깨지기 때문이다.
+ */
+export function normalizeResourceClasses(raw: unknown, what: string): string[] {
+  if (!Array.isArray(raw)) {
+    throw new OrchestrationError("invalid_resource_class", `${what}는 배열이어야 한다`);
+  }
+  if (raw.length > LIMITS.maxResourceClasses) {
+    throw new OrchestrationError("resource_class_too_many", `${what}는 ${LIMITS.maxResourceClasses}개 이하여야 한다`);
+  }
+  const seen = new Set<string>();
+  for (const r of raw) {
+    if (!isSlug(r)) {
+      throw new OrchestrationError("invalid_resource_class", `${what} 항목은 slug(${SLUG_PATTERN})여야 한다`);
+    }
+    if (seen.has(r)) {
+      throw new OrchestrationError("resource_class_duplicate", `${what}에 중복 class가 있다: ${r}`);
+    }
+    seen.add(r);
+  }
+  return [...seen].sort();
 }
 
 /** ownership 배열 정규화 — 중복 거부 후 사전순 고정(결정성). */

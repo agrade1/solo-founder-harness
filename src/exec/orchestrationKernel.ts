@@ -1,17 +1,25 @@
 /**
- * V3 M4a — deterministic durable orchestration kernel (로드맵 §3.1/§3.4/§4/§5).
+ * V3 M4a/M4b — deterministic durable orchestration kernel (로드맵 §3.1/§3.4/§4/§5).
  *
  * **중앙 kernel만이 상태 전이 주체다.** agent(호출자)는 메시지를 제출할 뿐이고 다른 task의
  * 상태·의존성·완료를 직접 바꾸는 API는 존재하지 않는다. 읽기 API는 전부 깊은 사본을 돌려주므로
  * 반환값을 수정해도 내부 state는 바뀌지 않는다.
  *
  * 이 커널은 **state-only/offline**이다: provider도 LLM도 프로세스도 띄우지 않는다.
- * 실제 agent 실행·7 specialist registry·scheduler·exclusive resource class·approval manifest는
- * M4a 범위 밖이며, roleId는 그것들을 나중에 그대로 수용하도록 **opaque slug 계약**으로 둔다.
+ * 실제 agent 실행·7 specialist registry·sibling/reviewer 라우팅·approval manifest는 아직 범위 밖이며,
+ * roleId는 그것들을 나중에 그대로 수용하도록 **opaque slug 계약**으로 둔다.
+ *
+ * M4b가 더한 것 — **배타 자원 class와 결정론적 scheduler**(두 번째 오케스트레이터를 만들지 않고
+ * 이 커널 안에 좁은 API 2개만 추가했다):
+ * - `scheduleReady()` — 시작 가능한 ready task를 taskId 순으로 고른다(state 변경 없음).
+ * - `startScheduledBatch()` — 그 batch를 **한 커밋으로** running으로 올린다.
+ * - `startTask()`도 같은 충돌 규칙을 적용하므로 scheduler를 우회할 수 없다.
+ * queue·retry·priority·fairness·실제 동시 실행은 범위 밖이다.
  *
  * 불변식:
  * - 유효하지 않은 입력은 state revision을 올리지 않고 영속 파일도 건드리지 않는다(검증 → 커밋 순서).
- * - `listReady()`와 snapshot은 taskId 정렬로 결정론적이다.
+ * - `listReady()`·`scheduleReady()`·snapshot은 taskId 정렬로 결정론적이다.
+ * - 같은 배타 자원 class를 요구하는 두 task는 **동시에 running이 되지 않는다**(커밋·load 양쪽 검사).
  * - 중앙이 운반하는 것은 bounded summary와 **검증된 artifact 포인터**뿐 — raw 본문·transcript 없음.
  */
 import {
@@ -36,6 +44,7 @@ import {
   assertText,
   formatTimestamp,
   normalizeOwnership,
+  normalizeResourceClasses,
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
 import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
@@ -62,6 +71,12 @@ export interface TaskSeed {
   scope: string;
   /** workspace-relative 소유 경로. M4a에서는 기록·검증 메타데이터일 뿐 실제 권한이 아니다. */
   ownership: string[];
+  /**
+   * 이 task가 요구하는 배타 자원 class(0..4개, slug). **생략·빈 배열 = 자원 요구 없음 = 병렬 안전**이며
+   * durable state에는 항상 정규화된 배열로 기록된다. agent가 envelope로 스스로 선언하는 값이 아니라
+   * task를 만드는 쪽(중앙)이 정하는 선언이다.
+   */
+  resourceClasses?: string[];
   /** 이 task의 task_assignment 메시지 id. */
   assignmentMessageId: string;
   /** 이 task의 task_assignment Markdown body. */
@@ -154,6 +169,8 @@ export class OrchestrationKernel {
         },
       ],
       bodies: [],
+      // 최초 커밋 — lock 안에서 "state 파일이 아직 없다"를 다시 확인한다(두 프로세스 동시 create 방지).
+      base: null,
     });
     return new OrchestrationKernel(paths, committed, clock);
   }
@@ -179,6 +196,31 @@ export class OrchestrationKernel {
   /** ready task 목록 — taskId 오름차순 고정(결정론적). */
   listReady(): OrchestrationTask[] {
     return this.#state.tasks.filter((t) => t.state === "ready").map(clone);
+  }
+
+  /**
+   * 다음에 시작할 수 있는 ready task를 **결정론적으로** 고른다(state·파일 변경 없음).
+   * taskId 오름차순으로 훑으며 ① 이미 running인 task가 점유한 class와 ② 같은 batch에서 앞서 고른
+   * task의 class를 모두 피한다. 자원을 요구하지 않는 task는 항상 병렬 안전이다.
+   * durable state만 보므로 재시작 뒤에도 같은 답을 낸다.
+   */
+  scheduleReady(limit: number = LIMITS.maxScheduleBatch): OrchestrationTask[] {
+    return selectSchedulable(this.#state, assertBatchLimit(limit)).map(clone);
+  }
+
+  /**
+   * `scheduleReady()`가 고른 batch를 **한 커밋으로** running으로 올린다(부분 적용 없음 — 커밋
+   * 하나가 실패하면 batch 전체가 전이 0이다). 고를 게 없으면 빈 배열이며 커밋하지 않는다.
+   */
+  startScheduledBatch(limit: number = LIMITS.maxScheduleBatch): OrchestrationTask[] {
+    const ids = selectSchedulable(this.#state, assertBatchLimit(limit)).map((t) => t.taskId);
+    if (ids.length === 0) return [];
+    this.#mutate((draft, now) => {
+      const mutation: Mutation = { events: [], bodies: [] };
+      for (const id of ids) setState(draft, now, mutation, requireTask(draft, id), "running", "started");
+      return mutation;
+    });
+    return ids.map((id) => clone(requireTask(this.#state, id)));
   }
 
   getMessage(messageId: string): MessageIndexEntry | null {
@@ -247,7 +289,11 @@ export class OrchestrationKernel {
     return clone(created!);
   }
 
-  /** ready → running. */
+  /**
+   * ready → running. scheduler를 거치지 않는 직접 호출도 **같은 배타 자원 충돌 규칙**을 받는다:
+   * 커밋 경로의 공용 불변식(`assertExclusiveResourceClaims`)이 running 두 개의 class 충돌을 거부하므로
+   * 이 메서드에도, 앞으로 추가되는 어떤 전이 경로에도 우회로가 없다(`resource_conflict`, 전이 0).
+   */
   startTask(taskId: string): OrchestrationTask {
     this.#mutate((draft, now) => {
       const t = requireTask(draft, assertSlug(taskId, "taskId"));
@@ -380,9 +426,17 @@ export class OrchestrationKernel {
   /**
    * 검증 → 커밋. fn이 던지면 `this.#state`도 디스크도 그대로다(전이 0).
    * fn은 draft(사본)만 만지고 이벤트/보디를 돌려준다.
+   *
+   * 커밋 기준(`base`)은 이 인스턴스가 들고 있던 **직전 state**의 revision/event tail이다. 같은 run을
+   * 두 kernel이 같은 revision에서 열었으면 늦은 쪽 커밋은 `stale_writer`로 거부된다(lost update 없음).
    */
   #mutate(fn: (draft: OrchestrationRunState, now: string) => Mutation): void {
     const now = formatTimestamp(this.#clock());
+    const base = {
+      revision: this.#state.revision,
+      lastEventId: this.#state.lastEventId,
+      lastEventHash: this.#state.lastEventHash,
+    };
     const draft = clone(this.#state);
     draft.revision += 1;
     draft.updatedAt = now;
@@ -393,8 +447,44 @@ export class OrchestrationKernel {
     draft.artifacts.sort((a, b) => (a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0));
     assertReferentialIntegrity(draft);
 
-    this.#state = commitRun(this.paths, { state: draft, events: mutation.events, bodies: mutation.bodies });
+    this.#state = commitRun(this.paths, { state: draft, events: mutation.events, bodies: mutation.bodies, base });
   }
+}
+
+// ── M4b scheduler (순수 함수 — state만 본다) ────────────────────────────────
+
+/** `running` task가 점유 중인 class 집합. `waiting_children`은 중단 상태라 점유하지 않는다. */
+function heldResourceClasses(state: OrchestrationRunState): Set<string> {
+  const held = new Set<string>();
+  for (const t of state.tasks) {
+    if (t.state !== "running") continue;
+    for (const r of t.resourceClasses) held.add(r);
+  }
+  return held;
+}
+
+/**
+ * 결정론적 선택: `state.tasks`는 taskId 오름차순 불변식이므로 같은 state면 항상 같은 목록이 나온다.
+ * 이미 점유된 class와 **이 batch에서 앞서 고른** class를 모두 피하므로 batch 내부도 충돌이 없다.
+ */
+function selectSchedulable(state: OrchestrationRunState, limit: number): OrchestrationTask[] {
+  const held = heldResourceClasses(state);
+  const picked: OrchestrationTask[] = [];
+  for (const t of state.tasks) {
+    if (picked.length >= limit) break;
+    if (t.state !== "ready") continue;
+    if (t.resourceClasses.some((r) => held.has(r))) continue;
+    for (const r of t.resourceClasses) held.add(r);
+    picked.push(t);
+  }
+  return picked;
+}
+
+function assertBatchLimit(limit: unknown): number {
+  if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > LIMITS.maxScheduleBatch) {
+    throw new OrchestrationError("invalid_batch_limit", `batch 상한은 1..${LIMITS.maxScheduleBatch} 정수여야 한다`);
+  }
+  return limit;
 }
 
 // ── 순수 헬퍼 (draft 조작) ──────────────────────────────────────────────────
@@ -467,6 +557,7 @@ function addTask(
     title: assertText(seed.title, "title", LIMITS.maxTextLength),
     scope: assertText(seed.scope, "scope", LIMITS.maxTextLength),
     ownership: normalizeOwnership(seed.ownership, "ownership"),
+    resourceClasses: normalizeResourceClasses(seed.resourceClasses ?? [], "resourceClasses"),
     parentTaskId,
     childTaskIds: [],
     dependsOn,

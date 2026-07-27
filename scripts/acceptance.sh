@@ -180,6 +180,20 @@ if [ -d "outputs/orchestration" ]; then false; else true; fi
 check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
 
 echo ""
+echo "== Test 14: M4b 배타 자원 class · scheduler · writer lock (offline) =="
+# 임시 workspace 전용. 상세 체크는 스크립트가 자체 출력한다(기존 Test 1~13 무변경).
+M4B_OUT="$(node scripts/m4b-offline-acceptance.mjs 2>&1)"
+M4B_RC=$?
+[ "$M4B_RC" -eq 0 ];                          check "M4b offline acceptance exit 0" $?
+echo "$M4B_OUT" | grep -q " FAIL=0";          check "M4b 내부 체크 전부 통과" $?
+echo "$M4B_OUT" | grep -q "b-live는 ready로 유예(동시 실행 0)"
+check "M4b 같은 class 동시 실행 0 확인 출력" $?
+echo "$M4B_OUT" | grep -q "stale_writer";     check "M4b stale writer 거부 확인 출력" $?
+echo "$M4B_OUT" | grep -q "run_lock_held";    check "M4b writer lock 경합 거부 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

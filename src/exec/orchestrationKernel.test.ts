@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
+  existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -42,8 +43,11 @@ import {
   MESSAGE_KEYS,
   STATE_KEYS,
   TASK_KEYS,
+  acquireRunWriterLock,
+  assertExclusiveResourceClaims,
   assertNoDependencyCycle,
   commitRun,
+  releaseRunWriterLock,
   runPaths,
   stateContentDigest,
   validateRunState,
@@ -252,6 +256,7 @@ test("[M4a] dependency cycle 검사(반복 DFS)", () => {
     title: "t",
     scope: "s",
     ownership: ["a"],
+    resourceClasses: [],
     parentTaskId: null,
     childTaskIds: [],
     state: "pending" as const,
@@ -667,6 +672,8 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "rebuildSnapshot",
     "registerArtifact",
     "requestSpawn",
+    "scheduleReady",
+    "startScheduledBatch",
     "startTask",
     "submitBlocker",
     "submitResult",
@@ -840,8 +847,16 @@ test("[M4a][P0-1] stateDigest는 chain 필드를 제외해 순환하지 않고 �
 
 test("[M4a][P0-1] 이벤트 없는 커밋은 거부한다(binding을 남길 곳이 없다)", () => {
   const { ws, k } = bootRoot();
+  const s = k.getState();
   assert.equal(
-    codeOf(() => commitRun(runPaths(ws, RUN_ID), { state: k.getState(), events: [], bodies: [] })),
+    codeOf(() =>
+      commitRun(runPaths(ws, RUN_ID), {
+        state: s,
+        events: [],
+        bodies: [],
+        base: { revision: s.revision, lastEventId: s.lastEventId, lastEventHash: s.lastEventHash },
+      }),
+    ),
     "commit_without_event",
   );
 });
@@ -942,6 +957,9 @@ test("[M4a] orchestration_run_state.schema.json이 runtime 계약과 동치다",
   assert.equal(d.task.properties.ownership.maxItems, LIMITS.maxOwnershipPaths);
   assert.equal(d.task.properties.dependsOn.maxItems, LIMITS.maxDependsOn);
   assert.equal(d.task.properties.artifactRefs.maxItems, LIMITS.maxArtifactRefs);
+  assert.equal(d.task.properties.resourceClasses.maxItems, LIMITS.maxResourceClasses);
+  assert.equal(d.task.properties.resourceClasses.items.$ref, "#/definitions/slug");
+  assert.equal(d.task.properties.resourceClasses.uniqueItems, true);
   assert.equal(d.boundedText.maxLength, LIMITS.maxTextLength);
   assert.equal(d.boundedSummary.maxLength, LIMITS.maxSummaryLength);
   assert.equal(d.slug.maxLength, LIMITS.maxIdLength);
@@ -976,4 +994,235 @@ test("[M4a] 실제로 생성된 state가 schema의 required/enum 범위 안에 �
     assert.deepEqual(Object.keys(e).sort(), [...s.definitions.event.required].sort());
     assert.ok((EVENT_TYPES as readonly string[]).includes(e.type));
   }
+});
+
+// ── M4b: 배타 자원 class · 결정론적 scheduler · run writer lock ─────────────
+
+/** 같은 배타 class를 요구하는 ready task 둘 + 자원을 요구하지 않는 ready task 하나. */
+function bootResourceRun(): { ws: string; k: OrchestrationKernel } {
+  const ws = makeWorkspace();
+  const k = createOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, clock: fixedClock() });
+  k.createRootTask(seed("a-stress", "qa", { resourceClasses: ["suite-lock"] }));
+  k.createRootTask(seed("b-live", "qa", { resourceClasses: ["suite-lock"] }));
+  k.createRootTask(seed("c-docs", "pm"));
+  return { ws, k };
+}
+
+test("[M4b] resourceClasses: 기본값 [] · 정렬 · 중복/비-slug/상한 거부 · durable 왕복", () => {
+  const ws = makeWorkspace();
+  const k = createOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, clock: fixedClock() });
+
+  assert.deepEqual(k.createRootTask(seed("plain", "r")).resourceClasses, []);
+  assert.deepEqual(k.createRootTask(seed("sorted", "r", { resourceClasses: ["zz-tmp", "aa-lock"] })).resourceClasses, [
+    "aa-lock",
+    "zz-tmp",
+  ]);
+
+  assert.equal(codeOf(() => k.createRootTask(seed("dup", "r", { resourceClasses: ["x", "x"] }))), "resource_class_duplicate");
+  assert.equal(codeOf(() => k.createRootTask(seed("bad", "r", { resourceClasses: ["Not Slug"] }))), "invalid_resource_class");
+  assert.equal(codeOf(() => k.createRootTask(seed("bad2", "r", { resourceClasses: "x" }))), "invalid_resource_class");
+  assert.equal(
+    codeOf(() => k.createRootTask(seed("many", "r", { resourceClasses: ["a", "b", "c", "d", "e"] }))),
+    "resource_class_too_many",
+  );
+
+  // durable 왕복 — 재시작해도 선언이 같은 바이트로 남는다.
+  const paths = runPaths(ws, RUN_ID);
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
+  assert.deepEqual(reopened.getTask("sorted")!.resourceClasses, ["aa-lock", "zz-tmp"]);
+  assert.equal(JSON.stringify(reopened.getState()), JSON.stringify(k.getState()));
+  assert.ok(readFileSync(paths.stateFile, "utf8").includes('"resourceClasses"'), "state 파일에 resourceClasses가 없다");
+  assert.ok(
+    readFileSync(paths.snapshotFile, "utf8").includes("- resourceClasses: aa-lock, zz-tmp"),
+    "snapshot에 자원 선언이 없다",
+  );
+});
+
+test("[M4b] scheduler: 같은 class 두 ready 중 하나만 · 자원 없는 task는 같은 batch에서 함께", () => {
+  const { k } = bootResourceRun();
+  assert.deepEqual(k.listReady().map((t) => t.taskId), ["a-stress", "b-live", "c-docs"]);
+
+  // 결정론: taskId 오름차순이라 a-stress가 이기고 b-live는 유예된다.
+  assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["a-stress", "c-docs"]);
+  assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["a-stress", "c-docs"], "scheduleReady가 결정론적이지 않다");
+
+  assert.deepEqual(k.startScheduledBatch().map((t) => t.taskId), ["a-stress", "c-docs"]);
+  assert.equal(k.getTask("a-stress")!.state, "running");
+  assert.equal(k.getTask("c-docs")!.state, "running");
+  assert.equal(k.getTask("b-live")!.state, "ready", "같은 class 두 task가 동시에 running이 됐다");
+  // class가 점유된 동안에는 더 고를 것이 없다.
+  assert.deepEqual(k.scheduleReady(), []);
+  assert.deepEqual(k.startScheduledBatch(), []);
+});
+
+test("[M4b] batch는 커밋 1회다 · limit 검증 · limit는 앞에서부터 자른다", () => {
+  const { k } = bootResourceRun();
+  const before = k.getState().revision;
+  assert.equal(k.startScheduledBatch().length, 2);
+  assert.equal(k.getState().revision, before + 1, "batch가 커밋을 여러 번 했다");
+
+  assert.equal(codeOf(() => k.scheduleReady(0)), "invalid_batch_limit");
+  assert.equal(codeOf(() => k.scheduleReady(LIMITS.maxScheduleBatch + 1)), "invalid_batch_limit");
+  assert.equal(codeOf(() => k.scheduleReady(1.5)), "invalid_batch_limit");
+  assert.equal(codeOf(() => k.startScheduledBatch(0)), "invalid_batch_limit");
+
+  const { k: k2 } = bootResourceRun();
+  assert.deepEqual(k2.scheduleReady(1).map((t) => t.taskId), ["a-stress"]);
+  assert.deepEqual(k2.startScheduledBatch(1).map((t) => t.taskId), ["a-stress"]);
+  assert.deepEqual(k2.scheduleReady().map((t) => t.taskId), ["c-docs"]);
+});
+
+test("[M4b] 직접 startTask도 같은 충돌 규칙을 받는다 — scheduler 우회 불가, 전이 0", () => {
+  const { ws, k } = bootResourceRun();
+  const paths = runPaths(ws, RUN_ID);
+  k.startTask("a-stress");
+
+  const revBefore = k.getState().revision;
+  const filesBefore = dirFingerprint(paths.dir);
+  assert.equal(codeOf(() => k.startTask("b-live")), "resource_conflict");
+  assert.equal(k.getState().revision, revBefore, "거부된 start가 revision을 올렸다");
+  assert.equal(dirFingerprint(paths.dir), filesBefore, "거부된 start가 파일을 바꿨다");
+  assert.equal(k.getTask("b-live")!.state, "ready");
+
+  // 자원을 요구하지 않는 task는 영향받지 않는다.
+  k.startTask("c-docs");
+  assert.equal(k.getTask("c-docs")!.state, "running");
+});
+
+test("[M4b] 점유는 running 동안만 — waiting_children은 자원을 들고 있지 않는다", () => {
+  const { k } = bootResourceRun();
+  k.startTask("a-stress");
+  k.requestSpawn({
+    envelope: envelope("spawn_request", "a-stress", "qa", { messageId: "spawn-1" }),
+    body: body("spawn_request"),
+    child: seed("child", "dev"),
+  });
+  assert.equal(k.getTask("a-stress")!.state, "waiting_children");
+  // 중단된 parent는 점유하지 않으므로 같은 class의 b-live를 고를 수 있다.
+  assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["b-live", "c-docs", "child"]);
+  k.startTask("b-live");
+  assert.equal(k.getTask("b-live")!.state, "running");
+});
+
+test("[M4b] holder가 완료되면 class가 풀리고 대기 task가 schedulable해진다", () => {
+  const { k } = bootResourceRun();
+  k.startScheduledBatch(1); // a-stress만 시작
+  assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["c-docs"]);
+
+  k.submitResult({
+    envelope: envelope("result", "a-stress", "qa", { messageId: "res-a" }),
+    body: body("result"),
+    summary: "a-stress 완료 — suite-lock 해제",
+  });
+  assert.equal(k.getTask("a-stress")!.state, "completed");
+  assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["b-live", "c-docs"]);
+  assert.deepEqual(k.startScheduledBatch().map((t) => t.taskId), ["b-live", "c-docs"]);
+});
+
+test("[M4b] 재시작: durable state만으로 같은 점유·같은 schedule 결정", () => {
+  const { ws, k } = bootResourceRun();
+  k.startTask("a-stress");
+  const scheduleBefore = k.scheduleReady().map((t) => t.taskId);
+
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
+  assert.equal(reopened.getTask("a-stress")!.state, "running");
+  assert.deepEqual(reopened.getTask("a-stress")!.resourceClasses, ["suite-lock"]);
+  assert.deepEqual(reopened.scheduleReady().map((t) => t.taskId), scheduleBefore);
+  assert.equal(codeOf(() => reopened.startTask("b-live")), "resource_conflict");
+});
+
+test("[M4b] state 위조: resourceClasses 편집은 state↔event binding으로 거부된다", () => {
+  const { ws, k } = bootResourceRun();
+  const paths = runPaths(ws, RUN_ID);
+  k.startTask("a-stress");
+  const original = readFileSync(paths.stateFile, "utf8");
+
+  const forged = JSON.parse(original);
+  forged.tasks.find((t: { taskId: string }) => t.taskId === "b-live").resourceClasses = [];
+  writeFileSync(paths.stateFile, JSON.stringify(forged, null, 2));
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "state_event_binding_mismatch");
+
+  writeFileSync(paths.stateFile, original);
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+});
+
+test("[M4b] M4a state(resourceClasses 없음)는 마이그레이션 없이 거부한다", () => {
+  const { ws } = bootRoot();
+  const paths = runPaths(ws, RUN_ID);
+  const original = readFileSync(paths.stateFile, "utf8");
+  const pre = JSON.parse(original);
+  for (const t of pre.tasks) delete t.resourceClasses;
+  writeFileSync(paths.stateFile, JSON.stringify(pre, null, 2));
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "state_pre_m4b_unsupported");
+
+  writeFileSync(paths.stateFile, original);
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+});
+
+test("[M4b] running 둘이 같은 class를 든 state는 커밋·load 양쪽에서 거부된다", () => {
+  const { ws, k } = bootResourceRun();
+  k.startTask("a-stress");
+  const onDisk = JSON.parse(readFileSync(runPaths(ws, RUN_ID).stateFile, "utf8"));
+  onDisk.tasks.find((t: { taskId: string }) => t.taskId === "b-live").state = "running";
+  assert.equal(codeOf(() => validateRunState(onDisk)), "resource_conflict");
+
+  const valid = validateRunState(JSON.parse(readFileSync(runPaths(ws, RUN_ID).stateFile, "utf8")));
+  assert.doesNotThrow(() => assertExclusiveResourceClaims(valid.tasks));
+  assert.equal(
+    codeOf(() => assertExclusiveResourceClaims(valid.tasks.map((t) => ({ ...t, state: "running" as const })))),
+    "resource_conflict",
+  );
+});
+
+test("[M4b] stale writer: 같은 revision에서 열린 두 kernel 중 늦은 쪽 커밋은 거부된다", () => {
+  const { ws, k } = bootRoot();
+  const paths = runPaths(ws, RUN_ID);
+  const stale = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
+  assert.equal(stale.getState().revision, k.getState().revision);
+
+  k.createRootTask(seed("first", "r")); // 첫 writer 성공
+  const afterFirst = dirFingerprint(paths.dir);
+
+  // 두 번째 kernel은 낡은 기준을 들고 있다 → 덮어쓰지 못하고 전이 0으로 거부된다.
+  assert.equal(codeOf(() => stale.createRootTask(seed("second", "r"))), "stale_writer");
+  assert.equal(dirFingerprint(paths.dir), afterFirst, "stale writer가 파일을 바꿨다");
+
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
+  assert.ok(reopened.getTask("first"), "첫 writer의 결과가 사라졌다");
+  assert.equal(reopened.getTask("second"), null);
+  assert.equal(reopened.getState().revision, k.getState().revision);
+  // 다시 열면 최신 기준을 갖고 정상 커밋한다.
+  assert.doesNotThrow(() => reopened.createRootTask(seed("third", "r")));
+});
+
+test("[M4b] writer lock: 다른 writer가 쥐고 있으면 대기 없이 거부하고 전이 0", () => {
+  const { ws, k } = bootRoot();
+  const paths = runPaths(ws, RUN_ID);
+  const held = acquireRunWriterLock(paths);
+
+  const revBefore = k.getState().revision;
+  const filesBefore = dirFingerprint(paths.dir);
+  assert.equal(codeOf(() => k.createRootTask(seed("blocked", "r"))), "run_lock_held");
+  assert.equal(k.getState().revision, revBefore);
+  assert.equal(dirFingerprint(paths.dir), filesBefore, "lock 거부가 파일을 바꿨다");
+  assert.equal(k.getTask("blocked"), null);
+
+  releaseRunWriterLock(paths, held);
+  assert.ok(!existsSync(paths.lockFile), "release 후에도 lock 파일이 남아 있다");
+  assert.doesNotThrow(() => k.createRootTask(seed("after-release", "r")));
+  assert.ok(!existsSync(paths.lockFile), "정상 커밋 후 lock 파일이 남아 있다");
+});
+
+test("[M4b] writer lock 정리는 자기 acquire만 지운다 — 남의 lock은 보존", () => {
+  const { ws } = bootRoot();
+  const paths = runPaths(ws, RUN_ID);
+  const mine = acquireRunWriterLock(paths);
+  assert.equal(codeOf(() => acquireRunWriterLock(paths)), "run_lock_held");
+  assert.equal(
+    codeOf(() => releaseRunWriterLock(paths, { file: paths.lockFile, nonce: "f".repeat(32) })),
+    "run_lock_owner_mismatch",
+  );
+  assert.ok(existsSync(paths.lockFile), "남의 lock을 지웠다");
+  releaseRunWriterLock(paths, mine);
+  assert.ok(!existsSync(paths.lockFile));
 });
