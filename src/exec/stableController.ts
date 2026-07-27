@@ -459,6 +459,10 @@ export class StableController {
       for (const out of h.outputs ?? []) {
         pointers.push(this.opts.kernel.registerArtifact({ taskId, path: out.path, role: out.role }));
       }
+      // durable 직전 재검증. **정직한 한계**: 이 호출 하나만 제거해도 실패하는 테스트가 없다 —
+      // 바로 아래 `submitResult`의 kernel `acceptMessage`가 같은 포인터를 다시 검증하기 때문이고
+      // 그 사이에 await가 없다. 즉 이것은 **중복 방어**이며, 앞으로 이 구간에 await가 하나라도
+      // 생기면 그때 유일한 방어가 된다(그래서 남긴다). 단독 커버리지를 주장하지 않는다.
       this.verifyPointers(pointers);
       const summary = this.boundedSummary(outcome);
       this.opts.kernel.submitResult({
