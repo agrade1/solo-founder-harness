@@ -3,7 +3,60 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5a 4차 리비전(offline)** · **M5 미완료 · M5a handoff 미승인** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5a 5차 리비전(offline)** · **M5 미완료 · M5a handoff 미승인** · 이 절이 가장 최신이다)
+
+범위 `85ebe883..8f95877`을 **또 다른 독립 fresh Codex `gpt-5.6-sol` xhigh read-only**가 리뷰해 다시
+**REVISE**를 냈다. 4차의 내부 linearization(첫 await 전 동기 claim · await 뒤·발행 직전 소유권 재확인 ·
+동기 신뢰 게이트 · 게이트 뒤 발행 · spawn까지 no-await)은 **그대로 유효**하고 보존했다. 이번 A는
+**밖에서 들어오는 신원과 권위**다. **새 fresh Claude Opus 5 세션**이 `8f95877` 위에 로컬 커밋만 추가했다
+(code/tests/dist `bfd1cd0` + 이 문서 커밋).
+
+- **A/P1 낡은 핸들이 교체 세션을 조종 → fixed**: `SessionHandle`에 provider 인스턴스 신원이 없고
+  `send`/`events`/`stop`이 **`sessionId`만으로** 상태를 찾았다 → H1을 stop하고 같은 id로 H2를 start하면
+  **이미 반환된 H1**이 H2의 이벤트를 읽고, H2에 지시를 보내고, H2를 중지·삭제할 수 있었다. 현행 계약:
+  - 세션 인스턴스마다 **내용 없는 frozen 신원 객체**를 발급해 `start`가 반환하는 핸들에 붙인다
+    (`SessionHandle.providerBinding` — **선택 필드**. `claude-cli`·`mock-exec`는 발급하지 않고 그대로 동작).
+  - 모든 진입점이 **참조 동일성**으로만 대조한다(`sessionId`·가변 `spec` 내용은 근거가 아니다).
+    낡은·위조 핸들의 `send`/`events` = **`codex_stale_handle`**(읽기·발행·spawn·변경·삭제 0),
+    `stop` = **무해·멱등**(교체 세션에 signal·close·상태 변경·삭제 0). 세션이 아예 없으면 기존대로
+    **`codex_unknown_session`**.
+  - → **호출자 계약**: `start()`가 준 **그 핸들 객체**를 그대로 들고 다녀야 한다. `{sessionId, spec}`을
+    다시 조립해 넘기면 fail closed다(M5b 배선 주의점 — 핸들을 직렬화·재구성하지 않는다).
+- **A/P1 가변 `opts.nowMs`로 만료 우회 → fixed(`C-23` 2차 reopen 후 완결)**: 4차 봉인에 `nowMs`·
+  `manifest`가 없어 매 invocation `this.opts`를 다시 읽었다 → 첫 turn 뒤 호출자가 **만료 전을 말하는 시계**로
+  갈아끼우면 경계 진입·spawn 직전 **두 만료 검사가 모두 통과**해 **만료된 승인 아래 resume이 떴다**.
+  현행: **시각 권위(clock)와 검증된 manifest 사본을 봉인**하고 경계에는 봉인값만 넘긴다. 봉인 clock은
+  만료 검사마다 **다시 호출**한다(시각 고정 아님 — 시간은 흐른다). `SEALED_KEYS`에 `clock`·`manifestDigest`
+  추가 → 시계 **교체·제거·추가**와 manifest **전 필드**(canonical digest) 변경이 `codex_spec_mutated`.
+  함수 아닌 `nowMs`는 start에서 `codex_config_invalid`. `spawn`은 **생성자 포착**이라 재읽기 없음
+  → **invocation 중 `this.opts`에서 읽는 실행 입력은 0**이다.
+- **A 드리프트 marker 문서·구현 불일치 → fixed**: "post-start 드리프트는 전부 `codex_spec_mutated`"라고
+  적어두고 비교가 **native 오류를 흘렸다**(테스트도 그걸 기대해 증거가 문서를 반박했다). 현행은
+  **초기 `start` = 정밀 native 코드**(`codex_sandbox_forbidden`·`codex_config_invalid`·`invalid_manifest`),
+  **start 이후 = `codex_spec_mutated` 하나**(값이 바뀐 경우와 무효가 된 경우 모두. 값·경로 미노출).
+- **열린 항목 정본(5차 기준)**: B = `B-7` · `B-8` · `B-9`(live/배선 하드 게이트, offline M5b는 막지 않는다).
+  C = `C-17` · `C-18` · `C-19` · `C-21` · `C-22` · `C-24` · `C-25` · **`C-26`(경계 밖 `runProcess` git
+  호출자 — 기한: controller가 worktree 조작을 자동화 경로로 쓰기 전, M5c)** · **`C-27`(`stop()`이
+  `starting`에서 반환한 뒤 취소된 invocation promise가 나중에 reject된다. 기한: M5b 배선 전)**.
+  **`C-23`·`C-28`은 5차에서 fixed**(`C-23` 행에 3차 overclaim → 4차 부분 fix → 5차 완결 이력을 남겼다).
+  **열린 A 없음 · 새 B 없음.**
+- **5차 리비전 검증**: 파일 단독 `npx tsx --test` → boundary **17/17** · parser **28/28** ·
+  provider **53/53**(합 **98/98**, 이전 95) · `npm run test:exec` **240/240**(237 → 240) ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 후 `git diff --numstat` 변화 0) ·
+  `git diff --check` clean · `node_modules` stage 0.
+  **세션 신원·만료 타이밍을 건드렸으므로 stale-handle + clock/drift 회귀 7건 반복 3회** → 3회 모두 7/7.
+  mutation **4종**(핸들 신원 대조 제거 → 2건 / 봉인 clock 대조 제거 → 2 / 대조 제거+`this.opts.nowMs`
+  재읽기(수정 전 상태) → 2이며 시각 권위 테스트가 **`(통과)`** = 만료 승인 아래 resume 실제 발생 /
+  드리프트 중 native 오류 허용 → 2) 후 전부 정확히 원복, `MUTATION` grep 0(소스·dist) ·
+  numstat 기준선 일치 · `tsc --noEmit` 0. **정직한 한계**: 재읽기만 되돌리고 봉인 대조를 남기면 실패하는
+  테스트가 **없다**(그 사이에 await가 없다) — 두 방어는 중복이며, 봉인 clock은 미래에 await가 끼어도
+  깨지지 않게 하는 쪽이다.
+- **전체 suite는 여전히 미실행이다.** **supervisor가 M5b~M5d 이후 최종 M5 handoff에서 `npm test`를
+  직렬 1회** 돌린다. 미실행: `npm test` 전체 · `test:core` · acceptance · stress · live · MCP ·
+  실제 Codex/Claude 추론 · M5b controller · M5c lifecycle · M5d E2E.
+  **M5a handoff는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 상태가 아니다.**
+
+### 이전 — M5a 4차 리비전 기록 (2026-07-27)
 
 범위 `85ebe883..3493a2e`를 **새 독립 fresh Codex `gpt-5.6-sol` xhigh read-only**가 리뷰해 다시
 **REVISE**를 냈다. 3차의 A 3건(spawn-adjacent 게이트 · 신뢰된 git · resume UUID 봉인)은 **fixed로
@@ -35,7 +88,8 @@
   완료된 큐를 교체**하고 가짜 종료 결과를 하나 더 냈다(주석은 반대로 말했다). 발행을 **게이트 뒤로** 옮겼다 —
   발행 전 실패는 큐·`child`·세션 신원을 하나도 건드리지 않고 rejected promise로만 나가며, 발행 이후 실패
   (동기 spawn 예외)만 그 invocation의 **bounded 스트림**을 종료 결과 1건으로 닫는다.
-- **열린 항목 정본(4차 기준)**: B = `B-7` · `B-8` · `B-9`(live/배선 하드 게이트, offline M5b는 막지 않는다).
+- **열린 항목(4차 시점 기록 — 현행 정본은 위 5차 절이다. `C-23`·`C-28`은 그 뒤 5차에서 fixed)**:
+  B = `B-7` · `B-8` · `B-9`(live/배선 하드 게이트, offline M5b는 막지 않는다).
   C = `C-17` · `C-18` · `C-19` · `C-21` · `C-22` · `C-24` · `C-25` · **`C-26`(경계 밖 `runProcess` git
   호출자 — 기한: controller가 worktree 조작을 자동화 경로로 쓰기 전, M5c)** · **`C-27`(신규 — `stop()`이
   `starting`에서 반환한 뒤 취소된 invocation promise가 나중에 reject된다. 기한: M5b 배선 전)** ·

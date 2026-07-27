@@ -23,10 +23,12 @@
   Codex 독립 리뷰의 **P0 2건은 2026-07-27에 수정 완료**했고 **M4 범위에 열린 P0는 없다**
   (M5a는 별도 리뷰를 받았다 — 아래 M5 항목).
 - **M5는 여전히 미완료다.** 다만 **2026-07-27에 사용자가 M5a 범위를 승인해 구현·offline 검증을 마쳤고,
-  같은 날 fresh Codex 독립 리뷰 4라운드(전부 REVISE)의 A 항목을 리비전으로 닫았다**
+  같은 날 fresh Codex 독립 리뷰 5라운드(전부 REVISE)의 A 항목을 리비전으로 닫았다**
   (실행 경계 + `CodexCliProvider` + JSONL 어댑터 + fake 테스트 — §10 M5 → M5a).
-  라운드별 A: 1차 9건 → 2차 4건 → 3차 3건 → **4차 3건(pre-spawn race · `C-23` reopen · 발행 순서)**.
-  **4차 이후에도 M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 것이 아니다.** **M5a가 아닌 것**:
+  라운드별 A: 1차 9건 → 2차 4건 → 3차 3건 → 4차 3건(pre-spawn race · `C-23` reopen · 발행 순서) →
+  **5차 3건(낡은 핸들이 교체 세션을 조종 · 가변 `nowMs`로 만료 우회(`C-23` 2차 reopen) · 드리프트 marker
+  문서·구현 불일치)**. 5차는 대장 **`C-28`도 함께 닫았다**(manifest canonical digest 봉인).
+  **5차 이후에도 M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 것이 아니다.** **M5a가 아닌 것**:
   autopilot CLI · Claude↔Codex 자동 전달 · 실제 7-agent 동시 실행 · **live acceptance**.
   이 문서 아래쪽의 "M5 not started" 표기는 M5a 승인 이전 기록이다.
   열린 B(P1)는 `B-7`(live 인증·secret redaction) · `B-8`(reviewer 결과 게이트) · `B-9`(JSONL live 확인)이며
@@ -1459,6 +1461,20 @@ package/lockfile 변경도 **0**이다. 두 번째 오케스트레이터·상태
   동기 spawn 예외 · error+close 경합 · stdin 오류 · `stop`은 **종료 결과 1건**으로 수렴한다
   (`stop`은 결과가 정착한 뒤에만 정리한다). 프로세스 그룹 · TERM→유예→KILL · deadline · 자손 0은
   **이 범위가 아니다**(`C-18`, M5c).
+- **핸들은 세션 인스턴스에 묶인다(5차 리비전).** `sessionId`는 **교체 세션과 같은 값**이므로 신원이 될 수
+  없다. provider가 세션 인스턴스마다 **내용 없는 frozen 신원 객체**를 만들어 `start`가 반환하는 핸들에
+  붙이고(`SessionHandle.providerBinding` — **선택 필드라 다른 provider는 영향 없다**), 모든 진입점이
+  **참조 동일성**으로 대조한다. 낡은·위조 핸들의 `send`/`events`는 대상 세션을 **읽지도 건드리지도 않고**
+  `codex_stale_handle`이며, `stop`은 **무해·멱등**이다(교체 세션에 signal·close·상태 변경·삭제 0).
+  신원은 비밀 material이 아니다 — 빈 객체 참조이므로 로그·직렬화·문서에 남길 값 자체가 없다.
+- **실행 권위는 `start()`가 포착한 값뿐이다(5차 리비전).** invocation 도중 `this.opts`에서 다시 읽는
+  실행 입력은 **하나도 없다**: **시각 권위(clock)** 와 **검증된 manifest 사본**까지 봉인하고 실행 경계에는
+  봉인값만 넘긴다. 봉인된 clock은 만료 검사마다 **다시 호출**되므로 시간은 자연스럽게 흐르고(시각을 얼리지
+  않는다), `opts.nowMs`의 교체·제거·추가와 manifest **전 필드**(canonical digest) 변경은 드리프트로 잡힌다.
+  `opts.spawn`은 **생성자에서 포착**되어 이후 교체가 무의미하다(테스트로 고정).
+  **start 이후 드리프트 marker는 `codex_spec_mutated` 하나**이고 — 값이 *바뀐* 경우와 *무효가 된* 경우가
+  같은 marker다 — **초기 `start`의 native 코드**(`codex_sandbox_forbidden`·`codex_config_invalid`·
+  `invalid_manifest` 등)는 그대로 유지된다.
 
 #### M5a fresh Codex 독립 리뷰와 리비전 (2026-07-27)
 
@@ -1520,9 +1536,9 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | `C-19` | C (P2) | **`--output-schema`를 넘겨도 응답 본문을 schema로 검증하지 않는다.** provider는 최종 agent message 텍스트를 그대로 `result.text`로 준다(호출자가 파싱) | 중간 | 구조화 결과 1건의 형태 오류가 호출자에게 넘어간다 | 낮음 — 검증기를 나중에 얹으면 된다(기존 수동 closed validator 방식) | 소~중 | **reviewer 결과를 kernel state로 옮기기 시작할 때(M5c)** | 미정 | `codexStreamParser` `lastMessage` · M5a focused "구조화 최종 출력" | open |
 | `C-21` | C (P2) | **프로토콜 실패로 끝난 invocation 뒤에도 resume이 허용된다**(MCP 위반·세션 신원 충돌만 세션을 닫는다). malformed·oversized·중복 종료로 실패한 turn 뒤에 호출자가 `send`를 부르면 provider는 그 thread를 이어간다 — 판정은 `result.isError`를 보는 호출자 몫이다 | 중간(호출자가 `isError`를 무시할 때) | 세션 1건의 후속 turn | 낮~중 — `B-8`(reviewer가 `isError`를 무시한다)과 같은 방향의 위험이고 그쪽을 닫으면 대부분 사라진다 | 소(실패 사유 화이트리스트로 poison 확장 + 회귀 테스트) | **`B-8`을 닫을 때 같이(= M5b reviewer 배선 전)** | M5b 구현 세션 | `CodexCliProvider.send`/`state.poisoned` · M5a 2차 리비전 focused "MCP 위반을 본 세션은 닫힌다" | open |
 | `C-22` | C (P2) | **`CODEX_HOME` 소유 신원이 in-memory라 controller가 재시작하면 같은 홈으로 resume할 수 없다**(신원을 잃으므로 최초 검증 규칙에 걸려 `codex_home_not_empty`). 방향은 fail closed이지만 self-hosting 재시작 후 진행 중 세션을 이어갈 수 없다 | 중간(M5c self-hosting에서) | 재시작 시점에 열려 있던 codex 세션의 resume | 낮~중 — 재시작 후에는 새 세션으로 다시 시작하면 된다 | 중(소유권을 `run_state.json`에 durable 기록 + 복원 검증) | **self-hosting controller 재시작 경계를 다룰 때(M5c)** | M5c 구현 세션 | `CodexState.homeId` · M5a 2차 리비전 focused "격리 홈 수명" | open |
-| `C-23` | **C (P2) → 3차에서 fixed로 적었으나 실제로는 절반만 닫혀 있었다(독립 리뷰가 reopen) → fixed(M5a 4차 리비전)** | **호출자 소유 `spec`/`opts`의 변조.** ⓐ turn 사이 변경으로 model·`--output-schema` 경로가 resume에서 달라질 수 있었다. ⓑ **한 invocation의 비동기 경계 작업 중** 값이 바뀌면 검증한 값과 argv·env가 갈라질 수 있었다. **ⓒ reopen 사유(4차 · 독립 리뷰 A/P1)**: 3차 fix는 **같은 invocation 안의** 스냅샷만 대조하고 provider는 여전히 `state.spec`을 들고 **매 turn `resolveCodexOptions`를 다시 해석**했다 → 1차 turn 완료 후 `send` 전의 변조가 **새 baseline**이 됐다. 즉 ⓐ는 닫히지 않았는데 대장·문서가 fixed라고 적었다(overclaim) | 낮~중 — `spec`/`opts`는 controller 소유 객체이지만 M5b 배선이 정확히 그 경로다 | 세션 1건의 invocation 설정 전체(argv·env·홈·실행 파일·경계 입력) | 중 — M5b provider 배선이 이 계약을 그대로 신뢰한다 | 소(start에서 봉인 + 필드 단위 대조) | (닫힘 — 원래 기한은 **M5b provider 배선 전**이었다) | M5a 4차 리비전 | **fix(4차)**: `start()`가 유효 옵션 **전부**를 봉인한다(`sessionId`·`model`·`reasoningEffort`·`sandbox`·`codexHome`·`outputSchemaPath`·`ephemeral`·`cwd`·codex/git 실행 파일 경로·`controllerRepoRoot`·manifest `milestoneId`/`approvedCommit`/`expiresAt`/`maxSessions`/`maxTokens`/`maxElapsedMs`, `Object.freeze`). **모든 invocation 동기 진입 + spawn 직전 게이트**에서 `SEALED_KEYS` **명시 필드 목록**으로 대조하고(JSON 키 순서 의존 없음) 드리프트는 단일 marker `codex_spec_mutated`다. argv·env·경계 입력은 전부 봉인값에서만 만든다. 증거: focused "C-23: turn 사이 spec/opts 변조 …" **9케이스**(model·outputSchema·cwd·codexHome·ephemeral·sessionId·codexBinaryPath·gitExecutablePath 드리프트 + sandbox는 재해석에서 `codex_sandbox_forbidden`) — 각 케이스 spawn 1차 그대로 · 이전 완료 큐 교체 0 · 되돌린 뒤 정상 turn 1건 + 기존 "창 안에서 spec이 변조되면 …" 4케이스 유지 + mutation(봉인값 대신 매 turn 재해석 → **between-turn 테스트만** 실패 / 필드 비교 무력화 → 2건 실패) | **fixed (2026-07-27, M5a 4차 리비전)** |
+| `C-23` | **C (P2) → 3차 "fixed"는 overclaim(절반만 닫힘) → 4차 reopen 후 fix → 4차 fix도 완전하지 않았다(5차 독립 리뷰가 다시 reopen: 봉인 밖 `nowMs`·`manifest` 재읽기) → fixed(M5a 5차 리비전)** | **호출자 소유 `spec`/`opts`의 변조.** ⓐ turn 사이 변경으로 model·`--output-schema` 경로가 resume에서 달라질 수 있었다. ⓑ **한 invocation의 비동기 경계 작업 중** 값이 바뀌면 검증한 값과 argv·env가 갈라질 수 있었다. **ⓒ reopen 사유(4차 · 독립 리뷰 A/P1)**: 3차 fix는 **같은 invocation 안의** 스냅샷만 대조하고 provider는 여전히 `state.spec`을 들고 **매 turn `resolveCodexOptions`를 다시 해석**했다 → 1차 turn 완료 후 `send` 전의 변조가 **새 baseline**이 됐다. 즉 ⓐ는 닫히지 않았는데 대장·문서가 fixed라고 적었다(overclaim) | 낮~중 — `spec`/`opts`는 controller 소유 객체이지만 M5b 배선이 정확히 그 경로다 | 세션 1건의 invocation 설정 전체(argv·env·홈·실행 파일·경계 입력) | 중 — M5b provider 배선이 이 계약을 그대로 신뢰한다 | 소(start에서 봉인 + 필드 단위 대조) | (닫힘 — 원래 기한은 **M5b provider 배선 전**이었다) | M5a 4차 리비전 | **fix(4차)**: `start()`가 유효 옵션 **전부**를 봉인한다(`sessionId`·`model`·`reasoningEffort`·`sandbox`·`codexHome`·`outputSchemaPath`·`ephemeral`·`cwd`·codex/git 실행 파일 경로·`controllerRepoRoot`·manifest `milestoneId`/`approvedCommit`/`expiresAt`/`maxSessions`/`maxTokens`/`maxElapsedMs`, `Object.freeze`). **모든 invocation 동기 진입 + spawn 직전 게이트**에서 `SEALED_KEYS` **명시 필드 목록**으로 대조하고(JSON 키 순서 의존 없음) 드리프트는 단일 marker `codex_spec_mutated`다. argv·env·경계 입력은 전부 봉인값에서만 만든다. 증거: focused "C-23: turn 사이 spec/opts 변조 …" **9케이스**(model·outputSchema·cwd·codexHome·ephemeral·sessionId·codexBinaryPath·gitExecutablePath 드리프트 + sandbox는 재해석에서 `codex_sandbox_forbidden`) — 각 케이스 spawn 1차 그대로 · 이전 완료 큐 교체 0 · 되돌린 뒤 정상 turn 1건 + 기존 "창 안에서 spec이 변조되면 …" 4케이스 유지 + mutation(봉인값 대신 매 turn 재해석 → **between-turn 테스트만** 실패 / 필드 비교 무력화 → 2건 실패). **ⓓ 2차 reopen 사유(5차 · 독립 리뷰 A/P1)**: 4차 봉인 목록에 **`nowMs`와 manifest 객체가 없었다** → 매 invocation `this.opts.nowMs`/`this.opts.manifest`를 다시 읽었고, 첫 turn 뒤 호출자가 시계를 만료 전 시각을 말하는 함수로 갈아끼우면 **경계 진입·spawn 직전 두 만료 검사가 모두 통과**해 **실제로는 만료된 승인 아래 resume이 떴다**(mutation으로 재현: 그 상태에서 send가 `(통과)` + spawn 2건). **fix(5차)**: 시각 권위와 **검증된 manifest 사본**을 봉인해 경계에 봉인값만 넘기고(`nowMs: s.clock` · `manifest: s.manifest`), `SEALED_KEYS`에 `clock`·`manifestDigest`를 더했다. 봉인 clock은 만료 검사마다 **다시 호출**한다(시각 고정 아님). `opts.spawn`은 생성자 포착이라 재읽기 자체가 없다(무관함을 테스트로 고정). 증거: focused "C-23: 시각 권위는 봉인된다 …"(교체 → `codex_spec_mutated`+spawn 0 · 되돌림 → 같은 시계가 `manifest_expired` · 시간 되돌아오면 정상 turn · 제거 → `codex_spec_mutated`) + 드리프트 표 **17케이스**로 확장 + mutation 3종 | **fixed (2026-07-27, M5a 5차 리비전)** |
 | `C-27` | C (P2) | **`stop()`이 `starting` 상태에서 돌아올 때 그 invocation의 promise는 아직 정착하지 않았다.** `stop`은 claim을 취소하고 즉시 반환하지만, 취소된 `start`/`send`는 진행 중인 비동기 경계 작업이 끝난 뒤에야 `codex_invocation_cancelled`로 **reject**된다. 프로세스는 뜨지 않는다(테스트로 고정) — 남는 것은 "stop 반환 후에도 호출자가 그 promise를 받아야 한다"는 계약이 코드/문서에만 있다는 점이다 | 중간(오케스트레이션 배선에서 promise를 버리면 unhandled rejection) | 취소 경로의 호출자 배선 | 낮~중 — 배선 시 `stop` 전 promise를 잡아두면 된다. 안 잡으면 로그 소음이지 상태 오염은 아니다 | 소~중(취소 시 즉시 settle하거나 `stop`이 진행 중 invocation을 await) | **provider를 orchestrator에 배선할 때(M5b — `C-25`와 같은 게이트)** | M5b 구현 세션 | `CodexCliProvider.stop`/`claim`/`assertOwned` · M5a 4차 리비전 focused "stop은 child 없는 claim도 취소한다" · "stop 뒤 교체 세션 …" | open |
-| `C-28` | C (P2) | **봉인 대상 밖의 manifest 필드는 turn 사이에 고정되지 않는다.** 4차 리비전은 manifest의 신원·TTL·상한(`milestoneId`·`approvedCommit`·`expiresAt`·`maxSessions`·`maxTokens`·`maxElapsedMs`)만 봉인했다. `writableRoots`·`ownershipByTask`·`allowedCommands`·`allowedDependencies`·`allowedNetworkDomains`·`localMergeAllowed`가 turn 사이에 바뀌면 드리프트로 잡히지 않는다. **M5a provider는 이 필드들로 아무 판정도 하지 않으므로**(read-only sandbox · 명령 실행 없음 · 네트워크 없음) 지금은 실행 결정에 영향이 없고, 매 invocation `validateApprovalManifest`를 다시 지나므로 형태 위반은 여전히 fail closed다 | 낮음 — 현재 provider가 읽지 않는 필드다 | 이 필드들을 실제로 집행하는 계층(권한 컴파일러·kernel)이 붙은 뒤의 판정 | 중 — task-bound 권한 계층(`workspace-write` 재도입)에서는 이 필드가 곧 판정 근거가 된다 | 소(`SEALED_KEYS`에 canonical manifest 전체 해시 1개 추가) | **manifest 권한 필드를 실제로 집행하는 계층을 붙일 때(= `workspace-write` 재승인 또는 M5c 권한 컴파일러)** | 해당 구현 세션 | `sealCodexSpec`/`SEALED_KEYS` · `approvalManifest.MANIFEST_KEYS` · M5a 4차 리비전 | open |
+| `C-28` | **C (P2) → fixed(M5a 5차 리비전)** | **봉인 대상 밖의 manifest 필드는 turn 사이에 고정되지 않는다.** 4차 리비전은 manifest의 신원·TTL·상한(`milestoneId`·`approvedCommit`·`expiresAt`·`maxSessions`·`maxTokens`·`maxElapsedMs`)만 봉인했다. `writableRoots`·`ownershipByTask`·`allowedCommands`·`allowedDependencies`·`allowedNetworkDomains`·`localMergeAllowed`가 turn 사이에 바뀌면 드리프트로 잡히지 않는다. **M5a provider는 이 필드들로 아무 판정도 하지 않으므로**(read-only sandbox · 명령 실행 없음 · 네트워크 없음) 지금은 실행 결정에 영향이 없고, 매 invocation `validateApprovalManifest`를 다시 지나므로 형태 위반은 여전히 fail closed다 | 낮음 — 현재 provider가 읽지 않는 필드다 | 이 필드들을 실제로 집행하는 계층(권한 컴파일러·kernel)이 붙은 뒤의 판정 | 중 — task-bound 권한 계층(`workspace-write` 재도입)에서는 이 필드가 곧 판정 근거가 된다 | 소(`SEALED_KEYS`에 canonical manifest 전체 해시 1개 추가) | (닫힘 — 원래 기한은 **manifest 권한 필드를 실제로 집행하는 계층을 붙일 때**였다) | M5a 5차 리비전 | **fix(5차)**: `sealCodexSpec`이 **검증·정규화된 manifest 사본**과 그 **canonical digest**(정규화 결과의 결정론적 JSON)를 봉인하고 `SEALED_KEYS`에 `manifestDigest`를 더했다 → 신원·TTL·상한뿐 아니라 `writableRoots`·`ownershipByTask`·`allowedCommands`·`allowedDependencies`·`allowedNetworkDomains`·`localMergeAllowed`까지 **한 필드도 빠짐없이** turn 사이에 고정된다. 실행 경계에도 `this.opts.manifest`가 아니라 **봉인 사본**을 넘긴다(승인 자체를 갈아끼우는 경로 제거). 오류에는 키 이름만 싣는다(digest 내용 미노출). 증거: focused 드리프트 표의 manifest 5케이스(`approvedCommit`·`expiresAt` 연장·`writableRoots`·`allowedCommands`·`localMergeAllowed`) + "manifest 무효화" 1케이스 — 전부 `codex_spec_mutated` · spawn 1차 그대로 · 이전 완료 큐 교체 0 · 되돌린 뒤 정상 turn 1건 | **fixed (2026-07-27, M5a 5차 리비전)** |
 | `C-24` | C (P2) | **stderr 버퍼 상한이 chunk 단위로만 적용된다**(`stderr.length < MAX_STDERR_BUFFER` 검사 뒤 chunk 전체를 붙인다 → 한 chunk만큼 초과 가능). 밖으로 나가는 요약은 여전히 `MAX_ERROR_CHARS` + `redactSecrets`로 bounded하다 | 낮음 | 실패 1건의 메모리 상한(정확도) | 낮음 | 소(붙일 때 잘라내기) | **live runner 도입 시(M5c, `C-18`과 함께)** | M5c 구현 세션 | `CodexCliProvider.invoke` stderr 핸들러 | open |
 | `C-26` | C (P2) | **경계 밖의 `runProcess` git 호출자는 여전히 `git`을 이름으로 부르고 `process.env`를 상속한다**(worktree 유틸·기계 게이트 등). M5a 3차 리비전은 **`executionBoundary`로 범위를 한정**했다(리뷰 지시). 이 호출자들은 **승인 커밋을 증명하지 않으므로** 경계 우회는 아니지만, 적대적 `PATH`·`GIT_*` 아래에서는 worktree 조작·조회가 다른 저장소를 볼 수 있다 | 낮~중 — 로컬 개발 환경 가정에서는 낮다 | worktree 생성·삭제·조회 경로(실행 승인 판정은 아님) | 낮~중 — 지금 함께 바꾸면 M5a 위험 예산을 넘고, 나중에 하면 호출자별 회귀 확인이 필요하다 | 중(공용 `git()` 헬퍼 1개 + 호출자 전환 + 회귀) | **controller가 worktree 조작을 자동화 경로로 쓰기 시작할 때(M5c 자율 실행 전)** | M5c 구현 세션 | `src/exec/runProcess.ts` 호출자 · `executionBoundary`의 `GIT_SANITIZED_ENV` 대비 · 2026-07-27 독립 리뷰 A/P1 범위 한정 | open |
 | `C-25` | C (P2) | **`events(handle)`는 현재 invocation의 큐를 준다** — `send` 전에 잡아 둔 스트림은 그 invocation이 끝나며 닫히고, 후속 turn 이벤트는 **다시 `events()`를 불러야** 나온다. 결과 유실은 아니지만(각 invocation은 종료 결과 1건으로 닫힌다) 소비자 계약이 문서에만 있다 | 중간(오케스트레이션 배선 시 오해하기 쉽다) | 소비자 배선 | 낮~중 — 배선 코드에서 turn마다 다시 구독하면 된다 | 소~중(멀티 turn 하나의 스트림으로 합치기 + 테스트) | **provider를 orchestrator에 배선할 때(M5b)** | M5b 구현 세션 | `CodexCliProvider.events`/`invoke`의 큐 교체 · M5a focused "실행 중 send" | open |
@@ -1627,6 +1643,44 @@ resume해 **A 3건을 전부 고쳤고** 문서·타입 정정과 `C-23` 확장/
   supervisor가 **M5b~M5d 이후 최종 M5 handoff에서 직렬 1회**를 예약했다. 미실행: `npm test` 전체 ·
   `test:core` · acceptance · stress · live · MCP · 실제 Codex/Claude 추론.
   **M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 것이 아니다. M5도 미완료.**
+
+#### M5a 5차 리비전 (2026-07-27, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰 → **REVISE**)
+
+범위 `85ebe883..8f95877`을 **또 다른 독립 read-only 리뷰**가 봤고 판정은 다시 **REVISE**였다. 4차의 내부
+linearization(첫 await 전 동기 claim · await 뒤·발행 직전 소유권 재확인 · 동기 신뢰 게이트 · 게이트 뒤 발행 ·
+spawn까지 no-await)은 **그대로 유효**하고 이번에도 보존했다. 이번 findings는 **경계 밖에서 들어오는 신원과
+권위**를 봤다: ⓐ 내부 상태는 원자적인데 **공개 핸들이 어느 인스턴스의 것인지**는 아무도 확인하지 않았고
+ⓑ 봉인이 **호출자가 계속 들고 있는 함수·객체 두 개**(시계·승인)를 빠뜨렸으며 ⓒ 문서가 약속한 단일
+드리프트 marker가 **코드·테스트와 어긋나** 있었다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| 1 | **A (P1)** | **낡은 핸들이 교체 세션을 조종한다.** `SessionHandle`에 provider 인스턴스/generation 신원이 없고 `send`/`events`/`stop`이 **`sessionId`만으로** 상태를 찾았다 → H1을 stop하고 같은 id로 H2를 start하면 **이미 반환된 H1**이 H2의 이벤트를 읽고, H2에 지시를 보내고, H2를 중지·삭제할 수 있었다(4차의 교체 테스트는 **내부 정리**만 봤고 공개 stale 핸들은 보지 않았다) | **fixed** — 세션 인스턴스마다 **내용 없는 frozen 신원 객체**를 만들어 `start`가 반환하는 핸들에 붙이고(`SessionHandle.providerBinding` — **선택 필드**라 `claude-cli`·`mock-exec`는 무영향), 모든 진입점이 **참조 동일성**으로 대조한다(`sessionId`·가변 `spec` 내용은 근거가 아니다). 낡은·위조 핸들: `send`/`events`는 **읽기·발행·spawn·변경·삭제 0**으로 `codex_stale_handle`, `stop`은 **무해·멱등**(signal·close·상태 변경·삭제 0). 그 id에 세션이 아예 없으면 기존대로 `codex_unknown_session`. 신원은 빈 객체 참조라 **로그·문서에 남길 비밀 material이 없다** |
+| 2 | **A (P1) — `C-23` 2차 reopen** | **가변 `opts.nowMs` 재읽기로 승인 만료를 우회할 수 있었다.** 4차 봉인 목록에 `nowMs`가 없어 매 invocation `this.opts.nowMs`를 다시 읽었다 → 첫 turn 뒤 호출자가 **만료 전을 말하는 시계**로 갈아끼우면 경계 진입·spawn 직전 **두 만료 검사가 모두 통과**해 **실제로는 만료된 승인 아래 resume 프로세스**가 떴다. 같은 재읽기 패턴이 `this.opts.manifest`에도 있었다 | **fixed** — **시각 권위(clock)와 검증된 manifest 사본을 `start()`에서 봉인**하고 경계에는 봉인값만 넘긴다. 봉인 clock은 만료 검사마다 **다시 호출**하므로 시간은 자연스럽게 흐른다(시각 고정 아님). `SEALED_KEYS`에 `clock`·`manifestDigest`를 더해 `opts.nowMs`의 **교체·제거·추가**와 manifest **전 필드** 변경을 `codex_spec_mutated`로 잡는다. 함수 아닌 `nowMs`는 start에서 `codex_config_invalid`. **caller-owned 옵션 전수 감사**: `manifest`·`nowMs`는 봉인으로 전환, `executablePath`/`gitExecutablePath`/`controllerRepoRoot`/`spec`은 이미 봉인값 사용, `spawn`은 **생성자 포착**이라 재읽기 없음(무관함을 테스트로 고정) → **invocation 중 `this.opts`에서 읽는 실행 입력 0** |
+| 3 | **A (문서/계약 불일치)** | 코드·문서는 "post-start 드리프트는 전부 `codex_spec_mutated`"라고 했지만 `assertNoSpecDrift`가 `sealCodexSpec`을 먼저 불러 **재해석 단계의 native 오류를 그대로 던졌고**, sandbox 드리프트 테스트가 `codex_sandbox_forbidden`을 기대해 **증거가 문서를 반박**하고 있었다 | **fixed** — 드리프트 비교 중의 검증 실패를 **단일 marker로 접는다**(원인 코드·경로·값 미노출). **초기 `start`는 정밀 native 코드를 그대로 유지**한다(`codex_sandbox_forbidden` 테스트 존치). sandbox 드리프트 테스트 2곳(같은 invocation · turn 사이)을 `codex_spec_mutated`로 정정하고 "무효화" 케이스(`codexHome` 삭제 · manifest 무효화)를 추가했다 — **문서·코드·증거가 이제 정확히 일치**한다 |
+| 4 | **C** | 인접 감사 | `C-28`은 이번 봉인 확장으로 **실제 구현+테스트까지 마쳐 fixed**로 닫았다. **`C-27`·`C-26`은 계약을 구현하지 않았으므로 그대로 open**이며 기한·트리거·증거 필드를 유지했다. `B-7`·`B-8`·`B-9`와 `C-17`·`C-18`·`C-19`·`C-21`·`C-22`·`C-24`·`C-25`도 전부 open이다 |
+
+검증 실측(offline, 2026-07-27 — 5차 리비전 세션):
+
+- 파일 단독 `npx tsx --test` : `executionBoundary.test.ts` **17/17** · `codexStreamParser.test.ts` **28/28** ·
+  `codexCliProvider.test.ts` **53/53**(50 → 53, 합 **98/98**, 이전 95).
+- `npm run test:exec` **240/240**(237 → 240). **240은 exec suite 수치이며 파일 단독 focused가 아니다.**
+- `npx tsc --noEmit` 0 · `npm run build` PASS(**dist parity** — 재빌드 후 `git diff --numstat` 변화 0) ·
+  `git diff --check` clean · `node_modules` stage 0.
+- **세션 신원·만료 타이밍을 건드렸으므로 stale-handle + clock/drift 회귀 7건을 반복 3회**: 3회 모두 7/7.
+- **비공허성(mutation) 4종**: ⓐ 핸들 신원 대조 제거 → **2건 실패**(발급되지 않은 핸들 · 낡은 핸들) /
+  ⓑ 봉인 clock 대조 제거 → **2건**(시각 권위 · 드리프트 표) / ⓒ 봉인 clock 대조 제거 **+** `this.opts.nowMs`
+  재읽기(= 수정 전 상태 그대로) → **2건**이며 그중 시각 권위 테스트는 `codex_spec_mutated` 대신 **`(통과)`**,
+  즉 **만료된 승인 아래 resume이 실제로 떴다** / ⓓ 드리프트 중 native 오류 허용 → **2건**(같은 invocation ·
+  turn 사이 sandbox). 네 번 모두 정확히 원복하고 `MUTATION` grep 0(소스·dist) ·
+  `git diff --numstat` 기준선 일치 · `tsc --noEmit` 0 · focused 53/53 재확인.
+  - **정직한 한계**: ⓒ에서 **재읽기만** 되돌리고 봉인 대조를 남기면 **어떤 테스트도 실패하지 않는다** —
+    현재 코드에는 동기 진입의 드리프트 검사와 경계 호출 인자 평가 **사이에 await가 없어** 호출자가 끼어들
+    수 없기 때문이다. 즉 두 방어는 **중복**이고, 봉인 clock은 지금 막는 쪽이자 **앞으로 그 사이에 await가
+    하나 생겨도 깨지지 않게 하는 쪽**이다. 커버리지를 과대 주장하지 않는다.
+- **전체 suite(`npm test`) 미실행 — 이전 라운드와 같다.** supervisor가 **M5b~M5d 이후 최종 M5 handoff에서
+  직렬 1회**를 예약했다. 미실행: `npm test` 전체 · `test:core` · acceptance · stress · live · MCP ·
+  실제 Codex/Claude 추론. **M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 승인된 것이 아니다. M5도 미완료.**
 
 ### M6 — Hierarchical Orchestrator + Fresh Context Rotation
 

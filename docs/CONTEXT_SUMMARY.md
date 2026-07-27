@@ -2,7 +2,47 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — **V3 M5a 4차 리비전: 독립 Codex 리뷰(REVISE) — pre-spawn race · `C-23` reopen · 발행 순서** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-27 — **V3 M5a 5차 리비전: 독립 Codex 리뷰(REVISE) — 낡은 핸들 · 가변 시계로 만료 우회(`C-23` 2차 reopen) · 드리프트 marker 불일치** · 이 블록이 가장 최신이다)
+
+- **위치**: 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
+  시작 HEAD `8f95877` 위에 **로컬 커밋만**(code+tests+dist `bfd1cd0`, docs 후속). **새 fresh Claude Opus 5
+  세션**. amend/rebase/reset·원격 push/PR/merge·네트워크·MCP·패키지 설치·live provider 추론 0,
+  `node_modules` stage 0. Pony Tail(full).
+- **리뷰**: 독립 fresh Codex `gpt-5.6-sol` xhigh read-only, 범위 `85ebe883..8f95877` → **REVISE**.
+  4차의 내부 linearization(동기 claim → 소유권 재확인 → 동기 신뢰 게이트 → 발행 → no-await spawn)은
+  **그대로 유효·보존**. 이번 A는 **밖에서 들어오는 신원과 권위**였다.
+- **고친 것**:
+  ⓐ **낡은 핸들이 교체 세션을 조종(A/P1)** — `send`/`events`/`stop`이 `sessionId`만으로 상태를 찾아서,
+  H1 stop 후 같은 id로 start한 H2를 **이미 반환된 H1**이 읽고·조종하고·중지·삭제할 수 있었다. 이제 세션
+  인스턴스마다 **내용 없는 frozen 신원 객체**를 발급해 핸들에 붙이고(`SessionHandle.providerBinding` —
+  **선택 필드**, 다른 provider 무영향) **참조 동일성**으로만 대조한다. 낡은·위조 핸들: `send`/`events`는
+  읽기·발행·spawn·변경·삭제 0으로 **`codex_stale_handle`**, `stop`은 **무해·멱등**. 세션 자체가 없으면
+  기존대로 `codex_unknown_session`. 신원은 빈 객체라 **로그·문서에 남길 비밀 material이 없다**.
+  ⓑ **가변 `opts.nowMs`로 만료 우회(A/P1 · `C-23` 2차 reopen)** — 4차 봉인에 `nowMs`·`manifest`가 없어
+  매 invocation 재읽기했고, 첫 turn 뒤 시계를 갈아끼우면 **두 만료 검사가 모두 통과**해 **만료된 승인 아래
+  resume이 떴다**. 이제 **시각 권위(clock)와 검증된 manifest 사본을 봉인**해 경계에 봉인값만 넘기고,
+  `SEALED_KEYS`에 `clock`·`manifestDigest` 추가 → 시계 **교체·제거·추가**와 manifest **전 필드** 변경이
+  `codex_spec_mutated`다. 봉인 clock은 **매 검사마다 재호출**(시각 고정 아님). `spawn`은 생성자 포착이라
+  재읽기 없음 → **invocation 중 `this.opts`에서 읽는 실행 입력 0**.
+  ⓒ **드리프트 marker 불일치(A)** — 문서는 단일 marker를 약속했는데 비교가 native 오류를 흘렸고 테스트가
+  그걸 기대했다. 이제 **초기 `start`는 정밀 native 코드**, **start 이후는 `codex_spec_mutated` 하나**.
+- **테스트**: 파일 단독 boundary **17/17** · parser **28/28** · provider **53/53**(합 **98/98**, 이전 95) ·
+  `npm run test:exec` **240/240**(237 → 240) · `tsc --noEmit` 0 · `build` PASS(dist parity — 재빌드 후
+  `git diff --numstat` 변화 0) · `git diff --check` clean. **stale-handle + clock/drift 회귀 7건 반복 3회
+  → 3회 모두 7/7.** 신규 3(낡은 핸들 vs 살아 있는 H2 · 시각 권위 봉인 · nowMs 타입/spawn seam 무관함),
+  기존 2건은 핸들 계약에 맞게 **정정하며 커버리지를 늘렸고**, 드리프트 표는 **9 → 17케이스**.
+  mutation **4종**(핸들 신원 대조 제거 2 · 봉인 clock 대조 제거 2 · 대조 제거+재읽기 2(**시각 권위 테스트가
+  `(통과)`** = 만료 승인 아래 resume 실제 발생) · 드리프트 중 native 오류 허용 2) 후 정확히 원복
+  (`MUTATION` grep 0 소스·dist · numstat 기준선 일치 · `tsc` 0).
+  **정직한 한계**: 재읽기만 되돌리고 봉인 대조를 남기면 실패하는 테스트가 **없다**(그 사이에 await가 없다) —
+  두 방어는 중복이고 봉인 clock은 미래에 await가 끼어도 깨지지 않게 하는 쪽이다.
+- **대장**: `C-23` **fixed(5차)** — 행에 **3차 overclaim → 4차 부분 fix → 5차 완결** 이력을 전부 남겼다.
+  `C-28` **fixed(5차)**(manifest canonical digest 봉인 — 구현+테스트 완료). **`C-27`·`C-26`은 그대로 open**
+  (계약 미구현 — 기한·트리거·증거 유지). `B-7`·`B-8`·`B-9`·`C-17`·`C-18`·`C-19`·`C-21`·`C-22`·`C-24`·`C-25`도
+  전부 open. **미실행**: `npm test` 전체 · `test:core` · acceptance · stress · live · MCP · 실제 추론.
+  **M5a는 supervisor의 다음 fresh 독립 리뷰 전까지 미승인이고 M5도 미완료다.**
+
+## 이전 (2026-07-27 — **V3 M5a 4차 리비전: 독립 Codex 리뷰(REVISE) — pre-spawn race · `C-23` reopen · 발행 순서**)
 
 - **위치**: 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
   시작 HEAD `3493a2e` 위에 **로컬 커밋만**. **새 fresh Claude Opus 5 세션**.
