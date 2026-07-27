@@ -2,9 +2,64 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — V3 **M4b 구현 완료: 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 **stacked** 격리 worktree · **M4 전체는 여전히 미완료(M4c 잔여)**)
+## 최신 (2026-07-27 — V3 **M4c 구현 완료: 중앙 경유 sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 **stacked** 격리 worktree · **이로써 M4 전체 완료 · M5는 미완료**)
 
 > **현행 마일스톤 상태 (이 항목이 최신이며 아래 dated 항목보다 우선한다)**
+> - **M3 완료(재개방 금지)** · **M4a·M4b·M4c 완료 → M4 전체 완료(offline 검증)**.
+> - **M5는 미완료·not started**: provider bridge(`CodexCliProvider`) · autopilot CLI ·
+>   실제 7-agent 동시 실행 · live acceptance. 별도 사용자 승인이 필요하다.
+> - `B-1`/`B-2`는 여전히 **nonblocking release-readiness backlog**다.
+> - 대장 **`C-6`(나머지 6개 메시지 타입 + 7 specialist registry)은 이번에 fixed**.
+> - **열린 P0는 없다.** 다음 단계는 M4c의 fresh Codex 독립 리뷰 → M5 계획 → 사용자 승인.
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m4c` · branch `work/m4c-routing-approval` ·
+  base `ab63eac`(리뷰 완료된 M4b 커밋) — **M4a/M4b와 분리된 stacked PR이고 아직 commit/push/PR 없음**
+  (미커밋 working tree). 원본 checkout·M4a/M4b worktree 무수정. 네트워크·`gh`·deploy·DB·production·
+  live billing·패키지 설치·신규 의존성·package/lockfile 변경·MCP·provider 호출·subagent **전부 없음**.
+  Pony Tail(full) 적용.
+- **무엇을 했나**: M4b kernel에 **§5.1 메시지 10종 · 중앙 경유 sibling/reviewer/decision 라우팅 ·
+  §8 milestone approval manifest · 7 specialist registry**를 더했다. 두 번째 오케스트레이터·범용
+  queue/mailbox·provider 추상화를 만들지 않았고 `runWorkflow`/`mission`/`ExecutionProvider`/
+  `projects/<p>/outputs/run_state.json`은 **무수정**이다.
+- **변경 파일 10 + 신규 3**: `orchestrationTypes.ts` · `approvalManifest.ts`(신규) ·
+  `orchestrationStore.ts` · `orchestrationKernel.ts` · `orchestrationKernel.test.ts` ·
+  `schemas/milestone_approval_manifest.schema.json`(신규) · `schemas/agent_message.schema.json` ·
+  `schemas/orchestration_run_state.schema.json` · `scripts/m4c-offline-acceptance.mjs`(신규) ·
+  `scripts/acceptance.sh`(Test 15 추가, 기존 1~14 무변경) · `scripts/m4a|m4b-offline-acceptance.mjs`
+  (manifest 인자 1개씩 — 체크 수 31/42 불변) · `dist/exec/*.js`(build 산출물).
+- **계약 요약**:
+  · 메시지 **10종 전부**. envelope 필드 집합은 **무변경** — route는 message index의
+    `routeToTaskId`/`acknowledgedAt`에 중앙이 남긴다. summary는 `task_assignment`/`spawn_request`만 null.
+  · sibling 전달은 **같은 parent 또는 직접 의존**일 때만. 자기 자신·미상·**모호(같은 roleId 다수)**·
+    orchestrator·종료 수신자·무관은 각각 다른 stable code로 거부(전이 0).
+  · reviewer 왕복: `review_request`는 **completed 대상 + 그 대상에 의존하는 fresh reviewer**에게만,
+    `review_result`는 받은 요청이 있어야, `revision_request`는 **선행 review_result가 있어야** 나간다.
+    decision 왕복은 **미응답 decision_request**가 있을 때만. **라우팅은 task 상태를 바꾸지 않는다.**
+  · 미수령 전달은 durable state만으로 계산(`createdAt`→`messageId`) → 재시작 후 같은 다음 전달.
+    수령은 좁은 전이 하나 + durable event `delivery_acknowledged`. **범용 queue/retry 없음.**
+  · **manifest는 run 생성 시 필수 bind**(기본값 = 조용한 자동 승인이므로). state·digest·snapshot에
+    들어가 손편집은 binding으로 거부된다. 강제되는 권한: ownership 명시 승인 · writableRoots ·
+    child는 parent 부분집합 · `maxSessions` · 만료. 전부 **커밋 경로 공용 불변식**이라 우회 불가.
+  · 실행 권한은 **조회만**: `commandAllowed`/`dependencyAllowed`/`networkDomainAllowed`(deny-by-default,
+    정확히 pin된 버전만, 하위 도메인 자동 허용 없음). `localMergeAllowed`는 기록 전용 — git 조작 없음.
+  · registry 7종(`research`/`pm`/`ux`/`design`/`tech-lead`/`dev-lead`/`qa-security`) + 하위 role 한 겹.
+    그 밖은 `unknown_role`. pre-M4c state는 `state_pre_m4c_unsupported`로 fail closed(자동 승인 금지).
+- **검증(offline)**: focused **142/142**(125 → 142) → `npm run build` PASS →
+  M4c acceptance **77/77** · M4a **31/31** · M4b **42/42** →
+  `npm test` **PASS(최종 코드 변경 후 1회)** = exec **142/142** + core **374/374** + acceptance **92/92**
+  (81 → 92). `git diff --check` clean. mutation 4종(ownership·session·sibling 관계·만료)으로 비공허성
+  확인 후 정확히 원복(파일 해시 일치, 흔적 grep 0).
+- **하지 않은 것**: M5 provider bridge/autopilot · 실제 7-agent 동시 실행 · stress/live/반복 suite ·
+  UI/dashboard · 크래시·fsync 하드닝 · stale lock 회수 · schema 마이그레이션 도구 · fairness/retry ·
+  git 조작 · 테스트 삭제·완화 **0**.
+- **새 유예 항목**: `C-11`(manifest 재승인 경로 없음) · `C-12`(ack 재전송·우선순위 없음) ·
+  `C-13`(리뷰 대상이 durable 필드 아님) · `C-14`(command 조회는 문자열 동치) · `C-15`(registry는 코드 상수).
+  전부 nonblocking, 로드맵 §9.1 대장 등록.
+- **다음**: M4c fresh Codex 독립 리뷰 → **M5**(provider bridge + autopilot) 계획 → 사용자 승인.
+
+## 이전 (2026-07-27 — V3 **M4b 구현 완료: 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 **stacked** 격리 worktree · **M4 전체는 여전히 미완료(M4c 잔여)**)
+
+> **(2026-07-27 M4b 시점 기록 — 현행 상태는 위 "최신" 블록이 우선한다. M4는 M4c로 완료됐다.)**
 > - **M3 완료(재개방 금지)** · **M4a 완료** · **M4b 완료(offline 검증)** · **M4 전체는 미완료**.
 >   남은 것은 **M4c**: sibling 전달 · reviewer 왕복(나머지 6개 메시지 타입) · milestone approval manifest.
 > - `B-1`/`B-2`는 여전히 **nonblocking release-readiness backlog**다(M4 선행 조건 아님).

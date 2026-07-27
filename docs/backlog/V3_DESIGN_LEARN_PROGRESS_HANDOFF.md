@@ -1,17 +1,24 @@
 # V3_DESIGN — 프로젝트 간 학습 · 실행 가시성 · Claude Code 자동 핸드오프
 
 > **2026-07-27 현행 상태 (이 블록이 최신이며 아래 2026-07-26 서술보다 우선한다 — 아래는 이력으로 보존):**
-> **M3는 완료(재개방 금지)** · **M4a 완료** · **M4b 완료(offline 검증 — 배타 자원 class + deterministic
-> scheduler + run writer lock, 대장 `B-3`/`B-4` fixed)** · **M4 전체는 미완료**(M4c 잔여 =
-> sibling 전달 · reviewer 왕복 · milestone approval manifest). **열린 P0 없음.**
-> M4b는 M4a 위 **stacked** 격리 worktree `work/m4b-resource-scheduler`(base `805da35`)에서 구현했고
+> **M3는 완료(재개방 금지)** · **M4a·M4b·M4c 완료 → M4 전체 완료(offline 검증)** · **M5는 미완료**
+> (provider bridge · autopilot · 실제 7-agent 동시 실행). **열린 P0 없음.**
+> M4c는 M4b 위 **stacked** 격리 worktree `work/m4c-routing-approval`(base `ab63eac`)에서 구현했고
 > **아직 commit/push/PR 없다.**
 > 부하(stress) 재실행과 live runner 재실행은 **nonblocking release-readiness backlog**(`B-1`/`B-2`)이며
 > M3 완료 게이트도 M4 선행 조건도 **아니다** — 아래 2026-07-26 블록의 "차단 게이트 / M4 not started"
 > 표기는 그 시점의 기록이다.
-> 현행 offline 수치: focused `orchestrationKernel.test.ts` **50/50**(M4a 최종 37 → M4b 50),
-> offline acceptance M4a **31/31** · M4b **42/42**, `npm test` PASS(1회) = exec **125/125** +
-> acceptance **81/81**, focused lock 테스트 75/75, liveEvidence 24/24.
+> 현행 offline 수치: focused `orchestrationKernel.test.ts` **142/142**(M4a 37 → M4b 50 → M4c 142),
+> offline acceptance M4a **31/31** · M4b **42/42** · M4c **77/77**, `npm test` PASS(1회) =
+> exec **142/142** + core **374/374** + acceptance **92/92**, focused lock 테스트 75/75, liveEvidence 24/24.
+> **M4c 추가 — 진행 이벤트·handoff 계약의 durable 기반이 생겼다**: agent 간 진행 공유는
+> `status_update`(중앙 경유 sibling 전달), 검토 왕복은 `review_request`/`review_result`/
+> `revision_request`, 사람·중앙 결정은 `decision_request`/`decision`으로 표현하며 **전부 중앙이
+> 관계·상태·승인을 검증한 뒤에만** message index에 route로 남는다(직접 mailbox 쓰기 없음).
+> 중앙이 옮기는 것은 여전히 **bounded summary와 검증된 artifact 포인터뿐**이고 raw transcript·
+> 본문은 어떤 경로로도 state/snapshot에 들어가지 않는다. 미수령 전달 목록은 durable state만으로
+> 계산돼 재시작 후에도 **같은 순서·같은 다음 전달**이다. **실제 세션 실행·스트리밍·provider handoff는
+> 여전히 M5 범위다.**
 > **디스크에 상태를 쓰는 산출물에는 M4b 계약도 함께 적용한다**: 쓰기 경로는 run 단위 배타 lock 안에서만
 > 진행하고(대기 없이 fail closed), **커밋 기준(revision/이력 tail)을 lock 안에서 디스크와 대조**해
 > 늦은 writer가 앞선 결과를 덮지 못하게 하며, 정리는 **자기 acquire만**(`O_NOFOLLOW` + nonce 대조,

@@ -1,20 +1,26 @@
 # V3_MCP — Capability 기반 외부 도구 연결 설계 (Tool Profiles)
 
 > **2026-07-27 현행 상태 (이 블록이 최신이며 아래 2026-07-26 서술보다 우선한다 — 아래는 이력으로 보존):**
-> **M3 완료(재개방 금지)** · **M4a 완료** · **M4b 완료(offline 검증 — 배타 자원 class + deterministic
-> scheduler + run writer lock, 대장 `B-3`/`B-4` fixed)** · **M4 전체는 미완료**(M4c 잔여 =
-> sibling 전달 · reviewer 왕복 · milestone approval manifest). **열린 P0 없음.**
-> M4b는 M4a 위 **stacked** 격리 worktree `work/m4b-resource-scheduler`(base `805da35`)에서 구현했고
+> **M3 완료(재개방 금지)** · **M4a·M4b·M4c 완료 → M4 전체 완료(offline 검증)** · **M5는 미완료**
+> (provider bridge · autopilot · 실제 7-agent 동시 실행). **열린 P0 없음.**
+> M4c는 M4b 위 **stacked** 격리 worktree `work/m4c-routing-approval`(base `ab63eac`)에서 구현했고
 > **아직 commit/push/PR 없다.** 부하·live 재실행은 **nonblocking release-readiness backlog**(`B-1`/`B-2`)이며
 > M3 완료 게이트도 M4 선행 조건도 **아니다**(아래 2026-07-26 블록의 "차단 게이트 / M4 not started"는
 > 그 시점의 기록이다).
-> 현행 offline 수치: focused `orchestrationKernel.test.ts` **50/50**(M4a 최종 37 → M4b 50),
-> offline acceptance M4a **31/31** · M4b **42/42**, `npm test` PASS(1회) = exec **125/125** +
-> acceptance **81/81**, focused lock 테스트 75/75, liveEvidence 24/24.
+> 현행 offline 수치: focused `orchestrationKernel.test.ts` **142/142**(M4a 37 → M4b 50 → M4c 142),
+> offline acceptance M4a **31/31** · M4b **42/42** · M4c **77/77**, `npm test` PASS(1회) =
+> exec **142/142** + core **374/374** + acceptance **92/92**, focused lock 테스트 75/75, liveEvidence 24/24.
 > **MCP·외부 도구 실행에도 M4b 배타 자원 계약을 적용한다**: 프로세스 전역·tmp 전역 상태를 관찰하는
 > 도구/runner는 task의 배타 자원 class로 선언하고 같은 class끼리 **동시에 running이 되지 않는다**
 > (점유는 `running` 동안만이며 중단 상태는 점유하지 않는다). 선언은 **중앙이 task 생성 시** 하고
 > **agent가 envelope로 자기 자원 권한을 선언할 경로는 없다**.
+> **M4c 추가 — 승인 manifest가 dependency pin 규칙의 집행 지점이 됐다**: 이 문서의 **MCP 패키지
+> `@latest` 금지**는 이제 `MilestoneApprovalManifest.allowedDependencies`에서 런타임으로 강제된다.
+> `latest`·범위(`^`/`~`/`>=`)·`x`·2자리 버전·dist-tag는 `dependency_not_pinned`로 거부하고,
+> M5 executor는 순수 술어 `dependencyAllowed(manifest, name, version)`로 **정확히 pin된 조합만**
+> 조회 통과시킨다(deny-by-default). 네트워크 도메인도 같은 방식이며 **하위 도메인은 자동 허용하지 않는다**.
+> 다만 **M4c는 아무것도 실행하지 않는다** — 설치·네트워크 접근·MCP 기동은 여전히 M5 범위이고
+> 레포 hard deny는 manifest 내용과 무관하게 항상 더 강하다.
 >
 > **2026-07-26 상태 갱신:** M0~M3 및 filtered shadcn read handoff는 구현·live acceptance 완료.
 > §10~§13의 기존 M4~M7 순서는 `V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`의 M3d~M10으로

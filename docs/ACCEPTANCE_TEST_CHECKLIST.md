@@ -204,15 +204,59 @@ npm run build && node scripts/m4b-offline-acceptance.mjs
 (**기존 Test 1~13은 변경하지 않았다**). 세부 계약은
 `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4b 절을 본다.
 
+> M4c부터 orchestration run은 §8 승인 manifest를 **필수 인자**로 받는다. 그래서 이 스크립트와
+> Test 13 스크립트에 manifest 상수 1개와 `createOrchestrationRun` 인자 1개를 더했다.
+> **기존 체크·단정은 하나도 바뀌지 않았고 카운트도 31/42 그대로다.**
+
+---
+
+### Test 15. M4c sibling/reviewer 라우팅 · 메시지 10종 · 승인 manifest · specialist registry (offline)
+
+명령:
+
+```bash
+npm run build && node scripts/m4c-offline-acceptance.mjs
+```
+
+확인:
+
+```text
+- 네트워크 / LLM / provider spawn / TTY / git write 없이 exit 0
+- 임시 workspace에서만 동작 (레포에 outputs/orchestration 생성하지 않음)
+- 닫힌 유효 manifest와 7 specialist registry가 durable하고 재시작 후에도 동일(snapshot 바이트 동일)
+- 승인 밖 요청이 안정적인 code로 거부되고 durable 전이가 0이다:
+  ownership_not_approved / ownership_outside_writable_root / unknown_role /
+  dependency_not_pinned(latest·범위) / 미상 command·domain deny /
+  manifest_expired / max_sessions_exceeded / state_pre_m4c_unsupported
+- child → 중앙 → 정당한 sibling 전달: bounded summary + 검증된 artifact 포인터만 옮기고
+  결정론적 inbox 순서를 유지하며, 무관(route_not_related)·모호(ambiguous_recipient)·
+  미상(unknown_recipient)·자기 자신(route_self)·orchestrator(invalid_recipient) 수신자는 거부한다.
+  run_state.json·snapshot.md 어디에도 raw artifact 본문·body 전문·transcript가 없다
+- 중앙 review_request → fresh reviewer inbox → reviewer review_result → 중앙 →
+  revision_request → 수정 worker inbox 왕복. fresh하지 않은 reviewer·리뷰 없는 수정 지시는 거부
+- decision_request → 중앙 → decision 회신, 요청 없는 결정은 거부
+- 재시작이 manifest·route·수령 상태·**같은 다음 전달**을 복원하고, 수령은 durable event
+  (delivery_acknowledged)를 남기며 재수령은 거부된다
+- 메시지 10종이 runtime 상수와 두 schema(agent_message · orchestration_run_state)에서 정렬되고,
+  manifest schema가 run state에서 참조된다
+```
+
+현재 이 스크립트는 **77개 체크**를 수행한다(2026-07-27 M4c 신규).
+
+`scripts/acceptance.sh` Test 15가 위 스크립트의 exit code와 내부 체크 결과를 검증한다
+(**기존 Test 1~14는 변경하지 않았다**). 세부 계약은
+`docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4c 절을 본다.
+
 ---
 
 ## 3. v1 통과 조건
 
 ```text
 위 5개 테스트(Test 1~5)가 모두 통과하면 v1 MVP 완료로 본다.
-(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~14 총 81 checks 검증.
+(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~15 총 92 checks 검증.
  2026-07-27 M4a에서 Test 13 4 checks 추가: 71 → 75.
- 2026-07-27 M4b에서 Test 14 6 checks 추가: 75 → 81. 기존 checks는 변경하지 않았다.)
+ 2026-07-27 M4b에서 Test 14 6 checks 추가: 75 → 81.
+ 2026-07-27 M4c에서 Test 15 11 checks 추가: 81 → 92. 기존 checks는 변경하지 않았다.)
 ```
 
 ## 4. v1 실패 조건

@@ -3,7 +3,85 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 최신 갱신 (2026-07-27 — V3 **M4b: 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 **stacked PR** · **M4 전체 미완료(M4c 잔여)** · 열린 P0 없음)
+## 최신 갱신 (2026-07-27 — V3 **M4c: 중앙 경유 sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 **stacked PR** · **M4 전체 완료 · M5 미완료** · 열린 P0 없음)
+
+이 세션은 **M4c 범위 한정 승인**을 받은 구현 세션이다. 격리 worktree
+`/private/tmp/solo-founder-harness-m4c` · branch `work/m4c-routing-approval` ·
+base `ab63eacc51650deaee0ce92b78a22a7ddcdc27bd`(**리뷰 완료된 M4b 커밋**)에서 단일 세션으로 진행했다.
+**M4a·M4b·M4c는 분리된 stacked PR이며 이 세션은 commit/push/PR/merge/rebase/reset/checkout/switch/
+worktree 조작을 하지 않았다**(미커밋 working tree). 원본 checkout과 M4a/M4b worktree는 수정하지 않았고,
+네트워크·`gh`·deploy·DB·production·live billing·패키지 설치·신규 런타임/dev 의존성·package/lockfile
+변경·MCP 서버·provider 호출·subagent/Agent Team **없음**. Pony Tail(full) 적용 세션이다.
+
+### 0) M4c가 닫은 것 / 남긴 것 (검수 시작점)
+
+- **닫음**: 대장 `C-6`(§5.1 나머지 6개 메시지 타입 + 7 specialist registry). 그리고 M4b가 M4c 잔여로
+  남겼던 **sibling 전달 · reviewer 왕복 · milestone approval manifest**를 전부 구현했다 →
+  **M4 전체 완료**(M4a + M4b + M4c의 focused/offline/전체 suite 증거 기준).
+- **안 닫음(= M5 이후)**: provider bridge(`CodexCliProvider`)·autopilot CLI · **실제 7-agent 동시 실행** ·
+  live acceptance · UI/dashboard. **M5를 완료로 적지 않았다.**
+- **의도적 미구현(대장 등록)**: manifest 재승인 전이(`C-11`) · ack 재전송/우선순위(`C-12`) ·
+  리뷰 대상의 durable 필드화(`C-13`) · command 조회의 shell 파싱(`C-14`) · run별 registry(`C-15`).
+  기존 `C-4`(크래시/fsync) · `C-8`(stale lock 회수) · `C-9`(schema 마이그레이션) · `C-10`(fairness/retry)도
+  그대로 open이다.
+
+| 파일 | 성격 |
+|---|---|
+| `src/exec/orchestrationTypes.ts` | 수정 — 메시지 10종 · `CENTRAL_MESSAGE_TYPES` · `SUMMARY_REQUIRED` · heading 6종 · manifest 타입 · route 필드 · `manifest` state 필드 · 이벤트 1종 · 상한 9개 |
+| `src/exec/approvalManifest.ts` | **신규** — §8 manifest closed validator · 7 specialist registry · M5용 순수 조회 술어 3개(실행 없음) |
+| `src/exec/orchestrationStore.ts` | 수정 — key 집합·manifest 검증·`state_pre_m4c_unsupported`·roleId registry·`assertManifestOwnership`/`assertSessionLimit`·`pendingDeliveries`·snapshot 4개 섹션·digest |
+| `src/exec/orchestrationKernel.ts` | 수정 — 필수 `manifest` bind · 만료 게이트 · 좁은 진입점 6개 + `acknowledgeDelivery` + 읽기 3개 · scheduler 세션 예산 |
+| `src/exec/orchestrationKernel.test.ts` | 수정 — focused 125 → **142건**(M4c 17건, 삭제·완화 0) |
+| `schemas/milestone_approval_manifest.schema.json` | **신규** — §8 계약 문서 |
+| `schemas/agent_message.schema.json` | 수정 — type enum 10종 + 타입별 heading |
+| `schemas/orchestration_run_state.schema.json` | 수정 — `manifest` required · route 필드 · `specialistRoleId` · 이벤트 enum |
+| `scripts/m4c-offline-acceptance.mjs` | **신규** — offline acceptance 77 체크 |
+| `scripts/acceptance.sh` | 수정 — Test 15 11 checks 추가(**기존 Test 1~14 무변경**) |
+| `scripts/m4a-offline-acceptance.mjs` · `scripts/m4b-offline-acceptance.mjs` | 수정 — manifest 상수 + 인자 1개씩(**체크 수 31/42 불변, 기존 단정 무변경**) |
+| `dist/exec/*.js` | `npm run build` 산출물 |
+
+### 0-1) 확정된 M4c 계약 (검수 포인트)
+
+- **envelope 필드 집합 무변경**(§5.1). route는 message index의 `routeToTaskId`/`acknowledgedAt`이며
+  **중앙이 정한다**. sibling 전달에서도 발신 agent의 `recipient`는 언제나 `orchestrator`다 →
+  "직접 mailbox 쓰기"가 계약상 표현 불가능하다. 다른 task 상태를 바꾸는 API도 여전히 없다.
+- **heading**: §5.2 지정분(`review_result`, 공유 `blocker`/`decision_request`)은 그대로. 미지정 4종
+  (`status_update`·`review_request`·`revision_request`·`decision`)만 **최소 closed set 3개씩** 신설.
+  summary는 `task_assignment`/`spawn_request`만 null, 나머지 8종 필수(`SUMMARY_REQUIRED`).
+- **라우팅 게이트**: sibling = 같은 parent 또는 직접 의존만. `route_self`/`unknown_recipient`/
+  `ambiguous_recipient`(같은 roleId 다수)/`invalid_recipient`(orchestrator)/`recipient_unavailable`/
+  `route_not_related` — 전부 전이 0. reviewer는 **completed 대상 + 그 대상에 의존 + fresh**,
+  `review_result`는 선행 요청 필요, `revision_request`는 선행 review_result 필요,
+  `decision`은 미응답 요청 필요. **라우팅은 task 상태를 바꾸지 않는다.**
+- **전달 목록은 durable state만으로** 계산(`createdAt`→`messageId`) → 재시작 후 같은 다음 전달.
+  수령은 좁은 전이 하나 + durable event `delivery_acknowledged`(상태 전이 없음). 범용 queue 없음.
+- **manifest 필수 bind**(기본값 없음 = 조용한 자동 승인 금지). digest·snapshot 포함 →
+  승인 범위 손편집은 `state_event_binding_mismatch`. milestone 불일치는 `manifest_milestone_mismatch`.
+  **강제 권한**: ownership 명시 승인 · writableRoots · child = parent 부분집합 · `maxSessions` · 만료.
+  전부 **커밋 경로 공용 불변식**(M4b와 같은 자리)이라 새 전이 경로도 load도 우회할 수 없다.
+- **실행 권한은 조회만**: 순수 술어 3개, deny-by-default, 정확히 pin된 버전만(`latest`·범위·tag 거부),
+  하위 도메인 자동 허용 없음, command는 문자열 동치(shell 파싱 없음). `localMergeAllowed`는 기록 전용 —
+  **kernel은 git을 만지지 않고 repo hard deny가 항상 더 강하다.**
+- **registry 7종 + 하위 role 한 겹**만 `roleId`로 허용(`unknown_role`). run별 7 task를 요구하지 않고
+  프로세스도 띄우지 않으며 provider/모델 라우팅을 중복 정의하지 않는다.
+- **pre-M4c state는 `state_pre_m4c_unsupported` 하나로 fail closed**(마이그레이션 없음).
+
+### 0-2) M4c 검증 실측 (offline)
+
+- focused `src/exec/orchestrationKernel.test.ts` **142/142**(125 → 142) · `npm run build` PASS ·
+  `git diff --check` clean.
+- offline acceptance: M4c **77/77** · M4a **31/31** · M4b **42/42**(전부 exit 0).
+- `npm test` **PASS(최종 코드 변경 후 1회)** = exec **142/142** + core **374/374** + acceptance **92/92**.
+- **stress·live·반복 suite 미실행**(`B-1`/`B-2` — M4c 게이트 아님).
+- **mutation 4종**(ownership 불변식 / session 불변식 / sibling 관계 검사 / 만료 게이트)으로 비공허성 확인 후
+  **정확히 원복**(파일 SHA-256 일치 · `MUTATION` 흔적 grep 0 · focused 142/142 재확인).
+- **문서 정정**: 대장 `C-4` 보강의 "lock 발행 후 write 실패도 잔재를 남긴다"는 부정확 → 커밋 경로의
+  잡힌 write 실패는 `finally`가 lock을 해제한다. 잔재는 크래시/kill · 해제 실패 ·
+  acquire의 nonce write 실패 창뿐이다. (`maxResourceClasses`는 코드·문서 모두 이미 **4**로 일치했다.)
+
+---
+
+## 이전 갱신 (2026-07-27 — V3 **M4b: 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 **stacked PR** · **M4 전체 미완료(M4c 잔여)** · 열린 P0 없음)
 
 이 세션은 **M4b 범위 한정 승인**을 받은 구현 세션이다. 격리 worktree
 `/private/tmp/solo-founder-harness-m4b` · branch `work/m4b-resource-scheduler` ·

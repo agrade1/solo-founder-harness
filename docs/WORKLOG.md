@@ -1,5 +1,72 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M4c — sibling/reviewer 라우팅 + 메시지 10종 + milestone approval manifest + 7 specialist registry** · M4b 위 stacked 격리 worktree · **이로써 M4 전체 완료 · M5는 미완료**)
+
+격리 worktree `/private/tmp/solo-founder-harness-m4c` · branch `work/m4c-routing-approval` ·
+base `ab63eacc51650deaee0ce92b78a22a7ddcdc27bd`(리뷰 완료된 M4b 커밋) 단일 세션.
+**M4a/M4b와 분리된 stacked PR이며 아직 commit/push/PR 없음**(미커밋 working tree).
+원본 checkout과 M4a/M4b worktree는 수정하지 않았다. 패키지 설치·신규 의존성·package/lockfile 변경 **0**,
+네트워크·`gh`·deploy·DB·production·live billing·MCP·provider 호출·subagent/Agent Team **없음**,
+stress·live runner **미실행**. Pony Tail(full) 적용 세션이다.
+
+- **① §5.1 메시지 계약을 4종 → 10종으로 닫았다.** `status_update`·`review_request`·`review_result`·
+  `revision_request`·`decision_request`·`decision`을 runtime·body·schema·durable index·테스트에 전부
+  반영했다. **envelope 필드 집합은 무변경**이다 — route·권한을 envelope에 밀어 넣지 않았다.
+  heading은 §5.2가 지정한 것(`review_result`, 공유 `blocker`/`decision_request`)을 그대로 쓰고,
+  지정되지 않은 4종만 **최소 closed set 3개씩**을 새로 정해 문서화했다. summary 계약도 표(`SUMMARY_REQUIRED`)
+  하나로 닫았다: `task_assignment`/`spawn_request`는 null, 나머지 8종은 bounded summary 필수.
+- **② sibling·reviewer·decision 라우팅은 전부 중앙을 지난다.** 진입점은 타입마다 하나씩 좁게 뒀고
+  (`submitStatusUpdate`/`requestReview`/`submitReviewResult`/`requestRevision`/`submitDecisionRequest`/
+  `recordDecision`), **다른 task를 바꾸거나 남의 mailbox에 쓰는 범용 API는 만들지 않았다.**
+  전달 대상은 taskId 또는 **유일한** roleId로만 해석하고 자기 자신·미상·모호·orchestrator·종료 상태·
+  무관 관계를 각각 다른 stable code로 거부한다(전이 0). reviewer는 **대상에 의존하는 fresh task**여야
+  하고, `revision_request`는 **그 대상의 review_result가 이미 있을 때만** 나간다.
+  durable route는 envelope가 아니라 message index(`routeToTaskId`/`acknowledgedAt`)에 있다.
+- **③ 미수령 전달 목록은 durable state만으로 계산한다.** `createdAt` → `messageId` 정렬이라 재시작 후에도
+  같은 순서·같은 다음 전달이다. 수령은 좁은 전이 하나(`acknowledgeDelivery` + durable event
+  `delivery_acknowledged`)이고 **범용 queue/retry/우선순위는 만들지 않았다**(→ `C-12`).
+- **④ §8 milestone approval manifest를 durable 계약으로 넣었다.** run 생성 시 **필수 bind**이고
+  (기본값 = 조용한 자동 승인이므로), state·`stateContentDigest`·snapshot(bounded·비밀 아님)에 들어간다.
+  검증은 closed: 40자 commit hash · 정규화된 writableRoots/ownership · **정확히 pin된 dependency**
+  (latest·범위·tag 거부) · 정규화 도메인 · 양수 bounded 예산 · 만료 · milestone 일치.
+- **⑤ state 관련 권한은 지금 전부 강제한다 — 커밋 경로 공용 불변식으로.** root/dependent ownership은
+  `ownershipByTask` 명시 승인 안이어야 하고, 모든 ownership은 `writableRoots` 안, child는 **parent
+  범위의 부분집합**만, 동시 running은 `maxSessions` 이하, 만료 후 변경은 전부 거부다.
+  M4b가 자원 충돌을 한 곳에 둔 것과 같은 이유로 `assertReferentialIntegrity` 안에 넣었다 →
+  **새 전이 경로도 load도 우회할 수 없다**(mutation으로 비공허성 확인).
+- **⑥ 실행 권한은 조회만 한다.** `commandAllowed`/`dependencyAllowed`/`networkDomainAllowed`는
+  **순수 술어**이고 deny-by-default다. shell 파싱·패키지 설치·네트워크·git merge·provider 호출은 없다.
+  `localMergeAllowed`는 기록·조회 전용이며 repo hard deny가 항상 더 강하다.
+- **⑦ 7 specialist registry를 정본 상수 하나로 넣었다**(`research`/`pm`/`ux`/`design`/`tech-lead`/
+  `dev-lead`/`qa-security`). `roleId`는 이 목록이거나 `<상위>.<하위>`(한 겹)여야 하고 그 밖은
+  `unknown_role`이다. run마다 7개 task를 요구하지 않고 프로세스도 띄우지 않으며 모델·provider 라우팅을
+  중복 정의하지 않는다. 기존 테스트/스크립트의 role 픽스처는 registry 값으로 바꿨다(단정은 무변경).
+- **⑧ 하위 호환은 fail closed 하나로.** manifest 없는 pre-M4c state는 마이그레이션하지 않고
+  **`state_pre_m4c_unsupported`** 로 거부한다(자동 승인 금지). `schemaVersion`은 `"1"` 유지.
+- **⑨ 테스트(삭제·완화 0)**: focused `orchestrationKernel.test.ts` 125 → **142건**(M4c 17건 추가).
+  계약 변경으로 손댄 기존 단정은 3곳뿐이다 — ⓐ "미구현 타입 거부"를 **union 밖 타입 거부**로 바꿨고
+  (10종이 구현됐으므로), ⓑ 공개 API 목록에 신규 9개를 더했고, ⓒ state 위조 루프에 **manifest 위조
+  6종을 추가**하며 거부 코드 집합을 넓혔다(전부 여전히 fail closed). 신규
+  `scripts/m4c-offline-acceptance.mjs`(77 체크) + `acceptance.sh` **Test 15**(11 checks),
+  **기존 Test 1~14 무변경**. M4a/M4b 스크립트는 manifest 인자 1개만 더했고 체크 수는 31/42 그대로다.
+- **검증 실측(offline)**: focused **142/142** → `npm run build` PASS →
+  M4c acceptance **77/77** · M4a **31/31** · M4b **42/42** →
+  `npm test` **PASS(최종 코드 변경 후 1회)** = exec **142/142** + core **374/374** + acceptance **92/92**
+  (81 → 92). `git diff --check` clean.
+- **비공허성(mutation) 4종**: ① ownership 불변식 호출 제거 ② session 불변식 호출 제거
+  ③ sibling 관계 검사 무력화 ④ 만료 게이트 제거 — 각각 해당 M4c 테스트 1건이 실패함을 확인하고
+  **전부 정확히 원복**(원복 후 파일 SHA-256 일치, 소스 내 `MUTATION` 흔적 grep 0, focused 142/142 재확인).
+- **하지 않은 것**: M5 provider bridge/autopilot · 실제 7-agent 동시 실행 · stress/live/반복 suite ·
+  UI/dashboard · 크래시·fsync 하드닝 · stale lock 회수 · schema 마이그레이션 도구 · fairness/retry ·
+  git 조작 · 테스트 삭제·완화 **0**.
+- **새 유예 항목**: `C-11`(manifest 재승인 경로 없음) · `C-12`(ack에 재전송·우선순위 없음) ·
+  `C-13`(리뷰 대상이 durable 필드가 아님) · `C-14`(command 조회는 문자열 동치) ·
+  `C-15`(registry가 코드 상수). 전부 nonblocking이며 로드맵 §9.1 대장에 등록했다. `C-6`은 **fixed**.
+- **문서 정정**: 대장 `C-4` 보강 항목의 "lock 발행 후 write 실패 경로도 같은 잔재를 남긴다"를 정정했다 —
+  커밋 경로에서 잡히는 정상적인 write 실패는 `commitRun`의 `finally`가 lock을 **해제한다**. 잔재는
+  크래시/kill · 해제 실패 · `acquireRunWriterLock`이 파일을 만든 뒤 nonce write가 실패하는 좁은 창뿐이다.
+  (`maxResourceClasses`는 문서·코드 모두 이미 **4**로 일치해 고칠 것이 없었다.)
+
 ## 2026-07-27 (V3 **M4b — 배타 자원 class + deterministic scheduler + run writer lock** · M4a 위 stacked 격리 worktree · **M4 전체는 여전히 미완료**)
 
 격리 worktree `/private/tmp/solo-founder-harness-m4b` · branch `work/m4b-resource-scheduler` ·

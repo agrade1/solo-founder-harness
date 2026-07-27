@@ -1,5 +1,46 @@
 # DECISIONS.md
 
+## 2026-07-27 (V3 M4c — 중앙 경유 라우팅 · 메시지 10종 · milestone approval manifest · specialist registry)
+
+- **route는 envelope가 아니라 중앙 state에 둔다.** 전달 대상을 envelope 필드로 만들면 agent가 자기
+  메시지에 "누구에게 보낼지"를 적는 셈이고, 그러면 검증은 사후 필터가 된다. §5.1 필드 집합을 그대로 두고
+  **message index의 `routeToTaskId`/`acknowledgedAt`** 에 중앙이 결정한 route만 남겼다. 발신 agent의
+  `recipient`는 sibling 전달에서도 **언제나 `orchestrator`** 다 — 계약상 "직접 mailbox 쓰기"가 표현
+  불가능하다.
+- **타입마다 좁은 진입점 하나. 범용 `route(message)`는 만들지 않았다.** 6종의 검증 규칙이 서로 다르고
+  (fresh reviewer · 선행 review_result · 미응답 decision_request · sibling 관계), 하나의 범용 API로
+  합치면 호출자가 규칙을 고르게 된다. 공통 골격(`#acceptRouted`)만 private으로 한 번 쓰고 규칙은
+  진입점에 남겼다.
+- **sibling 관계는 "같은 parent 또는 직접 의존"으로 좁혔다.** 조상·후손 전체나 같은 run 전체를 허용하면
+  사실상 무제한 전달이다. 좁은 규칙은 나중에 넓히기 쉽지만 넓은 규칙은 되돌리기 어렵다.
+  수신자 해석도 **taskId 또는 유일한 roleId**만 인정하고 중복 roleId는 `ambiguous_recipient`로 거부한다 —
+  중앙이 "누구에게"를 추측하지 않는다.
+- **reviewer/review_result/decision_request는 task 상태를 바꾸지 않는다.** 상태 전이는 이미
+  `result`/`blocker`가 담당한다. 검토 왕복마다 새 상태를 만들면 6개 상태 기계가 10개로 늘고 재계산
+  fixpoint가 복잡해진다. reviewer도 평소처럼 `result`로 완료한다 — **"라우팅은 전달이지 전이가 아니다."**
+- **manifest는 run 생성 시 필수 인자다(기본값 없음).** 기본 manifest를 두면 그것이 곧 조용한 자동 승인이고,
+  "승인 없이 만들어진 run"이 나중에 승인된 run과 구분되지 않는다. 대가로 기존 M4a/M4b acceptance
+  스크립트와 테스트 헬퍼에 manifest 인자를 더해야 했지만, **기존 단정은 하나도 바꾸지 않았다.**
+- **manifest 권한 검사도 커밋 경로 공용 불변식에 넣었다**(M4b 교훈 그대로). ownership 승인·writable root·
+  child 위임·`maxSessions`를 메서드마다 검사하지 않고 `assertReferentialIntegrity` 안에 한 번만 뒀다 →
+  `createRootTask`·`requestSpawn`·`startTask`·`startScheduledBatch`·load가 **같은 문**을 지난다.
+  mutation 4종으로 이 문이 실제 게이트임을 확인했다.
+- **실행 권한은 "조회만" 한다.** `allowedCommands`는 **문자열 동치**로만 판정한다. shell을 파싱하면
+  "승인된 명령처럼 보이는 것"을 판정하게 되고 그 판정은 이 계층의 권한이 아니다(대장 `C-14`).
+  같은 이유로 dependency는 **정확히 pin된 버전만**, 도메인은 **하위 도메인 자동 허용 없이** 통과시킨다.
+  `localMergeAllowed`는 기록·조회 전용이며 kernel은 git을 만지지 않는다 — repo hard deny가 항상 더 강하다.
+- **pre-M4c state는 마이그레이션하지 않고 코드 하나로 거부한다**(`state_pre_m4c_unsupported`).
+  M4b의 `state_pre_m4b_unsupported`와 같은 판단이다: 기본 manifest로 채우면 조용한 자동 승인이 되고,
+  digest도 어차피 어긋나 원인이 불분명한 실패가 된다. 마이그레이션 프레임워크는 여전히 만들지 않았다(`C-9`).
+- **7 specialist registry는 "장식"이 아니라 게이트로 만들었다.** roleId가 registry 밖이면 task를 만들 수
+  없다(`unknown_role`) — 그래야 registry가 "중앙이 정한 metadata"라는 말이 실제 계약이 된다.
+  하위 role은 `<상위>.<하위>` **한 겹**만 허용해 임의 계층 명명을 막았다. 대신 run별 registry 축소·확대는
+  넣지 않았다(`C-15`) — 지금 필요 없는 유연성이다.
+- **registry를 run state에 복제하지 않았다.** 7개짜리 코드 상수를 state 필드로 또 저장하면 drift 지점만
+  늘어난다. durable·재시작 안정성은 ⓐ 모든 task의 roleId가 **load에서도** registry 검사를 받고
+  ⓑ snapshot(파생 durable 파일)이 registry를 렌더한다는 두 가지로 확보했고, acceptance가 재시작 후
+  바이트 동일까지 확인한다.
+
 ## 2026-07-27 (V3 M4b — 배타 자원 class · deterministic scheduler · run writer lock)
 
 - **자원 점유는 `running` 동안만이고 `waiting_children`은 들고 있지 않는다.** 중단된 parent가 자원을
