@@ -1,5 +1,52 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M5a 2차 리비전 — 구조적 A 4건 + 문서 정정 1건** · fresh Claude Opus 5 세션 · **M5 전체는 여전히 미완료**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
+시작 HEAD `450739a`(clean). **이전 세션 컨텍스트를 잇지 않는 새 fresh 세션**이고, 그 세션의
+`--resume`은 이미 한 번 썼으므로 다시 열지 않았다. amend/rebase/reset 없음, 기존 커밋 위에 **로컬 커밋만**
+쌓았다. push/fetch/pull/PR/merge·네트워크·`gh`·패키지 설치·의존성/lockfile 변경·MCP·**live Codex/Claude 추론**·
+deploy·DB·production·live billing **없음**. `node_modules`(supervisor symlink)는 **stage하지 않았다**.
+Pony Tail(full) — 경로 `/Users/jihun/.claude/plugins/cache/ponytail/...`는 SessionStart 훅으로 로드됨(level full).
+
+- **① 비-ephemeral resume 구조 모순(A)**: 첫 codex 프로세스는 `CODEX_HOME`에 세션 상태를 **남겨야** 하는데
+  이전 계약은 **모든** invocation에 "빈 홈"을 요구했다 → `ephemeral:false` + `send`는 production에서 항상
+  `codex_home_not_empty`(fake CLI가 상태를 cwd에만 써서 테스트로 드러나지 않았다). 이제 **provider 소유 홈
+  수명**이다: 첫 invocation은 여전히 **빈** 0700 정규 비-symlink 홈(사용자 홈 금지)을 요구하고 그때
+  **신원(dev+ino)** 을 고정한다. resume은 **같은 신원일 때만** codex가 남긴 상태를 허용하며 경로 계약·권한·
+  홈 금지·strict 플래그(`--strict-config`/`--ignore-user-config`/`--ignore-rules`/`mcp_servers={}`)·
+  단일 `CODEX_HOME` env를 그대로 재검증한다. **교체(inode)·symlink화·권한 완화·소유하지 않은 기존 상태는
+  spawn 0.** fake CLI는 실제 codex처럼 `sessions/…/rollout-<uuid>.jsonl` + `history.jsonl`(0700)을 남긴다.
+  **live 인증(`B-7`)은 구현하지 않았고**, 같은 uid 공격자에 대한 내성도 **주장하지 않는다**.
+- **② 승인 만료 재확인(A)**: 만료를 **비동기 git 조회 전에만** 봤다. 이제 `nowMs`가 함수면 clock으로 취급해
+  `revalidateSync()`(spawn 직전 마지막 동기 검증)가 시각을 **다시 읽고** `now >= expiresAt`을 재확인한다.
+  읽을 수 없는 시각도 거부(fail closed). 만료가 그 사이에 걸치면 provider **spawn 0**.
+- **③ 신원 우선 파싱(A)**: `thread.started` 전에 assistant/status/unknown/error가 방출되고 나중에 성공할 수
+  있었다. 이제 **의미 있는 첫 이벤트가 정규 UUID 하나를 세워야** 하고, 그 전 이벤트는 비가역
+  `missing_session_id`이며 **내용·도구 payload를 전달하지 않는다**. 늦은 `thread.started`도, 그 뒤의 정상
+  종료도 되돌리지 못한다.
+- **④ MCP 위반 세션 격리(A)**: MCP 호출을 본 thread를 `send`로 이어갈 수 있었다(비가역 실패의 resume 우회).
+  이제 세션이 닫히고(`codex_mcp_observed`) 후속 `send`는 spawn 0이다.
+- **⑤ 문서 정정(C/문서)**: 로드맵·파서 주석의 "agent message 전문은 **어떤 이벤트에도** 실리지 않는다"는
+  실제 동작과 어긋났다(raw 배제 목록을 이벤트 전체로 넓힌 오류). raw/추론 원문/명령 문자열/stderr·error
+  payload는 여전히 제외하되, **상한 지난 최종 본문은 `assistant.text`·`result.text`로 의도적으로 전달**된다고
+  정정했다. `B-7`·`B-8`·`B-9` 서술은 손대지 않았다 — 세 항목 모두 **여전히 open**이다.
+- **신규 유예(C)**: `C-21`(프로토콜 실패 뒤 resume 허용 — `B-8`과 함께 M5b) · `C-22`(홈 소유 신원 in-memory →
+  controller 재시작 후 resume 불가, M5c) · `C-23`(turn 사이 spec 변경으로 model/schema 경로 drift, M5b) ·
+  `C-24`(stderr 버퍼 chunk 단위 상한, M5c) · `C-25`(`events()`가 invocation별 큐, M5b). 기한·담당·증거는
+  로드맵 §9.1 M5a 대장에 전부 적었다. **B로 올릴 새 항목은 없다.**
+- **검증(실행한 명령과 카운트)**: 파일 단독 `npx tsx --test --test-timeout=180000` →
+  `executionBoundary.test.ts` **13/13** · `codexStreamParser.test.ts` **26/26** ·
+  `codexCliProvider.test.ts` **40/40**(합 **79/79**, 이전 70) · `npm run test:exec` **221/221**(212 → 221) ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  **미실행**: `npm test` 전체 · `test:core` · acceptance · stress · live · 반복 3회 —
+  **최종 전체 suite 1회는 supervisor가 M5 handoff 시점으로 예약**한 그대로다.
+  **mutation 4종**: 홈 소유 신원 비교 제거(**2건 실패**) · `revalidateSync` 만료 재확인 제거(**2건 실패**) ·
+  신원 우선 게이트 무효화(**2건 실패**) · MCP 세션 격리 제거(**1건 실패**) → 네 번 모두 정확히 원복,
+  `MUTATION` grep 0 · `git diff --numstat` 기준선 일치 · focused 79/79 재확인.
+- **정정**: 아래 리비전 기록의 "`CODEX_HOME` … **비어 있음**"은 **그 시점 계약**이다. 현행은 위 ①(첫
+  invocation만 빈 홈, 이후는 소유 신원 일치)이다.
+
 ## 2026-07-27 (V3 **M5a 리비전 — fresh Codex 리뷰 REVISE의 A 9건 수정** · playbook §6의 **단 한 번 resume** · **M5 전체는 여전히 미완료**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,

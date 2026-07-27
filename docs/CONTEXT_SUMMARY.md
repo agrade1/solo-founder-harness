@@ -2,7 +2,32 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — **V3 M5a 리비전: fresh Codex 리뷰(REVISE)의 A 9건 수정** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-27 — **V3 M5a 2차 리비전: 구조적 A 4건 + 문서 정정** · 이 블록이 가장 최신이다)
+
+- **위치**: 같은 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider`,
+  시작 HEAD `450739a` 위에 **로컬 커밋만** 추가. **새 fresh Claude Opus 5 세션**(이전 세션 resume 안 함),
+  amend/rebase/reset 0, 원격 push/PR/merge 0, `node_modules` stage 0. Pony Tail(full).
+- **고친 것(A 4)**: ⓐ **`CODEX_HOME` 소유 수명** — 이전엔 **모든** invocation이 빈 홈을 요구해
+  비-ephemeral resume이 구조적으로 불가능했다. 이제 첫 invocation만 빈 홈(+신원 dev+ino 고정), resume은
+  **같은 신원일 때만** codex 상태를 허용하고 경로·0700·홈 금지·strict 플래그·단일 env는 그대로.
+  교체·symlink·권한 완화·소유하지 않은 상태 = spawn 0. fake CLI가 실제처럼 `sessions/…/rollout` 상태를 남긴다.
+  ⓑ **만료 재확인** — `nowMs`를 clock 함수로 넓혀 `revalidateSync()`(spawn 직전)가 `now >= expiresAt`을
+  다시 본다(비동기 git 조회 중 만료 창을 닫는다). ⓒ **신원 우선 파싱** — 의미 있는 첫 이벤트가 정규 UUID를
+  세워야 하고 그 전 이벤트는 비가역 `missing_session_id`이며 내용·도구 payload를 전달하지 않는다.
+  ⓓ **MCP 위반 세션 격리** — MCP를 본 thread는 resume 불가(`codex_mcp_observed`).
+- **문서 정정**: "agent message 전문은 어떤 이벤트에도 실리지 않는다" → raw/추론/명령/stderr payload는 제외,
+  **상한 지난 최종 본문은 `assistant.text`·`result.text`로 의도적으로 전달**. `B-7`·`B-8`·`B-9`는 **여전히 open**.
+- **신규 대장**: `C-21`(프로토콜 실패 뒤 resume 허용 — `B-8`과 함께) · `C-22`(홈 소유권 in-memory → 재시작 후
+  resume 불가) · `C-23`(turn 사이 spec 변경 drift) · `C-24`(stderr chunk 상한) · `C-25`(`events()` 큐 교체).
+  B 신규 없음.
+- **테스트**: 파일 단독 boundary **13/13** · parser **26/26** · provider **40/40**(합 **79/79**) ·
+  `npm run test:exec` **221/221** · `tsc --noEmit` 0 · `build` PASS · `git diff --check` clean.
+  **미실행**: `npm test` 전체 · core · acceptance · stress · live · 반복 — 최종 전체 suite 1회는 **여전히
+  supervisor가 M5 handoff 시점으로 예약**. mutation 4종(2/2/2/1건 실패) 후 정확히 원복(`MUTATION` grep 0).
+- **M5는 이 2차 리비전 뒤에도 미완료다.** 다음: `B-7`/`B-8`/`B-9` 해소 → M5b 계획 → 사용자 승인.
+
+## 이전 (2026-07-27 — **V3 M5a 리비전: fresh Codex 리뷰(REVISE)의 A 9건 수정**
+· `CODEX_HOME` "비어 있음" 서술은 2차 리비전 전 계약이다)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
   base `85ebe883`. 커밋 3개(`115e0be` feat → `6ae7fd6` docs → `bdd5507` fix, + 이 문서 커밋).

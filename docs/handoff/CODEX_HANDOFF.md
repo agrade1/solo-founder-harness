@@ -3,10 +3,50 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-27 — V3 **M5a 리비전 완료(offline)** · **M5 전체는 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5a 2차 리비전 완료(offline)** · **M5 전체는 미완료** · 이 절이 가장 최신이다)
 
 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` · base `85ebe883`.
-커밋 `115e0be`(feat) → `6ae7fd6`(docs) → `bdd5507`(fix, 리비전) + 이 문서 커밋. **원격 push/PR/merge 0.**
+커밋 `115e0be`(feat) → `6ae7fd6`(docs) → `bdd5507`(fix, 1차 리비전) → `450739a`(docs) →
+`7e7bb9b`(fix, **2차 리비전**) + 이 문서 커밋. **원격 push/PR/merge 0**, amend/rebase/reset 0.
+2차 리비전은 **새 fresh Claude Opus 5 세션**이 했다(이전 작성 세션은 다시 resume하지 않았다).
+
+- **2차 리비전에서 고친 A 4건(게이트끼리의 모순)** — 상세 표는 로드맵 §10 "M5a 2차 리비전":
+  1. **`CODEX_HOME` 소유 수명**: 이전 계약은 **모든** invocation이 빈 홈을 요구해 **비-ephemeral resume이
+     구조적으로 불가능**했다(codex는 resume 상태를 그 홈에 쓴다). 현행 = **첫 invocation만 빈 홈**(0700·정규·
+     비-symlink·사용자 홈 금지) + 그때 **신원(dev+ino) 고정** → resume은 **같은 신원일 때만** 기존 상태 허용,
+     경로 계약·권한·홈 금지·strict 플래그(`--strict-config`/`--ignore-user-config`/`--ignore-rules`/
+     `mcp_servers={}`)·**단일 `CODEX_HOME` env**는 매번 재검증. **교체(inode)·symlink화·권한 완화·provider가
+     소유하지 않은 기존 상태 = spawn 0.** 한계: **같은 uid 공격자 내성은 아니다**, 소유권은 **in-memory**(`C-22`).
+  2. **승인 만료 재확인**: `nowMs`가 함수면 clock으로 취급 → `revalidateSync()`(spawn 직전 마지막 동기 검증)가
+     `now >= expiresAt`을 **다시** 본다. 비동기 git 조회 중 만료 창을 닫았다. 걸치면 spawn 0.
+  3. **신원 우선 파싱**: 의미 있는 **첫** JSONL 이벤트가 정규 UUID 하나를 세워야 한다. 그 전 이벤트는
+     비가역 `missing_session_id`이고 **내용·도구 payload를 전달하지 않는다**(늦은 `thread.started`·정상 종료도
+     되돌리지 못한다).
+  4. **MCP 위반 세션 격리**: MCP를 본 thread는 `send`로 이어갈 수 없다(`codex_mcp_observed`, spawn 추가 0).
+- **문서 정정(중요)**: 이전 판의 "**agent message 전문은 어떤 이벤트에도 실리지 않는다**"는 틀렸다.
+  `raw`·추론 원문·명령 문자열·stderr/error payload·모르는 이벤트 payload는 **여전히 배제**되지만,
+  **상한(`MAX_TEXT_CHARS`)을 지난 최종 본문은 `assistant.text`·`result.text`로 의도적으로 전달된다**
+  (리뷰 판정·`--output-schema` 본문이 그 경로로 온다). `B-7`·`B-8`·`B-9`는 **여전히 open**이다.
+- **2차 리비전 검증**: 파일 단독 `npx tsx --test --test-timeout=180000` → boundary **13/13** ·
+  parser **26/26** · provider **40/40**(합 **79/79**) · `npm run test:exec` **221/221**(212 → 221) ·
+  `npx tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  **미실행**: `npm test` 전체 · `test:core` · acceptance · stress · live · 반복 3회(예약 그대로).
+  mutation 4종(홈 소유 신원 → 2건 / 만료 재확인 → 2건 / 신원 우선 → 2건 / MCP 격리 → 1건 실패) 후 정확히 원복,
+  `MUTATION` grep 0 · `git diff --numstat` 기준선 일치.
+- **2차 리비전이 추가한 열린 C**: `C-21`(프로토콜 실패 뒤 resume 허용 — `B-8`과 함께 M5b) ·
+  `C-22`(홈 소유권 in-memory → controller 재시작 후 resume 불가, M5c) · `C-23`(turn 사이 spec 변경으로
+  model/schema drift, M5b) · `C-24`(stderr chunk 단위 상한, M5c) · `C-25`(`events()`가 invocation별 큐, M5b).
+  **새 B는 없고 열린 A도 없다.**
+- **열린 항목 정본 목록(현행)**: B = `B-7` · `B-8` · `B-9`(전부 live/배선 하드 게이트, offline M5b는 막지 않는다).
+  C = `C-17` · `C-18` · `C-19` · `C-21`~`C-25`. 아래 1차 리비전 블록의 열린 목록은 **그 시점 기록**이라
+  `C-21`~`C-25`가 빠져 있다.
+- **Codex 추론**: 2차 리비전 세션도 **0회**(fake CLI·in-process seam만). `B-7`/`B-8`/`B-9`를 닫기 전에는
+  이 provider로 실제 Codex를 부르지 않는다.
+- **M5는 2차 리비전 뒤에도 미완료다.** 다음: `B-7`/`B-8`/`B-9` 해소 → M5b 계획 → 사용자 승인.
+
+### 이전 — M5a 1차 리비전 기록 (2026-07-27 · `CODEX_HOME` "비어 있음" 서술은 위 현행 블록이 대체한다)
+
+worktree·branch·base 동일. 커밋 `115e0be`(feat) → `6ae7fd6`(docs) → `bdd5507`(fix, 1차 리비전).
 
 - **독립 리뷰**: fresh Codex `gpt-5.6-sol` xhigh · read-only · strict empty MCP, 범위 `85ebe883..6ae7fd6`,
   판정 **REVISE** — **A 9건(P0 2 · P1 7)** + B 2건 + C 1건. playbook §6에 따라 작성 세션을 **한 번만 resume**해

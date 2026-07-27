@@ -1376,6 +1376,10 @@ package/lockfile 변경도 **0**이다. 두 번째 오케스트레이터·상태
   ⓔ **controller·실행 checkout 양쪽 HEAD == `approvedCommit`**(같은 checkout이면 1회)를 확인한다.
   provider는 **spawn 직전마다** 이 함수를 부르고, 거부 경로 전부에서 **spawn 횟수 0**을 테스트가 고정한다.
   이 함수는 provider 중립이라 이후 Claude provider·controller가 그대로 재사용한다.
+  **만료는 두 번 본다(2026-07-27 2차 리비전).** ⓑ의 첫 검사와 spawn 사이에는 **비동기 git 조회**가 있어
+  그 사이에 승인이 만료될 수 있었다. 이제 `nowMs`에 **함수(clock)** 를 주면 `revalidateSync()`(spawn 직전
+  마지막 동기 검증)가 **시각을 다시 읽어** `now >= expiresAt`을 재확인하고, 읽을 수 없는 시각도 거부한다
+  (fail closed). 숫자를 주면 그 시각으로 고정된다.
 - **실행 파일은 신뢰된 명시 절대경로 하나뿐이다.** provider 코드는 `process.env`를 **읽지 않는다**
   (PATH·`HARNESS_CODEX_BIN` 조회 없음). spawn 직전마다 그 경로가 **정규 · symlink 아님 · 일반 파일 ·
   실행 비트 있음 · group/other 쓰기 없음**임을 확인한다. 경로 선택·신뢰는 **controller의 책임**이다.
@@ -1391,23 +1395,40 @@ package/lockfile 변경도 **0**이다. 두 번째 오케스트레이터·상태
   거부하고 프로세스를 띄우지 않는다. 쓰기 모드는 manifest의 task 소유권·writableRoots를 실제로 집행하는
   **task-bound 권한 계층**이 생긴 뒤 별도 승인으로만 되살린다.
 - **strict empty MCP는 ambient 설정에 기대지 않는다**: 격리 `CODEX_HOME`이 **필수**이고
-  **정규 · symlink 아님 · 0700 · 비어 있음 · 사용자 홈 아님**을 spawn 전에 검증한다. 여기에
+  **정규 · symlink 아님 · 0700 · 사용자 홈 아님**을 spawn 전에 검증한다. 여기에
   `--config mcp_servers={}` · `--strict-config` · `--ignore-user-config` · `--ignore-rules`를 더하고,
   자식 env는 **`CODEX_HOME` 하나뿐**이다(PATH조차 상속하지 않는다). **auth 파일을 복사하거나 영속화하지
-  않는다.** 스트림에 MCP 호출 이벤트가 보이면 비가역 실패다.
+  않는다.** 스트림에 MCP 호출 이벤트가 보이면 비가역 실패이고 **그 세션은 닫힌다**(오염된 thread를
+  resume으로 이어가지 않는다).
+- **`CODEX_HOME`은 provider가 소유하는 수명이다(2026-07-27 2차 리비전).** 이전 계약은 "**모든** send가
+  빈 홈을 요구"했는데, 비-ephemeral resume은 codex가 그 홈에 남긴 세션 상태를 **필요로** 하므로
+  구조적으로 모순이었다(ephemeral:false + `send`는 production에서 항상 `codex_home_not_empty`).
+  현행: **첫 invocation은 여전히 비어 있는 홈을 요구**해 ambient config·auth·MCP를 0으로 만들고,
+  그때 확보한 **디렉터리 신원(dev+ino)** 을 provider가 고정한다. 이후 invocation(resume)은
+  **신원이 같을 때만** 비어 있지 않은 홈을 허용하고 경로 계약·0700·사용자 홈 금지·strict 플래그·단일
+  `CODEX_HOME` env는 그대로 재검증한다. **교체(inode 다름) · symlink화 · 권한 완화 · provider가 소유하지
+  않은 기존 상태로의 resume은 spawn 0**이다. 한계(주장하지 않는 것): 이 게이트는 **경로 교체·권한 완화·
+  소유하지 않은 상태**를 막는 것이고 **같은 uid로 동작하는 공격자에 대한 내성은 아니다**(소유자 자신은
+  언제든 자기 홈을 쓸 수 있다). live 인증은 여전히 `B-7`이고 M5a는 **auth를 쓰지도 복사하지도 않는다**.
 - **비가역 프로토콜 실패 + 종료 결과 정확히 1건.** malformed·과대 줄, 중복/모순 종료 이벤트, MCP 관측,
   세션 신원 위반, 종료 뒤 신원·최종 메시지 변경 시도, 이벤트 상한 초과는 **되돌릴 수 없는 실패**이고,
   **성공 종료 뒤에 실패·error·MCP가 와도 실패**다. `finish()`가 stream outcome + exit code/signal을 합쳐
   결과 하나를 만들므로 silent stream·정상 종료 뒤 비정상 exit도 실패다(조용한 성공 경로 없음).
   **형태가 유효한** 모르는 이벤트 타입만 bounded unknown으로 남기고 성공 근거로 쓰지 않는다.
-- **세션 신원은 불변의 정규 UUID 하나다.** `thread.started`가 정규 UUID를 정확히 한 번 줘야 하며
-  빈 값·형식 위반(`--last` 포함)·중복·모순·부재, 그리고 invocation 간 id 충돌은 전부 프로토콜 실패다.
+- **세션 신원은 불변의 정규 UUID 하나이고 신원이 먼저다.** **의미 있는 첫 JSONL 이벤트가 신원을 세워야
+  한다** — `thread.started`가 정규 UUID를 정확히 한 번 줘야 하며 빈 값·형식 위반(`--last` 포함)·중복·모순·
+  부재, 그리고 invocation 간 id 충돌은 전부 프로토콜 실패다. **신원 확립 전에 온 이벤트는**(status ·
+  assistant · unknown · error 포함) **비가역 실패(`missing_session_id`)이고 내용·도구 payload를 전달하지
+  않는다.** 뒤늦은 `thread.started`도, 그 뒤의 정상 종료도 이것을 되돌리지 못한다(2026-07-27 2차 리비전).
   **검증되지 않은 텍스트로 resume 인자를 만들지 않는다.**
 - **durable 문자열 위생**: `SessionEvent.raw`는 원본 JSON이 아니라 **bounded sanitized metadata
-  projection**이다. 추론/본문 텍스트 · agent message 전문 · 명령 문자열 · stderr/error 본문 · secret ·
-  프롬프트 · 환경변수 · 전체 argv · 모르는 이벤트 payload는 **어떤 이벤트에도** 실리지 않는다
-  (명령은 상태·exit code·길이만 남는다). error/stderr 요약은 상한 + `redactSecrets`를 통과한 것만이다.
-  **새 durable raw 로그를 만들지 않았다.**
+  projection**이다. 추론 원문 · 명령 문자열 · stderr/error 본문 · secret · 프롬프트 · 환경변수 · 전체 argv ·
+  모르는 이벤트 payload는 **어떤 이벤트에도** 실리지 않는다(명령은 상태·exit code·길이만 남는다).
+  error/stderr 요약은 상한 + `redactSecrets`를 통과한 것만이다. **정정(2026-07-27 2차 리비전)**: 최종
+  agent message는 이 배제 목록에 들지 않는다 — **상한(`MAX_TEXT_CHARS`)을 지난 최종 본문은
+  `assistant.text`와 `result.text`로 의도적으로 전달된다**(리뷰 판정·`--output-schema` 본문이 그 경로로 온다).
+  이전 서술("agent message 전문이 어떤 이벤트에도 실리지 않는다")은 `raw` 얘기를 이벤트 전체로 잘못 넓힌
+  것이었다. `raw`에는 여전히 길이·상태·exit code 같은 스칼라만 남는다. **새 durable raw 로그를 만들지 않았다.**
 - **수명은 멱등 상태 기계 하나다**: 검증을 모두 통과한 뒤에만 큐를 발행하고, harness 세션 id 중복 start ·
   실행 중 send · 중지된 세션 send를 거부한다. 실패한 start/send는 **열린 오염 큐나 잔여 상태를 남기지 않고**,
   동기 spawn 예외 · error+close 경합 · stdin 오류 · `stop`은 **종료 결과 1건**으로 수렴한다
@@ -1472,11 +1493,44 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | `B-9` | **B (P1)** | **codex JSONL payload 필드명·semantics를 provider live 경로로 확인하지 않았다.** supervisor 실측은 **플래그 파싱까지**이고(`B-6` fixed), 이벤트 필드(`thread_id` 등)는 별칭을 받아 두었을 뿐이다. 이름이 다르면 세션 id·usage가 비고 resume이 막힌다(성공으로 오인되지는 않는다 — `missing_session_id`가 실패다) | 중간 — alpha CLI | provider 1개(fail closed 방향) | 중 — 확인 없이 live를 켜면 첫 실행이 전부 실패로 낭비된다 | 소(live 1회 캡처 + fixture 갱신) | **M5b live 착수 전(하드 게이트)** | M5b 구현 세션 | `codexStreamParser.ts` 상단 주석 · `B-6` 증거란 | open |
 | `C-18` | C (P2) | **no-progress deadline · wall-clock deadline · cancellation/descendant 정리가 없다.** provider는 `stop()`으로 SIGTERM만 보내고 자손 소멸을 확인하지 않는다. §M5 "bridge 실행 요건"의 나머지 절반이다 | 중간(실제 live 세션에서) | 세션 1건이 오래 매달릴 수 있다(상태 오염은 아님 — 결과는 여전히 1건) | 중 — live 운영 전에는 필요하다 | 중 | **M5b/M5c live runner 도입 시** | 다음 구현 세션 | `CodexCliProvider.stop()` · 로드맵 §10 M5 목표 | open |
 | `C-19` | C (P2) | **`--output-schema`를 넘겨도 응답 본문을 schema로 검증하지 않는다.** provider는 최종 agent message 텍스트를 그대로 `result.text`로 준다(호출자가 파싱) | 중간 | 구조화 결과 1건의 형태 오류가 호출자에게 넘어간다 | 낮음 — 검증기를 나중에 얹으면 된다(기존 수동 closed validator 방식) | 소~중 | **reviewer 결과를 kernel state로 옮기기 시작할 때(M5c)** | 미정 | `codexStreamParser` `lastMessage` · M5a focused "구조화 최종 출력" | open |
+| `C-21` | C (P2) | **프로토콜 실패로 끝난 invocation 뒤에도 resume이 허용된다**(MCP 위반·세션 신원 충돌만 세션을 닫는다). malformed·oversized·중복 종료로 실패한 turn 뒤에 호출자가 `send`를 부르면 provider는 그 thread를 이어간다 — 판정은 `result.isError`를 보는 호출자 몫이다 | 중간(호출자가 `isError`를 무시할 때) | 세션 1건의 후속 turn | 낮~중 — `B-8`(reviewer가 `isError`를 무시한다)과 같은 방향의 위험이고 그쪽을 닫으면 대부분 사라진다 | 소(실패 사유 화이트리스트로 poison 확장 + 회귀 테스트) | **`B-8`을 닫을 때 같이(= M5b reviewer 배선 전)** | M5b 구현 세션 | `CodexCliProvider.send`/`state.poisoned` · M5a 2차 리비전 focused "MCP 위반을 본 세션은 닫힌다" | open |
+| `C-22` | C (P2) | **`CODEX_HOME` 소유 신원이 in-memory라 controller가 재시작하면 같은 홈으로 resume할 수 없다**(신원을 잃으므로 최초 검증 규칙에 걸려 `codex_home_not_empty`). 방향은 fail closed이지만 self-hosting 재시작 후 진행 중 세션을 이어갈 수 없다 | 중간(M5c self-hosting에서) | 재시작 시점에 열려 있던 codex 세션의 resume | 낮~중 — 재시작 후에는 새 세션으로 다시 시작하면 된다 | 중(소유권을 `run_state.json`에 durable 기록 + 복원 검증) | **self-hosting controller 재시작 경계를 다룰 때(M5c)** | M5c 구현 세션 | `CodexState.homeId` · M5a 2차 리비전 focused "격리 홈 수명" | open |
+| `C-23` | C (P2) | **turn 사이에 호출자가 `spec`을 바꾸면 model·`--output-schema` 경로가 resume에서 달라질 수 있다.** provider는 invocation마다 `spec`을 다시 검증하므로 sandbox·`codexHome`(신원)·경로 계약 위반은 막히지만 model 문자열과 schema 경로 교체는 통과한다 | 낮음 — spec은 controller 소유 객체다 | 세션 1건의 후속 turn 설정 | 낮음 | 소(start 시 해석값을 고정하고 resume에서 대조) | **reviewer/controller가 provider를 실제로 배선할 때(M5b)** | M5b 구현 세션 | `CodexCliProvider.invoke`의 `resolveCodexOptions` 재호출 | open |
+| `C-24` | C (P2) | **stderr 버퍼 상한이 chunk 단위로만 적용된다**(`stderr.length < MAX_STDERR_BUFFER` 검사 뒤 chunk 전체를 붙인다 → 한 chunk만큼 초과 가능). 밖으로 나가는 요약은 여전히 `MAX_ERROR_CHARS` + `redactSecrets`로 bounded하다 | 낮음 | 실패 1건의 메모리 상한(정확도) | 낮음 | 소(붙일 때 잘라내기) | **live runner 도입 시(M5c, `C-18`과 함께)** | M5c 구현 세션 | `CodexCliProvider.invoke` stderr 핸들러 | open |
+| `C-25` | C (P2) | **`events(handle)`는 현재 invocation의 큐를 준다** — `send` 전에 잡아 둔 스트림은 그 invocation이 끝나며 닫히고, 후속 turn 이벤트는 **다시 `events()`를 불러야** 나온다. 결과 유실은 아니지만(각 invocation은 종료 결과 1건으로 닫힌다) 소비자 계약이 문서에만 있다 | 중간(오케스트레이션 배선 시 오해하기 쉽다) | 소비자 배선 | 낮~중 — 배선 코드에서 turn마다 다시 구독하면 된다 | 소~중(멀티 turn 하나의 스트림으로 합치기 + 테스트) | **provider를 orchestrator에 배선할 때(M5b)** | M5b 구현 세션 | `CodexCliProvider.events`/`invoke`의 큐 교체 · M5a focused "실행 중 send" | open |
 
 > **`C-20` 철회(2026-07-27, fresh Codex 리뷰 P2/C).** M5a가 등록했던 `C-20`("kernel 만료가 여전히 `>`")은
 > 기존 `C-17`과 **같은 항목의 중복 등록**이었다. 중복을 지우고 **`C-17` 하나만** 만료 경계 항목으로 남긴다.
 > `C-17`의 기한은 **M5c(장시간 autopilot 도입) 전**으로 좁혔다. M5a가 실행 경계에서만 `>=`로 좁힌 사실은
 > 위 M5a 절과 `C-17` 증거란에 남는다.
+
+#### M5a 2차 리비전 (2026-07-27, fresh Claude Opus 5 세션 — 구조적 A 4건 + 문서 정정 1건)
+
+리비전 커밋 `bdd5507` 이후, **새 fresh Claude Opus 5 세션**(이전 작성 세션의 컨텍스트를 잇지 않는다)이
+지목받은 구조적 A 후보를 조사해 전부 수정했다. 앞선 Codex 리뷰의 A 9건과 **다른 층위의 결함**이다 —
+개별 게이트는 있었지만 **게이트들끼리 모순**이었다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| 1 | **A** | **비-ephemeral resume이 구조적으로 불가능했다.** 첫 codex 프로세스는 `CODEX_HOME`에 세션 상태를 남겨야 하는데 **모든** invocation이 "빈 홈"을 요구했다 → `ephemeral:false` + `send`는 production에서 항상 `codex_home_not_empty`. fake CLI가 상태를 cwd에만 써서 이 모순이 테스트로 드러나지 않았다 | **fixed** — provider 소유 홈 수명(첫 invocation은 빈 홈 + 신원 고정 / resume은 같은 신원일 때만 상태 허용, 경로·0700·홈 금지·strict 플래그·단일 env 재검증). 교체·symlink·권한 완화·소유하지 않은 상태는 spawn 0. fake CLI가 실제처럼 `sessions/…/rollout-<uuid>.jsonl` + `history.jsonl`을 남긴다. **live 인증(`B-7`)은 그대로 open**이고 같은 uid 공격자 내성은 주장하지 않는다 |
+| 2 | **A** | **승인 만료를 비동기 git 조회 **전에만** 봤다.** `revalidateSync()`(spawn 직전 마지막 검증)에는 만료 재확인이 없어 조회 중에 만료된 승인으로 프로세스가 뜰 수 있었다 | **fixed** — `nowMs`에 clock 함수를 주면 재검증이 시각을 다시 읽어 `now >= expiresAt`을 재확인하고 읽을 수 없는 시각도 거부한다. 만료가 그 사이에 걸치면 provider spawn 0 |
+| 3 | **A** | **파서가 `thread.started` 전에 assistant·status·error를 방출하고 나중에 성공할 수 있었다** — 신원 없는 이벤트가 내용·도구 payload를 들고 나갔다 | **fixed** — 신원 우선: 의미 있는 첫 이벤트가 정규 UUID를 세워야 하고, 그 전 이벤트는 비가역 `missing_session_id`이며 내용·도구를 전달하지 않는다. 늦은 `thread.started`·성공 종료도 되돌리지 못한다 |
+| 4 | **A** | **MCP 위반을 본 thread를 resume할 수 있었다**(비가역 실패의 resume 우회) | **fixed** — MCP 관측 시 세션을 닫는다(`codex_mcp_observed`), 후속 `send`는 spawn 0 |
+| 5 | **C(문서)** | 로드맵·파서 주석이 "agent message 전문은 어떤 이벤트에도 실리지 않는다"고 적어 **실제 동작과 어긋났다**(raw 얘기를 이벤트 전체로 넓힌 오류) | **fixed(문서)** — raw/추론/명령/stderr/error payload는 제외, **상한 지난 최종 본문은 `assistant.text`·`result.text`로 의도적으로 전달**로 정정. `B-7`·`B-8`·`B-9`의 서술은 그대로 유효하다(인증·reviewer 게이트·JSONL 필드 live 확인은 여전히 open) |
+
+검증 실측(offline, 2026-07-27 — 2차 리비전 세션):
+
+- 파일 단독 `npx tsx --test --test-timeout=180000` : `executionBoundary.test.ts` **13/13** ·
+  `codexStreamParser.test.ts` **26/26** · `codexCliProvider.test.ts` **40/40**(합 **79/79**, 이전 70).
+- `npm run test:exec` **221/221**(212 → 221). **221은 exec suite 수치이며 파일 단독 focused가 아니다.**
+- `npx tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+- **비공허성(mutation) 4종**: 홈 소유 신원 비교 제거 → **2건 실패** / `revalidateSync` 만료 재확인 제거 →
+  **2건 실패** / 신원 우선 게이트 무효화 → **2건 실패** / MCP 세션 격리 제거 → **1건 실패**.
+  네 번 모두 정확히 원복하고 `MUTATION` grep 0 · `git diff --numstat` 기준선 일치 · focused 79/79 재확인.
+- **미실행**: `npm test` 전체 · `test:core` · acceptance · stress · live · 반복 3회 —
+  최종 전체 suite 1회는 여전히 **supervisor가 M5 handoff 시점으로 예약**했다.
+- **Codex 추론 0회**(이 세션은 fake CLI·in-process seam만 썼다). `B-7`·`B-8`·`B-9`는 **여전히 open**이고
+  그 전에는 이 provider로 실제 Codex를 부르지 않는다. 신규 유예: `C-21`~`C-25`(위 대장).
 
 ### M6 — Hierarchical Orchestrator + Fresh Context Rotation
 
