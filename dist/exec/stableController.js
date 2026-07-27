@@ -19,10 +19,14 @@
  *
  * 그래서 M5b의 계약을 **실제로 증명할 수 있는 것**으로 좁혔다.
  *
- * - provider는 **read-only 실행 계약 brand**(`READ_ONLY_EXECUTION_CONTRACT`)를 가진 구현만 받는다.
- *   문자열 `id` 위조로는 들어올 수 없다(§ `types.ts`의 brand 주석이 보장/비보장 범위를 적는다).
- *   production에서 그 brand를 다는 것은 `CodexCliProvider` 하나이고, 그 구현이 sandbox `read-only`와
- *   strict empty MCP를 **실제로 집행**한다.
+ * - provider는 **실제로 생성된 read-only Codex 실행 provider**만 받는다
+ *   (`attestReadOnlyCodexProvider` — `codexCliProvider.ts`의 모듈 사설 등록부). 2026-07-28 2차 리뷰 A2
+ *   정정: 이전 판의 brand 심볼은 `types.ts`에서 **공개 export** 됐으므로 같은 프로세스의 아무 provider나
+ *   그것을 import해 자기에게 달 수 있었다(= 공개 API만으로 위조 가능, 집행이 아니라 자기 신고였다).
+ *   지금은 심볼·property 복사, prototype 위조, subclass, 메서드 override, `Proxy` 감싸기, 임의
+ *   scripted provider가 **전부 거부**된다. **주장 범위는 정직하게 좁다**: 같은 프로세스 안에서
+ *   *공개 API만으로는* 못 들어온다는 것이고, OS 샌드박스 격리를 주장하지 않는다.
+ *   테스트는 그 provider의 **주입 spawn seam**으로 실제 생성 경로를 그대로 지난다(live 프로세스 0).
  * - `SessionSpec`은 `permissionMode: "plan"`만 받는다 → `ClaudeCliProvider`의 **기본 `acceptEdits`** 는
  *   이 bridge에 들어오지 못한다. 도구 확대(`allowedTools`)·범위 확대(`addDirs`)·권한 파일
  *   (`settingsPath`)·비 read-only codex sandbox도 거부다.
@@ -40,7 +44,10 @@
  * ## 나머지 확정 계약
  *
  * - **run 하나는 생성 시점에 봉인된 권위에 묶인다.** kernel·provider·handoff **객체 자체와 호출할 메서드
- *   함수까지** 생성자에서 포착하고, 이후 실행 입력을 `this.opts`에서 다시 읽지 않는다. `opts`는 **tripwire
+ *   함수까지** 생성자에서 **정확히 한 번씩만 읽어** 포착하고(2026-07-28 2차 리뷰 A1 — 검사한 값과
+ *   실행하는 값이 갈리지 않는다: 교대 getter·proxy·재진입 시계가 끼어들 창이 없다), 포착한 함수는
+ *   **bind**해 들고 다니므로 나중의 monkey-patch는 실행 대상이 되지 못한다. 이후 실행 입력을
+ *   `this.opts`에서 다시 읽지 않는다. `opts`는 **tripwire
  *   전용**이다: 객체 교체·메서드 monkey-patch·경로/시계 교체는 매 게이트에서 **단일 marker
  *   `controller_binding_drift`** 로 fail closed다. 승인 manifest는 kernel(SoR)에서 읽어
  *   `validateApprovalManifest`로 다시 닫고 **깊게 복사·깊게 freeze**해 봉인하며, 밖(handoff·경계)에는
@@ -63,6 +70,13 @@
  * - **durable state에는 raw가 하나도 들어가지 않는다**: 프롬프트·transcript·추론·stdout/stderr·argv·
  *   secret 값·`SessionHandle`은 어디에도 저장하지 않는다. **토큰 usage 카운터도 durable state에 들어가지
  *   않는다** — `TaskOutcome.usage` 반환값으로만 나간다(state schema를 건드리지 않는다).
+ * - **실패 코드 taxonomy는 닫혀 있다(2026-07-28 2차 리뷰 A5b).** provider·handoff가 던진 오류는
+ *   `provider_start_failed` · `provider_send_failed` · `provider_stream_failed` · `handoff_failed`처럼
+ *   **이 계층이 정한 코드**로 접힌다 — 경계 밖 코드가 `code: "result_accepted"`를 다는 것만으로
+ *   성공처럼 보이는 marker를 만들 수 없다. kernel(SoR)의 코드는 권위이므로 그대로 올라온다.
+ * - **실패한 turn의 usage도 회계된다(2차 리뷰 A3).** 종료 결과가 1건으로 확정되면 **성공/실패를 해석하기
+ *   전에** bounded usage를 정확히 한 번 더한다 → 실패한 turn이 태운 토큰이 전역 예산에서 빠지고,
+ *   소진된 뒤의 task는 provider 호출 0으로 닫힌다.
  * - **모든 실패는 fail closed다**: provider 오류·결과 없음/중복 종료/실패 결과·정책 거부·artifact 드리프트·
  *   manifest 드리프트/만료·예산 소진·낡은 핸들은 task를 **완료로 만들지도 전달을 수령하지도 않고**
  *   안정 bounded outcome으로 돌아온다(M5c의 pause/recovery가 그 위에 붙는다).
@@ -79,9 +93,23 @@ import { ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, normalizeWorkspacePath }
 import { commandAllowed, dependencyAllowed, networkDomainAllowed, pathWithin, validateApprovalManifest, } from "./approvalManifest.js";
 import { verifyArtifactFile } from "./orchestrationStore.js";
 import { verifyExecutionBoundary } from "./executionBoundary.js";
-import { consumeExactlyOneTerminal, hasReadOnlyExecutionContract } from "./types.js";
+import { consumeExactlyOneTerminal } from "./types.js";
+import { attestReadOnlyCodexProvider } from "./codexCliProvider.js";
 /** 한 turn에서 소비할 이벤트 상한 — provider 스트림이 무한정 돌지 않게 한다. */
-const MAX_TURN_EVENTS = 10_000;
+export const MAX_TURN_EVENTS = 10_000;
+/**
+ * 이 controller가 종료 결과 소비자에게 주는 **안정 코드 5종**. 상수로 내보내는 이유는 회귀 테스트가
+ * "controller가 실제로 쓰는 그 코드 집합"에 대고 공용 소비자의 불변식(정확히 1건 · 종료 뒤 이벤트 없음 ·
+ * bounded · 닫힌 taxonomy)을 단정할 수 있게 하기 위해서다 — 실제 Codex provider는 파서가 이미
+ * 종료를 1건으로 정규화하므로 그 경로로는 중복·부재 스트림을 만들 수 없다(방어는 그대로 남긴다).
+ */
+export const CONTROLLER_TERMINAL_CODES = Object.freeze({
+    unbounded: "provider_stream_unbounded",
+    streamFailed: "provider_stream_failed",
+    noResult: "provider_no_result",
+    resultError: "provider_result_error",
+    duplicate: "provider_duplicate_terminal",
+});
 /** 모든 거부는 안정 `code`를 가진 기존 오류 타입으로 올린다(중복 오류 계층 금지). */
 export class ControllerError extends OrchestrationError {
     constructor(code, message) {
@@ -328,39 +356,60 @@ export class StableController {
     tokensUsed = 0;
     constructor(opts) {
         this.opts = opts;
-        if (typeof opts.nowMs !== "undefined" && typeof opts.nowMs !== "function") {
+        // **호출자 소유 property는 여기서 정확히 한 번씩만 읽는다**(2026-07-28 2차 리뷰 A1). 아래 지역
+        // 변수가 유일한 권위이고 검증도 봉인도 실행도 **이 값**에 대고 한다 — 교대 getter·proxy·재진입
+        // 시계가 "검증된 값"과 "실제로 쓰이는 값"을 다르게 만들 창이 없다.
+        const optsObj = opts;
+        const kernelObj = opts.kernel;
+        const providerObj = opts.provider;
+        const handoff = opts.handoff;
+        const controllerRepoRoot = opts.controllerRepoRoot;
+        const gitExecutablePath = opts.gitExecutablePath;
+        const nowMs = opts.nowMs;
+        if (typeof nowMs !== "undefined" && typeof nowMs !== "function") {
             fail("controller_config_invalid", "opts.nowMs는 시각(ms)을 돌려주는 함수여야 한다");
         }
-        if (typeof opts.handoff !== "function")
+        if (typeof handoff !== "function")
             fail("controller_config_invalid", "opts.handoff는 함수여야 한다");
-        // **read-only bridge 게이트는 생성 시점에 있다**: brand 없는 provider는 세션을 하나도 열지 못한다.
-        if (!hasReadOnlyExecutionContract(opts.provider)) {
-            fail("controller_provider_not_read_only", "M5b bridge는 read-only 실행 계약 brand가 있는 provider만 받는다");
-        }
-        const clock = opts.nowMs ?? Date.now;
-        const kernel = captureKernel(opts.kernel);
-        const provider = captureProvider(opts.provider);
-        const state = kernel.getState();
+        const clock = nowMs ?? Date.now;
+        // **read-only bridge 게이트는 생성 시점에 있다**: 실제로 생성된 Codex read-only provider가 아니면
+        // 세션을 하나도 열지 못한다. 증명과 메서드 포착이 **같은 한 번의 읽기**다(재읽기 창 없음).
+        const kernel = captureKernel(kernelObj);
+        const provider = captureProvider(providerObj);
+        const providerId = providerObj.id;
+        const state = kernel.captured.getState();
         // 승인의 출처는 **kernel(SoR)** 이다 — 호출자 객체를 두 번째 승인 원천으로 쓰지 않는다.
-        const manifest = deepFreeze(validateApprovalManifest(kernel.getManifest()));
+        const manifest = deepFreeze(validateApprovalManifest(kernel.captured.getManifest()));
         if (manifest.milestoneId !== state.milestoneId) {
             fail("controller_manifest_mismatch", "kernel manifest의 milestone이 run과 다르다");
         }
         this.sealed = Object.freeze({
             runId: state.runId,
             milestoneId: state.milestoneId,
-            controllerRepoRoot: opts.controllerRepoRoot,
-            gitExecutablePath: opts.gitExecutablePath,
-            providerId: opts.provider.id,
+            controllerRepoRoot,
+            gitExecutablePath,
+            providerId: typeof providerId === "string" ? providerId : "",
             clock,
             manifest,
-            kernel,
-            provider,
-            handoff: opts.handoff,
+            kernel: kernel.captured,
+            provider: provider.captured,
+            handoff,
             startedAtMs: clock(),
         });
-        // pins는 **`this.opts`를 통해** 읽는다 — 필드 하나를 바꿔도, `opts` 객체를 통째로 갈아끼워도 잡힌다.
-        this.pins = buildPins(() => this.opts, kernel);
+        // pins는 **`this.opts`를 통해 지금 값을 다시 읽고**(tripwire) 위에서 포착한 **바로 그 값**과 비교한다.
+        // 필드 하나를 바꿔도, `opts` 객체를 통째로 갈아끼워도, 메서드를 monkey-patch해도 잡힌다.
+        this.pins = buildPins(() => this.opts, kernel.captured, {
+            opts: optsObj,
+            kernel: kernelObj,
+            provider: providerObj,
+            handoff,
+            controllerRepoRoot,
+            gitExecutablePath,
+            providerId,
+            clock,
+            kernelMethods: kernel.raw,
+            providerMethods: provider.raw,
+        });
     }
     /** 봉인된 승인 커밋. */
     approvedCommit() {
@@ -480,13 +529,15 @@ export class StableController {
             const task = this.requireTask(taskId);
             // 의존 포인터의 **불변 스냅샷** — 이 값을 handoff에 주고, provider 호출 직전에 **이 값으로** 재검증한다.
             const inputs = this.verifiedInputs(task);
-            const h = sealHandoff(this.sealed.handoff({ task: frozenClone(task, "task"), inputs, manifest: this.approvedManifest() }));
+            const ctx = { task: frozenClone(task, "task"), inputs, manifest: this.approvedManifest() };
+            // handoff는 호출자 코드다 — 던진 오류의 **코드를 스스로 고르게 두지 않는다**(A5b).
+            const h = sealHandoff(atBoundary("handoff_failed", () => this.sealed.handoff(ctx)));
             const boundary = await this.verifyBoundary(h.spec.cwd);
             // 경계가 확인한 `targetRoot`로 **새 불변 spec**을 만든다(호출자 cwd 문자열을 다시 쓰지 않는다).
             const spec = frozenClone({ ...h.spec, cwd: boundary.targetRoot }, "spec");
             this.syncGate(boundary, inputs); // ← 이 다음 문장이 provider 호출이다(사이에 await 없음)
-            handle = await provider.start(spec, h.prompt);
-            this.applyTurn(outcome, await this.consumeTurn(handle));
+            handle = await atBoundaryAsync("provider_start_failed", () => provider.start(spec, h.prompt));
+            await this.consumeTurn(handle, outcome);
             // inbox: durable 순서 그대로. 경계·게이트·포인터를 **전달 직전에** 다시 확인하고,
             // ack는 그 turn이 **성공 종료 결과**를 낸 뒤에만 한다.
             for (const entry of kernel.listPendingInbox(taskId)) {
@@ -494,8 +545,9 @@ export class StableController {
                 this.verifyPointers(refs);
                 const b = await this.verifyBoundary(spec.cwd);
                 this.syncGate(b, refs); // ← 이 다음 문장이 send다(사이에 await 없음)
-                await provider.send(handle, deliveryPrompt(entry));
-                this.applyTurn(outcome, await this.consumeTurn(handle));
+                const message = deliveryPrompt(entry);
+                await atBoundaryAsync("provider_send_failed", () => provider.send(handle, message));
+                await this.consumeTurn(handle, outcome);
                 kernel.acknowledgeDelivery({ taskId, messageId: entry.messageId });
                 outcome.acknowledged.push(entry.messageId);
             }
@@ -527,8 +579,13 @@ export class StableController {
         finally {
             // 세션은 성공·실패 어느 경로에서도 닫는다(취소 promise 정착까지 — provider `C-27` 계약).
             // provider 정리 실패를 durable 완료보다 먼저 확인하는 것은 대장 `B-13`(M5c)이다.
-            if (handle)
-                await provider.stop(handle, `controller_${outcome.marker}`).catch(() => undefined);
+            // **동기 throw도 삼킨다**: `finally`에서 새어 나가면 이미 확정된 outcome을 덮어쓴다.
+            if (handle) {
+                const h = handle;
+                await Promise.resolve()
+                    .then(() => provider.stop(h, `controller_${outcome.marker}`))
+                    .catch(() => undefined);
+            }
         }
     }
     requireTask(taskId) {
@@ -578,15 +635,15 @@ export class StableController {
     /**
      * **turn마다 `events(handle)`를 다시 부른다(`C-25`).** 예전 iterable은 그 invocation과 함께 닫히므로
      * 재사용하면 두 번째 turn의 결과를 영원히 얻지 못한다. 종료 결과는 **정확히 1건**이어야 한다(`B-8`).
+     *
+     * **종료 usage는 성공/실패를 해석하기 전에 정확히 한 번 회계한다(2차 리뷰 A3).** 이전 판은
+     * 공용 소비자가 `isError`에서 먼저 던졌으므로 **실패한 turn이 태운 토큰이 전역 예산에서 빠지지 않았고**,
+     * 그 뒤 task가 이미 소진된 예산으로 계속 시작할 수 있었다. 이제 `onTerminal`이 그 창을 닫는다.
      */
-    consumeTurn(handle) {
-        return consumeExactlyOneTerminal(this.sealed.provider.events(handle), {
-            unbounded: "provider_stream_unbounded",
-            streamFailed: "provider_stream_failed",
-            noResult: "provider_no_result",
-            resultError: "provider_result_error",
-            duplicate: "provider_duplicate_terminal",
-        }, MAX_TURN_EVENTS, ControllerError);
+    consumeTurn(handle, outcome) {
+        // `events()` 호출 자체가 던져도 provider가 결과 코드를 고르지 못한다(A5b).
+        const stream = atBoundary("provider_stream_failed", () => this.sealed.provider.events(handle));
+        return consumeExactlyOneTerminal(stream, CONTROLLER_TERMINAL_CODES, MAX_TURN_EVENTS, ControllerError, (result) => this.applyTurn(outcome, result));
     }
     applyTurn(outcome, result) {
         outcome.turns += 1;
@@ -628,65 +685,75 @@ export class StableController {
         };
     }
 }
-/** kernel 메서드를 생성 시점에 bind해 포착한다(이후 교체·patch는 실행 대상이 아니다). */
-function captureKernel(kernel) {
-    if (kernel === null || typeof kernel !== "object")
-        fail("controller_config_invalid", "opts.kernel이 kernel이 아니다");
-    for (const m of KERNEL_METHODS) {
-        if (typeof kernel[m] !== "function") {
-            fail("controller_config_invalid", `opts.kernel에 ${m}가 없다`);
-        }
+/**
+ * **property를 정확히 한 번 읽어** 그 값을 검증하고 그 값만 bind한다(2차 리뷰 A1).
+ * 이전 판은 `typeof owner[m] === "function"`으로 검사한 **뒤** `owner.m.bind(owner)`로 **다시 읽었으므로**,
+ * 교대로 다른 값을 주는 getter/proxy면 "검사한 함수"와 "실행되는 함수"가 갈릴 수 있었다.
+ */
+function captureMethods(owner, names, what) {
+    if (owner === null || typeof owner !== "object")
+        fail("controller_config_invalid", `${what}가 객체가 아니다`);
+    const raw = {};
+    const bound = {};
+    for (const m of names) {
+        const fn = owner[m]; // ← 이 property를 읽는 유일한 지점
+        if (typeof fn !== "function")
+            fail("controller_config_invalid", `${what}에 ${m}가 없다`);
+        raw[m] = fn;
+        bound[m] = fn.bind(owner);
     }
-    return Object.freeze({
-        workspaceRoot: kernel.paths.workspaceRoot,
-        getState: kernel.getState.bind(kernel),
-        getManifest: kernel.getManifest.bind(kernel),
-        getTask: kernel.getTask.bind(kernel),
-        scheduleReady: () => kernel.scheduleReady(),
-        startScheduledBatch: () => kernel.startScheduledBatch(),
-        listPendingInbox: kernel.listPendingInbox.bind(kernel),
-        registerArtifact: kernel.registerArtifact.bind(kernel),
-        submitResult: kernel.submitResult.bind(kernel),
-        acknowledgeDelivery: kernel.acknowledgeDelivery.bind(kernel),
-    });
+    return { raw: Object.freeze(raw), bound };
 }
-/** provider 메서드를 생성 시점에 bind해 포착한다 — `provider.start = …` monkey-patch는 실행되지 않는다. */
-function captureProvider(provider) {
-    for (const m of PROVIDER_METHODS) {
-        if (typeof provider[m] !== "function") {
-            fail("controller_config_invalid", `opts.provider에 ${m}가 없다`);
-        }
+/** kernel 메서드를 생성 시점에 **한 번 읽어** bind해 포착한다(이후 교체·patch는 실행 대상이 아니다). */
+function captureKernel(kernel) {
+    const { raw, bound } = captureMethods(kernel, KERNEL_METHODS, "opts.kernel");
+    const paths = kernel.paths; // 한 번만 읽는다
+    const workspaceRoot = paths === null || typeof paths !== "object" ? undefined : paths.workspaceRoot;
+    if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
+        fail("controller_config_invalid", "opts.kernel에 workspaceRoot가 없다");
     }
-    return Object.freeze({
-        start: provider.start.bind(provider),
-        send: provider.send.bind(provider),
-        events: provider.events.bind(provider),
-        stop: provider.stop.bind(provider),
-    });
+    return { raw, captured: Object.freeze({ workspaceRoot, ...bound }) };
+}
+/**
+ * provider 메서드를 생성 시점에 **한 번 읽어** bind해 포착한다 — `provider.start = …` monkey-patch는
+ * 실행되지 않는다. 읽기 주체는 **증명 함수**다(A2): 실제로 생성된 Codex read-only provider가 아니면
+ * 여기서 끝나고, 통과하면 그 **한 번의 읽기 결과**가 그대로 실행 대상이 된다(A1의 재읽기 창 제거).
+ */
+function captureProvider(provider) {
+    const raw = attestReadOnlyCodexProvider(provider);
+    if (!raw) {
+        fail("controller_provider_not_read_only", "M5b bridge는 실제로 생성된 read-only Codex 실행 provider만 받는다(복사본·prototype 위조·subclass·override·proxy 거부)");
+    }
+    const bound = {};
+    for (const m of PROVIDER_METHODS)
+        bound[m] = raw[m].bind(provider);
+    return { raw: raw, captured: Object.freeze(bound) };
 }
 /** tripwire 목록. 실행 입력이 아니라 "호출자가 봉인 뒤에 무엇을 바꿨는가"만 본다. */
-function buildPins(get, kernel) {
-    const pin = (what, read) => ({ what, read, pinned: read() });
+function buildPins(get, kernel, at) {
+    const pin = (what, read, pinned) => ({ what, read, pinned });
     const pins = [
         // 객체·함수 신원(교체 = 드리프트. 같은 state를 가진 다른 kernel도 거부다).
-        pin("opts", () => get()),
-        pin("kernel", () => get().kernel),
-        pin("provider", () => get().provider),
-        pin("handoff", () => get().handoff),
-        pin("controllerRepoRoot", () => get().controllerRepoRoot),
-        pin("gitExecutablePath", () => get().gitExecutablePath),
-        pin("providerId", () => get().provider.id),
-        pin("clock", () => get().nowMs ?? Date.now),
-        // run 신원과 승인 canonical digest(SoR에서 다시 읽는다).
-        pin("runId", () => kernel.getState().runId),
-        pin("milestoneId", () => kernel.getState().milestoneId),
-        pin("manifestDigest", () => safeDigest(kernel.getManifest())),
+        pin("opts", () => get(), at.opts),
+        pin("kernel", () => get().kernel, at.kernel),
+        pin("provider", () => get().provider, at.provider),
+        pin("handoff", () => get().handoff, at.handoff),
+        pin("controllerRepoRoot", () => get().controllerRepoRoot, at.controllerRepoRoot),
+        pin("gitExecutablePath", () => get().gitExecutablePath, at.gitExecutablePath),
+        pin("providerId", () => get().provider.id, at.providerId),
+        pin("clock", () => get().nowMs ?? Date.now, at.clock),
+        // run 신원과 승인 canonical digest(SoR에서 **포착된** kernel로 다시 읽는다).
+        pin("runId", () => kernel.getState().runId, kernel.getState().runId),
+        pin("milestoneId", () => kernel.getState().milestoneId, kernel.getState().milestoneId),
+        pin("manifestDigest", () => safeDigest(kernel.getManifest()), safeDigest(kernel.getManifest())),
     ];
     // 메서드 함수 신원 — monkey-patch는 실행되지도 않고 **조용히 넘어가지도 않는다**.
-    for (const m of PROVIDER_METHODS)
-        pins.push(pin(`provider.${m}`, () => get().provider[m]));
-    for (const m of KERNEL_METHODS)
-        pins.push(pin(`kernel.${m}`, () => get().kernel[m]));
+    for (const m of PROVIDER_METHODS) {
+        pins.push(pin(`provider.${m}`, () => get().provider[m], at.providerMethods[m]));
+    }
+    for (const m of KERNEL_METHODS) {
+        pins.push(pin(`kernel.${m}`, () => get().kernel[m], at.kernelMethods[m]));
+    }
     return Object.freeze(pins);
 }
 /** provider를 한 번도 부르지 않은 task의 bounded outcome(예산 소진 등). */
@@ -707,6 +774,35 @@ function clampCount(v) {
 }
 function codeOf(err) {
     return err instanceof OrchestrationError ? err.code : "controller_internal_error";
+}
+/**
+ * **provider·handoff 경계의 오류는 taxonomy를 고르지 못한다**(2026-07-28 2차 리뷰 A5b).
+ *
+ * 이전 판은 `codeOf(err)`가 "`OrchestrationError`면 그 코드 그대로"였으므로, provider·handoff가
+ * `new OrchestrationError("result_accepted", …)`를 던지는 것만으로 **성공처럼 보이는 marker를 단 실패
+ * outcome**을 만들 수 있었다(`status:"failed"` + `marker:"result_accepted"` — M5c 분기가 그 marker를 읽는다).
+ * 이제 경계 밖 코드가 무엇을 던지든 **이 계층의 안정 코드 하나**로 접는다. 원인은 코드·이름 수준으로만
+ * 남기고(경로·transcript 금지) 우리 자신의 `ControllerError`만 그대로 통과시킨다.
+ */
+function atBoundary(code, fn) {
+    try {
+        return fn();
+    }
+    catch (err) {
+        if (err instanceof ControllerError)
+            throw err;
+        fail(code, "실행 경계 밖 호출이 실패했다");
+    }
+}
+async function atBoundaryAsync(code, fn) {
+    try {
+        return await fn();
+    }
+    catch (err) {
+        if (err instanceof ControllerError)
+            throw err;
+        fail(code, "실행 경계 밖 호출이 실패했다");
+    }
 }
 /**
  * 전달 프롬프트. 중앙이 옮기는 것은 **bounded summary와 검증된 포인터**뿐이다 —

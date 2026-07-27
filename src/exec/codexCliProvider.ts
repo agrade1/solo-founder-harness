@@ -97,7 +97,6 @@ import {
   type VerifiedExecutionBoundary,
 } from "./executionBoundary.js";
 import { OrchestrationError, type MilestoneApprovalManifest } from "./orchestrationTypes.js";
-import { READ_ONLY_EXECUTION_CONTRACT } from "./types.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from "./types.js";
 
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
@@ -565,15 +564,49 @@ function isBoundTo(handle: SessionHandle, state: CodexState): boolean {
   return !!handle && handle.providerBinding === state.binding;
 }
 
+/**
+ * **read-only 실행 권위 등록부**(M5b 2차 리비전 A2). 이 `WeakSet`은 **이 모듈 밖으로 나가지 않고**,
+ * 여기에 들어오는 유일한 경로는 아래 `CodexCliProvider` 생성자다. 발급기(issuer)·토큰·
+ * "임의 provider를 증명해 주는 factory"는 **내보내지 않는다** — 밖으로 나가는 것은 판정 함수 하나뿐이다.
+ *
+ * 이전 판은 `types.ts`가 brand 심볼을 **공개 export** 했으므로 같은 프로세스의 아무 provider나
+ * 그것을 import해 자기에게 달 수 있었다(= 공개 API만으로 위조 가능). 이제 위조하려면 이 모듈의
+ * 내부 상태를 건드려야 한다.
+ */
+const ATTESTED_READ_ONLY = new WeakSet<object>();
+
+/** read-only bridge가 실제로 호출하는 메서드. 이 네 개의 **함수 신원**까지 증명 대상이다. */
+const ATTESTED_METHODS = ["start", "send", "events", "stop"] as const;
+export type AttestedMethod = (typeof ATTESTED_METHODS)[number];
+
+/**
+ * **생성 권위 증명 + 메서드 단일 읽기.** 통과하면 `start`·`send`·`events`·`stop`을 **정확히 한 번씩**
+ * 읽은 그 값을 돌려주고, 아니면 `null`이다. 호출자(=`StableController`)는 **돌려받은 이 값만** bind해
+ * 실행하므로 "검증한 함수"와 "실행하는 함수"가 갈릴 창이 없다(교대 getter·proxy 대응 — A1).
+ *
+ * 거부되는 것: 심볼·property 복사본, prototype 위조(`Object.setPrototypeOf`), subclass,
+ * 인스턴스 메서드 override, 임의 scripted provider, 진짜 provider를 감싼 `Proxy`.
+ *
+ * **주장하는 범위**: 같은 프로세스에서 **공개 API만으로는** read-only bridge에 들어올 수 없다.
+ * **주장하지 않는 범위**: OS 수준 샌드박스 격리가 아니다. 이 모듈의 내부를 직접 조작할 수 있는 코드
+ * (프로토타입 오염 이전 단계·모듈 패치·디버거)는 여전히 프로세스 안에 있다.
+ */
+export function attestReadOnlyCodexProvider(provider: unknown): Readonly<Record<AttestedMethod, unknown>> | null {
+  if (typeof provider !== "object" || provider === null) return null;
+  if (!ATTESTED_READ_ONLY.has(provider)) return null; // 생성자를 지나지 않았다(복사본·proxy·위조 prototype)
+  if (Object.getPrototypeOf(provider) !== CodexCliProvider.prototype) return null; // subclass·prototype 교체
+  const proto = CodexCliProvider.prototype as unknown as Record<string, unknown>;
+  const methods = {} as Record<AttestedMethod, unknown>;
+  for (const m of ATTESTED_METHODS) {
+    const fn = (provider as Record<string, unknown>)[m]; // ← 이 property를 읽는 유일한 지점
+    if (fn !== proto[m]) return null; // 인스턴스 override(own property)
+    methods[m] = fn;
+  }
+  return Object.freeze(methods);
+}
+
 export class CodexCliProvider implements ExecutionProvider {
   readonly id = "codex-cli";
-  /**
-   * **read-only 실행 계약 brand**(M5b 독립 리뷰 A2). 이 구현은 sandbox를 `read-only`로 고정하고
-   * (`codex_sandbox_forbidden`) strict empty MCP를 격리 홈·`--strict-config`로 집행하므로
-   * `StableController`의 read-only bridge를 지날 자격이 있다. 문자열 `id`가 아니라 **이 심볼 참조**가
-   * 판정 근거다(같은 id를 단 다른 객체는 거부된다).
-   */
-  readonly [READ_ONLY_EXECUTION_CONTRACT] = true as const;
   private readonly sessions = new Map<string, CodexState>();
   private readonly spawnFn: SpawnFn;
   /** invocation generation 발급기 — 단조 증가하며 재사용되지 않는다. */
@@ -582,6 +615,9 @@ export class CodexCliProvider implements ExecutionProvider {
   constructor(private readonly opts: CodexCliProviderOpts) {
     // spawn seam은 **여기서 한 번** 포착한다 — 이후 `opts.spawn`을 바꿔도 실행 대상은 바뀌지 않는다.
     this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
+    // **read-only 실행 권위는 여기서만 발급된다**(A2). 이 구현이 sandbox `read-only`(`codex_sandbox_forbidden`)와
+    // strict empty MCP를 격리 홈·`--strict-config`로 실제 집행하므로 bridge를 지날 자격이 있다.
+    ATTESTED_READ_ONLY.add(this);
   }
 
   /**
@@ -935,3 +971,7 @@ export class CodexCliProvider implements ExecutionProvider {
     }
   }
 }
+
+// prototype을 얼려 둔다: 증명이 "메서드가 prototype의 그 함수와 같은가"이므로, prototype 자체가
+// 바뀌면 모든 인스턴스가 함께 오염된다(A2). 확장할 계획이 없는 클래스이므로 비용이 0이다.
+Object.freeze(CodexCliProvider.prototype);

@@ -20,10 +20,17 @@
  *   ⓕ 구조 위반 → `reviewer_malformed_output`: **코드 펜스를 걷어낸** 본문에서 top-level `## ` heading을
  *      뽑아 §5.2 필수 6개(`Reviewed Revision and Hash` · `Findings (P0/P1/P2)` ·
  *      `Reproduction or Evidence` · `Missing Tests` · `Contract Deviations` · `Verdict`)가 **각각 정확히
- *      1회**여야 하고, **미상 heading은 거부**이며, findings 섹션은 `없음` 또는 `P0/P1/P2` 항목 중
- *      **하나만** 말해야 한다(둘 다면 모순 = 거부).
- *   ⓖ 대상 신원 불일치 → `reviewer_subject_mismatch`: `## Reviewed Revision and Hash`가 호출자가
- *      **명시로 준** `subject.revision`·`subject.hash`를 둘 다 담아야 한다(리뷰어의 자기 주장을 신뢰하지 않는다).
+ *      1회 · 정확히 그 순서**여야 하고, **미상 heading은 거부**이며, findings 섹션은 `없음` 또는
+ *      `P0/P1/P2` 항목 중 **하나만** 말해야 하고(둘 다면 모순 = 거부) **형식을 벗어난 비공백 줄은
+ *      무시하지 않고 거부**하며 각 항목 본문은 비어 있지 않고 `MAX_FINDING_CHARS` 이하여야 한다.
+ *   ⓖ 대상 신원 불일치 → `reviewer_subject_mismatch`: `## Reviewed Revision and Hash`의 비공백 줄이
+ *      **정확히** `- revision: …` 1개와 `- hash: …` 1개여야 하고 두 값이 호출자가 **명시로 준**
+ *      `subject.revision`·`subject.hash`와 **완전 일치**여야 한다(라벨 뒤바뀜 · 접두/접미 · 부분 포함 ·
+ *      중복 라벨 · 미상 줄은 전부 거부 — 리뷰어의 자기 주장을 신뢰하지 않는다).
+ *
+ * **모든 경계 밖 오류는 위 코드로 접힌다(2026-07-28 2차 리뷰 A5b).** provider가 `code`를 달고 던지는
+ * 것만으로 게이트 결과 코드를 고를 수 없다 — `start`·`events()`·스트림 소비·`stop`의 어떤 예외도
+ * 이 목록 밖의 코드가 되지 않는다.
  *   ⓗ verdict 위반 → `reviewer_verdict_invalid`: `pass|revise|block` 정확히 1개여야 하고, `pass`는
  *      **P0·P1이 0건일 때만** 성립한다(P2는 pass와 공존한다).
  *
@@ -118,7 +125,15 @@ export async function reviewDiff(inp) {
     let result;
     try {
         // provider 계약: `events(handle)`는 **이 invocation의** bounded 스트림이고 종료 결과는 정확히 1건이다.
-        result = await consumeExactlyOneTerminal(inp.provider.events(handle), {
+        // `events()` 호출 자체가 던져도 provider가 게이트 결과 코드를 고르지 못한다(2차 리뷰 A5b).
+        let stream;
+        try {
+            stream = inp.provider.events(handle);
+        }
+        catch {
+            throw new ReviewGateError("reviewer_provider_failed", "리뷰어 이벤트 스트림을 열지 못했다");
+        }
+        result = await consumeExactlyOneTerminal(stream, {
             unbounded: "reviewer_stream_unbounded",
             streamFailed: "reviewer_provider_failed",
             noResult: "reviewer_no_result",
@@ -128,7 +143,10 @@ export async function reviewDiff(inp) {
     }
     finally {
         // 판정 여부와 무관하게 세션을 닫는다(실패한 리뷰가 세션을 붙잡은 채 남지 않는다).
-        await inp.provider.stop(handle, "review_finished").catch(() => undefined);
+        // 동기 throw까지 삼킨다 — `finally`에서 새어 나가면 게이트 판정을 덮어쓴다.
+        await Promise.resolve()
+            .then(() => inp.provider.stop(handle, "review_finished"))
+            .catch(() => undefined);
     }
     const raw = result.text;
     if (typeof raw !== "string" || raw.trim().length === 0) {
@@ -144,36 +162,47 @@ function assertSubject(subject) {
     }
 }
 /**
- * **코드 펜스를 걷어낸다.** ` ``` ` 또는 ` ~~~ ` 로 열린 블록의 내용은 heading·verdict 판정에서 제외한다
- * (열린 채 끝나면 그 뒤 전부 제외 — fail closed 방향이다: 헤더가 사라져 `reviewer_malformed_output`이 된다).
+ * **코드 펜스를 걷어낸다**(2026-07-28 2차 리뷰 A5a 정정).
+ *
+ * 이전 판은 여는 펜스의 **길이를 잊고** `fence = char.repeat(3)`으로 정규화한 뒤 `startsWith`로 닫았다.
+ * 그래서 ` ````` ` 로 연 블록을 그 **안에 있는 ` ``` ` 줄**이 닫아 버렸고, 이어지는 블록 내용이 본문으로
+ * 새어 나와 가짜 `## Verdict: pass`를 심을 수 있었다. CommonMark대로 ⓐ **문자와 여는 길이를 기억**하고
+ * ⓑ **같은 문자 · 여는 길이 이상 · 뒤에 공백만** 있는 줄로만 닫는다. ` ``` `와 ` ~~~ `를 동등하게 다룬다.
+ * (열린 채 끝나면 그 뒤 전부 제외 — fail closed 방향이다: 헤더가 사라져 `reviewer_malformed_output`이 된다.)
  */
 function stripFences(raw) {
     const out = [];
     let fence = null;
     for (const line of raw.split("\n")) {
-        const open = /^\s{0,3}(```+|~~~+)/.exec(line);
+        const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
         if (fence === null) {
-            if (open) {
-                fence = open[1][0].repeat(3);
+            if (m) {
+                fence = { char: m[1][0], len: m[1].length };
                 continue;
             }
             out.push(line);
             continue;
         }
-        if (open && open[1].startsWith(fence))
+        // 닫는 펜스: 같은 문자 · 여는 길이 이상 · 뒤에는 공백만(정보 문자열이 붙으면 닫는 펜스가 아니다).
+        if (m && m[1][0] === fence.char && m[1].length >= fence.len && m[2].trim() === "")
             fence = null;
     }
     return out;
 }
 const HEADING_RE = /^##[ \t]+(.+?)[ \t]*$/;
 const VERDICT_RE = /^Verdict[ \t]*:[ \t]*(.*)$/i;
-const FINDING_RE = /^[-*][ \t]*(P0|P1|P2)\b[ \t]*:?[ \t]*(.*)$/;
-const NONE_RE = /^[-*][ \t]*(없음|none)[ \t]*\.?$/i;
-/** §5.2 `review_result`의 **closed** 파서. 중복·미상·모순 섹션은 판정을 만들지 않는다. */
+const FINDING_RE = /^[-*][ \t]+(P0|P1|P2)[ \t]*:?[ \t]*(.*)$/;
+const NONE_RE = /^[-*][ \t]+(없음|none)[ \t]*\.?$/i;
+/** `- revision: <값>` / `- hash: <값>` — **한 줄 · 정확한 라벨 · 값 하나**. */
+const SUBJECT_LABEL_RE = /^[-*][ \t]+(revision|hash)[ \t]*:[ \t]*(\S.*?)[ \t]*$/;
+/** finding 한 줄의 상한(문자). 리뷰어 본문이 무한정 길어져도 판정 경로는 bounded다. */
+export const MAX_FINDING_CHARS = 1_000;
+/** §5.2 `review_result`의 **closed** 파서. 중복·미상·모순·순서 위반 섹션은 판정을 만들지 않는다. */
 function parseReviewResult(raw, subject) {
     const lines = stripFences(raw);
     const sections = new Map();
     const counts = new Map();
+    const order = [];
     const verdictValues = [];
     let current = null;
     for (const line of lines) {
@@ -190,6 +219,7 @@ function parseReviewResult(raw, subject) {
             throw new ReviewGateError("reviewer_malformed_output", `리뷰어 출력에 미상 top-level heading이 있다: ${key}`);
         }
         counts.set(key, (counts.get(key) ?? 0) + 1);
+        order.push(key);
         if (!sections.has(key))
             sections.set(key, []);
         current = key;
@@ -203,22 +233,36 @@ function parseReviewResult(raw, subject) {
         if (n > 1)
             throw new ReviewGateError("reviewer_malformed_output", `필수 heading이 ${n}번 나왔다(정확히 1회여야 한다): ## ${need}`);
     }
-    // 대상 신원은 **호출자 기대값**에 묶인다(리뷰어의 자기 주장만으로는 통과하지 않는다).
-    const subjectText = sections.get("Reviewed Revision and Hash").join("\n");
-    if (!subjectText.includes(subject.revision) || !subjectText.includes(subject.hash)) {
-        throw new ReviewGateError("reviewer_subject_mismatch", "`## Reviewed Revision and Hash`가 기대한 revision·hash를 담고 있지 않다");
+    // **순서까지 계약이다**(A5a): 프롬프트가 "정확히 이 순서로"를 요구하므로 재배열은 형식 위반이다.
+    if (order.join("\n") !== REVIEW_RESULT_HEADINGS.join("\n")) {
+        throw new ReviewGateError("reviewer_malformed_output", "필수 heading의 순서가 §5.2 계약과 다르다");
     }
-    // findings: `없음`과 P0/P1/P2 항목은 **양립하지 않는다**.
+    assertSubjectSection(sections.get("Reviewed Revision and Hash"), subject);
+    // findings: `없음`과 P0/P1/P2 항목은 **양립하지 않는다**. 그리고 **미상 비공백 줄은 전부 거부**다
+    // (이전 판은 조용히 무시했으므로 `- 없음` + 불릿 없는 `P1: 승인 우회`가 통과했다 — A5a).
     const findings = [];
     let none = false;
     for (const line of sections.get("Findings (P0/P1/P2)")) {
-        const f = FINDING_RE.exec(line.trim());
+        const t = line.trim();
+        if (t.length === 0)
+            continue;
+        const f = FINDING_RE.exec(t);
         if (f) {
-            findings.push({ severity: f[1], text: f[2].trim() });
+            const text = f[2].trim();
+            if (text.length === 0) {
+                throw new ReviewGateError("reviewer_malformed_output", `findings 항목 ${f[1]}의 본문이 비었다`);
+            }
+            if (text.length > MAX_FINDING_CHARS) {
+                throw new ReviewGateError("reviewer_malformed_output", `findings 항목이 ${MAX_FINDING_CHARS}자 상한을 넘었다`);
+            }
+            findings.push({ severity: f[1], text });
             continue;
         }
-        if (NONE_RE.test(line.trim()))
+        if (NONE_RE.test(t)) {
             none = true;
+            continue;
+        }
+        throw new ReviewGateError("reviewer_malformed_output", "findings 섹션에 형식을 벗어난 줄이 있다(미상 줄은 무시하지 않는다)");
     }
     if (none && findings.length > 0) {
         throw new ReviewGateError("reviewer_malformed_output", "findings 섹션이 `없음`과 P0/P1/P2를 동시에 말한다(모순)");
@@ -235,6 +279,34 @@ function parseReviewResult(raw, subject) {
         throw new ReviewGateError("reviewer_verdict_invalid", `verdict(${verdict})와 P0/P1 목록(${critical.length}건)이 모순이다 — 어느 쪽도 통과 근거로 쓰지 않는다`);
     }
     return { critical, findings, verdict };
+}
+/**
+ * **대상 신원 섹션은 정확히 두 줄이다**(2026-07-28 2차 리뷰 A5a 정정).
+ *
+ * 이전 판은 섹션 전체를 한 문자열로 이어 붙여 `includes(revision) && includes(hash)`로 봤다. 그래서
+ * ⓐ 라벨이 뒤바뀌어도(`- revision: <hash>` · `- hash: <revision>`) ⓑ 값에 접두·접미가 붙어도
+ * (`- hash: <hash>-dirty`) ⓒ 다른 revision을 리뷰하고 기대값을 **아무 줄에나 한 번 언급**하기만 해도
+ * 통과했다. 지금은 비공백 줄이 **정확히** `- revision: …` 1개와 `- hash: …` 1개여야 하고, 값은
+ * 기대값과 **문자열 완전 일치**여야 하며, 그 외 비공백 줄이 하나라도 있으면 거부다.
+ */
+function assertSubjectSection(lines, subject) {
+    const seen = new Map();
+    for (const line of lines) {
+        const t = line.trim();
+        if (t.length === 0)
+            continue;
+        const m = SUBJECT_LABEL_RE.exec(t);
+        if (!m) {
+            throw new ReviewGateError("reviewer_subject_mismatch", "`## Reviewed Revision and Hash`에 형식을 벗어난 줄이 있다");
+        }
+        if (seen.has(m[1])) {
+            throw new ReviewGateError("reviewer_subject_mismatch", `대상 라벨 ${m[1]}이 두 번 나왔다(각각 정확히 1회여야 한다)`);
+        }
+        seen.set(m[1], m[2]);
+    }
+    if (seen.size !== 2 || seen.get("revision") !== subject.revision || seen.get("hash") !== subject.hash) {
+        throw new ReviewGateError("reviewer_subject_mismatch", "`## Reviewed Revision and Hash`가 기대한 revision·hash와 정확히 일치하지 않는다");
+    }
 }
 /**
  * verdict heading 뒤의 값에서 `pass|revise|block`을 **전부** 뽑는다. 하나가 아니면 위에서 거부되므로
