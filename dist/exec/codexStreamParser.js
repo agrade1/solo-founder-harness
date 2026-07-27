@@ -2,27 +2,29 @@
  * V3 M5a — `codex exec --json`의 JSONL을 기존 `SessionEvent`로 정규화한다.
  *
  * 좁게 파싱한다: `thread.started` · `turn.started` · `item.started` · `item.updated`(있으면) ·
- * `item.completed` · `turn.completed` · `turn.failed` · `error`. 그 밖의 타입과 그 밖의 item 종류는
- * **bounded unknown 이벤트**로만 남기고 **성공으로 취급하지 않는다**(전방 호환 ≠ 낙관적 성공).
+ * `item.completed` · `turn.completed` · `turn.failed` · `error`. **형태가 유효한** 모르는 이벤트 타입만
+ * bounded unknown으로 남기고(전방 호환), 그마저 성공의 근거로 쓰지 않는다.
  *
- * 계약:
- * - **종료 결과는 정확히 1개다.** stream의 `turn.completed`/`turn.failed`/`error`는 outcome을 기록만 하고,
- *   `finish()`가 exit code/signal까지 합쳐 `result` 이벤트 **하나**를 낸다. 그래서
- *   ⓐ 종료 이벤트가 없는 silent stream ⓑ 정상 종료 이벤트 뒤의 비정상 exit ⓒ 중복 종료 이벤트가
- *   모두 조용한 성공이 되지 않는다.
- * - **MCP 호출 이벤트가 관측되면 실패다**(strict empty MCP — provider가 config를 격리해도 스트림에서 한 번 더 막는다).
- * - **durable 상태로 나가는 문자열에는 raw prompt·transcript·secret·환경변수·전체 argv가 없다.**
- *   error/stderr 요약은 상한을 넘기지 않고 `redactSecrets`를 통과한 뒤에만 실린다. 호환용 raw 객체는
- *   in-memory `SessionEvent.raw`에만 있고 이 모듈은 아무것도 디스크에 쓰지 않는다.
+ * 계약(2026-07-27 fresh Codex 리뷰 반영):
+ * - **비가역 프로토콜 실패**: malformed·과대 줄, 중복/모순 종료 이벤트, MCP 관측, 세션 id 위반,
+ *   이벤트 상한 초과는 **되돌릴 수 없는 실패**로 기록된다. 성공 종료 뒤에 실패·error·MCP가 와도 **실패**다.
+ * - **종료 결과는 정확히 1개다.** stream 이벤트는 outcome을 기록만 하고 `finish()`가 exit code/signal까지
+ *   합쳐 `result` **하나**를 낸다. silent stream · 정상 종료 뒤 비정상 exit · 중복 종료가 모두 실패다.
+ * - **세션 신원은 불변의 정규 UUID 하나다.** `thread.started`가 정규 UUID를 정확히 한 번 줘야 하고,
+ *   빈 값·형식 위반(`--last` 같은 텍스트 포함)·중복·모순·부재는 전부 프로토콜 실패다.
+ *   종료 이벤트 뒤에 오는 이벤트는 세션 신원도 최종 메시지도 **바꾸지 못한다**.
+ * - **raw는 원본 JSON이 아니라 bounded sanitized metadata projection이다.** 추론/본문 텍스트,
+ *   agent message 전문, 명령 문자열, stderr/error 본문, secret, 프롬프트, 환경변수, 전체 argv,
+ *   모르는 이벤트의 payload는 **어떤 이벤트에도 실리지 않는다**. 이 모듈은 디스크에 아무것도 쓰지 않는다.
  *
- * ⚠ 이벤트 필드명은 로컬 `codex exec` help·JSONL 실측으로 확정해야 한다(M5a에서는 help 실행이
- * 승인되지 않아 미확정 — 그래서 `thread_id`/`session_id`, `item_type`/`type` 같은 별칭을 모두 받는다).
- * live 확정은 M5b 게이트다.
+ * ⚠ JSONL 필드명은 supervisor가 실측한 `codex exec --help`(0.146.0-alpha.3)의 **플래그**까지만 확정됐고
+ * 이벤트 payload 필드명은 provider live 경로로 확인하지 않았다 — 그래서 `thread_id`/`session_id` 같은
+ * 별칭을 함께 받는다. live 확정은 M5b 게이트다.
  */
 import { redactSecrets } from "../tools/redact.js";
-/** 한 줄 최대 길이(문자). 넘으면 내용을 버리고 malformed로 센다. */
+/** 한 줄 최대 길이(문자). 넘으면 내용을 버리고 프로토콜 실패로 본다. */
 export const MAX_LINE_CHARS = 65_536;
-/** 한 invocation에서 처리할 최대 JSONL 줄 수. 넘으면 종료 결과가 실패다. */
+/** 한 invocation에서 처리할 최대 JSONL 줄 수. 넘으면 프로토콜 실패다. */
 export const MAX_EVENTS = 5_000;
 /** 이벤트 텍스트 상한(문자). */
 export const MAX_TEXT_CHARS = 8_192;
@@ -32,6 +34,8 @@ export const MAX_ERROR_CHARS = 512;
 export const MAX_USAGE = 1_000_000_000_000;
 /** file_change 요약에 남기는 최대 변경 수. */
 export const MAX_CHANGES = 32;
+/** codex thread id = 정규 소문자 UUID. 이 형태가 아니면 세션 신원으로 인정하지 않는다. */
+export const CODEX_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const EMPTY_USAGE = { inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 };
 function clampInt(v) {
     if (typeof v !== "number" || !Number.isFinite(v) || v < 0)
@@ -63,6 +67,13 @@ function looksLikePermissionFailure(text) {
     return /approval|permission|not permitted|denied|sandbox|read-?only/i.test(text);
 }
 /**
+ * `SessionEvent.raw`에 실리는 **유일한** 형태: 이벤트 종류와 bounded 스칼라 metadata뿐이다.
+ * 원본 객체를 넣지 않는다 — 소비자가 그대로 전달·직렬화해도 본문이 새지 않게 하기 위해서다.
+ */
+function meta(codexType, extra = {}) {
+    return { type: "codex_event", codexType: bounded(codexType, 64), ...extra };
+}
+/**
  * 스트리밍 JSONL 파서. `push()`로 청크를 넣고, 프로세스 종료 시 `finish()`로 **정확히 하나의**
  * `result` 이벤트를 받는다. 순수 in-memory이며 파일을 쓰지 않는다.
  */
@@ -71,22 +82,36 @@ export class CodexJsonlParser {
     buf = "";
     lines = 0;
     malformed = 0;
-    outcome = null;
+    /** 첫 프로토콜 실패. 한 번 서면 어떤 이벤트도 이것을 되돌리지 못한다. */
+    failure = null;
+    /** 성공 종료 이벤트를 봤는가(중복 판정용). */
+    success = null;
     lastMessage = "";
     usage = EMPTY_USAGE;
     closed = false;
     session = "";
-    limitHit = false;
+    terminalSeen = false;
     constructor(ctx) {
         this.ctx = ctx;
     }
-    /** 관측된 codex thread(session) id. `codex exec resume <id>`는 이 값만 쓴다. */
+    /** 관측된 codex thread(session) id — 정규 UUID이거나 빈 문자열이다. */
     get sessionId() {
         return this.session;
+    }
+    /** 프로토콜 실패가 기록됐는가(비가역). */
+    get protocolFailed() {
+        return this.failure !== null;
     }
     /** 상한 초과·malformed 줄 수(진단용 계측 — 텍스트는 담지 않는다). */
     get malformedLines() {
         return this.malformed;
+    }
+    /**
+     * provider가 스트림 밖에서 발견한 위반(세션 신원 충돌 등)을 같은 비가역 실패로 기록한다.
+     * 텍스트는 호출자가 이미 안전하다고 보증한 짧은 사유만 넣는다.
+     */
+    protocolFail(reason, detail = "") {
+        this.fail(reason, summarizeError(detail));
     }
     push(chunk) {
         if (this.closed)
@@ -99,17 +124,19 @@ export class CodexJsonlParser {
             this.buf = this.buf.slice(nl + 1);
             this.consume(line, out);
         }
-        // 개행 없이 상한을 넘긴 buffer는 붙잡지 않는다(메모리 상한).
+        // 개행 없이 상한을 넘긴 buffer는 붙잡지 않는다(메모리 상한) — 그리고 그것도 프로토콜 실패다.
         if (this.buf.length > MAX_LINE_CHARS) {
             this.buf = "";
             this.malformed++;
-            out.push(this.unknown("oversized_line", { chars: MAX_LINE_CHARS }));
+            out.push(this.marker("oversized_line", { chars: MAX_LINE_CHARS }));
+            this.fail("oversized_line", "");
         }
         return out;
     }
     /**
      * 프로세스 종료 처리. 남은 부분 줄을 소진한 뒤 **정확히 하나의** `result`를 낸다.
-     * 스트림 outcome이 성공이어도 exit code/signal이 비정상이면 실패다(조용한 성공 금지).
+     * 프로토콜 실패 > 세션 신원 부재 > 종료 이벤트 부재 > 비정상 exit/signal 순으로 실패를 판정하고,
+     * 그중 아무것도 없을 때만 성공이다.
      */
     finish(exit) {
         const out = [];
@@ -123,80 +150,81 @@ export class CodexJsonlParser {
             return out; // 이미 result를 냈다 — 두 번 내지 않는다.
         this.closed = true;
         const stderr = summarizeError(exit.stderr);
-        let isError;
+        let isError = true;
         let reason;
         let text = "";
         let permission = false;
-        if (this.limitHit) {
-            isError = true;
-            reason = "event_limit_exceeded";
+        if (this.failure) {
+            reason = this.failure.reason;
+            text = this.failure.text || stderr;
+            permission = this.failure.permission;
         }
-        else if (!this.outcome) {
-            isError = true;
+        else if (this.lines > 0 && !this.session) {
+            // 이벤트가 흘렀는데 정규 세션 id가 없다 = 프로토콜 위반(resume 근거를 만들 수 없다).
+            reason = "missing_session_id";
+            text = stderr;
+        }
+        else if (!this.success) {
             reason = exit.spawnError ? "spawn_error" : exit.signal ? "signal" : exit.code !== 0 ? "exit_error" : "no_terminal_event";
             text = stderr;
         }
-        else if (this.outcome.isError) {
-            isError = true;
-            reason = this.outcome.reason;
-            text = this.outcome.text || stderr;
-            permission = this.outcome.permission;
-        }
         else if (exit.signal) {
-            isError = true;
             reason = "signal";
             text = stderr;
         }
         else if (exit.code !== 0) {
-            isError = true;
             reason = "exit_error";
             text = stderr;
         }
         else {
             isError = false;
-            reason = this.outcome.reason;
+            reason = this.success.reason;
             text = this.lastMessage;
         }
-        const raw = {
-            type: "codex_result",
-            reason,
-            exit_code: exit.code,
-            signal: exit.signal ?? null,
-            lines: this.lines,
-            malformed_lines: this.malformed,
-        };
         out.push({
             kind: "result",
             sessionId: this.session,
             isError,
             text: bounded(text, MAX_TEXT_CHARS),
-            numTurns: this.outcome ? 1 : 0,
+            numTurns: this.success ? 1 : 0,
             usage: this.usage,
             totalCostUsd: 0, // codex JSONL은 비용을 주지 않는다 — 추정치를 만들지 않는다.
             stopReason: permission ? "permission_required" : undefined,
             terminalReason: reason,
             permissionDenials: permission ? [{ reason: "permission_required" }] : [],
-            raw,
+            raw: meta("codex_result", {
+                reason,
+                exitCode: exit.code,
+                signal: exit.signal === null || exit.signal === undefined ? null : bounded(String(exit.signal), 16),
+                lines: this.lines,
+                malformedLines: this.malformed,
+            }),
         });
         return out;
     }
-    unknown(type, extra = {}) {
-        return { kind: "unknown", type, sessionId: this.session, raw: { type, ...extra } };
+    /** 첫 실패만 채택한다(비가역). 성공 outcome이 이미 있어도 실패가 이긴다. */
+    fail(reason, text, permission = false) {
+        if (!this.failure)
+            this.failure = { reason, text, permission };
+    }
+    marker(type, extra = {}) {
+        return { kind: "unknown", type, sessionId: this.session, raw: meta(type, extra) };
     }
     consume(line, out) {
         const t = line.trim();
         if (!t)
             return;
         if (++this.lines > MAX_EVENTS) {
-            if (!this.limitHit) {
-                this.limitHit = true;
-                out.push(this.unknown("event_limit_exceeded", { limit: MAX_EVENTS }));
+            if (!this.failure) {
+                out.push(this.marker("event_limit_exceeded", { limit: MAX_EVENTS }));
+                this.fail("event_limit_exceeded", "");
             }
             return;
         }
         if (t.length > MAX_LINE_CHARS) {
             this.malformed++;
-            out.push(this.unknown("oversized_line", { chars: t.length }));
+            out.push(this.marker("oversized_line", { chars: t.length }));
+            this.fail("oversized_line", "");
             return;
         }
         let obj;
@@ -205,22 +233,46 @@ export class CodexJsonlParser {
         }
         catch {
             this.malformed++;
-            out.push(this.unknown("malformed_line"));
+            out.push(this.marker("malformed_line"));
+            this.fail("malformed_line", "");
             return;
         }
         if (!obj || typeof obj !== "object" || Array.isArray(obj) || typeof obj.type !== "string") {
             this.malformed++;
-            out.push(this.unknown("malformed_line"));
+            out.push(this.marker("malformed_line"));
+            this.fail("malformed_line", "");
             return;
         }
         this.event(obj, out);
     }
     event(raw, out) {
+        // 종료 뒤에 오는 이벤트는 신원·최종 메시지를 바꾸지 못한다(중복 종료는 아래에서 실패로 잡힌다).
+        const postTerminal = this.terminalSeen;
         switch (raw.type) {
             case "thread.started": {
-                // 필드명 미확정 구간 — 별칭을 모두 받는다(§상단 주석).
+                // 필드명 미확정 구간 — 별칭을 모두 받는다. 값은 정규 UUID만 인정한다.
                 const id = raw.thread_id ?? raw.session_id ?? raw.id;
-                this.session = bounded(id, 128);
+                if (postTerminal) {
+                    out.push(this.marker("post_terminal_event", { codexType: "thread.started" }));
+                    this.fail("post_terminal_event", "");
+                    return;
+                }
+                if (typeof id !== "string" || !CODEX_SESSION_ID_RE.test(id)) {
+                    out.push(this.marker("invalid_session_id"));
+                    this.fail("invalid_session_id", "");
+                    return;
+                }
+                if (this.session && this.session !== id) {
+                    out.push(this.marker("conflicting_session_id"));
+                    this.fail("conflicting_session_id", "");
+                    return;
+                }
+                if (this.session === id) {
+                    out.push(this.marker("duplicate_session_id"));
+                    this.fail("duplicate_session_id", "");
+                    return;
+                }
+                this.session = id;
                 out.push({
                     kind: "init",
                     sessionId: this.session,
@@ -229,109 +281,157 @@ export class CodexJsonlParser {
                     permissionMode: this.ctx.sandbox,
                     tools: [],
                     mcpServers: [], // strict empty MCP — 이 provider는 MCP 서버를 붙이지 않는다.
-                    raw,
+                    raw: meta("thread.started"),
                 });
                 return;
             }
             case "turn.started":
-                out.push({ kind: "status", sessionId: this.session, status: "turn_started", raw });
+                out.push({ kind: "status", sessionId: this.session, status: "turn_started", raw: meta("turn.started") });
                 return;
             case "item.started":
             case "item.updated": {
                 const item = (raw.item ?? {});
                 const itemType = bounded(item.item_type ?? item.type, 64) || "unknown";
                 if (itemType === "mcp_tool_call")
-                    return this.mcpViolation(raw, out);
+                    return this.mcpViolation(out);
                 // 진행 신호만 낸다(추론 원문·부분 텍스트는 싣지 않는다).
-                out.push({ kind: "status", sessionId: this.session, status: `${raw.type}:${itemType}`, raw });
+                out.push({
+                    kind: "status",
+                    sessionId: this.session,
+                    status: `${raw.type}:${itemType}`,
+                    raw: meta(raw.type, { itemType }),
+                });
                 return;
             }
             case "item.completed":
-                return this.itemCompleted(raw, out);
+                return this.itemCompleted(raw, postTerminal, out);
             case "turn.completed":
-                if (!this.outcome)
-                    this.usage = usageOf(raw.usage); // 채택된 outcome의 usage만 남긴다
-                this.record({ isError: false, reason: "turn_completed", text: "", permission: false }, raw, out);
+                if (!this.success && !this.failure)
+                    this.usage = usageOf(raw.usage);
+                this.recordTerminal({ reason: "turn_completed", permission: false, text: "" }, false, out);
                 return;
             case "turn.failed": {
                 const err = (raw.error ?? {});
                 const text = summarizeError(err.message ?? raw.message);
-                this.record({ isError: true, reason: "turn_failed", text, permission: looksLikePermissionFailure(text) }, raw, out);
+                this.recordTerminal({ reason: "turn_failed", permission: looksLikePermissionFailure(text), text }, true, out);
                 return;
             }
             case "error": {
                 const text = summarizeError(raw.message ?? raw.error?.message);
-                this.record({ isError: true, reason: "error", text, permission: looksLikePermissionFailure(text) }, raw, out);
+                this.recordTerminal({ reason: "error", permission: looksLikePermissionFailure(text), text }, true, out);
                 return;
             }
             default:
-                // 전방 호환: 모르는 타입은 남기되 성공의 근거로 쓰지 않는다.
-                out.push({ kind: "unknown", type: bounded(raw.type, 64), subtype: undefined, sessionId: this.session, raw });
+                // 전방 호환: **형태가 유효한** 모르는 타입만 표시로 남긴다. payload는 싣지 않는다.
+                out.push({
+                    kind: "unknown",
+                    type: bounded(raw.type, 64),
+                    subtype: undefined,
+                    sessionId: this.session,
+                    raw: meta(raw.type),
+                });
                 return;
         }
     }
-    itemCompleted(raw, out) {
+    itemCompleted(raw, postTerminal, out) {
         const item = (raw.item ?? {});
         const itemType = bounded(item.item_type ?? item.type, 64) || "unknown";
         const id = bounded(item.id, 128);
+        if (itemType === "mcp_tool_call")
+            return this.mcpViolation(out);
+        if (postTerminal) {
+            out.push(this.marker("post_terminal_event", { codexType: "item.completed", itemType }));
+            this.fail("post_terminal_event", "");
+            return;
+        }
         switch (itemType) {
             case "agent_message": {
                 const text = bounded(item.text ?? item.message, MAX_TEXT_CHARS);
                 this.lastMessage = text; // 최종 결과 텍스트(= --output-schema 사용 시 구조화 출력 본문)
-                out.push({ kind: "assistant", sessionId: this.session, text, toolUses: [], stopReason: null, raw });
+                out.push({
+                    kind: "assistant",
+                    sessionId: this.session,
+                    text,
+                    toolUses: [],
+                    stopReason: null,
+                    raw: meta("item.completed", { itemType, textChars: text.length }),
+                });
                 return;
             }
             case "reasoning":
-                out.push({ kind: "status", sessionId: this.session, status: "reasoning", raw });
+                // 추론은 진행 신호로만 남긴다 — 원문은 어디에도 싣지 않는다.
+                out.push({ kind: "status", sessionId: this.session, status: "reasoning", raw: meta("item.completed", { itemType }) });
                 return;
             case "command_execution": {
+                const exitCode = typeof item.exit_code === "number" ? item.exit_code : null;
+                const status = bounded(item.status, 32);
+                // 명령 문자열은 넣지 않는다(길이만). 승인·감사에 필요한 것은 상태와 종료 코드다.
                 const tool = {
                     id,
                     name: "command_execution",
-                    input: {
-                        command: bounded(item.command, 1_024),
-                        status: bounded(item.status, 32),
-                        exitCode: typeof item.exit_code === "number" ? item.exit_code : null,
-                    },
+                    input: { status, exitCode, commandChars: typeof item.command === "string" ? item.command.length : 0 },
                 };
-                out.push({ kind: "assistant", sessionId: this.session, text: "", toolUses: [tool], stopReason: null, raw });
+                out.push({
+                    kind: "assistant",
+                    sessionId: this.session,
+                    text: "",
+                    toolUses: [tool],
+                    stopReason: null,
+                    raw: meta("item.completed", { itemType, status, exitCode }),
+                });
                 return;
             }
             case "file_change": {
-                const changes = Array.isArray(item.changes) ? item.changes.slice(0, MAX_CHANGES) : [];
+                const all = Array.isArray(item.changes) ? item.changes : [];
+                const changes = all.slice(0, MAX_CHANGES).map((c) => {
+                    const o = (c ?? {});
+                    return { path: bounded(o.path, 256), kind: bounded(o.kind, 32) };
+                });
                 const tool = {
                     id,
                     name: "file_change",
-                    input: {
-                        status: bounded(item.status, 32),
-                        changes: changes.map((c) => {
-                            const o = (c ?? {});
-                            return { path: bounded(o.path, 256), kind: bounded(o.kind, 32) };
-                        }),
-                        truncated: Array.isArray(item.changes) && item.changes.length > MAX_CHANGES,
-                    },
+                    input: { status: bounded(item.status, 32), changes, truncated: all.length > MAX_CHANGES },
                 };
-                out.push({ kind: "assistant", sessionId: this.session, text: "", toolUses: [tool], stopReason: null, raw });
+                out.push({
+                    kind: "assistant",
+                    sessionId: this.session,
+                    text: "",
+                    toolUses: [tool],
+                    stopReason: null,
+                    raw: meta("item.completed", { itemType, changeCount: changes.length }),
+                });
                 return;
             }
-            case "mcp_tool_call":
-                return this.mcpViolation(raw, out);
             default:
-                out.push({ kind: "unknown", type: `item.completed:${itemType}`, sessionId: this.session, raw });
+                out.push({
+                    kind: "unknown",
+                    type: `item.completed:${itemType}`,
+                    sessionId: this.session,
+                    raw: meta("item.completed", { itemType }),
+                });
                 return;
         }
     }
-    /** MCP 호출 관측 = 즉시 실패 outcome. 이후 성공 종료 이벤트가 와도 뒤집지 않는다. */
-    mcpViolation(raw, out) {
-        out.push(this.unknown("mcp_call_observed"));
-        this.record({ isError: true, reason: "mcp_call_observed", text: "MCP 호출이 관측됐다(strict empty MCP 위반)", permission: false }, raw, out);
+    /** MCP 호출 관측 = 비가역 실패. 이후 어떤 성공 이벤트도 이것을 뒤집지 못한다. */
+    mcpViolation(out) {
+        out.push(this.marker("mcp_call_observed"));
+        this.fail("mcp_call_observed", "MCP 호출이 관측됐다(strict empty MCP 위반)");
     }
-    /** 첫 종료 outcome만 채택한다. 두 번째는 중복 표시만 남긴다(정확히 1개 종료 계약). */
-    record(o, raw, out) {
-        if (this.outcome) {
-            out.push(this.unknown("duplicate_terminal", { type: bounded(raw.type, 64) }));
+    /**
+     * 종료 이벤트 기록. 첫 성공은 채택하고, **두 번째 종료 이벤트는 종류와 무관하게 프로토콜 실패**다
+     * (중복·모순 모두). 실패 종료 이벤트는 언제 와도 비가역 실패다.
+     */
+    recordTerminal(o, isFailure, out) {
+        if (this.terminalSeen) {
+            out.push(this.marker("duplicate_terminal", { codexType: o.reason }));
+            // 같은 종류가 또 오면 duplicate, 성공↔실패가 엇갈리면 conflicting. 첫 실패가 이미 있으면 그것이 이긴다.
+            this.fail(this.success && !isFailure ? "duplicate_terminal" : "conflicting_terminal", o.text, o.permission);
             return;
         }
-        this.outcome = o;
+        this.terminalSeen = true;
+        if (isFailure)
+            this.fail(o.reason, o.text, o.permission);
+        else
+            this.success = o;
     }
 }

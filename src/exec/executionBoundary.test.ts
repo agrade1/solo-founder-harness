@@ -4,7 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProcess } from "./runProcess.js";
@@ -46,7 +46,15 @@ async function initRepo(prefix = "m5a-boundary-", marker = "a"): Promise<{ root:
   return { root: dir, head };
 }
 
-async function code(fn: () => Promise<unknown>): Promise<string> {
+/** 두 번째 커밋을 만들어 HEAD를 움직인다. */
+async function advance(root: string): Promise<string> {
+  writeFileSync(join(root, "src", "b.txt"), "b\n");
+  await runProcess("git", ["-C", root, "add", "."]);
+  await runProcess("git", ["-C", root, "commit", "-q", "-m", "next"]);
+  return (await runProcess("git", ["-C", root, "rev-parse", "HEAD"])).stdout.trim();
+}
+
+async function code(fn: () => Promise<unknown> | unknown): Promise<string> {
   try {
     await fn();
     return "(통과)";
@@ -68,6 +76,7 @@ test("[M5a] controller = 실행 checkout이고 HEAD가 승인 커밋이면 통�
     assert.equal(v.approvedCommit, repo.head);
     assert.equal(v.controllerRoot, repo.root);
     assert.equal(v.targetRoot, repo.root);
+    v.revalidateSync(); // spawn 직전 재확인도 통과해야 한다
   } finally {
     rmSync(repo.root, { recursive: true, force: true });
   }
@@ -94,7 +103,6 @@ test("[M5a] controller와 실행 worktree가 다르면 양쪽 HEAD를 모두 대
     await runProcess("git", ["-C", repo.root, "worktree", "add", "-q", "-b", "work/m5a-test", wt]);
     const wtReal = realpathSync(wt);
 
-    // 같은 커밋 → 통과
     const ok = await verifyExecutionBoundary({
       manifest: manifest({ approvedCommit: repo.head }),
       controllerRepoRoot: repo.root,
@@ -102,11 +110,9 @@ test("[M5a] controller와 실행 worktree가 다르면 양쪽 HEAD를 모두 대
     });
     assert.equal(ok.sameCheckout, false);
     assert.equal(ok.targetRoot, wtReal);
+    ok.revalidateSync();
 
-    // 실행 worktree만 앞서 나가면 거부
-    writeFileSync(join(wtReal, "src", "b.txt"), "b\n");
-    await runProcess("git", ["-C", wtReal, "add", "."]);
-    await runProcess("git", ["-C", wtReal, "commit", "-q", "-m", "ahead"]);
+    await advance(wtReal); // 실행 worktree만 앞서 나가면 거부
     assert.equal(
       await code(() =>
         verifyExecutionBoundary({
@@ -182,12 +188,47 @@ test("[M5a] 경로 입력이 계약 밖이면 git을 부르기 전에 거부", a
   }
 });
 
-test("[M5a] checkout 루트가 아니면(하위 디렉터리·symlink 탈출) 거부", async () => {
+test("[M5a] 비정규(symlink) 입력 경로는 해석하지 않고 거부한다", async () => {
   const repo = await initRepo();
   const other = await initRepo("m5a-other-", "other");
-  const link = join(realpathSync(mkdtempSync(join(tmpdir(), "m5a-link-"))), "repo-link");
+  const linkDir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-link-")));
+  const link = join(linkDir, "repo-link");
   try {
-    // 하위 디렉터리를 루트로 넘긴 경우
+    symlinkSync(other.root, link, "dir");
+    assert.equal(
+      await code(() =>
+        verifyExecutionBoundary({
+          manifest: manifest({ approvedCommit: repo.head }),
+          controllerRepoRoot: repo.root,
+          targetWorktree: link,
+        }),
+      ),
+      "boundary_path_not_canonical",
+      "symlink를 realpath로 눙쳐서 통과시키지 않는다(검사 대상 = 실행 대상)",
+    );
+    // 자기 자신을 가리키는 정상 대상이어도 마찬가지다 — 정규 경로가 아니면 거부.
+    const selfLink = join(linkDir, "self-link");
+    symlinkSync(repo.root, selfLink, "dir");
+    assert.equal(
+      await code(() =>
+        verifyExecutionBoundary({
+          manifest: manifest({ approvedCommit: repo.head }),
+          controllerRepoRoot: selfLink,
+          targetWorktree: repo.root,
+        }),
+      ),
+      "boundary_path_not_canonical",
+    );
+  } finally {
+    rmSync(linkDir, { recursive: true, force: true });
+    rmSync(other.root, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] checkout 루트가 아니면(하위 디렉터리) 거부", async () => {
+  const repo = await initRepo();
+  try {
     assert.equal(
       await code(() =>
         verifyExecutionBoundary({
@@ -198,22 +239,7 @@ test("[M5a] checkout 루트가 아니면(하위 디렉터리·symlink 탈출) �
       ),
       "boundary_not_checkout_root",
     );
-    // symlink가 다른 저장소를 가리키는 경우: realpath로 정규화되어 그 저장소의 HEAD를 본다
-    symlinkSync(other.root, link, "dir");
-    assert.equal(
-      await code(() =>
-        verifyExecutionBoundary({
-          manifest: manifest({ approvedCommit: repo.head }),
-          controllerRepoRoot: repo.root,
-          targetWorktree: link,
-        }),
-      ),
-      "approved_commit_mismatch",
-      "symlink는 realpath 대상의 HEAD로 판정된다(승인 커밋이 아니면 거부)",
-    );
   } finally {
-    rmSync(link, { recursive: true, force: true });
-    rmSync(other.root, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
@@ -235,5 +261,62 @@ test("[M5a] git이 아닌 디렉터리는 boundary_git_failed", async () => {
   } finally {
     rmSync(plain, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] revalidateSync: 검증 이후 HEAD가 움직이면 spawn 직전에 거부", async () => {
+  const repo = await initRepo();
+  try {
+    const v = await verifyExecutionBoundary({
+      manifest: manifest({ approvedCommit: repo.head }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+    });
+    v.revalidateSync();
+    await advance(repo.root); // 검사와 사용 사이의 변경
+    assert.equal(await code(() => v.revalidateSync()), "approved_commit_mismatch");
+  } finally {
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] revalidateSync: 디렉터리가 다른 실체로 바뀌면 신원 불일치로 거부", async () => {
+  const repo = await initRepo();
+  const decoy = await initRepo("m5a-decoy-", "decoy");
+  const parked = `${repo.root}-parked`;
+  try {
+    const v = await verifyExecutionBoundary({
+      manifest: manifest({ approvedCommit: repo.head }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+    });
+    // 같은 경로에 다른 디렉터리를 끼워 넣는다(inode 교체).
+    renameSync(repo.root, parked);
+    renameSync(decoy.root, repo.root);
+    assert.equal(await code(() => v.revalidateSync()), "boundary_identity_changed");
+  } finally {
+    rmSync(parked, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+    rmSync(decoy.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] revalidateSync: 경로가 symlink로 교체되면 거부", async () => {
+  const repo = await initRepo();
+  const other = await initRepo("m5a-other2-", "other2");
+  const parked = `${repo.root}-parked2`;
+  try {
+    const v = await verifyExecutionBoundary({
+      manifest: manifest({ approvedCommit: repo.head }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+    });
+    renameSync(repo.root, parked);
+    symlinkSync(other.root, repo.root, "dir");
+    assert.equal(await code(() => v.revalidateSync()), "boundary_path_not_canonical");
+  } finally {
+    rmSync(repo.root, { recursive: true, force: true });
+    rmSync(parked, { recursive: true, force: true });
+    rmSync(other.root, { recursive: true, force: true });
   }
 });

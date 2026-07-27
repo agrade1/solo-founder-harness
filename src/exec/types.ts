@@ -84,15 +84,22 @@ export interface SessionSpec {
 
 /**
  * Codex CLI 전용 실행 옵션 (V3 M5a). 다른 provider는 이 필드를 무시한다.
- * 기본값은 로드맵 §7.1의 리뷰 계약이다: 읽기 전용 sandbox · xhigh · fresh/ephemeral 세션.
- * `workspace-write`는 **승인된 task가 명시적으로 요구할 때만** 지정한다. bypass 계열 sandbox는 없다.
+ * 로드맵 §7.1의 리뷰 계약: **읽기 전용 sandbox** · xhigh · fresh/ephemeral 세션.
+ *
+ * **`workspace-write`는 M5a에서 hard deny다**(2026-07-27 fresh Codex 리뷰 P0/A).
+ * Codex는 planner/reviewer이며 read-only다. 쓰기 모드는 manifest의 task 소유권·writableRoots를
+ * 실제로 집행하는 **task-bound 권한 계층이 생긴 뒤에만** 별도 승인으로 되살린다. bypass 계열 sandbox는 없다.
  */
 export interface CodexSessionOptions {
   reasoningEffort?: "low" | "medium" | "high" | "xhigh"; // 기본 xhigh
-  sandbox?: "read-only" | "workspace-write"; // 기본 read-only
+  /** M5a에서 유일하게 허용되는 값. 다른 값은 `codex_sandbox_forbidden`으로 거부된다. */
+  sandbox?: "read-only";
   /** `--output-schema` 파일 절대경로 (구조화 최종 출력이 필요할 때만). */
   outputSchemaPath?: string;
-  /** 격리된 codex 설정 홈 절대경로. **필수** — 사용자 전역 설정·MCP 상속을 막는 지점이다. */
+  /**
+   * provider 전용 격리 codex 설정 홈 **절대·정규 경로**. **필수**이며 비어 있고 0700이어야 한다 —
+   * 사용자 전역 설정·MCP·자격증명 상속을 막는 지점이다(auth 복사·영속화 없음).
+   */
   codexHome: string;
   /** 기본 true(`--ephemeral`). resume이 필요한 세션만 false로 시작한다. */
   ephemeral?: boolean;

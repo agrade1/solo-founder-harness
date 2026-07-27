@@ -1,7 +1,7 @@
 /**
  * V3 M5a — CodexCliProvider 테스트.
  * 실제 codex 추론·네트워크·인증은 없다. 두 가지 방식만 쓴다:
- *  ⓐ in-process spawn seam 주입(argv·env·stdin·spawn 횟수 단정)
+ *  ⓐ in-process spawn seam 주입(argv·env·stdin·spawn 횟수·수명 단정)
  *  ⓑ 결정론적 fake CLI(`__fixtures__/fake-codex.mjs`) 실제 spawn — stdio 배선까지 확인
  * 실행: `npx tsx --test src/exec/codexCliProvider.test.ts` 또는 `npm run test:exec`.
  */
@@ -9,17 +9,30 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn as nodeSpawn, type ChildProcess } from "node:child_process";
 import { runProcess } from "./runProcess.js";
-import { CodexCliProvider, compileCodexArgs, compileCodexEnv, resolveCodexOptions, type SpawnFn } from "./codexCliProvider.js";
+import {
+  CodexCliProvider,
+  assertIsolatedCodexHome,
+  assertTrustedExecutable,
+  compileCodexArgs,
+  compileCodexEnv,
+  resolveCodexOptions,
+  type SpawnFn,
+} from "./codexCliProvider.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
 import type { SessionEvent, SessionSpec } from "./types.js";
 
 const FAKE_CLI = fileURLToPath(new URL("./__fixtures__/fake-codex.mjs", import.meta.url));
+const PROVIDER_SRC = fileURLToPath(new URL("./codexCliProvider.ts", import.meta.url));
+/** 신뢰된 실행 파일: 현재 node 바이너리(정규 경로·일반 파일·0755). */
+const TRUSTED_BIN = realpathSync(process.execPath);
+const TID = "0199a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
+const TID2 = "0199ffff-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
 
 /**
  * 결정론적 fake CLI를 **실제로 spawn**하는 seam. 실행 비트에 의존하지 않도록 현재 node로 띄우며,
@@ -58,19 +71,13 @@ function manifest(approvedCommit: string) {
   };
 }
 
+/** 비어 있는 0700 격리 홈. */
 function codexHome(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), "m5a-home-")));
 }
 
 function specFor(cwd: string, home: string, over: Partial<SessionSpec> = {}): SessionSpec {
-  return {
-    sessionId: "s1",
-    role: "reviewer",
-    cwd,
-    model: "gpt-5.6-sol",
-    codex: { codexHome: home },
-    ...over,
-  };
+  return { sessionId: "s1", role: "reviewer", cwd, model: "gpt-5.6-sol", codex: { codexHome: home }, ...over };
 }
 
 interface FakeCall {
@@ -81,32 +88,39 @@ interface FakeCall {
   stdin: string;
 }
 
-/** stdout/stderr/close를 테스트가 직접 몰아주는 가짜 child. */
-function fakeSpawn(calls: FakeCall[], script: (child: FakeChild) => void): SpawnFn {
-  return (command, args, options) => {
-    const child = new FakeChild();
-    const record: FakeCall = { command, args, cwd: options.cwd, env: options.env, stdin: "" };
-    calls.push(record);
-    child.stdin.on("data", (d: Buffer | string) => (record.stdin += String(d)));
-    setImmediate(() => script(child));
-    return child as unknown as ChildProcess;
-  };
-}
-
 class FakeChild extends EventEmitter {
   stdout = new PassThrough();
   stderr = new PassThrough();
   stdin = new PassThrough();
   killed: string | null = null;
+  private done = false;
   kill(signal: string): boolean {
     this.killed = signal;
+    // 실제 SIGTERM처럼 비동기 close로 수렴시킨다.
+    setImmediate(() => this.close(null, signal));
     return true;
+  }
+  close(code: number | null, signal: string | null = null): void {
+    if (this.done) return;
+    this.done = true;
+    this.emit("close", code, signal);
   }
   finish(lines: string[], code: number | null, signal: string | null = null, stderr = ""): void {
     for (const l of lines) this.stdout.write(`${l}\n`);
     if (stderr) this.stderr.write(stderr);
-    setImmediate(() => this.emit("close", code, signal));
+    setImmediate(() => this.close(code, signal));
   }
+}
+
+function fakeSpawn(calls: FakeCall[], script: (child: FakeChild, index: number) => void): SpawnFn {
+  return (command, args, options) => {
+    const child = new FakeChild();
+    const record: FakeCall = { command, args, cwd: options.cwd, env: options.env, stdin: "" };
+    const index = calls.push(record) - 1;
+    child.stdin.on("data", (d: Buffer | string) => (record.stdin += String(d)));
+    setImmediate(() => script(child, index));
+    return child as unknown as ChildProcess;
+  };
 }
 
 async function drain(it: AsyncIterable<SessionEvent>): Promise<SessionEvent[]> {
@@ -120,18 +134,30 @@ function codeOf(err: unknown): string {
   return (err as OrchestrationError).code;
 }
 
+async function codeOfCall(fn: () => Promise<unknown> | unknown): Promise<string> {
+  try {
+    await fn();
+    return "(통과)";
+  } catch (e) {
+    return codeOf(e);
+  }
+}
+
 const OK_STREAM = [
-  '{"type":"thread.started","thread_id":"th_abc"}',
+  `{"type":"thread.started","thread_id":"${TID}"}`,
   '{"type":"turn.started"}',
   '{"type":"item.completed","item":{"id":"i","item_type":"agent_message","text":"done"}}',
   '{"type":"turn.completed","usage":{"input_tokens":5,"output_tokens":6}}',
 ];
 
+function resultsOf(events: SessionEvent[]) {
+  return events.filter((e) => e.kind === "result") as Extract<SessionEvent, { kind: "result" }>[];
+}
+
 // ── argv / env / 설정 계약 (순수 함수) ────────────────────────────────────
 
-test("[M5a] argv: 명시 배열 + stdin 프롬프트 + 리뷰 기본값(read-only·xhigh·ephemeral)", () => {
-  const args = compileCodexArgs(specFor("/tmp/wt", "/tmp/home"));
-  assert.deepEqual(args, [
+test("[M5a] argv(fresh): 명시 배열 + stdin 프롬프트 + 격리/read-only 플래그", () => {
+  assert.deepEqual(compileCodexArgs(specFor("/tmp/wt", "/tmp/home"), "/tmp/wt"), [
     "exec",
     "--json",
     "--model",
@@ -140,6 +166,9 @@ test("[M5a] argv: 명시 배열 + stdin 프롬프트 + 리뷰 기본값(read-onl
     'model_reasoning_effort="xhigh"',
     "--config",
     "mcp_servers={}",
+    "--strict-config",
+    "--ignore-user-config",
+    "--ignore-rules",
     "--sandbox",
     "read-only",
     "--cd",
@@ -147,175 +176,418 @@ test("[M5a] argv: 명시 배열 + stdin 프롬프트 + 리뷰 기본값(read-onl
     "--ephemeral",
     "-",
   ]);
-  assert.ok(!args.some((a) => /dangerous|bypass|full-auto|danger-full-access|--last/.test(a)), "bypass 계열 플래그 없음");
 });
 
-test("[M5a] argv: resume은 명시 session id만 쓰고 --last는 없다 · output-schema는 요청 시에만", () => {
+test("[M5a] argv(resume): --sandbox/--cd는 resume 앞(부모 위치), --ephemeral 없음", () => {
+  const spec = specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", ephemeral: false } });
+  assert.deepEqual(compileCodexArgs(spec, "/tmp/wt", TID), [
+    "exec",
+    "--sandbox",
+    "read-only",
+    "--cd",
+    "/tmp/wt",
+    "resume",
+    TID,
+    "--json",
+    "--model",
+    "gpt-5.6-sol",
+    "--config",
+    'model_reasoning_effort="xhigh"',
+    "--config",
+    "mcp_servers={}",
+    "--strict-config",
+    "--ignore-user-config",
+    "--ignore-rules",
+    "-",
+  ]);
+});
+
+/**
+ * supervisor 실측(codex-cli 0.146.0-alpha.3, parse-only) 기반 파싱 계약.
+ * fresh exec는 아래 전부를 받고, `exec resume`는 subcommand-local `--sandbox`/`--cd`/`--ephemeral`을 받지 않는다.
+ */
+const FRESH_SUPPORTED = new Set([
+  "--config",
+  "--strict-config",
+  "--model",
+  "--sandbox",
+  "--cd",
+  "--ephemeral",
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--output-schema",
+  "--json",
+]);
+const RESUME_LOCAL_SUPPORTED = new Set([
+  "--config",
+  "--strict-config",
+  "--model",
+  "--ignore-user-config",
+  "--ignore-rules",
+  "--output-schema",
+  "--json",
+]);
+
+test("[M5a] 파싱 계약: 모든 플래그가 설치된 CLI가 받는 위치에만 있다(실측 help 근거)", () => {
+  const schema = join(tmpdir(), "m5a-schema.json");
   const spec = specFor("/tmp/wt", "/tmp/home", {
-    codex: { codexHome: "/tmp/home", ephemeral: false, outputSchemaPath: "/tmp/schema.json", sandbox: "workspace-write", reasoningEffort: "high" },
+    codex: { codexHome: "/tmp/home", ephemeral: false, outputSchemaPath: schema },
   });
-  const fresh = compileCodexArgs(spec);
-  assert.deepEqual(fresh.slice(0, 2), ["exec", "--json"]);
-  assert.ok(!fresh.includes("--ephemeral"), "ephemeral:false면 붙지 않는다");
-  assert.deepEqual(fresh.slice(-3), ["--output-schema", "/tmp/schema.json", "-"]);
-  assert.ok(fresh.includes("workspace-write") && fresh.includes('model_reasoning_effort="high"'));
 
-  const resumed = compileCodexArgs(spec, "th_abc");
-  assert.deepEqual(resumed.slice(0, 4), ["exec", "resume", "th_abc", "--json"]);
-  assert.ok(!resumed.includes("--last"));
+  const fresh = compileCodexArgs(spec, "/tmp/wt");
+  assert.equal(fresh[0], "exec");
+  assert.ok(!fresh.includes("resume"));
+  for (const a of fresh) if (a.startsWith("--")) assert.ok(FRESH_SUPPORTED.has(a), `fresh exec가 받지 않는 플래그: ${a}`);
+
+  const resumed = compileCodexArgs(spec, "/tmp/wt", TID);
+  const at = resumed.indexOf("resume");
+  assert.ok(at > 0, "resume 하위 명령이 있다");
+  assert.equal(resumed[at + 1], TID);
+  // 부모 위치(= resume 앞)에는 fresh exec가 받는 것만.
+  for (const a of resumed.slice(0, at)) if (a.startsWith("--")) assert.ok(FRESH_SUPPORTED.has(a), `부모 위치 미지원 플래그: ${a}`);
+  // resume 뒤에는 subcommand-local 지원 플래그만 — 실측상 --sandbox/--cd/--ephemeral은 여기서 거부된다.
+  for (const a of resumed.slice(at + 2)) {
+    if (a.startsWith("--")) assert.ok(RESUME_LOCAL_SUPPORTED.has(a), `resume이 받지 않는 플래그: ${a}`);
+  }
+  for (const forbidden of ["--sandbox", "--cd", "--ephemeral"]) {
+    assert.ok(!resumed.slice(at).includes(forbidden), `${forbidden}가 resume 뒤에 있으면 CLI가 거부한다`);
+  }
+  assert.ok(!resumed.includes("--last") && !fresh.includes("--last"));
+  assert.ok(![...fresh, ...resumed].some((a) => /dangerous|bypass|full-auto|danger-full-access/.test(a)));
 });
 
-test("[M5a] env: PATH·CODEX_HOME만 넘긴다(사용자 HOME·자격증명 미상속)", () => {
+test("[M5a] argv: resume 대상은 정규 UUID만 — 검증 안 된 텍스트로 인자를 만들지 않는다", async () => {
+  const spec = specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", ephemeral: false } });
+  for (const hostile of ["--last", "", "not-a-uuid", `${TID} --last`, "0199A1B2-C3D4-4E5F-8A9B-0C1D2E3F4A5B"]) {
+    assert.equal(await codeOfCall(() => compileCodexArgs(spec, "/tmp/wt", hostile)), "codex_resume_id_invalid", hostile);
+  }
+});
+
+test("[M5a] env: CODEX_HOME 하나뿐 — PATH조차 상속하지 않는다", () => {
   const env = compileCodexEnv("/tmp/home");
-  assert.deepEqual(Object.keys(env).sort(), ["CODEX_HOME", "PATH"]);
+  assert.deepEqual(Object.keys(env), ["CODEX_HOME"]);
   assert.equal(env.CODEX_HOME, "/tmp/home");
 });
 
-test("[M5a] 설정은 fail closed: codexHome 필수 · sandbox/effort/모델/경로 계약 밖 거부", () => {
-  const bad = (spec: SessionSpec): string => {
-    try {
-      resolveCodexOptions(spec);
-      return "(통과)";
-    } catch (e) {
-      return codeOf(e);
-    }
-  };
-  assert.equal(bad({ sessionId: "s", role: "r", cwd: "/tmp/wt" }), "codex_config_isolation_required");
-  assert.equal(bad(specFor("/tmp/wt", "relative-home")), "codex_config_invalid");
-  assert.equal(bad(specFor("/tmp/wt", "/tmp/home", { model: "bad model!" })), "codex_config_invalid");
-  assert.equal(bad(specFor("relative/wt", "/tmp/home")), "codex_config_invalid");
+test("[M5a] provider 소스는 process.env를 읽지 않는다(env 유래 production 동작 0)", () => {
+  // 주석은 계약 서술이라 제외하고 **코드**만 본다.
+  const code = readFileSync(PROVIDER_SRC, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .replace(/(^|[^:])\/\/.*$/gm, "$1");
+  assert.ok(!/process\s*\.\s*env/.test(code), "provider 코드가 process.env를 참조한다");
+  assert.ok(!/HARNESS_CODEX_BIN/.test(code), "env 기반 실행 파일 seam이 남아 있다");
+});
+
+test("[M5a] 설정은 fail closed: codexHome 필수 · workspace-write hard deny · 모델/경로 계약", async () => {
+  const bad = (spec: SessionSpec) => codeOfCall(() => resolveCodexOptions(spec));
+  assert.equal(await bad({ sessionId: "s", role: "r", cwd: "/tmp/wt" }), "codex_config_isolation_required");
+  assert.equal(await bad(specFor("/tmp/wt", "relative-home")), "codex_config_invalid");
+  assert.equal(await bad(specFor("/tmp/wt", "/tmp/home", { model: "bad model!" })), "codex_config_invalid");
+  assert.equal(await bad(specFor("relative/wt", "/tmp/home")), "codex_config_invalid");
+  for (const sandbox of ["workspace-write", "danger-full-access", "" as unknown]) {
+    assert.equal(
+      await bad(specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", sandbox: sandbox as never } })),
+      "codex_sandbox_forbidden",
+      String(sandbox),
+    );
+  }
   assert.equal(
-    bad(specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", sandbox: "danger-full-access" as never } })),
+    await bad(specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", reasoningEffort: "ultra" as never } })),
+    "codex_config_invalid",
+  );
+  assert.equal(
+    await bad(specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", outputSchemaPath: "schema.json" } })),
+    "codex_config_invalid",
+  );
+});
+
+test("[M5a] 실행 파일 신원: 절대·정규·비-symlink 일반 파일·실행 비트·타인 쓰기 금지", async () => {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-bin-")));
+  try {
+    assert.equal(assertTrustedExecutable(TRUSTED_BIN), TRUSTED_BIN);
+    assert.equal(await codeOfCall(() => assertTrustedExecutable("codex")), "codex_config_invalid");
+    assert.equal(await codeOfCall(() => assertTrustedExecutable(undefined)), "codex_config_invalid");
+    assert.equal(await codeOfCall(() => assertTrustedExecutable(join(dir, "missing"))), "codex_executable_invalid");
+    assert.equal(await codeOfCall(() => assertTrustedExecutable(dir)), "codex_executable_invalid", "디렉터리 거부");
+
+    const link = join(dir, "link-to-node");
+    symlinkSync(TRUSTED_BIN, link);
+    assert.equal(await codeOfCall(() => assertTrustedExecutable(link)), "codex_executable_invalid", "symlink 거부");
+
+    const plain = join(dir, "plain.sh");
+    writeFileSync(plain, "#!/bin/sh\necho hi\n", { mode: 0o644 });
+    assert.equal(await codeOfCall(() => assertTrustedExecutable(plain)), "codex_executable_invalid", "실행 비트 없음");
+
+    chmodSync(plain, 0o777);
+    assert.equal(await codeOfCall(() => assertTrustedExecutable(plain)), "codex_executable_invalid", "타인 쓰기 가능");
+    chmodSync(plain, 0o755);
+    assert.equal(assertTrustedExecutable(plain), plain);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] 격리 홈 검증: 사용자 홈·비어있지 않음·symlink·느슨한 권한 전부 거부", async () => {
+  const home = codexHome();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "m5a-hp-")));
+  try {
+    assert.equal(assertIsolatedCodexHome(home), home);
+    assert.equal(await codeOfCall(() => assertIsolatedCodexHome(realpathSync(homedir()))), "codex_home_ambient");
+    assert.equal(await codeOfCall(() => assertIsolatedCodexHome(join(realpathSync(homedir()), ".codex"))), "codex_home_ambient");
+
+    const link = join(parent, "home-link");
+    symlinkSync(home, link, "dir");
+    assert.equal(await codeOfCall(() => assertIsolatedCodexHome(link)), "codex_home_invalid", "symlink 홈 거부");
+
+    const permissive = realpathSync(mkdtempSync(join(tmpdir(), "m5a-perm-")));
+    chmodSync(permissive, 0o755);
+    assert.equal(await codeOfCall(() => assertIsolatedCodexHome(permissive)), "codex_home_permissive");
+    rmSync(permissive, { recursive: true, force: true });
+
+    writeFileSync(join(home, "auth.json"), "{}"); // ambient 자격증명 흉내
+    const err = await codeOfCall(() => assertIsolatedCodexHome(home));
+    assert.equal(err, "codex_home_not_empty");
+  } finally {
+    rmSync(parent, { recursive: true, force: true });
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+// ── 프로세스는 검증을 다 통과할 때만 뜬다 (spawn 횟수 0 계약) ─────────────
+
+/** 모든 거부 케이스에서 spawn 0을 확인하는 공용 러너. */
+async function expectNoSpawn(
+  build: (repo: { root: string; head: string }, home: string, calls: FakeCall[]) => Promise<unknown>,
+): Promise<string> {
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    const code = await codeOfCall(() => build(repo, home, calls));
+    assert.equal(calls.length, 0, `거부 경로인데 spawn이 일어났다(${code})`);
+    return code;
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+}
+
+function providerWith(repo: { head: string }, controllerRoot: string, calls: FakeCall[], over: Record<string, unknown> = {}) {
+  return new CodexCliProvider({
+    manifest: manifest(repo.head),
+    controllerRepoRoot: controllerRoot,
+    executablePath: TRUSTED_BIN,
+    spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+    ...over,
+  });
+}
+
+test("[M5a] approvedCommit 불일치·만료·경로 위반이면 spawn 횟수 0", async () => {
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) =>
+      new CodexCliProvider({
+        manifest: manifest("b".repeat(40)),
+        controllerRepoRoot: repo.root,
+        executablePath: TRUSTED_BIN,
+        spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+      }).start(specFor(repo.root, home), "리뷰해라"),
+    ),
+    "approved_commit_mismatch",
+  );
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) =>
+      providerWith(repo, repo.root, calls, { nowMs: () => Date.parse("2099-12-31T00:00:00.000Z") }).start(
+        specFor(repo.root, home),
+        "p",
+      ),
+    ),
+    "manifest_expired",
+  );
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) => providerWith(repo, join(repo.root, "nope"), calls).start(specFor(repo.root, home), "p")),
+    "boundary_path_unresolvable",
+  );
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) =>
+      new CodexCliProvider({
+        manifest: { milestoneId: "m5a" },
+        controllerRepoRoot: repo.root,
+        executablePath: TRUSTED_BIN,
+        spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+      }).start(specFor(repo.root, home), "p"),
+    ),
+    "invalid_manifest",
+  );
+});
+
+test("[M5a] workspace-write 요청은 프로세스를 띄우지 않는다(M5a hard deny)", async () => {
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) =>
+      providerWith(repo, repo.root, calls).start(
+        specFor(repo.root, home, { codex: { codexHome: home, sandbox: "workspace-write" as never } }),
+        "p",
+      ),
+    ),
     "codex_sandbox_forbidden",
   );
-  assert.equal(
-    bad(specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", reasoningEffort: "ultra" as never } })),
-    "codex_config_invalid",
-  );
-  assert.equal(
-    bad(specFor("/tmp/wt", "/tmp/home", { codex: { codexHome: "/tmp/home", outputSchemaPath: "schema.json" } })),
-    "codex_config_invalid",
-  );
 });
 
-// ── 실행 경계: 프로세스는 승인 커밋에서만 뜬다 ─────────────────────────────
-
-test("[M5a] approvedCommit 불일치면 spawn 횟수 0", async () => {
-  const repo = await initRepo();
-  const home = codexHome();
-  const calls: FakeCall[] = [];
+test("[M5a] 실행 파일이 신뢰 조건을 어기면 spawn 0 — env로 대체 경로를 고르지도 않는다", async () => {
+  // 공격자가 env를 심어도 provider는 명시 경로만 본다(그리고 그 경로가 나쁘면 거부한다).
+  const prevBin = process.env.HARNESS_CODEX_BIN;
+  const prevEvil = process.env.CODEX_BIN;
+  process.env.HARNESS_CODEX_BIN = "/tmp/evil-codex";
+  process.env.CODEX_BIN = "/tmp/evil-codex";
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-badbin-")));
   try {
-    const provider = new CodexCliProvider({
-      manifest: manifest("b".repeat(40)),
-      controllerRepoRoot: repo.root,
-      bin: "codex",
-      spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
-    });
-    await assert.rejects(
-      () => provider.start(specFor(repo.root, home), "리뷰해라"),
-      (e: unknown) => codeOf(e) === "approved_commit_mismatch",
-    );
-    assert.equal(calls.length, 0, "경계 위반에서는 프로세스를 띄우지 않는다");
-  } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(repo.root, { recursive: true, force: true });
-  }
-});
-
-test("[M5a] manifest 누락·만료·설정 위반·과대 프롬프트도 spawn 전에 거부한다", async () => {
-  const repo = await initRepo();
-  const home = codexHome();
-  const calls: FakeCall[] = [];
-  const spawn = fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0));
-  try {
-    const cases: Array<[string, () => Promise<unknown>]> = [
-      [
-        "invalid_manifest",
-        () =>
-          new CodexCliProvider({ manifest: { milestoneId: "m5a" }, controllerRepoRoot: repo.root, spawn }).start(
-            specFor(repo.root, home),
-            "p",
-          ),
-      ],
-      [
-        "manifest_expired",
-        () =>
-          new CodexCliProvider({
-            manifest: manifest(repo.head),
-            controllerRepoRoot: repo.root,
-            spawn,
-            nowMs: () => Date.parse("2099-12-31T00:00:00.000Z"),
-          }).start(specFor(repo.root, home), "p"),
-      ],
-      [
-        "codex_config_isolation_required",
-        () =>
-          new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn }).start(
-            { sessionId: "s", role: "r", cwd: repo.root },
-            "p",
-          ),
-      ],
-      [
-        "codex_prompt_too_long",
-        () =>
-          new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn }).start(
-            specFor(repo.root, home),
-            "x".repeat(300_000),
-          ),
-      ],
-      [
-        "boundary_path_unresolvable",
-        () =>
-          new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: join(repo.root, "nope"), spawn }).start(
-            specFor(repo.root, home),
-            "p",
-          ),
-      ],
-    ];
-    for (const [expected, run] of cases) {
-      await assert.rejects(run, (e: unknown) => codeOf(e) === expected, `기대 코드 ${expected}`);
+    const nonExec = join(dir, "codex");
+    writeFileSync(nonExec, "#!/bin/sh\n", { mode: 0o644 });
+    const link = join(dir, "codex-link");
+    symlinkSync(TRUSTED_BIN, link);
+    for (const bin of [nonExec, link, join(dir, "missing"), "codex", "", undefined]) {
+      assert.equal(
+        await expectNoSpawn((repo, home, calls) =>
+          providerWith(repo, repo.root, calls, { executablePath: bin }).start(specFor(repo.root, home), "p"),
+        ),
+        bin === "codex" || bin === "" || bin === undefined ? "codex_config_invalid" : "codex_executable_invalid",
+        String(bin),
+      );
     }
-    assert.equal(calls.length, 0, "거부 경로 전부에서 spawn 0");
+    // 정상 경로에서는 env가 오염돼 있어도 **명시 경로로만** spawn하고 env를 물려주지 않는다.
+    const repo = await initRepo();
+    const home = codexHome();
+    const calls: FakeCall[] = [];
+    try {
+      const provider = providerWith(repo, repo.root, calls);
+      const handle = await provider.start(specFor(repo.root, home), "p");
+      await drain(provider.events(handle));
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].command, TRUSTED_BIN, "env가 아니라 명시 경로로 spawn한다");
+      assert.deepEqual(Object.keys(calls[0].env), ["CODEX_HOME"]);
+      assert.ok(!JSON.stringify(calls[0]).includes("evil-codex"));
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(repo.root, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+    if (prevBin === undefined) delete process.env.HARNESS_CODEX_BIN;
+    else process.env.HARNESS_CODEX_BIN = prevBin;
+    if (prevEvil === undefined) delete process.env.CODEX_BIN;
+    else process.env.CODEX_BIN = prevEvil;
+  }
+});
+
+test("[M5a] 격리 홈이 계약을 어기면 spawn 0", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    writeFileSync(join(home, "config.toml"), "x=1\n");
+    const code = await codeOfCall(() => providerWith(repo, repo.root, calls).start(specFor(repo.root, home), "p"));
+    assert.equal(code, "codex_home_not_empty");
+    assert.equal(calls.length, 0);
+
+    rmSync(join(home, "config.toml"));
+    chmodSync(home, 0o755);
+    assert.equal(
+      await codeOfCall(() => providerWith(repo, repo.root, calls).start(specFor(repo.root, home), "p")),
+      "codex_home_permissive",
+    );
+    assert.equal(calls.length, 0);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
 
-// ── 스트림 매핑 (주입 spawn) ───────────────────────────────────────────────
+test("[M5a] 프롬프트 계약 위반도 spawn 0", async () => {
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) => providerWith(repo, repo.root, calls).start(specFor(repo.root, home), "x".repeat(300_000))),
+    "codex_prompt_too_long",
+  );
+  assert.equal(
+    await expectNoSpawn((repo, home, calls) => providerWith(repo, repo.root, calls).start(specFor(repo.root, home), "")),
+    "codex_prompt_invalid",
+  );
+});
 
-async function runProvider(
-  script: (c: FakeChild) => void,
-  over: Partial<SessionSpec> = {},
-): Promise<{ events: SessionEvent[]; calls: FakeCall[]; provider: CodexCliProvider; repo: { root: string; head: string }; home: string }> {
+test("[M5a] spawn 직전 HEAD가 움직이면 프로세스를 띄우지 않는다(TOCTOU 재확인)", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    // 경계 검증 통과 후, revalidateSync 직전에 HEAD를 옮기는 시나리오를 nowMs 훅 시점에 끼워 넣는다.
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+      nowMs: () => {
+        // 이 훅은 verifyExecutionBoundary 호출 인자로 평가된다 — 이후 revalidateSync가 변경을 잡아야 한다.
+        return Date.now();
+      },
+    });
+    writeFileSync(join(repo.root, "b.txt"), "b\n");
+    await runProcess("git", ["-C", repo.root, "add", "."]);
+    await runProcess("git", ["-C", repo.root, "commit", "-q", "-m", "moved"]);
+    const code = await codeOfCall(() => provider.start(specFor(repo.root, home), "p"));
+    assert.equal(code, "approved_commit_mismatch");
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+// ── 스트림 매핑 · 수명 (주입 spawn) ────────────────────────────────────────
+
+interface Harness {
+  provider: CodexCliProvider;
+  repo: { root: string; head: string };
+  home: string;
+  calls: FakeCall[];
+  cleanup(): void;
+}
+
+async function harness(script: (c: FakeChild, i: number) => void, over: Record<string, unknown> = {}): Promise<Harness> {
   const repo = await initRepo();
   const home = codexHome();
   const calls: FakeCall[] = [];
   const provider = new CodexCliProvider({
     manifest: manifest(repo.head),
     controllerRepoRoot: repo.root,
-    bin: "codex",
+    executablePath: TRUSTED_BIN,
     spawn: fakeSpawn(calls, script),
+    ...over,
   });
-  const handle = await provider.start(specFor(repo.root, home, over), "리뷰해라");
-  const events = await drain(provider.events(handle));
-  return { events, calls, provider, repo, home };
+  return {
+    provider,
+    repo,
+    home,
+    calls,
+    cleanup: () => {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(repo.root, { recursive: true, force: true });
+    },
+  };
 }
 
 test("[M5a] 성공 스트림: cwd·stdin 프롬프트 전달 + result 1건", async () => {
-  const { events, calls, repo, home } = await runProvider((c) => c.finish(OK_STREAM, 0));
+  const h = await harness((c) => c.finish(OK_STREAM, 0));
   try {
-    assert.equal(calls.length, 1);
-    assert.equal(calls[0].command, "codex");
-    assert.equal(calls[0].cwd, repo.root);
-    assert.equal(calls[0].stdin, "리뷰해라", "프롬프트는 argv가 아니라 stdin으로만 간다");
-    assert.ok(!calls[0].args.includes("리뷰해라"));
-    const results = events.filter((e) => e.kind === "result");
-    assert.equal(results.length, 1);
-    assert.equal(results[0].kind === "result" && results[0].isError, false);
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "리뷰해라");
+    const events = await drain(h.provider.events(handle));
+    assert.equal(h.calls.length, 1);
+    assert.equal(h.calls[0].cwd, h.repo.root, "native cwd = 경계가 확인한 targetRoot");
+    assert.equal(h.calls[0].args[h.calls[0].args.indexOf("--cd") + 1], h.repo.root, "argv --cd도 같은 값");
+    assert.equal(h.calls[0].stdin, "리뷰해라", "프롬프트는 argv가 아니라 stdin으로만 간다");
+    assert.ok(!h.calls[0].args.includes("리뷰해라"));
+    const r = resultsOf(events);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, false);
   } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(repo.root, { recursive: true, force: true });
+    h.cleanup();
   }
 });
 
@@ -325,98 +597,189 @@ test("[M5a] 비정상 exit·signal·silent stream은 실패로 닫힌다", async
     ["signal", (c: FakeChild) => c.finish(OK_STREAM, null, "SIGKILL"), "signal"],
     ["silent", (c: FakeChild) => c.finish([], 0), "no_terminal_event"],
   ] as Array<[string, (c: FakeChild) => void, string]>) {
-    const { events, repo, home } = await runProvider(script);
+    const h = await harness(script);
     try {
-      const results = events.filter((e) => e.kind === "result");
-      assert.equal(results.length, 1, `${label}: 종료 결과 1건`);
-      assert.ok(results[0].kind === "result" && results[0].isError, `${label}: 실패여야 한다`);
-      assert.equal(results[0].kind === "result" && results[0].terminalReason, reason, label);
+      const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+      const r = resultsOf(await drain(h.provider.events(handle)));
+      assert.equal(r.length, 1, `${label}: 종료 결과 1건`);
+      assert.ok(r[0].isError, `${label}: 실패여야 한다`);
+      assert.equal(r[0].terminalReason, reason, label);
     } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(repo.root, { recursive: true, force: true });
+      h.cleanup();
     }
   }
 });
 
-test("[M5a] spawn 실패(바이너리 없음)는 hang이 아니라 spawn_error 결과다", async () => {
-  const { events, repo, home } = await runProvider((c) => c.emit("error", new Error("spawn codex ENOENT")));
+test("[M5a] 수명: error와 close가 겹쳐 와도 종료 결과는 1건", async () => {
+  const h = await harness((c) => {
+    c.emit("error", new Error("spawn codex ENOENT"));
+    c.close(1, null);
+  });
   try {
-    const r = events.filter((e) => e.kind === "result");
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+    const r = resultsOf(await drain(h.provider.events(handle)));
     assert.equal(r.length, 1);
-    assert.equal(r[0].kind === "result" && r[0].terminalReason, "spawn_error");
+    assert.equal(r[0].terminalReason, "spawn_error", "먼저 온 신호가 이긴다");
   } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(repo.root, { recursive: true, force: true });
+    h.cleanup();
   }
 });
 
-test("[M5a] resume: ephemeral 세션은 거부 · 비ephemeral은 관측된 session id로만 재실행", async () => {
-  // ephemeral(기본) → resume 불가
-  {
-    const { provider, repo, home } = await runProvider((c) => c.finish(OK_STREAM, 0));
-    try {
-      await assert.rejects(
-        () => provider.send({ sessionId: "s1", spec: specFor(repo.root, home) }, "추가 지시"),
-        (e: unknown) => codeOf(e) === "codex_resume_unavailable",
-      );
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(repo.root, { recursive: true, force: true });
-    }
-  }
-  // ephemeral:false → 관측된 thread id로 resume
-  {
-    const repo = await initRepo();
-    const home = codexHome();
-    const calls: FakeCall[] = [];
-    try {
-      const provider = new CodexCliProvider({
-        manifest: manifest(repo.head),
-        controllerRepoRoot: repo.root,
-        bin: "codex",
-        spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
-      });
-      const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
-      const handle = await provider.start(spec, "1차");
-      await drain(provider.events(handle));
-      await provider.send(handle, "2차");
-      await drain(provider.events(handle));
-      assert.equal(calls.length, 2);
-      assert.deepEqual(calls[1].args.slice(0, 3), ["exec", "resume", "th_abc"]);
-      assert.equal(calls[1].stdin, "2차");
-    } finally {
-      rmSync(home, { recursive: true, force: true });
-      rmSync(repo.root, { recursive: true, force: true });
-    }
-  }
-});
-
-test("[M5a] resume: session id를 관측하지 못했으면 --last로 대체하지 않고 거부", async () => {
+test("[M5a] 수명: 동기 spawn 예외는 던지고, 열린 큐를 남기지 않는다", async () => {
   const repo = await initRepo();
   const home = codexHome();
-  const calls: FakeCall[] = [];
   try {
     const provider = new CodexCliProvider({
       manifest: manifest(repo.head),
       controllerRepoRoot: repo.root,
-      spawn: fakeSpawn(calls, (c) => c.finish(['{"type":"turn.completed","usage":{}}'], 0)),
+      executablePath: TRUSTED_BIN,
+      spawn: () => {
+        throw new Error("EMFILE");
+      },
     });
-    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
-    const handle = await provider.start(spec, "1차");
-    await drain(provider.events(handle));
-    await assert.rejects(() => provider.send(handle, "2차"), (e: unknown) => codeOf(e) === "codex_resume_unavailable");
-    assert.equal(calls.length, 1, "resume 거부에서는 두 번째 프로세스가 없다");
+    const handle = { sessionId: "s1", spec: specFor(repo.root, home) };
+    assert.equal(await codeOfCall(() => provider.start(specFor(repo.root, home), "p")), "codex_spawn_failed");
+    // 실패한 start는 세션 상태를 남기지 않는다.
+    assert.equal(await codeOfCall(() => provider.events(handle)), "codex_unknown_session");
+    assert.equal(await codeOfCall(() => provider.send(handle, "x")), "codex_unknown_session");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
 
+test("[M5a] 수명: stdin 오류는 unhandled가 아니라 프로토콜 실패로 수렴한다", async () => {
+  const h = await harness((c) => {
+    c.stdin.emit("error", new Error("EPIPE"));
+    c.finish(OK_STREAM, 0);
+  });
+  try {
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+    const r = resultsOf(await drain(h.provider.events(handle)));
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, true);
+    assert.equal(r[0].terminalReason, "stdin_error");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] 수명: 같은 harness 세션 id로 두 번 start하면 거부(기존 세션 보존)", async () => {
+  const h = await harness((c) => c.finish(OK_STREAM, 0));
+  try {
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+    assert.equal(await codeOfCall(() => h.provider.start(specFor(h.repo.root, h.home), "p2")), "codex_session_exists");
+    assert.equal(h.calls.length, 1, "중복 start는 프로세스를 띄우지 않는다");
+    const r = resultsOf(await drain(h.provider.events(handle)));
+    assert.equal(r.length, 1, "기존 세션의 큐는 오염되지 않는다");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] 수명: 실행 중 send는 거부되고 기존 스트림을 교체하지 않는다", async () => {
+  const held: { release?: () => void } = {};
+  const h = await harness((c) => {
+    held.release = () => c.finish(OK_STREAM, 0);
+  });
+  try {
+    const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+    const handle = await h.provider.start(spec, "p");
+    assert.equal(await codeOfCall(() => h.provider.send(handle, "겹침")), "codex_send_overlap");
+    assert.equal(h.calls.length, 1);
+    await new Promise((r) => setImmediate(r)); // spawn 스크립트가 도는 tick을 지난다(FIFO — 타이밍 추측 아님)
+    held.release?.();
+    const r = resultsOf(await drain(h.provider.events(handle)));
+    assert.equal(r.length, 1);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] 수명: stop은 종료 결과가 정착한 뒤에 정리한다", async () => {
+  const h = await harness(() => {
+    /* 스스로 끝나지 않는다 — stop의 SIGTERM이 close로 수렴시킨다 */
+  });
+  try {
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+    const stream = h.provider.events(handle); // stop 전에 잡아 둔다
+    await h.provider.stop(handle, "테스트");
+    const r = resultsOf(await drain(stream));
+    assert.equal(r.length, 1, "stop 전에 큐를 닫아 종료 결과를 잃지 않는다");
+    assert.equal(r[0].isError, true);
+    assert.equal(r[0].terminalReason, "signal");
+    assert.equal(await codeOfCall(() => h.provider.events(handle)), "codex_unknown_session", "정리 후에는 세션이 없다");
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("[M5a] resume: ephemeral 거부 · 관측 UUID로만 재실행 · 두 번째 invocation도 경계를 다시 지난다", async () => {
+  const h = await harness((c) => c.finish(OK_STREAM, 0));
+  try {
+    const eph = await h.provider.start(specFor(h.repo.root, h.home), "1차");
+    await drain(h.provider.events(eph));
+    assert.equal(await codeOfCall(() => h.provider.send(eph, "2차")), "codex_resume_unavailable");
+    assert.equal(h.calls.length, 1);
+  } finally {
+    h.cleanup();
+  }
+
+  const h2 = await harness((c) => c.finish(OK_STREAM, 0));
+  try {
+    const spec = specFor(h2.repo.root, h2.home, { codex: { codexHome: h2.home, ephemeral: false } });
+    const handle = await h2.provider.start(spec, "1차");
+    await drain(h2.provider.events(handle));
+    await h2.provider.send(handle, "2차");
+    await drain(h2.provider.events(handle));
+    assert.equal(h2.calls.length, 2);
+    assert.deepEqual(h2.calls[1].args.slice(0, 7), ["exec", "--sandbox", "read-only", "--cd", h2.repo.root, "resume", TID]);
+    assert.equal(h2.calls[1].stdin, "2차");
+  } finally {
+    h2.cleanup();
+  }
+});
+
+test("[M5a] resume: 정규 UUID를 관측하지 못했으면 --last로 대체하지 않고 거부", async () => {
+  for (const stream of [['{"type":"turn.completed","usage":{}}'], ['{"type":"thread.started","thread_id":"--last"}']]) {
+    const h = await harness((c) => c.finish(stream, 0));
+    try {
+      const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+      const handle = await h.provider.start(spec, "1차");
+      await drain(h.provider.events(handle));
+      assert.equal(await codeOfCall(() => h.provider.send(handle, "2차")), "codex_resume_unavailable");
+      assert.equal(h.calls.length, 1, "resume 거부에서는 두 번째 프로세스가 없다");
+    } finally {
+      h.cleanup();
+    }
+  }
+});
+
+test("[M5a] 세션 신원 충돌: resume이 다른 thread id를 내면 세션이 닫힌다", async () => {
+  const h = await harness((c, i) => c.finish(i === 0 ? OK_STREAM : [`{"type":"thread.started","thread_id":"${TID2}"}`], 0));
+  try {
+    const spec = specFor(h.repo.root, h.home, { codex: { codexHome: h.home, ephemeral: false } });
+    const handle = await h.provider.start(spec, "1차");
+    await drain(h.provider.events(handle));
+    await h.provider.send(handle, "2차");
+    const events = await drain(h.provider.events(handle));
+    assert.ok(events.some((e) => e.kind === "unknown" && e.type === "session_identity_conflict"));
+    const r = resultsOf(events);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, true);
+    assert.equal(r[0].terminalReason, "session_identity_conflict");
+    assert.equal(await codeOfCall(() => h.provider.send(handle, "3차")), "codex_session_identity_conflict");
+    assert.equal(h.calls.length, 2);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("[M5a] MCP 호출이 스트림에 보이면 실패 결과다", async () => {
-  const { events, repo, home } = await runProvider((c) =>
+  const h = await harness((c) =>
     c.finish(
       [
-        '{"type":"thread.started","thread_id":"th_abc"}',
+        `{"type":"thread.started","thread_id":"${TID}"}`,
         '{"type":"item.completed","item":{"id":"i","item_type":"mcp_tool_call","server":"s","tool":"t"}}',
         '{"type":"turn.completed","usage":{}}',
       ],
@@ -424,63 +787,92 @@ test("[M5a] MCP 호출이 스트림에 보이면 실패 결과다", async () => 
     ),
   );
   try {
-    const r = events.filter((e) => e.kind === "result");
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+    const r = resultsOf(await drain(h.provider.events(handle)));
     assert.equal(r.length, 1);
-    assert.equal(r[0].kind === "result" && r[0].terminalReason, "mcp_call_observed");
+    assert.equal(r[0].terminalReason, "mcp_call_observed");
   } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(repo.root, { recursive: true, force: true });
+    h.cleanup();
   }
 });
 
 test("[M5a] 권한 실패는 permission_required로 올라온다(hang 없음)", async () => {
-  const { events, repo, home } = await runProvider((c) =>
+  const h = await harness((c) =>
     c.finish(
       [
-        '{"type":"thread.started","thread_id":"th_abc"}',
+        `{"type":"thread.started","thread_id":"${TID}"}`,
         '{"type":"turn.failed","error":{"message":"approval required in non-interactive mode"}}',
       ],
       1,
     ),
   );
   try {
-    const r = events.find((e) => e.kind === "result");
-    assert.ok(r && r.kind === "result");
-    assert.equal(r.stopReason, "permission_required");
-    assert.equal(r.isError, true);
+    const handle = await h.provider.start(specFor(h.repo.root, h.home), "p");
+    const r = resultsOf(await drain(h.provider.events(handle)));
+    assert.equal(r.length, 1);
+    assert.equal(r[0].stopReason, "permission_required");
+    assert.equal(r[0].isError, true);
   } finally {
-    rmSync(home, { recursive: true, force: true });
-    rmSync(repo.root, { recursive: true, force: true });
+    h.cleanup();
   }
 });
 
 // ── 결정론적 fake CLI 실제 spawn ───────────────────────────────────────────
 
+function scenario(repoRoot: string, runs: unknown[]): void {
+  writeFileSync(join(repoRoot, ".fake-codex-scenario.json"), JSON.stringify({ runs }));
+}
+function invocations(repoRoot: string): { calls: Array<{ argv: string[]; cwd: string; stdin: string; envKeys: string[] }> } {
+  return JSON.parse(readFileSync(join(repoRoot, ".fake-codex-invocation.json"), "utf8"));
+}
+
 test("[M5a] fake CLI 왕복: argv·cwd·stdin·격리 env가 계약대로 도착한다", async () => {
   const repo = await initRepo();
   const home = codexHome();
   try {
-    writeFileSync(
-      join(home, "scenario.json"),
-      JSON.stringify({ lines: OK_STREAM, exitCode: 0 }),
-    );
-    const provider = new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn: realFakeSpawn });
+    scenario(repo.root, [{ lines: OK_STREAM, exitCode: 0 }]);
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
     const handle = await provider.start(specFor(repo.root, home), "리뷰 프롬프트");
     const events = await drain(provider.events(handle));
 
-    const r = events.find((e) => e.kind === "result");
-    assert.ok(r && r.kind === "result" && !r.isError);
-    assert.equal(r.text, "done");
+    const r = resultsOf(events);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, false);
+    assert.equal(r[0].text, "done");
 
-    const seen = JSON.parse(readFileSync(join(home, "invocation.json"), "utf8"));
-    assert.deepEqual(seen.argv, compileCodexArgs(specFor(repo.root, home)));
+    const seen = invocations(repo.root).calls[0];
+    // 실측 help 근거로 손으로 적은 기대 argv(구현을 구현과 비교하지 않는다).
+    assert.deepEqual(seen.argv, [
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.6-sol",
+      "--config",
+      'model_reasoning_effort="xhigh"',
+      "--config",
+      "mcp_servers={}",
+      "--strict-config",
+      "--ignore-user-config",
+      "--ignore-rules",
+      "--sandbox",
+      "read-only",
+      "--cd",
+      repo.root,
+      "--ephemeral",
+      "-",
+    ]);
     assert.equal(seen.cwd, repo.root);
     assert.equal(seen.stdin, "리뷰 프롬프트");
-    // 자식이 보는 env는 우리가 준 PATH·CODEX_HOME뿐이다(플랫폼이 주입하는 __CF_* 제외).
-    const injected = seen.envKeys.filter((k: string) => !["CODEX_HOME", "PATH", "__CF_USER_TEXT_ENCODING"].includes(k));
-    assert.deepEqual(injected, [], "사용자 env를 상속하지 않는다");
-    assert.ok(!seen.envKeys.includes("HOME"), "사용자 HOME 미상속 → ambient ~/.codex 설정·auth를 볼 수 없다");
-    assert.ok(seen.envKeys.includes("CODEX_HOME"));
+    const injected = seen.envKeys.filter((k) => !["CODEX_HOME", "__CF_USER_TEXT_ENCODING"].includes(k));
+    assert.deepEqual(injected, [], "CODEX_HOME 외 env는 상속되지 않는다(PATH 포함)");
+    assert.ok(!seen.envKeys.includes("HOME") && !seen.envKeys.includes("PATH"));
+    // 격리 홈은 여전히 비어 있다 — provider가 auth·설정을 쓰지 않았다.
+    assert.ok(!existsSync(join(home, "config.toml")) && !existsSync(join(home, "auth.json")));
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
@@ -491,19 +883,20 @@ test("[M5a] fake CLI 비정상 종료: stderr는 bounded·scrubbed 요약으로�
   const repo = await initRepo();
   const home = codexHome();
   try {
-    writeFileSync(
-      join(home, "scenario.json"),
-      JSON.stringify({ lines: [], exitCode: 7, stderr: `codex: token=SUPERSECRET ${"z".repeat(2000)}` }),
-    );
-    const provider = new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn: realFakeSpawn });
+    scenario(repo.root, [{ lines: [], exitCode: 7, stderr: `codex: token=SUPERSECRET ${"z".repeat(2000)}` }]);
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
     const handle = await provider.start(specFor(repo.root, home), "p");
-    const events = await drain(provider.events(handle));
-    const r = events.find((e) => e.kind === "result");
-    assert.ok(r && r.kind === "result");
-    assert.equal(r.isError, true);
-    assert.equal(r.terminalReason, "exit_error");
-    assert.ok(!r.text.includes("SUPERSECRET"));
-    assert.ok(r.text.length < 600, "stderr 요약은 상한을 넘지 않는다");
+    const r = resultsOf(await drain(provider.events(handle)));
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, true);
+    assert.equal(r[0].terminalReason, "exit_error");
+    assert.ok(!r[0].text.includes("SUPERSECRET"));
+    assert.ok(r[0].text.length < 600, "stderr 요약은 상한을 넘지 않는다");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
@@ -514,74 +907,120 @@ test("[M5a] fake CLI 중단(signal): 종료 결과 1건 · 실패", async () => 
   const repo = await initRepo();
   const home = codexHome();
   try {
-    writeFileSync(join(home, "scenario.json"), JSON.stringify({ lines: OK_STREAM, selfSignal: "SIGKILL" }));
-    const provider = new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn: realFakeSpawn });
+    scenario(repo.root, [{ lines: OK_STREAM, selfSignal: "SIGKILL" }]);
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
     const handle = await provider.start(specFor(repo.root, home), "p");
-    const events = await drain(provider.events(handle));
-    const results = events.filter((e) => e.kind === "result");
-    assert.equal(results.length, 1);
-    assert.ok(results[0].kind === "result" && results[0].isError);
-    assert.equal(results[0].kind === "result" && results[0].terminalReason, "signal");
+    const r = resultsOf(await drain(provider.events(handle)));
+    assert.equal(r.length, 1);
+    assert.ok(r[0].isError);
+    assert.equal(r[0].terminalReason, "signal");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
 
-test("[M5a] fake CLI 구조화 출력: --output-schema 요청 시 argv에 실리고 본문이 result.text다", async () => {
+test("[M5a] fake CLI 구조화 출력: --output-schema가 argv에 실리고 본문이 result.text다", async () => {
   const repo = await initRepo();
   const home = codexHome();
-  const schema = join(home, "review.schema.json");
+  const schema = join(repo.root, "review.schema.json");
   try {
-    mkdirSync(join(home, "unused"), { recursive: true });
     writeFileSync(schema, JSON.stringify({ type: "object" }));
-    writeFileSync(
-      join(home, "scenario.json"),
-      JSON.stringify({
+    scenario(repo.root, [
+      {
         lines: [
-          '{"type":"thread.started","thread_id":"th_abc"}',
+          `{"type":"thread.started","thread_id":"${TID}"}`,
           '{"type":"item.completed","item":{"id":"i","item_type":"agent_message","text":"{\\"verdict\\":\\"pass\\"}"}}',
           '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":2}}',
         ],
-      }),
-    );
+      },
+    ]);
     const spec = specFor(repo.root, home, { codex: { codexHome: home, outputSchemaPath: schema } });
-    const provider = new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn: realFakeSpawn });
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
     const handle = await provider.start(spec, "p");
     const events = await drain(provider.events(handle));
-    const seen = JSON.parse(readFileSync(join(home, "invocation.json"), "utf8"));
-    assert.ok(seen.argv.includes("--output-schema") && seen.argv.includes(schema));
-    const r = events.find((e) => e.kind === "result");
-    assert.ok(r && r.kind === "result");
-    assert.deepEqual(JSON.parse(r.text), { verdict: "pass" });
+    const seen = invocations(repo.root).calls[0];
+    const at = seen.argv.indexOf("--output-schema");
+    assert.ok(at > 0 && seen.argv[at + 1] === schema);
+    const r = resultsOf(events);
+    assert.deepEqual(JSON.parse(r[0].text), { verdict: "pass" });
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
 
-test("[M5a] fake CLI 오염 스트림: malformed·과대 줄·unknown이 섞여도 종료 결과는 1건", async () => {
+test("[M5a] fake CLI 오염 스트림: malformed·과대 줄이 섞이면 프로토콜 실패 1건", async () => {
   const repo = await initRepo();
   const home = codexHome();
   try {
-    writeFileSync(
-      join(home, "scenario.json"),
-      JSON.stringify({
+    scenario(repo.root, [
+      {
         lines: [
-          '{"type":"thread.started","thread_id":"th_abc"}',
+          `{"type":"thread.started","thread_id":"${TID}"}`,
           "{broken json",
           `{"type":"item.completed","item":{"item_type":"agent_message","text":"${"y".repeat(70_000)}"}}`,
           '{"type":"unheard.of","x":1}',
           '{"type":"turn.completed","usage":{}}',
         ],
-      }),
-    );
-    const provider = new CodexCliProvider({ manifest: manifest(repo.head), controllerRepoRoot: repo.root, spawn: realFakeSpawn });
+      },
+    ]);
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
     const handle = await provider.start(specFor(repo.root, home), "p");
     const events = await drain(provider.events(handle));
     const kinds = events.filter((e) => e.kind === "unknown").map((e) => (e.kind === "unknown" ? e.type : ""));
-    assert.ok(kinds.includes("malformed_line") && kinds.includes("oversized_line") && kinds.includes("unheard.of"));
-    assert.equal(events.filter((e) => e.kind === "result").length, 1);
+    assert.ok(kinds.includes("malformed_line") && kinds.includes("unheard.of"));
+    const r = resultsOf(events);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, true);
+    assert.equal(r[0].terminalReason, "malformed_line", "첫 프로토콜 실패가 종료 사유다");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5a] fake CLI resume 왕복: 두 번째 invocation argv가 실측 배치를 따른다", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  try {
+    scenario(repo.root, [
+      { lines: OK_STREAM },
+      { lines: [`{"type":"thread.started","thread_id":"${TID}"}`, '{"type":"turn.completed","usage":{}}'] },
+    ]);
+    const provider = new CodexCliProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
+    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
+    const handle = await provider.start(spec, "1차");
+    await drain(provider.events(handle));
+    await provider.send(handle, "2차");
+    await drain(provider.events(handle));
+
+    const calls = invocations(repo.root).calls;
+    assert.equal(calls.length, 2);
+    assert.deepEqual(calls[1].argv.slice(0, 7), ["exec", "--sandbox", "read-only", "--cd", repo.root, "resume", TID]);
+    assert.ok(!calls[1].argv.slice(5).includes("--cd"), "resume 뒤에는 --cd가 없다");
+    assert.ok(!calls[1].argv.includes("--ephemeral"));
+    assert.equal(calls[1].stdin, "2차");
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
