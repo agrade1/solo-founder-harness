@@ -1,5 +1,54 @@
 # WORKLOG.md
 
+## 2026-07-27 (V3 **M5a 구현 — 실행 경계(`B-5`) + CodexCliProvider + JSONL 어댑터 + offline fake 테스트** · **M5 전체는 미완료**)
+
+격리 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
+base `85ebe883ff96fad1070a508f5d4a28f7fc637b8e`(= M4 문서 정합성 커밋) 단일 세션. Pony Tail(full) 적용.
+**M5a 범위만** 구현했다 — autopilot CLI·실제 7-agent 동시 실행·live acceptance·Claude↔Codex 자동 전달은
+**하지 않았다**. push/fetch/pull/PR/merge/rebase/reset·네트워크·`gh`·패키지 설치·신규 의존성·
+package/lockfile 변경·MCP·실제 Codex 추론·deploy·DB·production·live billing **없음**.
+`runWorkflow`/`mission`/`orchestration*`/기존 테스트·schema·script는 **무수정**이다.
+
+- **① 플레이북 정정(B/P1, 첫 패치)**: `docs/handoff/CLAUDE_CODE_WORKER_PLAYBOOK.md` §3의 Claude
+  stream-json 예시에 **`--verbose`가 빠져 있었다**(그대로 실행하면 CLI가 거부한다). 플래그와 근거 주석을 넣었다.
+- **② 실행 경계 — 대장 `B-5` fixed**: `src/exec/executionBoundary.ts` 신규.
+  `verifyExecutionBoundary()`가 ⓐ manifest closed 재검증 ⓑ 만료(경계 포함) ⓒ 경로 계약(절대·NUL 없음·
+  디렉터리) ⓓ realpath 정규화 + `--show-toplevel` 대조로 **checkout 루트 신원** ⓔ controller·실행 checkout
+  **양쪽 HEAD == `approvedCommit`** 을 확인한 뒤에만 통과한다(같은 checkout이면 대조 1회).
+  `CodexCliProvider`는 **spawn 직전마다** 이 함수를 부른다 — 위반 경로 전부에서 **fake spawn 횟수 0**을
+  테스트가 고정한다. 기존 승인 manifest 규칙은 약화하지 않았다(같은 `validateApprovalManifest`를 통과해야 한다).
+- **③ `CodexCliProvider`**: 기존 `ExecutionProvider` 인터페이스 그대로 구현. argv는 **배열 컴파일**
+  (`exec --json --model … --config model_reasoning_effort="…" --config mcp_servers={} --sandbox … --cd … --ephemeral [--output-schema …] -`),
+  프롬프트는 **stdin**, cwd 명시, 리뷰 기본값은 `gpt-5.6-sol`·`xhigh`·`read-only`·ephemeral.
+  `workspace-write`는 spec이 명시할 때만이고 **bypass 계열 플래그·`danger-full-access`는 컴파일 단계에서 도달 불가**.
+  strict empty MCP는 **격리 `CODEX_HOME`(필수 입력) + `--config mcp_servers={}` + 자식 env를 `PATH`/`CODEX_HOME`
+  둘로 제한**(사용자 `HOME` 미상속 → ambient `~/.codex`·auth 미노출, 복사·저장도 없음)으로 강제하고,
+  스트림에 MCP 호출이 보이면 실패다. resume은 **관측된 session id로 `codex exec resume <id>`만** 하고
+  **`--last`는 쓰지 않는다**; ephemeral 세션의 resume은 거부한다.
+- **④ JSONL 어댑터**: `src/exec/codexStreamParser.ts` 신규. 8종을 좁게 파싱하고 나머지는 bounded unknown이다
+  (성공 근거로 쓰지 않는다). **종료 결과는 정확히 1건**이며 stream outcome + exit code/signal을 합쳐
+  `finish()`가 만든다 → silent stream·정상 종료 뒤 비정상 exit·중복 종료 이벤트가 모두 조용한 성공이 되지 않는다.
+  줄/이벤트/텍스트/usage 상한, malformed·과대 줄 처리, 권한 실패 → `permission_required` 매핑을 넣었고
+  error/stderr 요약은 상한 + 기존 `redactSecrets`를 통과한 것만 싣는다. **새 durable raw 로그는 만들지 않았다.**
+- **⑤ 타입 변경(최소)**: `src/exec/types.ts`에 `CodexSessionOptions`와 `SessionSpec.codex?` **추가만** 했다.
+  `SessionEvent`·`ExecutionProvider`·기존 필드는 **무변경**(codex 이벤트는 기존 kind로 매핑된다).
+- **⑥ offline fake 테스트**: `src/exec/__fixtures__/fake-codex.mjs`(결정론적 fake CLI — argv·cwd·stdin·env를
+  격리 홈에 기록하고 시나리오 JSONL을 재생) + 테스트 3종.
+- **검증(실행한 명령과 카운트)**:
+  · `npx tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  · 파일 단독 `npx tsx --test src/exec/executionBoundary.test.ts` **8/8**,
+    `… codexStreamParser.test.ts` **18/18**, `… codexCliProvider.test.ts` **18/18** (세 파일 합 **44/44**).
+  · `npm run test:exec` 전체 suite **186/186**(142 → 186). **186은 exec suite 수치이며 파일 단독 focused가 아니다.**
+  · **미실행**: `npm test` 전체 · core · acceptance · stress · live · 반복 3회 — M5a 범위상 돌리지 않았다
+    (사용자 지시: build + focused exec만). 미실행은 미실행으로 적는다.
+  · **비공허성(mutation) 2종**: ⓐ provider의 경계 대조 제거 → 경계 테스트 2건 실패
+    ⓑ 종료 이벤트 없는 스트림을 성공 처리 → 5건 실패. 둘 다 **정확히 원복**했고 원복 후
+    `git diff` 빈 diff · 소스 내 `MUTATION` grep **0** · focused 44/44 재확인.
+- **열린 블로커**: **로컬 `codex exec --help` 실행 승인이 나지 않아 argv·플래그·JSONL 필드명을 실측하지
+  못했다**(권한 거부 3회). 근거는 로드맵 §1의 기록(`0.146.0-alpha.3`에서 `--json`·`--output-schema`·
+  `--ephemeral`·`--sandbox`·`--model`·config override 확인)뿐이다 → 대장 `B-6`으로 등록했고
+  **M5b live 착수 전 필수**다. 잘못된 플래그는 codex가 비정상 종료하므로 결과는 fail closed다.
+
 ## 2026-07-27 (V3 **M4 문서 정합성 정정 — docs-only** · M5 착수 전 · **M5는 여전히 not started·미승인**)
 
 격리 worktree `/private/tmp/solo-founder-harness-m4-doc-consistency` · branch `work/m4-doc-consistency` ·

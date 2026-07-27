@@ -1,5 +1,28 @@
 # DECISIONS.md
 
+## 2026-07-27 (V3 M5a — 실행 경계 · Codex provider)
+
+- **실행 경계는 provider마다 복제하지 않고 함수 하나로 뒀다**(`verifyExecutionBoundary`).
+  provider별로 HEAD 대조를 복사하면 새 provider·controller 경로가 조용히 우회한다. 앞으로 프로세스를
+  띄우는 모든 경로가 같은 함수를 지나야 하며, 이 결정이 `B-5`를 닫는 실제 이유다.
+- **경계는 checkout "루트 신원"까지 본다.** realpath로 정규화한 경로가 `git rev-parse --show-toplevel`의
+  realpath와 같아야 통과한다. 그렇지 않으면 검사 대상(하위 디렉터리·symlink)과 실행 대상이 다른 저장소일 수 있다.
+- **실행 경계의 만료 판정은 kernel보다 좁다**(`now >= expiresAt`이면 거부). 대장 `C-17`이 지적한
+  경계 1회 통과를 **실행 경로에서는** 지금 닫는다 — kernel의 상태 전이 계약(`>`)은 이번 범위가 아니라 건드리지 않았다.
+- **종료 결과는 stream 이벤트가 아니라 `finish()`가 만든다.** `turn.completed`를 보자마자 result를 내면
+  그 뒤의 비정상 exit·signal을 성공에 덧붙일 방법이 없다. outcome을 기록해 두고 exit까지 합쳐 **정확히 1건**을
+  내면 "조용한 성공"이 구조적으로 불가능해진다(대신 result는 프로세스 종료 시점에 온다 — 진행 가시성은
+  init/status/assistant 이벤트가 담당한다).
+- **strict empty MCP를 ambient 설정에 기대지 않는다.** 격리 `CODEX_HOME`을 **필수 입력**으로 만들고
+  자식 env를 `PATH`/`CODEX_HOME` 둘로 좁혔다(사용자 `HOME` 미상속). 대가: 그 홈에는 자격증명이 없으므로
+  **live 실행은 인증 방식을 따로 결정해야 한다** — auth 파일 복사·영속화는 하지 않기로 했으므로 이 결정은
+  M5b에서 사람이 내린다(대장 `B-7`).
+- **resume은 `codex exec resume <session-id>`만.** `--last`는 "마지막 세션"이 다른 프로세스의 것일 수 있어
+  자동화에서 소유권을 증명하지 못한다. session id를 관측하지 못했으면 그냥 거부한다.
+- **`SessionEvent`를 늘리지 않았다.** codex 이벤트는 기존 kind(init/status/assistant/unknown/result)로
+  충분히 표현된다. provider 중립 타입에 vendor 전용 변형을 넣으면 모든 소비자가 그 변형을 알아야 한다.
+  추가한 것은 `SessionSpec.codex?` 하나뿐이다.
+
 ## 2026-07-27 (M4 문서 정합성 — docs-only)
 
 - **`manifest.approvedCommit`을 실행 checkout HEAD에 묶는 것은 M5 실행 경계의 진입 조건으로 못박았다**

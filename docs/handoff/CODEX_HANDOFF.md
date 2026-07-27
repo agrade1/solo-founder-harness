@@ -3,7 +3,33 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 문서 정합성 갱신 (2026-07-27 — **docs-only**, 이 절이 사실 관계에서 가장 최신이다)
+## 현행 상태 (2026-07-27 — V3 **M5a 구현 완료(offline)** · **M5 전체는 미완료** · 이 절이 가장 최신이다)
+
+격리 worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
+base `85ebe883ff96fad1070a508f5d4a28f7fc637b8e`. **로컬 커밋만 만들고 원격 push/PR/merge는 0.**
+Pony Tail(full). 네트워크·`gh`·패키지 설치·신규 의존성·package/lockfile 변경·MCP·**실제 Codex 추론**·
+deploy·DB·production·live billing **없음**.
+
+- **무엇이 들어갔나(M5a 범위 한정 승인)**: ⓐ 단일 fail-closed **실행 경계**
+  `src/exec/executionBoundary.ts` — spawn 직전마다 controller·실행 checkout HEAD가 정확히
+  `manifest.approvedCommit`인지 확인(대장 **`B-5` fixed**) ⓑ `src/exec/codexCliProvider.ts` —
+  기존 `ExecutionProvider` 구현(argv 배열 · stdin 프롬프트 · 명시 cwd/model/effort/sandbox ·
+  `--ephemeral` · `--json` · 선택 `--output-schema` · bypass 플래그 도달 불가 · `--last` 미사용)
+  ⓒ `src/exec/codexStreamParser.ts` — JSONL 8종 좁은 파싱, **종료 결과 정확히 1건**, bounded/scrubbed
+  ⓓ 결정론적 fake CLI 픽스처 + 테스트 3종. `src/exec/types.ts`는 `SessionSpec.codex?` **추가만**.
+- **무엇이 아닌가**: autopilot CLI · Claude↔Codex 자동 전달 · 실제 7-agent 동시 실행 ·
+  self-hosting controller 재시작 경계 · **live acceptance 전부**. **M5b/M5c/M5d는 시작도 하지 않았다.**
+- **검증(명령 + 범위)**: 파일 단독 `executionBoundary.test.ts` **8/8** · `codexStreamParser.test.ts` **18/18** ·
+  `codexCliProvider.test.ts` **18/18**(합 44/44) · `npm run test:exec` 전체 **186/186**(142 → 186) ·
+  `tsc --noEmit` 0 · `npm run build` PASS · `git diff --check` clean.
+  **미실행**: `npm test` 전체 · `test:core` · acceptance · stress · live · 반복 3회.
+  mutation 2종으로 새 게이트 비공허성 확인 후 정확히 원복(diff 0 · `MUTATION` grep 0).
+- **열린 P0 없음.** 열린 **B(P1) 2건**: `B-6`(로컬 `codex exec --help` 실측 미완 — 이 세션에서 실행 승인이
+  나지 않았다) · `B-7`(격리 `CODEX_HOME`의 live 인증 방식 미정). **둘 다 M5b live 착수 전 하드 게이트다.**
+  신규 C: `C-18`(deadline·cancellation) · `C-19`(`--output-schema` 응답 미검증) · `C-20`(kernel 만료 경계).
+- **다음 단계**: fresh Codex read-only 리뷰 → `B-6`/`B-7` 해소 → M5b 계획 → 사용자 승인.
+
+## 이전 — 문서 정합성 갱신 (2026-07-27 — **docs-only**)
 
 격리 worktree `/private/tmp/solo-founder-harness-m4-doc-consistency` · branch `work/m4-doc-consistency` ·
 base `c963cb0832d66a58fefdaa2025a9213966c3cc27`(= M4c 최종 HEAD)에서 **문서만** 고친 단일 세션이다.

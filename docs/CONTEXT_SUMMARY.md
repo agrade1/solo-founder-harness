@@ -2,7 +2,28 @@
 
 최종 갱신: 2026-07-27
 
-## 최신 (2026-07-27 — **M4 문서 정합성 정정 세션(docs-only)** · 이 블록이 사실 관계에서 가장 최신이다)
+## 최신 (2026-07-27 — **V3 M5a 구현: 실행 경계 + CodexCliProvider + JSONL 어댑터** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5a` · branch `work/m5a-codex-provider` ·
+  base `85ebe883ff96fad1070a508f5d4a28f7fc637b8e`. 로컬 커밋만, **원격 push/PR/merge 0**. Pony Tail(full).
+- **범위**: M5a만이다. **M5는 여전히 미완료** — autopilot CLI · Claude↔Codex 자동 전달 ·
+  실제 7-agent 동시 실행 · live acceptance는 **하지 않았다**(M5b/M5c/M5d).
+- **신규**: `src/exec/executionBoundary.ts` · `src/exec/codexCliProvider.ts` · `src/exec/codexStreamParser.ts`
+  + 테스트 3종 + `src/exec/__fixtures__/fake-codex.mjs`. **변경**: `src/exec/types.ts`(`SessionSpec.codex?` 추가만) ·
+  `docs/handoff/CLAUDE_CODE_WORKER_PLAYBOOK.md`(§3 예시에 `--verbose`) · `dist/exec/*.js`(build 산출물).
+  `runWorkflow`/`mission`/`orchestration*`/기존 테스트·schema·script·package/lockfile은 **무수정**.
+- **대장**: `B-5` **fixed**(승인 커밋 ↔ 실행 checkout HEAD 대조가 spawn 직전마다 fail closed).
+  신규 등록: `B-6`(codex help 실측 미완 — M5b live 전 필수) · `B-7`(격리 홈 인증 방식 미정 — M5b live 전 필수) ·
+  `C-18`(no-progress/wall-clock deadline·cancellation 미구현) · `C-19`(`--output-schema` 응답 검증 없음) ·
+  `C-20`(kernel 만료 경계는 여전히 `>`).
+- **테스트(명령 + 범위)**: 파일 단독 `executionBoundary.test.ts` **8/8** · `codexStreamParser.test.ts` **18/18** ·
+  `codexCliProvider.test.ts` **18/18**(합 44/44) · `npm run test:exec` 전체 **186/186**(142 → 186) ·
+  `tsc --noEmit` 0 · `npm run build` PASS. **미실행**: `npm test` 전체 · core · acceptance · stress · live · 반복.
+  mutation 2종으로 새 게이트 비공허성 확인 후 정확히 원복(diff 0 · `MUTATION` grep 0).
+- **열린 블로커**: 로컬 `codex exec --help` 실행 승인이 나지 않아 **argv·플래그·JSONL 필드명이 미실측**이다.
+  다음 세션은 이것부터 확정한다(대장 `B-6`).
+
+## 이전 (2026-07-27 — **M4 문서 정합성 정정 세션(docs-only)**)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m4-doc-consistency` · branch
   `work/m4-doc-consistency` · base `c963cb0`(= M4c 최종 HEAD). **문서만 수정**했고 소스·테스트·schema·
