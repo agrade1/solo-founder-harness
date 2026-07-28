@@ -219,8 +219,9 @@ export async function verifyExecutionBoundary(input) {
     const manifest = validateApprovalManifest(input.manifest);
     const clock = clockOf(input.nowMs);
     assertNotExpired(manifest, clock(), "경계 진입");
-    // 증명 도구부터 신뢰한다: 이름 조회 없이 검증된 절대경로 하나만 쓴다(신원은 아래에서 고정).
-    const gitBin = verifyTrustedExecutable(input.gitExecutablePath, "gitExecutablePath", GIT_CODES);
+    // 증명 도구부터 신뢰한다: 이름 조회 없이 검증된 절대경로 하나만 쓴다.
+    // 신원은 호출자가 더 이른 시점에 고정했다면 **그 값**과 대조하고(교체 거부) 아니면 여기서 고정한다.
+    const gitBin = verifyTrustedExecutable(input.gitExecutablePath, "gitExecutablePath", GIT_CODES, input.gitIdentity);
     const controller = resolveCanonicalDir(input.controllerRepoRoot, "controllerRepoRoot");
     const target = resolveCanonicalDir(input.targetWorktree, "targetWorktree");
     const sameCheckout = controller.path === target.path;

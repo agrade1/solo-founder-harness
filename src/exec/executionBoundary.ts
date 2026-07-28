@@ -143,6 +143,12 @@ export interface ExecutionBoundaryInput {
    */
   gitExecutablePath: string;
   /**
+   * **호출자가 더 이른 시점에 고정한 git 실행 파일 신원(dev+ino)**. 주면 경계 진입에서부터 그 신원과
+   * 같은지 확인한다(V3 M5b 5차 리뷰 A1) — 증명·생성 시점 이후 같은 경로가 다른 실행 파일로 교체되면
+   * 승인 커밋을 증명하지 못한다. 미지정이면 경계가 진입 시점 신원을 자기 기준으로 고정한다.
+   */
+  gitIdentity?: FileIdentity;
+  /**
    * 만료 판정용 시각. **함수를 주면 clock으로 취급해 재검증에서 다시 읽는다**(비동기 git 조회 중에
    * 승인이 만료되는 창을 닫는다). 숫자를 주면 그 시각으로 고정하고, 미지정이면 `Date.now`다.
    */
@@ -302,8 +308,9 @@ export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Pr
   const clock = clockOf(input.nowMs);
   assertNotExpired(manifest, clock(), "경계 진입");
 
-  // 증명 도구부터 신뢰한다: 이름 조회 없이 검증된 절대경로 하나만 쓴다(신원은 아래에서 고정).
-  const gitBin = verifyTrustedExecutable(input.gitExecutablePath, "gitExecutablePath", GIT_CODES);
+  // 증명 도구부터 신뢰한다: 이름 조회 없이 검증된 절대경로 하나만 쓴다.
+  // 신원은 호출자가 더 이른 시점에 고정했다면 **그 값**과 대조하고(교체 거부) 아니면 여기서 고정한다.
+  const gitBin = verifyTrustedExecutable(input.gitExecutablePath, "gitExecutablePath", GIT_CODES, input.gitIdentity);
 
   const controller = resolveCanonicalDir(input.controllerRepoRoot, "controllerRepoRoot");
   const target = resolveCanonicalDir(input.targetWorktree, "targetWorktree");

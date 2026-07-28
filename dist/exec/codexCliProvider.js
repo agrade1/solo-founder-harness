@@ -49,6 +49,16 @@
  * - **실행 파일은 신뢰된 명시 절대경로 하나뿐이다.** 이 모듈은 `process.env`를 **읽지 않는다** —
  *   PATH·`HARNESS_CODEX_BIN` 같은 상속 환경으로 실행 대상을 고르지 않는다(임의 실행 파일 seam 제거).
  *   경로를 고르는 책임은 **controller(호출자)** 에 있고, 여기서는 검증만 한다.
+ * - **증명은 메서드가 아니라 "설정 신원"까지 본다(5차 리비전 · A1/P1).** 이전 판은 executor가 진짜
+ *   `spawn`이기만 하면 **숨은 설정과 무관하게** 증명했으므로, 사용자 소유 0700 스크립트를
+ *   `executablePath`로 준 인스턴스도(`/bin/echo`·`/bin/true` 포함) read-only bridge를 지날 수 있었다 —
+ *   argv를 무시하고 쓰기·네트워크·hard deny 작업을 하는 native 코드가 승인 경계 안에서 돌 수 있었다.
+ *   지금 production 분기는 생성 시점에 **codex 실행 파일 · git 실행 파일 · controller checkout ·
+ *   승인 canonical digest · 시각 권위**를 런타임 검증해 **불변 스냅샷**으로 고정하고(검증 불가면 생성
+ *   자체가 실패한다), `attestReadOnlyCodexProvider(provider, expected)`는 **호출자가 스스로 검증해 온
+ *   기대 권위와의 대조 결과만** 알려 준다. 신원 객체는 밖으로 나가지 않으므로 "임의 실행 파일을 든
+ *   provider"에 대해 승인처럼 읽히는 답이 없다. 실행 파일·git 신원은 **매 invocation 그 스냅샷으로**
+ *   다시 확인하므로 첫 invocation이 새 baseline을 세우지 않는다.
  * - **spawn 직전 동기 게이트가 신뢰 판정의 근거다(3차 리비전 · A/P0).** 이전 판은 홈·실행 파일을
  *   **비동기 경계 작업 전에** 검사하고 그 뒤에는 경계 재검증만 했다 → 그 창에서 홈·실행 파일이 교체·
  *   symlink화·권한 완화되면 spawn까지 도달할 수 있었다. 이제 **await가 하나도 남지 않은 상태에서**
@@ -119,6 +129,12 @@ const CODEX_BIN_CODES = {
     path: "codex_config_invalid",
     invalid: "codex_executable_invalid",
     identity: "codex_executable_identity_changed",
+};
+/** 경계가 쓰는 git 실행 파일을 **provider 생성 시점에도** 같은 규칙으로 검증한다(신원 고정용). */
+const GIT_BIN_CODES = {
+    path: "codex_config_invalid",
+    invalid: "codex_git_executable_invalid",
+    identity: "codex_git_executable_identity_changed",
 };
 /**
  * codex 실행 파일 신원 검증(경계와 **같은 구현**을 쓴다): 정규 · symlink 아님 · 일반 파일 ·
@@ -382,19 +398,35 @@ function isBoundTo(handle, state) {
     return !!handle && handle.providerBinding === state.binding;
 }
 /**
- * **read-only 실행 권위 등록부**(M5b 2차 리비전 A2 · 3차 리비전 A1). 이 `WeakSet`은 **이 모듈 밖으로
- * 나가지 않고**, 여기에 들어오는 유일한 경로는 아래 `CodexCliProvider` 생성자의 **`opts.spawn`이 없는
- * 분기**다. 발급기(issuer)·토큰·"임의 provider를 증명해 주는 factory"는 **내보내지 않는다** —
- * 밖으로 나가는 것은 판정 함수 하나뿐이다.
+ * **read-only 실행 권위 등록부**(M5b 2차 리비전 A2 · 3차 리비전 A1 · **5차 리비전 A1**). 이 `WeakMap`은
+ * **이 모듈 밖으로 나가지 않고**, 여기에 들어오는 유일한 경로는 아래 `CodexCliProvider` 생성자의
+ * **`opts.spawn`이 없는 분기**다. 발급기(issuer)·토큰·"임의 provider를 증명해 주는 factory"는
+ * **내보내지 않는다** — 밖으로 나가는 것은 판정 함수 하나뿐이다.
  *
  * 이전 판은 `types.ts`가 brand 심볼을 **공개 export** 했으므로 같은 프로세스의 아무 provider나
  * 그것을 import해 자기에게 달 수 있었다(= 공개 API만으로 위조 가능). 그 다음 판은 심볼을 없앴지만
- * **`opts.spawn`으로 임의 executor를 주입한 인스턴스도 그대로 등록**했으므로 증명이 여전히 위조 가능했다:
- * 증명을 통과한 callback이 argv·env를 무시하고 임의 쓰기·명령·네트워크를 할 수 있었다.
- * 지금은 **executor가 `PRODUCTION_SPAWN`인 인스턴스만** 등록되고, 그 값은 `#private`이라
- * 생성 이후 외부 대입·`defineProperty`로 바꿀 수 없다.
+ * **`opts.spawn`으로 임의 executor를 주입한 인스턴스도 그대로 등록**했으므로 증명이 여전히 위조 가능했다.
+ * 그 다음 판(4차)은 executor가 `PRODUCTION_SPAWN`인 인스턴스만 등록했지만 **숨은 설정은 증명 대상이
+ * 아니었다**: 사용자 소유 0700 스크립트를 `executablePath`로 준 인스턴스도, 다른 git 실행 파일·다른 승인
+ * manifest·다른 checkout을 든 인스턴스도 그대로 증명됐다(`/bin/echo`·`/bin/true`가 증명을 통과했다).
+ *
+ * 지금 등록되는 값은 **불변 정규 설정·신원 스냅샷**이고 판정 함수가 그것을 함께 돌려준다 →
+ * `StableController`가 자기 소유 기대 신원과 **대조**할 수 있다(어긋나면 생성 자체가 거부된다).
  */
-const ATTESTED_READ_ONLY = new WeakSet();
+const ATTESTED_IDENTITY = new WeakMap();
+/**
+ * 생성 시점 1회 검증. **실패하면 증명 가능한 provider가 아니므로 생성 자체가 실패한다**(fail closed) —
+ * "일단 만들고 실행할 때 거부"는 controller가 대조할 신원을 주지 못한다.
+ */
+function captureIdentity(config) {
+    return Object.freeze({
+        executable: Object.freeze(verifyCodexExecutable(config.executablePath)),
+        git: Object.freeze(verifyTrustedExecutable(config.gitExecutablePath, "gitExecutablePath", GIT_BIN_CODES)),
+        controllerRepoRoot: requireAbsolute(config.controllerRepoRoot, "controllerRepoRoot"),
+        manifestDigest: manifestDigestOf(validateApprovalManifest(config.manifest)),
+        clock: resolveClock(config.nowMs),
+    });
+}
 /** read-only bridge가 실제로 호출하는 메서드. 이 네 개의 **함수 신원**까지 증명 대상이다. */
 const ATTESTED_METHODS = ["start", "send", "events", "stop"];
 /**
@@ -410,11 +442,12 @@ const ATTESTED_METHODS = ["start", "send", "events", "stop"];
  * **주장하지 않는 범위**: OS 수준 샌드박스 격리가 아니다. 이 모듈의 내부를 직접 조작할 수 있는 코드
  * (프로토타입 오염 이전 단계·모듈 패치·디버거)는 여전히 프로세스 안에 있다.
  */
-export function attestReadOnlyCodexProvider(provider) {
+export function attestReadOnlyCodexProvider(provider, expected) {
     if (typeof provider !== "object" || provider === null)
         return null;
-    if (!ATTESTED_READ_ONLY.has(provider))
-        return null; // 생성자를 지나지 않았다(복사본·proxy·위조 prototype)
+    const identity = ATTESTED_IDENTITY.get(provider); // 생성자를 지나지 않았다(복사본·proxy·위조 prototype)
+    if (identity === undefined)
+        return null;
     if (Object.getPrototypeOf(provider) !== CodexCliProvider.prototype)
         return null; // subclass·prototype 교체
     // 증명된 인스턴스의 상태·설정은 전부 `#private`이므로 own property는 **0이어야** 한다(4차 리뷰 A1) →
@@ -429,7 +462,32 @@ export function attestReadOnlyCodexProvider(provider) {
             return null; // 인스턴스 override(own property)
         methods[m] = fn;
     }
-    return Object.freeze(methods);
+    return Object.freeze({ methods: Object.freeze(methods), authorityMatches: authorityMatches(identity, expected) });
+}
+/**
+ * 증명된 설정이 기대 권위와 같은가. **하나라도** 다르면 false다(값·경로는 아무 데도 싣지 않는다).
+ *
+ * 시각 권위는 **controller와 같은 함수이거나 진짜 시스템 시계(`Date.now`)** 만 인정한다: 호출자가 고른
+ * 다른 시계를 든 provider는 controller가 만료로 보는 시점에 "아직 유효하다"고 판정할 수 있고,
+ * 반대로 `Date.now`는 호출자가 거짓말시키도록 고를 수 있는 값이 아니다(fail-safe 방향).
+ *
+ * 기대값 자체가 계약 밖이면(부분 객체·잘못된 타입) **false**다 — 예외를 던져 판정을 회피하지 않는다.
+ */
+function authorityMatches(identity, expected) {
+    const sameFile = (a, b) => typeof b === "object" &&
+        b !== null &&
+        a.path === b.path &&
+        typeof b.id === "object" &&
+        b.id !== null &&
+        a.id.dev === b.id.dev &&
+        a.id.ino === b.id.ino;
+    if (typeof expected !== "object" || expected === null)
+        return false;
+    return (sameFile(identity.executable, expected.executable) &&
+        sameFile(identity.git, expected.git) &&
+        identity.controllerRepoRoot === expected.controllerRepoRoot &&
+        identity.manifestDigest === expected.manifestDigest &&
+        (identity.clock === expected.clock || identity.clock === Date.now));
 }
 /** 호출자 manifest를 **한 번 읽어** 평범한 사본으로 입양한다(getter·proxy·cycle은 여기서 닫힌다). */
 function adoptManifestInput(raw) {
@@ -470,6 +528,12 @@ export class CodexCliProvider {
      * "호출자가 봉인 뒤에 자기 객체를 바꿨는가"를 판정할 때만 쓴다(바뀌면 `codex_spec_mutated`).
      */
     #optsRef;
+    /**
+     * **증명된 설정·신원 스냅샷**(5차 리뷰 A1). production 분기에서만 만들어지며(주입 executor는 증명
+     * 대상이 아니다) 실행 파일·git 신원은 **매 invocation 이 값으로 대조**한다 — 첫 invocation이 새
+     * baseline을 세우지 않는다.
+     */
+    #identity;
     /** invocation generation 발급기 — 단조 증가하며 재사용되지 않는다. */
     #nextGen = 1;
     constructor(opts) {
@@ -485,14 +549,19 @@ export class CodexCliProvider {
         });
         if (injected === undefined) {
             this.#spawn = PRODUCTION_SPAWN;
-            // **read-only 실행 권위는 여기서만 발급된다**(A2 · 3차 리뷰 A1). 이 구현이 sandbox
+            // **read-only 실행 권위는 여기서만 발급된다**(A2 · 3차 리뷰 A1 · 5차 리뷰 A1). 이 구현이 sandbox
             // `read-only`(`codex_sandbox_forbidden`)와 strict empty MCP를 격리 홈·`--strict-config`로 실제
             // 집행하고, **실행 대상이 진짜 `node:child_process.spawn`일 때만** bridge를 지날 자격이 있다.
-            ATTESTED_READ_ONLY.add(this);
+            // 등록되는 것은 메서드가 아니라 **런타임 검증된 설정 신원**이다: 실행 파일·git·checkout·승인
+            // digest·시각 권위가 여기서 고정되고, controller가 자기 기대값과 대조한다.
+            this.#identity = captureIdentity(this.#config);
+            ATTESTED_IDENTITY.set(this, this.#identity);
         }
         else if (typeof injected === "function") {
             // 하위 계층 단위 테스트용 seam. **증명하지 않는다** — 임의 executor를 가진 인스턴스는 untrusted다.
+            // 설정 검증도 여기서 하지 않는다(계약 위반은 그대로 `start`의 정확한 native 코드로 보고된다).
             this.#spawn = injected;
+            this.#identity = null;
         }
         else {
             fail("codex_config_invalid", "opts.spawn은 함수여야 한다");
@@ -711,7 +780,10 @@ export class CodexCliProvider {
             ? { identity: state.homeId } // resume: 소유 홈(상태 있음이 정상)
             : { requireEmpty: true }; // 첫 invocation: 빈 홈
         const preHome = verifyCodexHome(s.codexHome, homeExpect);
-        const preBin = verifyCodexExecutable(s.executablePath);
+        // **생성 시점에 고정된 실행 파일 신원**으로 대조한다(5차 리뷰 A1) — 첫 invocation이 새 baseline을
+        // 세우지 않으므로, 증명 이후 같은 경로가 다른 실행 파일로 교체되면 여기서 fail closed다.
+        const pinnedBin = this.#identity?.executable.id;
+        const preBin = verifyCodexExecutable(s.executablePath, pinnedBin);
         // 대장 `B-5`: 승인된 커밋이 controller/실행 checkout HEAD와 정확히 같을 때만 프로세스를 띄운다.
         const boundary = await verifyExecutionBoundary({
             // **봉인된 승인 사본**이다(`this.opts.manifest`를 다시 읽지 않는다 — 갈아끼운 승인이 경계 판정에
@@ -720,6 +792,9 @@ export class CodexCliProvider {
             controllerRepoRoot: s.controllerRepoRoot,
             targetWorktree: s.cwd,
             gitExecutablePath: s.gitExecutablePath,
+            // git 실행 파일도 **생성 시점 신원**에 묶는다(5차 리뷰 A1) — 증명 이후 교체된 git으로는
+            // 승인 커밋을 증명하지 못한다.
+            gitIdentity: this.#identity?.git.id,
             // **봉인된 시각 권위**를 함수로 넘긴다 — 경계는 진입과 spawn 직전 재검증에서 이 함수를 각각
             // 다시 호출한다(시간은 흐르고, 나중에 교체된 `opts.nowMs`는 여기 오지 못한다).
             nowMs: s.clock,
@@ -741,7 +816,7 @@ export class CodexCliProvider {
         assertNoSpecDrift(s, state.spec, this.#optsRef);
         boundary.revalidateSync();
         const home = verifyCodexHome(s.codexHome, { ...homeExpect, identity: preHome.id });
-        const bin = verifyCodexExecutable(s.executablePath, preBin.id);
+        const bin = verifyCodexExecutable(s.executablePath, pinnedBin ?? preBin.id);
         // argv는 **봉인값**으로 컴파일한다(중간에 바뀐 호출자 객체로 인자를 만들지 않는다).
         const args = compileResolvedArgs(s, cwd, resumeSessionId);
         // ── 발행: 검증과 동기 게이트가 전부 끝난 뒤에만 큐/`running`을 바꾼다 ──

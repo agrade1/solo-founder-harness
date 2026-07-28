@@ -18,6 +18,15 @@
  *   디스크에 **새 event tail + 낡은 state**가 남아 reopen(`event_count_mismatch`)도 재시도(`stale_writer`)도
  *   깨졌다. 지금은 발행 전에 `commit.journal`(원자적 rename)을 남기고, 다음 `commitRun`·`loadRun`이
  *   **그 journal을 보고 결정론적으로 복구**한다 — 규칙은 아래 `recoverPendingCommit`에 있다.
+ * - **최종 message body는 journal이 durable해진 뒤에만 생긴다(5차 독립 리뷰 A3).** body는 먼저
+ *   **트랜잭션 소유 staging 이름**(`messages/.staged-<txn>.<id>.md`)으로 쓰고, journal에 대상 messageId와
+ *   **내용 digest**를 함께 남긴 뒤에 최종 이름으로 rename한다. 복구는 roll forward에서 body를 **전부**
+ *   발행하고(하나라도 없으면 state를 쓰지 않는다) roll back에서는 **이 트랜잭션 소유 파일만** 지운다 —
+ *   기존·남의 body는 어떤 경로에서도 지우지 않는다.
+ * - **journal은 열린 기록이 아니다(5차 독립 리뷰 A3).** closed schema이고 경로 runId·milestone·승인
+ *   manifest·기준 state 원본 바이트·기준 event 바이트·후속 revision·정규 event record·해시 체인·
+ *   최종 state digest·body digest에 **전부 묶인다**. 어긋나면 `journal_*` 코드로 fail closed이며
+ *   journal·state·events·snapshot·body가 **바이트 그대로** 남는다.
  * - **커밋은 run 단위 배타 writer lock 안에서만 일어나고**(M4b), lock 안에서 디스크 state의
  *   revision·event tail이 호출자의 커밋 기준과 같은지 확인한다. 다르면 `stale_writer`로 거부하며
  *   **먼저 쓴 writer의 결과를 덮지 않는다**. lock 경합은 대기 없이 `run_lock_held`로 fail-closed다.
@@ -682,6 +691,7 @@ export const COMMIT_STAGES = [
     "journal:write",
     "journal:rename",
     "events:append",
+    "body:publish",
     "snapshot:write",
     "snapshot:rename",
     "state:write",
@@ -815,20 +825,24 @@ export function releaseRunWriterLock(paths, lock) {
  * lock을 쥔 상태에서 디스크가 아직 호출자의 기준과 같은지 확인한다.
  * 다르면 **아무것도 쓰지 않고** `stale_writer`로 거부한다 — 늦은 writer가 먼저 쓴 결과를 덮거나
  * 남의 event tail에 이어 붙여 체인을 깨뜨리는 경로를 없앤다.
+ *
+ * 통과하면 **기준 state 바이트의 digest**를 돌려준다(최초 커밋은 null) — journal이 그 값을 들고 가므로
+ * 복구가 "디스크가 정확히 그 기준인가"를 revision 숫자가 아니라 **원본 바이트 신원**으로 판정한다.
  */
 function assertDurableBase(paths, base) {
     if (base === null) {
         if (runExists(paths)) {
             throw new OrchestrationError("run_already_exists", `이미 존재하는 run이다: ${paths.runId}`);
         }
-        return;
+        return null;
     }
     if (!runExists(paths)) {
         throw new OrchestrationError("stale_writer", "커밋 기준 run_state.json이 디스크에서 사라졌다");
     }
+    const text = readFileSync(paths.stateFile, "utf8");
     let parsed;
     try {
-        parsed = JSON.parse(readFileSync(paths.stateFile, "utf8"));
+        parsed = JSON.parse(text);
     }
     catch {
         throw new OrchestrationError("state_unparsable", "run_state.json이 JSON이 아니다");
@@ -843,6 +857,53 @@ function assertDurableBase(paths, base) {
     if (tail !== base.lastEventId) {
         throw new OrchestrationError("stale_writer", `events.jsonl 줄 수(${tail})가 커밋 기준(${base.lastEventId})과 다르다`);
     }
+    return sha256Hex(text);
+}
+// ── M5b: 발행 journal (closed schema · 전이에 암호학적·구조적으로 묶인다) ────────
+//
+// **5차 독립 리뷰 A3.** 이전 판의 journal은 열린 객체였다: 미상 key를 허용했고 `base`를 검사 없이 받았고
+// 아무 숫자나 `baseEventBytes`로 썼고 event·state 문자열을 그대로 신뢰했다. 복구는 embedded state의
+// 일반 schema와 revision 숫자만 봤으므로, 그럴듯한 journal 하나로 **유효한 state를 호출자가 고른 state로
+// 덮어쓸 수** 있었다. 지금 journal은 아래 전부를 **발행 전에** 증명해야 한다:
+// 경로 runId · milestone · 승인 manifest 신원 · **기준 state 원본 바이트 digest** · 기준 event 바이트 수와
+// tail 신원 · **후속 revision** · 정규 event record와 번호·해시 체인 · 최종 event hash와 state digest ·
+// 발행할 state의 정규 바이트 형태 · staged/final body 대상과 **내용 digest**.
+const JOURNAL_SCHEMA = "m5b-commit-journal-1";
+/** journal 파일 자체의 바이트 상한 — 외부 조작으로 무한정 큰 파일을 읽지 않는다. */
+const MAX_JOURNAL_BYTES = 8 * 1024 * 1024;
+/** 한 커밋이 append하는 event 줄 수 상한(kernel 트랜잭션 하나는 batch·산출물 상한 안이다). */
+const MAX_JOURNAL_EVENTS = 64;
+/** 한 커밋이 발행하는 body 수 상한(kernel 트랜잭션 하나가 수락하는 메시지는 몇 건이다). */
+const MAX_JOURNAL_BODIES = 8;
+/** `events.jsonl` 바이트 수의 정적 상한 — 형식 검증 단계에서 범위 밖 값을 거른다. */
+const MAX_EVENT_FILE_BYTES = 1_073_741_824;
+const TXN_ID_RE = /^[0-9a-f]{32}$/;
+const JOURNAL_KEYS = [
+    "schema",
+    "txnId",
+    "runId",
+    "milestoneId",
+    "base",
+    "baseEventBytes",
+    "targetRevision",
+    "eventCount",
+    "events",
+    "state",
+    "stateSha256",
+    "stateDigest",
+    "lastEventId",
+    "lastEventHash",
+    "manifestDigest",
+    "bodies",
+];
+const JOURNAL_BASE_KEYS = ["revision", "lastEventId", "lastEventHash", "stateSha256"];
+const JOURNAL_BODY_KEYS = ["messageId", "sha256"];
+function jfail(code, message) {
+    throw new OrchestrationError(code, message);
+}
+/** 이 트랜잭션이 소유하는 staging 경로. 최종 경로(`messages/<id>.md`)와 절대 겹치지 않는다. */
+function stagedBodyPath(paths, txnId, messageId) {
+    return join(paths.messagesDir, `.staged-${txnId}.${messageId}.md`);
 }
 function readJournal(paths) {
     if (!existsSync(paths.journalFile))
@@ -851,6 +912,8 @@ function readJournal(paths) {
     if (st.isSymbolicLink() || !st.isFile()) {
         throw new OrchestrationError("journal_not_regular_file", "commit.journal이 일반 파일이 아니다");
     }
+    if (st.size > MAX_JOURNAL_BYTES)
+        jfail("journal_invalid", "commit.journal이 상한보다 크다");
     let parsed;
     try {
         parsed = JSON.parse(readFileSync(paths.journalFile, "utf8"));
@@ -859,94 +922,305 @@ function readJournal(paths) {
         // journal은 rename으로 발행하므로 부분 기록이 생기지 않는다 → 손상은 외부 조작이다(fail closed).
         throw new OrchestrationError("journal_unparsable", "commit.journal이 JSON이 아니다");
     }
-    const o = asObject(parsed, "commit.journal");
-    if (o.runId !== paths.runId) {
-        throw new OrchestrationError("journal_foreign", "commit.journal이 다른 run의 것이다");
-    }
-    if (typeof o.events !== "string" || typeof o.state !== "string" || typeof o.baseEventBytes !== "number") {
-        throw new OrchestrationError("journal_invalid", "commit.journal 필드가 계약과 다르다");
-    }
-    return {
-        runId: paths.runId,
-        base: o.base === null ? null : asObject(o.base, "commit.journal.base"),
-        baseEventBytes: o.baseEventBytes,
-        events: o.events,
-        state: o.state,
-    };
-}
-/** 디스크 `run_state.json`의 revision(없으면 null). 복구 판정에만 쓰는 얇은 읽기다. */
-function diskRevision(paths) {
-    if (!runExists(paths))
-        return null;
-    let parsed;
     try {
-        parsed = JSON.parse(readFileSync(paths.stateFile, "utf8"));
+        return validateJournal(paths, parsed);
+    }
+    catch (e) {
+        // 계약 위반은 **단일 안정 코드**로 접는다 — 내부 validator의 코드(`invalid_state` 등)가 새어 나가
+        // 복구 분기의 taxonomy를 흔들지 않게 한다.
+        if (e instanceof OrchestrationError && e.code.startsWith("journal_"))
+            throw e;
+        jfail("journal_invalid", "commit.journal이 계약과 다르다");
+    }
+}
+/** closed 검증 + 전이 묶기. 하나라도 어긋나면 던지며 **파일은 하나도 바뀌지 않는다**. */
+function validateJournal(paths, raw) {
+    const o = asObject(raw, "commit.journal");
+    if (o.runId !== paths.runId)
+        jfail("journal_foreign", "commit.journal이 다른 run의 것이다");
+    closedKeys(o, JOURNAL_KEYS, "commit.journal");
+    if (o.schema !== JOURNAL_SCHEMA)
+        jfail("journal_invalid", `commit.journal.schema는 "${JOURNAL_SCHEMA}"여야 한다`);
+    if (typeof o.txnId !== "string" || !TXN_ID_RE.test(o.txnId)) {
+        jfail("journal_invalid", "commit.journal.txnId는 32자 소문자 16진수여야 한다");
+    }
+    if (typeof o.events !== "string" || typeof o.state !== "string" || typeof o.manifestDigest !== "string") {
+        jfail("journal_invalid", "commit.journal의 events/state/manifestDigest는 문자열이어야 한다");
+    }
+    const milestoneId = assertSlug(o.milestoneId, "commit.journal.milestoneId");
+    const baseEventBytes = boundedInt(o.baseEventBytes, "commit.journal.baseEventBytes", 0, MAX_EVENT_FILE_BYTES);
+    const targetRevision = boundedInt(o.targetRevision, "commit.journal.targetRevision", 1, 1_000_000);
+    const eventCount = boundedInt(o.eventCount, "commit.journal.eventCount", 1, MAX_JOURNAL_EVENTS);
+    const lastEventId = boundedInt(o.lastEventId, "commit.journal.lastEventId", 1, 1_000_000);
+    const lastEventHash = assertSha256(o.lastEventHash, "commit.journal.lastEventHash");
+    const stateSha256 = assertSha256(o.stateSha256, "commit.journal.stateSha256");
+    const stateDigest = assertSha256(o.stateDigest, "commit.journal.stateDigest");
+    let base = null;
+    if (o.base !== null) {
+        const b = asObject(o.base, "commit.journal.base");
+        closedKeys(b, JOURNAL_BASE_KEYS, "commit.journal.base");
+        base = {
+            revision: boundedInt(b.revision, "commit.journal.base.revision", 1, 1_000_000),
+            lastEventId: boundedInt(b.lastEventId, "commit.journal.base.lastEventId", 0, 1_000_000),
+            lastEventHash: assertSha256(b.lastEventHash, "commit.journal.base.lastEventHash"),
+            stateSha256: assertSha256(b.stateSha256, "commit.journal.base.stateSha256"),
+        };
+    }
+    if (base === null) {
+        if (targetRevision !== 1 || baseEventBytes !== 0) {
+            jfail("journal_invalid", "최초 커밋 journal은 revision 1 · 기준 event 바이트 0이어야 한다");
+        }
+    }
+    else if (targetRevision !== base.revision + 1) {
+        jfail("journal_invalid", "commit.journal의 목표 revision은 기준 revision의 바로 다음이어야 한다");
+    }
+    // 발행할 state를 **load와 같은 validator**로 닫고, 바이트가 정규 직렬화 형태인지까지 본다.
+    let wanted;
+    try {
+        wanted = validateRunState(JSON.parse(o.state));
     }
     catch {
-        throw new OrchestrationError("state_unparsable", "run_state.json이 JSON이 아니다");
+        jfail("journal_invalid", "commit.journal.state가 유효한 run_state가 아니다");
     }
-    const rev = asObject(parsed, "run_state").revision;
-    if (typeof rev !== "number")
-        throw new OrchestrationError("invalid_state", "run_state.revision이 숫자가 아니다");
-    return rev;
+    if (`${JSON.stringify(wanted, null, 2)}\n` !== o.state) {
+        jfail("journal_invalid", "commit.journal.state가 정규 직렬화 바이트가 아니다");
+    }
+    if (sha256Hex(o.state) !== stateSha256)
+        jfail("journal_invalid", "commit.journal.stateSha256이 state 바이트와 다르다");
+    if (wanted.runId !== paths.runId)
+        jfail("journal_foreign", "commit.journal.state가 다른 run의 것이다");
+    if (wanted.milestoneId !== milestoneId)
+        jfail("journal_foreign", "commit.journal.state의 milestone이 journal과 다르다");
+    if (JSON.stringify(wanted.manifest) !== o.manifestDigest) {
+        jfail("journal_foreign", "commit.journal의 승인 manifest 신원이 state와 다르다");
+    }
+    if (wanted.revision !== targetRevision)
+        jfail("journal_invalid", "commit.journal.targetRevision이 state와 다르다");
+    if (wanted.lastEventId !== lastEventId || wanted.lastEventHash !== lastEventHash) {
+        jfail("journal_invalid", "commit.journal의 event chain 신원이 state와 다르다");
+    }
+    if (stateContentDigest(wanted) !== stateDigest)
+        jfail("journal_invalid", "commit.journal.stateDigest가 state 내용과 다르다");
+    // append할 event 줄 — 정규 record · 번호 · 해시 체인 · revision · 마지막 digest까지 본다.
+    const lines = o.events.split("\n");
+    if (lines.pop() !== "")
+        jfail("journal_invalid", "commit.journal.events는 개행으로 끝나는 줄들이어야 한다");
+    if (lines.length !== eventCount)
+        jfail("journal_invalid", "commit.journal.eventCount가 실제 줄 수와 다르다");
+    const baseEventId = base === null ? 0 : base.lastEventId;
+    let prevHash = base === null ? GENESIS_HASH : base.lastEventHash;
+    for (let i = 0; i < lines.length; i++) {
+        let ev;
+        try {
+            ev = validateEvent(JSON.parse(lines[i]));
+        }
+        catch {
+            jfail("journal_invalid", `commit.journal.events ${i + 1}번째 줄이 event 계약과 다르다`);
+        }
+        // 정규 형태: 최소 JSON 왕복(공백·중복 key·불필요한 표기 없음). key 순서는 `validateEvent`의 closed
+        // 검사가 이미 집합을 고정하므로 순서에 의존하지 않는다(디스크 event 바이트 배치를 바꾸지 않는다).
+        if (JSON.stringify(JSON.parse(lines[i])) !== lines[i]) {
+            jfail("journal_invalid", `commit.journal.events ${i + 1}번째 줄이 정규 형태가 아니다`);
+        }
+        if (ev.eventId !== baseEventId + i + 1)
+            jfail("journal_invalid", `commit.journal.events ${i + 1}번째 줄의 eventId가 기준과 이어지지 않는다`);
+        if (ev.prevHash !== prevHash)
+            jfail("journal_invalid", `commit.journal.events ${i + 1}번째 줄의 prevHash가 체인과 다르다`);
+        if (ev.revision !== targetRevision)
+            jfail("journal_invalid", `commit.journal.events ${i + 1}번째 줄의 revision이 목표와 다르다`);
+        const wantDigest = i === lines.length - 1 ? stateDigest : null;
+        if (ev.stateDigest !== wantDigest)
+            jfail("journal_invalid", `commit.journal.events ${i + 1}번째 줄의 stateDigest가 계약과 다르다`);
+        prevHash = sha256Hex(lines[i]);
+    }
+    if (baseEventId + lines.length !== lastEventId || prevHash !== lastEventHash) {
+        jfail("journal_invalid", "commit.journal의 최종 event 신원이 append와 다르다");
+    }
+    // body 발행 metadata — 대상 messageId와 내용 digest가 발행할 state의 메시지에 정확히 묶인다.
+    if (!Array.isArray(o.bodies) || o.bodies.length > MAX_JOURNAL_BODIES) {
+        jfail("journal_invalid", `commit.journal.bodies는 ${MAX_JOURNAL_BODIES}개 이하 배열이어야 한다`);
+    }
+    const bodies = [];
+    for (const item of o.bodies) {
+        const b = asObject(item, "commit.journal.bodies 항목");
+        closedKeys(b, JOURNAL_BODY_KEYS, "commit.journal.bodies 항목");
+        const messageId = assertSlug(b.messageId, "commit.journal.bodies[].messageId");
+        const sha256 = assertSha256(b.sha256, "commit.journal.bodies[].sha256");
+        if (bodies.some((x) => x.messageId === messageId))
+            jfail("journal_invalid", `commit.journal.bodies에 중복 messageId: ${messageId}`);
+        const m = wanted.messages.find((x) => x.messageId === messageId);
+        if (!m)
+            jfail("journal_invalid", `commit.journal.bodies가 state에 없는 메시지를 담았다: ${messageId}`);
+        if (m.bodySha256 !== sha256)
+            jfail("journal_invalid", `commit.journal.bodies의 digest가 state와 다르다: ${messageId}`);
+        bodies.push({ messageId, sha256 });
+    }
+    return {
+        txnId: o.txnId,
+        base,
+        baseEventBytes,
+        events: o.events,
+        eventBytes: Buffer.from(o.events, "utf8"),
+        state: o.state,
+        wanted,
+        bodies,
+    };
+}
+/** 일반 파일의 내용 digest(없거나 일반 파일이 아니면 null) — body 신원 판정용. */
+function fileDigest(file) {
+    if (!existsSync(file))
+        return null;
+    const st = lstatSync(file);
+    if (st.isSymbolicLink() || !st.isFile())
+        return null;
+    return sha256Hex(readFileSync(file));
 }
 /**
- * **미완 커밋 복구(V3 M5b 4차 독립 리뷰 A3).** `commitRun`(lock 안)과 `loadRun`이 부른다.
- * journal이 없으면 아무 일도 하지 않는다. 규칙은 **결정론적이고 멱등**이다:
+ * 발행할 state가 참조하는 **모든** body가 실제로 있고 내용이 맞는지 확인한다(쓰기 전에).
+ * 최종 경로에 이미 있으면 그대로 인정하고, 없으면 이 트랜잭션의 staged 파일에서 온다.
+ * 하나라도 없거나 digest가 다르면 fail closed이며 **파일은 하나도 바뀌지 않는다**.
+ */
+function planBodyPublication(paths, j) {
+    const moves = [];
+    for (const m of j.wanted.messages) {
+        const finalFile = join(paths.dir, m.bodyPath);
+        if (fileDigest(finalFile) === m.bodySha256)
+            continue;
+        const entry = j.bodies.find((b) => b.messageId === m.messageId);
+        if (!entry)
+            jfail("journal_body_missing", `발행할 state의 body가 없다: ${m.bodyPath}`);
+        const stagedFile = stagedBodyPath(paths, j.txnId, m.messageId);
+        if (fileDigest(stagedFile) !== entry.sha256) {
+            jfail("journal_body_missing", `이 커밋의 staged body가 없거나 내용이 다르다: ${m.messageId}`);
+        }
+        moves.push({ from: stagedFile, to: finalFile });
+    }
+    return moves;
+}
+/** 검증된 계획대로 staged → final rename. 중간 실패는 journal이 남아 다음 복구가 이어받는다(멱등). */
+function publishBodies(moves) {
+    for (const mv of moves)
+        renameSync(mv.from, mv.to);
+}
+/**
+ * roll back에서 지우는 것은 **이 트랜잭션이 만든 것뿐**이다: txn 소유 staged 파일, 그리고
+ * 최종 경로에 있더라도 ⓐ 내용 digest가 이 journal의 body와 같고 ⓑ 기준 state가 그 messageId를
+ * 참조하지 **않을** 때만 지운다. 즉 기존·남의 body는 어떤 경우에도 지우지 않는다.
+ */
+function rollbackBodies(paths, j, baseStateText) {
+    const baseIds = new Set();
+    if (baseStateText !== null) {
+        try {
+            const msgs = JSON.parse(baseStateText).messages;
+            if (Array.isArray(msgs))
+                for (const m of msgs)
+                    if (typeof m?.messageId === "string")
+                        baseIds.add(m.messageId);
+        }
+        catch {
+            jfail("journal_unrecognized", "기준 run_state.json을 읽을 수 없어 body를 되돌릴 수 없다");
+        }
+    }
+    for (const b of j.bodies) {
+        rmSync(stagedBodyPath(paths, j.txnId, b.messageId), { force: true });
+        if (baseIds.has(b.messageId))
+            continue; // 기준 state가 참조하는 body는 남의 것이다 — 손대지 않는다
+        const finalFile = join(paths.dir, `messages/${b.messageId}.md`);
+        if (fileDigest(finalFile) === b.sha256)
+            rmSync(finalFile, { force: true });
+    }
+}
+/**
+ * **미완 커밋 복구(V3 M5b 4·5차 독립 리뷰 A3).** `commitRun`(lock 안)과 `loadRun`이 부른다.
+ * journal이 없으면 아무 일도 하지 않는다. **쓰기·삭제를 하기 전에** journal 전체(closed schema + 전이
+ * 묶기) · 발행할 state · event append · body 신원 · 디스크 현재 상태를 **모두** 검증한다.
+ * 규칙은 **결정론적이고 멱등**이다:
  *
- * 1. 디스크 state가 이미 journal의 revision이면 → 발행은 끝났다. journal만 지운다(정리 실패 복구).
- * 2. 디스크 state가 아직 기준(base)이고 **event append가 정확히 journal의 바이트로 끝나 있으면**
- *    → **roll forward**: snapshot·state를 journal의 값으로 발행하고 journal을 지운다.
+ * 1. 디스크 state 바이트가 **정확히** journal이 발행할 state면 → 발행은 끝났다. event append와 body
+ *    신원까지 확인하고(남은 staged가 있으면 발행) journal을 지운다(정리 실패 복구).
+ * 2. 디스크 state가 아직 **기준 원본 바이트**(revision·chain·digest 전부 일치)이고 **event tail이 정확히
+ *    journal의 append 바이트**면 → **roll forward**: body 발행 → snapshot → state → journal 삭제.
  *    (감사 이력에 이미 기록된 커밋은 버리지 않는다 — append-only 의미 보존.)
- * 3. 디스크 state가 아직 기준이고 event tail이 journal 바이트와 다르면(0바이트·찢어진 부분 append)
- *    → **roll back**: `events.jsonl`을 기준 길이로 되돌리고 journal을 지운다. **가시적 전이 0**이며
- *    호출자가 받은 실패가 그대로 진실이다(같은 커밋을 그대로 재시도할 수 있다).
- * 4. 그 밖(디스크 state가 기준도 journal도 아님)은 외부 조작이므로 fail closed다.
- *
- * body 파일은 어느 경로에서도 지우지 않는다: state가 참조하지 않는 body는 load 검증 대상이 아니고,
- * 같은 messageId 재시도는 같은 경로를 덮어쓰므로 멱등이다(중복 event·revision을 만들지 않는다).
+ * 3. 같은 기준이고 tail이 journal append의 **정확한 바이트 접두**(0바이트·찢어진 부분 줄)면
+ *    → **roll back**: 이 트랜잭션의 staged/자기 소유 body 제거 → `events.jsonl`을 기준 길이로 truncate →
+ *    journal 삭제. **가시적 전이 0**이며 호출자가 받은 실패가 그대로 진실이다(같은 커밋 재시도 가능).
+ * 4. 그 밖(같은 길이의 남의 바이트 · 접두가 아닌 짧은 바이트 · 완전한 append 뒤의 여분 · 디스크 state가
+ *    기준도 목표도 아님)은 **fail closed**다: journal·state·events·snapshot·body가 **바이트 그대로** 남는다.
+ *    이전 판은 "정확히 일치하지 않는 모든 tail"을 기준 길이로 잘라냈으므로 **남의 append-only 감사
+ *    바이트를 파괴**할 수 있었다(5차 리뷰 A3).
  */
 function recoverPendingCommit(paths) {
-    const journal = readJournal(paths);
-    if (journal === null)
+    const j = readJournal(paths);
+    if (j === null)
         return "none";
-    const wanted = validateRunState(JSON.parse(journal.state));
-    const rev = diskRevision(paths);
-    if (rev === wanted.revision) {
+    const diskText = runExists(paths) ? readFileSync(paths.stateFile, "utf8") : null;
+    const eventBytes = existsSync(paths.eventsFile) ? readFileSync(paths.eventsFile) : Buffer.alloc(0);
+    const suffix = eventBytes.length >= j.baseEventBytes ? eventBytes.subarray(j.baseEventBytes) : null;
+    const appendComplete = suffix !== null && suffix.equals(j.eventBytes);
+    // ① 이미 발행됐다(정리만 남았다). 목표 state 바이트가 정확히 같고 append도 완전해야 journal을 지운다.
+    if (diskText !== null && diskText === j.state) {
+        if (!appendComplete) {
+            jfail("journal_unrecognized", "발행된 state인데 events.jsonl tail이 이 커밋의 append가 아니다");
+        }
+        publishBodies(planBodyPublication(paths, j));
         rmSync(paths.journalFile, { force: true });
         return "completed";
     }
-    if (rev !== (journal.base === null ? null : journal.base.revision)) {
-        throw new OrchestrationError("journal_unrecognized", `commit.journal이 디스크 state와 이어지지 않는다(디스크 revision ${String(rev)}, 기준 ${String(journal.base?.revision ?? null)}, 목표 ${wanted.revision})`);
+    // ② 디스크가 아직 이 커밋의 기준인가 — revision/chain **그리고 원본 바이트 digest**까지 같아야 한다.
+    if (!baseIsOnDisk(j, diskText)) {
+        jfail("journal_unrecognized", `commit.journal이 디스크 state와 이어지지 않는다(목표 revision ${j.wanted.revision}, 기준 ${String(j.base?.revision ?? null)})`);
     }
-    const size = existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0;
-    const appendedBytes = Buffer.byteLength(journal.events, "utf8");
-    if (size < journal.baseEventBytes) {
-        throw new OrchestrationError("journal_unrecognized", "events.jsonl이 커밋 기준보다 짧다");
-    }
-    const tail = size === journal.baseEventBytes + appendedBytes && appendedBytes > 0
-        ? readFileSync(paths.eventsFile).subarray(journal.baseEventBytes).toString("utf8")
-        : "";
-    if (tail === journal.events && appendedBytes > 0) {
-        writeAtomic(paths.snapshotFile, renderSnapshot(wanted));
-        writeAtomic(paths.stateFile, journal.state);
+    if (suffix === null)
+        jfail("journal_unrecognized", "events.jsonl이 커밋 기준보다 짧다");
+    if (appendComplete) {
+        const moves = planBodyPublication(paths, j); // 검증만 — 하나라도 없으면 여기서 fail closed다
+        publishBodies(moves);
+        writeAtomic(paths.snapshotFile, renderSnapshot(j.wanted));
+        writeAtomic(paths.stateFile, j.state);
         rmSync(paths.journalFile, { force: true });
         return "rolled_forward";
     }
-    if (size !== journal.baseEventBytes)
-        truncateSync(paths.eventsFile, journal.baseEventBytes);
-    rmSync(paths.journalFile, { force: true });
-    return "rolled_back";
+    // 접두(찢어진 부분 append·빈 tail)만 되돌린다. 그 밖의 바이트는 남의 것이므로 **손대지 않는다**.
+    if (suffix.length < j.eventBytes.length && j.eventBytes.subarray(0, suffix.length).equals(suffix)) {
+        rollbackBodies(paths, j, diskText);
+        if (eventBytes.length !== j.baseEventBytes)
+            truncateSync(paths.eventsFile, j.baseEventBytes);
+        rmSync(paths.journalFile, { force: true });
+        return "rolled_back";
+    }
+    jfail("journal_foreign", "events.jsonl tail이 이 커밋 append의 정확한 접두도 완전한 append도 아니다");
+}
+/** 디스크 state가 이 journal의 **기준 원본 바이트**인가(revision·event chain·digest 전부). */
+function baseIsOnDisk(j, diskText) {
+    if (j.base === null)
+        return diskText === null;
+    if (diskText === null)
+        return false;
+    if (sha256Hex(diskText) !== j.base.stateSha256)
+        return false;
+    let o;
+    try {
+        o = asObject(JSON.parse(diskText), "run_state");
+    }
+    catch {
+        return false;
+    }
+    return o.revision === j.base.revision && o.lastEventId === j.base.lastEventId && o.lastEventHash === j.base.lastEventHash;
 }
 /**
  * 하나의 kernel 변경을 디스크에 반영한다. **검증은 전부 호출 전에 끝나 있어야 한다** —
  * 유효하지 않은 입력은 여기까지 오지 않으므로 invalid input에서는 파일 전이가 0이다.
  *
- * 순서는 **준비 → 발행** 두 국면이다(V3 M5b 4차 독립 리뷰 A3):
+ * 순서는 **준비 → 발행** 두 국면이다(V3 M5b 4·5차 독립 리뷰 A3):
  * ① 준비 — 미완 커밋 복구 → 디스크 기준 확인 → event 줄·최종 state 계산 → **런타임 validator 전체와
- *    참조 무결성으로 예정 state를 검증**(무효한 state는 여기서 끝나므로 절대 발행되지 않는다).
- * ② 발행 — body → **journal(원자적 rename)** → events append → snapshot → state → journal 삭제.
- *    journal이 있는 동안 실패하면 다음 `commitRun`·`loadRun`이 `recoverPendingCommit`의 규칙대로
+ *    참조 무결성으로 예정 state를 검증**(무효한 state는 여기서 끝나므로 절대 발행되지 않는다) →
+ *    body를 **트랜잭션 소유 staging 이름**으로만 쓴다(`messages/.staged-<txn>.<id>.md`).
+ * ② 발행 — **journal(원자적 rename)** → events append → **body를 최종 이름으로 발행** → snapshot →
+ *    state → journal 삭제. `messages/<messageId>.md`는 **검증된 journal이 durable해진 뒤에만** 생긴다
+ *    (5차 리뷰 A3: 이전 판은 journal 전에 최종 body를 만들었으므로, journal 쓰기 실패가 색인되지 않은
+ *    최종 메시지 파일을 SoR 이름공간에 영구히 남겼다 — 복구도 load도 그것을 알지 못했다).
+ *    journal 발행 **전** 실패는 이 invocation의 staging만 지우고 끝난다(전이 0 · 최종 body 0).
+ *    journal이 있는 동안의 실패는 다음 `commitRun`·`loadRun`이 `recoverPendingCommit`의 규칙대로
  *    roll forward 또는 roll back한다 → 관찰 결과는 언제나 **일관된 전 상태 또는 후 상태**다.
  *
  * 커밋의 **마지막** 이벤트가 이 커밋이 남기는 state 내용의 digest를 들고 가고, load가 그것을
@@ -962,12 +1236,21 @@ export function commitRun(paths, input) {
     if (events.length === 0) {
         throw new OrchestrationError("commit_without_event", "state 커밋은 이벤트를 최소 1건 남겨야 한다");
     }
+    if (events.length > MAX_JOURNAL_EVENTS) {
+        throw new OrchestrationError("commit_events_too_many", `한 커밋의 이벤트는 ${MAX_JOURNAL_EVENTS}건 이하여야 한다`);
+    }
+    if (bodies.length > MAX_JOURNAL_BODIES) {
+        throw new OrchestrationError("commit_bodies_too_many", `한 커밋의 body는 ${MAX_JOURNAL_BODIES}건 이하여야 한다`);
+    }
     // chain 필드를 뺀 내용은 아래 finalState와 동일하므로 append 전에 미리 계산할 수 있다.
     const digest = stateContentDigest(state);
     const lock = acquireRunWriterLock(paths);
+    // 이 invocation이 만든 staging. journal 발행 **전** 실패면 전부 지운다(최종 이름은 아직 없다).
+    const staged = [];
+    let journalPublished = false;
     try {
         recoverPendingCommit(paths);
-        assertDurableBase(paths, input.base);
+        const baseStateSha256 = assertDurableBase(paths, input.base);
         // ── ① 준비: 발행 전에 전부 만들고 전부 검증한다 ──────────────────────────
         let prevHash = state.lastEventHash;
         let eventId = state.lastEventId;
@@ -997,26 +1280,61 @@ export function commitRun(paths, input) {
             throw new OrchestrationError("state_digest_drift", "예정 state가 정규화 결과와 다르다");
         }
         const snapshotText = renderSnapshot(finalState);
-        // ── ② 발행: journal이 있는 동안의 실패는 복구 규칙이 덮는다 ───────────────
+        // body는 **트랜잭션 소유 staging 이름**으로만 만든다 — 최종 이름은 journal 발행 뒤에 생긴다.
+        const txnId = randomBytes(16).toString("hex");
         for (const b of bodies) {
-            writeAtomic(join(paths.messagesDir, `${b.messageId}.md`), b.body, "body");
+            const stagedFile = stagedBodyPath(paths, txnId, b.messageId);
+            writeAtomic(stagedFile, b.body, "body");
+            staged.push(stagedFile);
         }
+        // ── ② 발행: journal이 있는 동안의 실패는 복구 규칙이 덮는다 ───────────────
         const baseEventBytes = existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0;
         const journal = {
+            schema: JOURNAL_SCHEMA,
+            txnId,
             runId: paths.runId,
-            base: input.base,
+            milestoneId: finalState.milestoneId,
+            base: input.base === null ? null : { ...input.base, stateSha256: baseStateSha256 },
             baseEventBytes,
+            targetRevision: finalState.revision,
+            eventCount: events.length,
             events: appended,
             state: stateText,
+            stateSha256: sha256Hex(stateText),
+            stateDigest: digest,
+            lastEventId: finalState.lastEventId,
+            lastEventHash: finalState.lastEventHash,
+            manifestDigest: JSON.stringify(finalState.manifest),
+            bodies: bodies.map((b) => ({ messageId: b.messageId, sha256: sha256Hex(b.body) })),
         };
         writeAtomic(paths.journalFile, JSON.stringify(journal), "journal");
+        journalPublished = true;
         faultPoint("events:append");
         appendFileSync(paths.eventsFile, appended, { encoding: "utf8", mode: 0o600 });
+        faultPoint("body:publish");
+        for (const b of bodies) {
+            renameSync(stagedBodyPath(paths, txnId, b.messageId), join(paths.messagesDir, `${b.messageId}.md`));
+        }
         writeAtomic(paths.snapshotFile, snapshotText, "snapshot");
         writeAtomic(paths.stateFile, stateText, "state");
         faultPoint("journal:cleanup");
         rmSync(paths.journalFile, { force: true });
         return finalState;
+    }
+    catch (e) {
+        // journal 발행 전 실패: 이 invocation의 staging만 지운다(최종 body·복구 대상 전이는 애초에 없다).
+        // 발행 뒤라면 정리 주체는 **결정론적 복구**이므로 여기서 아무것도 지우지 않는다.
+        if (!journalPublished) {
+            for (const f of staged) {
+                try {
+                    rmSync(f, { force: true });
+                }
+                catch {
+                    /* 정리 실패는 원 오류를 가리지 않는다 */
+                }
+            }
+        }
+        throw e;
     }
     finally {
         // ponytail: 해제 실패(남의 lock으로 교체 등)는 원 오류를 가릴 수 있지만 삼키지 않는다 —

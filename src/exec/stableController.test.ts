@@ -28,7 +28,14 @@ import {
   type ControllerHandoff,
   type HandoffContext,
 } from "./stableController.js";
-import { CodexCliProvider, attestReadOnlyCodexProvider, type SpawnFn } from "./codexCliProvider.js";
+import {
+  CodexCliProvider,
+  attestReadOnlyCodexProvider,
+  verifyCodexExecutable,
+  type ExpectedCodexAuthority,
+  type SpawnFn,
+} from "./codexCliProvider.js";
+import { validateApprovalManifest } from "./approvalManifest.js";
 import { consumeExactlyOneTerminal } from "./types.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec, SessionUsage } from "./types.js";
 
@@ -169,6 +176,23 @@ function fakeCodexBin(): string {
   return bin;
 }
 const FAKE_CODEX_BIN = fakeCodexBin();
+
+/**
+ * **valid-mode sentinel 실행 파일**(5차 리뷰 A1 회귀용). 사용자 소유 0700 · 정규 · 일반 파일이라
+ * 신뢰 조건을 **전부 만족**하지만, 실행되면 argv를 무시하고 sentinel 파일을 남긴다.
+ * 증명·binding이 열려 있으면 이것이 read-only bridge를 지나 실제로 돌아간다(= A1의 정확한 실패).
+ */
+function sentinelBin(sentinel: string): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-sentinel-")));
+  cleanups.push(dir);
+  const bin = join(dir, "sentinel.mjs");
+  writeFileSync(
+    bin,
+    `#!${process.execPath}\nimport {writeFileSync} from "node:fs";\nwriteFileSync(${JSON.stringify(sentinel)}, "ran\\n");\n`,
+  );
+  chmodSync(bin, 0o700);
+  return bin;
+}
 
 /** 결정론적 codex thread id — 파서가 정규 UUID를 요구한다. */
 const CODEX_TID = "0199a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
@@ -350,15 +374,17 @@ interface FixtureOpts {
 }
 
 /**
- * 신뢰 조건을 깨뜨린 codex 실행 파일 사본. provider는 spawn 직전 신원 검사에서 거부한다
- * (`codex_executable_invalid`) → controller는 그것을 자기 taxonomy로 접는다.
+ * 이 fixture만 쓰는 **개별 codex 실행 파일 사본**. 생성·증명·binding 시점에는 신뢰 조건을 만족하고
+ * (그래야 controller가 만들어진다) fixture가 controller를 만든 **뒤에** 실행 비트를 뗀다 →
+ * provider는 **생성 시점에 고정한 신원**으로 다시 검증하다 거부하고(`codex_executable_invalid`)
+ * controller가 그것을 자기 taxonomy로 접는다. spawn은 0이다.
  */
-function brokenCodexBin(): string {
-  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-badbin-")));
+function ownCodexBin(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-ownbin-")));
   cleanups.push(dir);
   const bin = join(dir, "codex.mjs");
-  writeFileSync(bin, "#!/bin/false\n");
-  chmodSync(bin, 0o600); // 실행 비트 없음
+  writeFileSync(bin, `#!${process.execPath}\nimport ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};\n`);
+  chmodSync(bin, 0o700);
   return bin;
 }
 
@@ -379,11 +405,12 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
   for (const id of taskIds) {
     kernel.createRootTask(seed(id, "dev-lead", opts.shareResource ? { resourceClasses: ["global-tmp"] } : {}));
   }
+  const codexBin = opts.breakExecutable ? ownCodexBin() : FAKE_CODEX_BIN;
   const provider = new CodexHarness(opts.script ?? (() => okTurn()), {
     manifest,
     controllerRepoRoot: repo.root,
     cwd: repo.root,
-    executablePath: opts.breakExecutable ? brokenCodexBin() : undefined,
+    executablePath: codexBin,
   });
   const handoffs: HandoffContext[] = [];
   const controllerOpts = {
@@ -391,6 +418,7 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
     provider: provider.codex,
     controllerRepoRoot: repo.root,
     gitExecutablePath: TRUSTED_GIT,
+    codexExecutablePath: codexBin,
     nowMs: opts.nowMs ?? msClock(),
     handoff: (ctx: HandoffContext) => {
       handoffs.push(ctx);
@@ -403,6 +431,8 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
     },
   };
   const controller = new StableController(controllerOpts);
+  // 신원 고정 **뒤에** 실행 파일을 신뢰 조건 밖으로 만든다 → 실패는 invocation 시점의 재검증이 낸다.
+  if (opts.breakExecutable) chmodSync(codexBin, 0o600);
   return { repo, kernel, provider, controller, handoffs, opts: controllerOpts as unknown as Record<string, unknown> };
 }
 
@@ -537,11 +567,12 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     body: body("result"),
     summary: "producer 완료",
   });
+  const codexBin = over.breakExecutable ? ownCodexBin() : FAKE_CODEX_BIN;
   const provider = new CodexHarness(over.script ?? ((t) => okTurn(t === 0 ? "첫 turn" : "두 번째 turn")), {
     manifest: deliveryManifest,
     controllerRepoRoot: repo.root,
     cwd: repo.root,
-    executablePath: over.breakExecutable ? brokenCodexBin() : undefined,
+    executablePath: codexBin,
   });
   const handoffs: HandoffContext[] = [];
   const controllerOpts = {
@@ -549,6 +580,7 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     provider: provider.codex,
     controllerRepoRoot: repo.root,
     gitExecutablePath: TRUSTED_GIT,
+    codexExecutablePath: codexBin,
     nowMs: over.nowMs ?? msClock(),
     handoff: (ctx: HandoffContext) => {
       handoffs.push(ctx);
@@ -561,6 +593,7 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     },
   };
   const controller = new StableController(controllerOpts);
+  if (over.breakExecutable) chmodSync(codexBin, 0o600); // 신원 고정 뒤에 신뢰 조건을 깬다
   return { repo, kernel, provider, controller, handoffs, opts: controllerOpts as unknown as Record<string, unknown> };
 }
 
@@ -1241,6 +1274,7 @@ async function controllerKernelGateCode(
       provider,
       controllerRepoRoot: repo.root,
       gitExecutablePath: TRUSTED_GIT,
+      codexExecutablePath: FAKE_CODEX_BIN,
       handoff: () => ({ spec: readOnlySpec("s", "dev-lead", repo.root), prompt: "p" }),
     });
     return "(생성됨)";
@@ -1249,27 +1283,42 @@ async function controllerKernelGateCode(
     return e.code;
   }
 }
+
+/** controller 생성자에 넣을 provider 후보를 그 run의 권위(repo·manifest)로 만들어 주는 factory. */
+type ProviderFactory = (ctx: { repo: { root: string; head: string }; manifest: Record<string, unknown> }) => unknown;
 
 /**
  * A2 회귀 공용 러너 — provider 후보 하나를 controller 생성자에 넣고 코드를 돌려준다.
  * 통과하면 `"(생성됨)"`이다(그 경우가 하나라도 나오면 이 finding이 다시 열린 것이다).
+ * 후보는 값 또는 factory다(**같은 권위로 발급된** provider를 만들어야 하는 양성 대조군용).
  */
-async function controllerGateCode(provider: unknown): Promise<string> {
+interface GateRun {
+  repo: { root: string; head: string };
+  manifest: Record<string, unknown>;
+  kernel: OrchestrationKernel;
+}
+
+/** 게이트 회귀용 run 하나(실제 checkout + 진짜 kernel). 여러 후보가 **같은 run**을 공유해도 된다. */
+async function gateRun(): Promise<GateRun> {
   const repo = await initRepo();
-  const kernel = createOrchestrationRun({
-    workspaceRoot: repo.root,
-    runId: RUN_ID,
-    milestoneId: MILESTONE,
-    manifest: manifestFor(repo.head, ["task-a"]),
-  });
+  const manifest = manifestFor(repo.head, ["task-a"]);
+  const kernel = createOrchestrationRun({ workspaceRoot: repo.root, runId: RUN_ID, milestoneId: MILESTONE, manifest });
   kernel.createRootTask(seed("task-a", "dev-lead"));
+  return { repo, manifest, kernel };
+}
+
+/** 주어진 run에 후보 provider를 꽂아 controller를 만들고 코드(또는 `"(생성됨)"`)를 돌려준다. */
+function gateCode(run: GateRun, candidate: unknown | ProviderFactory, over: Record<string, unknown> = {}): string {
+  const provider = typeof candidate === "function" ? (candidate as ProviderFactory)(run) : candidate;
   try {
     new StableController({
-      kernel,
+      kernel: run.kernel,
       provider: provider as ExecutionProvider,
-      controllerRepoRoot: repo.root,
+      controllerRepoRoot: run.repo.root,
       gitExecutablePath: TRUSTED_GIT,
-      handoff: () => ({ spec: readOnlySpec("s", "dev-lead", repo.root), prompt: "p" }),
+      codexExecutablePath: FAKE_CODEX_BIN,
+      handoff: () => ({ spec: readOnlySpec("s", "dev-lead", run.repo.root), prompt: "p" }),
+      ...over,
     });
     return "(생성됨)";
   } catch (e) {
@@ -1278,24 +1327,33 @@ async function controllerGateCode(provider: unknown): Promise<string> {
   }
 }
 
+async function controllerGateCode(candidate: unknown | ProviderFactory, over: Record<string, unknown> = {}): Promise<string> {
+  return gateCode(await gateRun(), candidate, over);
+}
+
+/** 증명·binding에 쓸 수 있는 유효 승인(실제 checkout에 묶이지 않는 형태 검증용 값). */
+const STANDALONE_MANIFEST = manifestFor("a".repeat(40), ["task-a"]);
+
 /**
  * **production 생성 경로 그대로의** provider — `spawn`을 주지 않으므로 executor는 진짜
  * `node:child_process.spawn`이고 증명을 받는다. 아래 테스트들은 이 인스턴스를 **세션을 열지 않고**
- * controller 생성자에만 넣는다.
+ * controller 생성자에만 넣는다. 5차 리뷰 A1 이후 증명은 **설정·신원 스냅샷**을 함께 발급하므로
+ * 생성 시점 설정이 실제로 검증 가능해야 한다(임의 실행 파일·잘못된 승인은 생성 자체가 실패한다).
  */
-function genuineCodex(repoRoot = "/"): CodexCliProvider {
+function genuineCodex(over: Partial<ConstructorParameters<typeof CodexCliProvider>[0]> = {}): CodexCliProvider {
   return new CodexCliProvider({
-    manifest: {},
-    controllerRepoRoot: repoRoot,
+    manifest: STANDALONE_MANIFEST,
+    controllerRepoRoot: "/",
     executablePath: FAKE_CODEX_BIN,
     gitExecutablePath: TRUSTED_GIT,
+    ...over,
   });
 }
 
 /** 임의 executor를 주입한 provider — 생성자를 지나지만 **증명 대상이 아니다**(3차 리뷰 A1). */
 function customSpawnCodex(): CodexCliProvider {
   return new CodexCliProvider({
-    manifest: {},
+    manifest: STANDALONE_MANIFEST,
     controllerRepoRoot: "/",
     executablePath: FAKE_CODEX_BIN,
     gitExecutablePath: TRUSTED_GIT,
@@ -1305,59 +1363,214 @@ function customSpawnCodex(): CodexCliProvider {
   });
 }
 
-test("[M5b] A1: 임의 executor를 주입한 인스턴스는 증명을 받지 못한다(사후 필드 덮어쓰기도 무효)", async () => {
-  // ⓐ `opts.spawn`을 준 인스턴스는 생성자를 지나도 read-only bridge에 들어오지 못한다.
-  //    (이전 판은 `opts.spawn ?? nodeSpawn`을 포착한 **모든** 인스턴스를 증명 등록부에 넣었으므로,
-  //     argv·env를 무시하고 임의 쓰기·명령·네트워크를 하는 callback이 그대로 통과했다.)
-  assert.equal(attestReadOnlyCodexProvider(customSpawnCodex()), null, "custom spawn 인스턴스가 증명됐다");
-  assert.equal(await controllerGateCode(customSpawnCodex()), "controller_provider_not_read_only");
+/** controller와 **같은 권위로 발급된** production provider(양성 대조군). */
+const matchingCodex: ProviderFactory = ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root });
 
-  // ⓑ production 인스턴스는 증명을 받고 controller 생성도 통과한다(음성 대조군이 아니라 **양성** 대조군).
-  assert.notEqual(attestReadOnlyCodexProvider(genuineCodex()), null, "production 인스턴스가 증명을 못 받았다");
-  assert.equal(await controllerGateCode(genuineCodex()), "(생성됨)");
+/**
+ * 증명 호출에 넣을 **기대 권위**. 증명은 이 값과의 대조 결과만 알려 주므로, 임의 실행 파일을 든
+ * provider에 대해 "승인처럼 읽히는 답"이 나올 수 없다(5차 리뷰 A1).
+ */
+function expectedAuthority(over: Partial<ExpectedCodexAuthority> = {}): ExpectedCodexAuthority {
+  return {
+    executable: verifyCodexExecutable(FAKE_CODEX_BIN),
+    git: verifyCodexExecutable(TRUSTED_GIT),
+    controllerRepoRoot: "/",
+    manifestDigest: JSON.stringify(validateApprovalManifest(STANDALONE_MANIFEST)),
+    clock: Date.now,
+    ...over,
+  };
+}
 
-  // ⓒ 생성 뒤에는 **어떤 필드도 덧붙일 수 없다**(4차 리뷰 A1 — 인스턴스가 얼어 있다).
-  //   executor·세션·설정·`id`가 전부 `#private`/prototype이므로 own property는 0이어야 한다.
-  const patched = genuineCodex();
+/** 생성 뒤 필드를 덧붙이려는 모든 시도가 던지는지 확인한다(인스턴스가 얼어 있다). */
+function assertSealedSurface(p: CodexCliProvider): void {
   assert.deepEqual(
-    [...Object.getOwnPropertyNames(patched), ...Object.getOwnPropertySymbols(patched)],
+    [...Object.getOwnPropertyNames(p), ...Object.getOwnPropertySymbols(p)],
     [],
     "provider 상태·설정이 public own property로 노출됐다(대입·defineProperty 통로)",
   );
-  assert.equal(Object.isFrozen(patched), true, "provider 인스턴스가 얼지 않았다");
-  for (const name of ["spawn", "spawnFn", "opts", "id", "sessions"]) {
+  assert.equal(Object.isFrozen(p), true, "provider 인스턴스가 얼지 않았다");
+  for (const name of ["spawn", "spawnFn", "opts", "id", "sessions", "identity"]) {
     assert.throws(
       () => {
-        (patched as unknown as Record<string, unknown>)[name] = () => undefined;
+        (p as unknown as Record<string, unknown>)[name] = () => undefined;
       },
       TypeError,
       `${name} 대입이 통과했다`,
     );
-    assert.throws(
-      () => Object.defineProperty(patched, name, { value: () => undefined, configurable: true }),
-      TypeError,
-      `${name} defineProperty가 통과했다`,
-    );
+    assert.throws(() => Object.defineProperty(p, name, { value: () => undefined, configurable: true }), TypeError, `${name} defineProperty가 통과했다`);
   }
-  assert.equal(patched.id, "codex-cli", "id가 prototype 상수가 아니다");
-  assert.notEqual(attestReadOnlyCodexProvider(patched), null, "거부된 덮어쓰기 시도가 증명을 깨뜨렸다");
-  assert.equal(await controllerGateCode(patched), "(생성됨)");
+  assert.equal(p.id, "codex-cli", "id가 prototype 상수가 아니다");
+  assert.notEqual(attestReadOnlyCodexProvider(p, expectedAuthority()), null, "거부된 덮어쓰기 시도가 증명을 깨뜨렸다");
+}
+
+test("[M5b] A1: 임의 executor를 주입한 인스턴스는 증명을 받지 못한다(사후 필드 덮어쓰기도 무효)", async () => {
+  // ⓐ `opts.spawn`을 준 인스턴스는 생성자를 지나도 read-only bridge에 들어오지 못한다.
+  //    (이전 판은 `opts.spawn ?? nodeSpawn`을 포착한 **모든** 인스턴스를 증명 등록부에 넣었으므로,
+  //     argv·env를 무시하고 임의 쓰기·명령·네트워크를 하는 callback이 그대로 통과했다.)
+  assert.equal(attestReadOnlyCodexProvider(customSpawnCodex(), expectedAuthority()), null, "custom spawn 인스턴스가 증명됐다");
+  assert.equal(await controllerGateCode(customSpawnCodex()), "controller_provider_not_read_only");
+
+  // ⓑ production 인스턴스는 증명을 받고, **같은 권위로 발급됐으면** controller 생성도 통과한다
+  //    (음성 대조군이 아니라 **양성** 대조군).
+  assert.notEqual(attestReadOnlyCodexProvider(genuineCodex(), expectedAuthority()), null, "production 인스턴스가 증명을 못 받았다");
+  assert.equal(await controllerGateCode(matchingCodex), "(생성됨)");
+
+  // ⓒ 생성 뒤에는 **어떤 필드도 덧붙일 수 없다**(4차 리뷰 A1 — 인스턴스가 얼어 있다). 거부된 시도가
+  //    증명·binding을 깨뜨리지도 않는다.
+  assertSealedSurface(genuineCodex());
+  const patchAttempt: ProviderFactory = (ctx) => {
+    const p = matchingCodex(ctx) as CodexCliProvider;
+    assertSealedSurface(p);
+    return p;
+  };
+  assert.equal(await controllerGateCode(patchAttempt), "(생성됨)");
 
   // ⓓ 함수가 아닌 spawn은 생성 자체가 거부다.
-  assert.throws(
-    () =>
-      new CodexCliProvider({
-        manifest: {},
-        controllerRepoRoot: "/",
-        executablePath: FAKE_CODEX_BIN,
-        gitExecutablePath: TRUSTED_GIT,
-        spawn: 1 as unknown as SpawnFn,
-      }),
-    /codex_config_invalid/,
+  assert.throws(() => genuineCodex({ spawn: 1 as unknown as SpawnFn }), /codex_config_invalid/);
+});
+
+test("[M5b] A1: 증명은 **설정 권위 대조 결과**만 주고, 임의 실행 파일 설정은 생성부터 거부한다", async () => {
+  // 증명 결과는 메서드 + "기대 권위와 같은가"뿐이다 — 신원 객체를 밖으로 내보내지 않는다.
+  const attested = attestReadOnlyCodexProvider(genuineCodex(), expectedAuthority());
+  assert.ok(attested, "production 인스턴스가 증명을 못 받았다");
+  assert.deepEqual(Object.keys(attested).sort(), ["authorityMatches", "methods"]);
+  assert.equal(attested.authorityMatches, true, "같은 권위인데 대조가 실패했다");
+
+  // 권위 필드 하나씩 어긋나면 **전부** false다(승인처럼 읽히는 답이 나오지 않는다).
+  const other = ownCodexBin();
+  const drift: Array<[string, Partial<ExpectedCodexAuthority>]> = [
+    ["codex 실행 파일 경로", { executable: verifyCodexExecutable(other) }],
+    ["git 실행 파일 경로", { git: verifyCodexExecutable(other) }],
+    ["controller checkout", { controllerRepoRoot: "/tmp" }],
+    ["승인 digest", { manifestDigest: "{}" }],
+  ];
+  for (const [label, over] of drift) {
+    const a = attestReadOnlyCodexProvider(genuineCodex(), expectedAuthority(over));
+    assert.equal(a?.authorityMatches, false, `${label} 드리프트가 대조를 통과했다`);
+  }
+  // 시각 권위: **호출자가 고른 다른 시계**는 거부다(만료 판정이 controller와 갈릴 수 있다).
+  assert.equal(
+    attestReadOnlyCodexProvider(genuineCodex({ nowMs: () => 0 }), expectedAuthority({ clock: msClock() }))?.authorityMatches,
+    false,
+    "호출자가 고른 다른 시계가 통과했다",
   );
+  // 반대로 **진짜 시스템 시계**(`Date.now`)는 어떤 controller 시계 아래에서도 인정한다 — 호출자가 골라
+  // 거짓말시킬 수 있는 값이 아니고, 실제 시각은 결정론적 테스트 시계보다 **엄격한** 방향이다(명시 계약).
+  assert.equal(
+    attestReadOnlyCodexProvider(genuineCodex(), expectedAuthority({ clock: msClock() }))?.authorityMatches,
+    true,
+    "진짜 시스템 시계를 든 provider가 거부됐다",
+  );
+  // 같은 경로·다른 inode도 다른 실행 파일이다(경로 문자열만 보지 않는다).
+  const swapped = verifyCodexExecutable(FAKE_CODEX_BIN);
+  const forgedId = { path: swapped.path, id: { dev: swapped.id.dev, ino: swapped.id.ino + 1 } };
+  assert.equal(
+    attestReadOnlyCodexProvider(genuineCodex(), expectedAuthority({ executable: forgedId }))?.authorityMatches,
+    false,
+    "같은 경로의 다른 신원이 통과했다",
+  );
+  // 기대값 자체가 계약 밖이면 판정은 false다(던져서 판정을 회피하지 않는다).
+  assert.equal(
+    attestReadOnlyCodexProvider(genuineCodex(), {} as unknown as ExpectedCodexAuthority)?.authorityMatches,
+    false,
+    "빈 기대값이 통과했다",
+  );
+  // 호출자 시계를 명시로 준 provider는 **그 시계를 기대할 때만** 통과한다.
+  const clock = msClock();
+  assert.equal(
+    attestReadOnlyCodexProvider(genuineCodex({ nowMs: clock }), expectedAuthority({ clock }))?.authorityMatches,
+    true,
+    "같은 시계인데 거부됐다",
+  );
+
+  // 검증 불가능한 설정(존재하지 않는 실행 파일 · 실행 비트 없음 · 무효 승인 · 상대 경로)은
+  // **증명 가능한 provider가 아니므로 생성 자체가 실패한다** — 나중에 거부하는 것이 아니다.
+  const noExec = join(realpathSync(mkdtempSync(join(tmpdir(), "m5b-noexec-"))), "x.mjs");
+  writeFileSync(noExec, "#!/bin/false\n");
+  chmodSync(noExec, 0o600);
+  assert.throws(() => genuineCodex({ executablePath: join(FAKE_CODEX_BIN, "nope") }), /codex_executable_invalid/);
+  assert.throws(() => genuineCodex({ executablePath: noExec }), /codex_executable_invalid/);
+  assert.throws(() => genuineCodex({ executablePath: "relative/codex" }), /codex_config_invalid/);
+  assert.throws(() => genuineCodex({ gitExecutablePath: noExec }), /codex_git_executable_invalid/);
+  assert.throws(() => genuineCodex({ manifest: {} }), /invalid_manifest/);
+  assert.throws(() => genuineCodex({ controllerRepoRoot: "relative/root" }), /codex_config_invalid/);
+});
+
+test("[M5b] A1: 다른 권위로 발급된 provider는 git·codex를 띄우기 전에 거부된다(sentinel 미실행)", async () => {
+  const sentinelDir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-sent-")));
+  cleanups.push(sentinelDir);
+  const codexSentinel = join(sentinelDir, "codex-ran");
+  const gitSentinel = join(sentinelDir, "git-ran");
+  // 두 sentinel 실행 파일 모두 **신뢰 조건을 전부 만족**한다(정규 · 0700 · 일반 파일 · 실행 비트).
+  const sentinelCodex = sentinelBin(codexSentinel);
+  const sentinelGit = sentinelBin(gitSentinel);
+  const otherGit = sentinelBin(join(sentinelDir, "other-git-ran"));
+
+  const cases: Array<[string, ProviderFactory, Record<string, unknown>]> = [
+    // ⓐ **임의의 valid-mode codex 실행 파일**을 든 provider(`/bin/echo`·사용자 0700 스크립트와 같은 부류).
+    ["임의 codex 실행 파일", ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, executablePath: sentinelCodex }), {}],
+    // ⓑ git 신원 불일치: provider는 sentinel git, controller는 진짜 git을 기대한다.
+    ["다른 git 실행 파일", ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, gitExecutablePath: sentinelGit }), {}],
+    // ⓒ controller가 기대하는 git이 provider의 것과 다른 반대 방향(경로 자체가 다르다).
+    [
+      "controller가 다른 git을 기대한다",
+      ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, gitExecutablePath: sentinelGit }),
+      { gitExecutablePath: otherGit },
+    ],
+    // ⓓ 다른 승인(manifest)으로 발급된 provider — 같은 실행 파일이라도 권위가 다르다.
+    ["다른 승인 manifest", ({ repo }) => genuineCodex({ manifest: STANDALONE_MANIFEST, controllerRepoRoot: repo.root }), {}],
+    // ⓔ 다른 controller checkout으로 발급된 provider.
+    ["다른 controller checkout", ({ manifest }) => genuineCodex({ manifest, controllerRepoRoot: "/" }), {}],
+    // ⓕ 호출자가 고른 다른 시계로 발급된 provider(만료 판정을 갈라놓을 수 있다).
+    [
+      "다른 시각 권위",
+      ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, nowMs: () => 0 }),
+      { nowMs: msClock() },
+    ],
+  ];
+
+  const run = await gateRun(); // 후보들이 **같은 run**을 공유한다(불필요한 git 부하를 만들지 않는다)
+  for (const [label, make, over] of cases) {
+    assert.equal(gateCode(run, make, over), "controller_provider_authority_mismatch", label);
+    assert.equal(existsSync(codexSentinel), false, `${label}: codex sentinel이 실행됐다`);
+    assert.equal(existsSync(gitSentinel), false, `${label}: git sentinel이 실행됐다`);
+  }
+
+  // 양성 대조군: **명시로 pin한** 실행 파일을 든 provider는 그대로 쓸 수 있다(sentinel도 여전히 0).
+  const pinnedSentinel: ProviderFactory = ({ repo, manifest }) =>
+    genuineCodex({ manifest, controllerRepoRoot: repo.root, executablePath: sentinelCodex });
+  assert.equal(gateCode(run, pinnedSentinel, { codexExecutablePath: sentinelCodex }), "(생성됨)", "명시로 pin한 실행 파일이 거부됐다");
+  assert.equal(existsSync(codexSentinel), false, "생성만으로 codex sentinel이 실행됐다");
+  assert.equal(existsSync(gitSentinel), false, "생성만으로 git sentinel이 실행됐다");
+});
+
+test("[M5b] A1: 같은 경로가 다른 실행 파일로 교체되면 생성 시점 신원이 그것을 거부한다", async () => {
+  // ⓐ provider 발급 뒤 같은 경로를 **새 inode**로 갈아치우면 controller 생성이 거부된다.
+  const swap = ownCodexBin();
+  const provider = genuineCodex({ executablePath: swap });
+  rmSync(swap);
+  writeFileSync(swap, `#!${process.execPath}\nimport ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};\n`);
+  chmodSync(swap, 0o700);
+  assert.equal(
+    await controllerGateCode(provider, { codexExecutablePath: swap }),
+    "controller_provider_authority_mismatch",
+    "같은 경로의 다른 실행 파일이 통과했다",
+  );
+
+  // ⓑ 실행 시점에도 **생성 시점 신원**이 근거다: controller가 만들어진 뒤 교체하면 spawn 0으로 거부된다.
+  const f = await fixture({ taskIds: ["task-a"], breakExecutable: true });
+  const bin = f.opts.codexExecutablePath as string;
+  chmodSync(bin, 0o700); // 신뢰 조건은 되돌리고 **신원만** 바꾼다
+  rmSync(bin);
+  writeFileSync(bin, `#!${process.execPath}\nimport ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};\n`);
+  chmodSync(bin, 0o700);
+  const out = await f.controller.advanceOnce();
+  assert.equal(out.tasks[0].marker, "provider_start_failed", "교체된 실행 파일로 세션이 열렸다");
+  assert.equal(f.provider.turns.length, 0, "교체된 실행 파일이 실제로 떴다");
 });
 
 test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자체가 거부된다(위조 표면 전수)", async () => {
+  const run = await gateRun(); // 후보 전수가 **같은 run**을 공유한다(케이스마다 checkout을 만들지 않는다)
   const genuine = genuineCodex();
   const proto = Object.getPrototypeOf(genuine) as Record<string, unknown>;
 
@@ -1369,22 +1582,22 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
     events: () => (async function* () {})(),
     stop: async () => undefined,
   };
-  assert.equal(await controllerGateCode(scripted), "controller_provider_not_read_only", "임의 scripted provider가 통과했다");
+  assert.equal(gateCode(run, scripted), "controller_provider_not_read_only", "임의 scripted provider가 통과했다");
 
   // ⓑ 진짜 provider의 property·심볼을 **전부 복사**한 객체.
   const copied = { ...genuine } as Record<string | symbol, unknown>;
   for (const s of Object.getOwnPropertySymbols(genuine)) copied[s] = (genuine as unknown as Record<symbol, unknown>)[s];
   for (const m of ["start", "send", "events", "stop"]) copied[m] = proto[m];
-  assert.equal(await controllerGateCode(copied), "controller_provider_not_read_only", "property/심볼 복사본이 통과했다");
+  assert.equal(gateCode(run, copied), "controller_provider_not_read_only", "property/심볼 복사본이 통과했다");
 
   // ⓒ prototype 위조: 겉모습·프로토타입이 같아도 생성자를 지나지 않았다.
   const spoofedProto = Object.create(CodexCliProvider.prototype) as Record<string, unknown>;
   // `id`는 prototype getter다(A1) — setter가 없으므로 대입이 아니라 own property로 심어야 한다.
   Object.defineProperty(spoofedProto, "id", { value: "codex-cli", enumerable: true, configurable: true });
-  assert.equal(await controllerGateCode(spoofedProto), "controller_provider_not_read_only", "prototype 위조가 통과했다");
+  assert.equal(gateCode(run, spoofedProto), "controller_provider_not_read_only", "prototype 위조가 통과했다");
   const setProto = { id: "codex-cli" };
   Object.setPrototypeOf(setProto, CodexCliProvider.prototype);
-  assert.equal(await controllerGateCode(setProto), "controller_provider_not_read_only", "setPrototypeOf 위조가 통과했다");
+  assert.equal(gateCode(run, setProto), "controller_provider_not_read_only", "setPrototypeOf 위조가 통과했다");
 
   // ⓓ subclass: 생성자를 **지나지만** 자기 메서드로 실행 계약을 갈아치울 수 있다.
   class EvilSubclass extends CodexCliProvider {
@@ -1393,15 +1606,20 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
     }
   }
   // **production 인자 그대로**(spawn 주입 없음)여도 거부여야 한다 — 거부 근거는 executor가 아니라 subclass다.
-  const subOpts = { manifest: {}, controllerRepoRoot: "/", executablePath: FAKE_CODEX_BIN, gitExecutablePath: TRUSTED_GIT };
+  const subOpts = {
+    manifest: STANDALONE_MANIFEST,
+    controllerRepoRoot: "/",
+    executablePath: FAKE_CODEX_BIN,
+    gitExecutablePath: TRUSTED_GIT,
+  };
   const sub = new EvilSubclass(subOpts);
-  assert.equal(await controllerGateCode(sub), "controller_provider_not_read_only", "subclass가 통과했다");
+  assert.equal(gateCode(run, sub), "controller_provider_not_read_only", "subclass가 통과했다");
 
   // ⓓ' 아무것도 override하지 않은 subclass도 거부다 — 증명 대상은 "이 구현"이지 "이 구현의 자손"이 아니다
   //     (자손은 다른 메서드·getter·필드로 계약을 얼마든지 바꿀 수 있고, 그 표면을 여기서 추적하지 않는다).
   class PlainSubclass extends CodexCliProvider {}
   const plain = new PlainSubclass(subOpts);
-  assert.equal(await controllerGateCode(plain), "controller_provider_not_read_only", "override 없는 subclass가 통과했다");
+  assert.equal(gateCode(run, plain), "controller_provider_not_read_only", "override 없는 subclass가 통과했다");
 
   // ⓔ 인스턴스 메서드 override. **4차 리뷰 A1 이후 인스턴스가 얼어 있어 두 경로 모두 던진다** —
   //    대입도, `defineProperty`도 own property를 만들지 못한다. 그래도 방어선(함수 신원 대조 +
@@ -1412,30 +1630,40 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
       (frozen as unknown as Record<string, unknown>)[m] = () => undefined;
     }, TypeError);
     assert.throws(() => definePatch(frozen as unknown as Record<string, unknown>, m, () => undefined), TypeError);
-    assert.notEqual(attestReadOnlyCodexProvider(frozen), null, `${m}: 거부된 override 시도가 증명을 깨뜨렸다`);
+    assert.notEqual(attestReadOnlyCodexProvider(frozen, expectedAuthority()), null, `${m}: 거부된 override 시도가 증명을 깨뜨렸다`);
 
     // own property가 하나라도 있으면(= 여기서는 override) 증명은 `null`이다.
     const overridden = Object.create(CodexCliProvider.prototype) as Record<string, unknown>;
     definePatch(overridden, m, () => undefined);
-    assert.equal(await controllerGateCode(overridden), "controller_provider_not_read_only", `${m} override가 통과했다`);
+    assert.equal(gateCode(run, overridden), "controller_provider_not_read_only", `${m} override가 통과했다`);
   }
 
   // ⓕ 진짜 provider를 감싼 Proxy(호출을 가로채면서 신원만 빌린다).
-  assert.equal(await controllerGateCode(new Proxy(genuineCodex(), {})), "controller_provider_not_read_only", "Proxy wrapper가 통과했다");
+  assert.equal(gateCode(run, new Proxy(genuineCodex(), {})), "controller_provider_not_read_only", "Proxy wrapper가 통과했다");
 
   // ⓖ 발급기·토큰·factory는 밖으로 나가 있지 않다 — 모듈이 내보내는 것은 판정 함수뿐이다.
   const mod = (await import("./codexCliProvider.js")) as Record<string, unknown>;
   const attestors = Object.keys(mod).filter((k) => /attest|brand|contract|issue/i.test(k));
   assert.deepEqual(attestors, ["attestReadOnlyCodexProvider"], "임의 provider를 증명해 줄 수 있는 표면이 늘었다");
   assert.equal(mod.attestReadOnlyCodexProvider instanceof Function, true);
-  assert.equal((mod.attestReadOnlyCodexProvider as (p: unknown) => unknown)(scripted), null, "판정 함수가 임의 객체를 증명했다");
+  assert.equal(
+    (mod.attestReadOnlyCodexProvider as (p: unknown, e: ExpectedCodexAuthority) => unknown)(scripted, expectedAuthority()),
+    null,
+    "판정 함수가 임의 객체를 증명했다",
+  );
 });
 
 test("[M5b] A2: production 경로 — 진짜 자식 프로세스로 controller가 그대로 전진한다", async () => {
   // live codex/claude 추론·네트워크·인증 0. **실제 OS 자식 프로세스**가 뜨고, provider 생성·증명·봉인·
   // 경계·argv·env·stdin·파서 배선이 전부 production 경로다(3차 리뷰 A1 — 주입 executor 없음).
   const f = await fixture({ taskIds: ["task-a"] });
-  assert.notEqual(attestReadOnlyCodexProvider(f.provider.codex), null, "증명된 production provider가 아니다");
+  const authority = expectedAuthority({
+    controllerRepoRoot: f.repo.root,
+    manifestDigest: JSON.stringify(f.kernel.getManifest()),
+    clock: f.opts.nowMs as () => number,
+  });
+  const attested = attestReadOnlyCodexProvider(f.provider.codex, authority);
+  assert.equal(attested?.authorityMatches, true, "증명·권위 대조를 통과한 production provider가 아니다");
   const out = await f.controller.advanceOnce();
   assert.equal(out.tasks[0].status, "completed", out.tasks[0].marker);
   const turn = f.provider.turns[0];

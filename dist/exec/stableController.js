@@ -30,6 +30,12 @@
  *   prototype 위조, subclass, 메서드 override, `Proxy` 감싸기, 임의 scripted provider, **custom-spawn
  *   인스턴스**가 전부 거부된다. **주장 범위는 정직하게 좁다**: 같은 프로세스 안에서 *공개 API만으로는*
  *   못 들어온다는 것이고, OS 샌드박스 격리를 주장하지 않는다.
+ *   **5차 리뷰 A1 정정**: 그 판은 **메서드 신원만** 증명했으므로 임의의 valid-mode 실행 파일(사용자 소유
+ *   0700 스크립트·`/bin/echo`)을 든 provider도 그대로 bridge를 지났다. 지금은 controller가 **명시 필수
+ *   옵션 `codexExecutablePath`** 를 스스로 검증하고(정규 경로 + dev/ino) `gitExecutablePath`·checkout
+ *   루트·**kernel(SoR) 승인의 canonical digest**·시각 권위와 함께 **기대 권위**로 만들어 증명 함수에
+ *   넘긴다. provider가 다른 권위로 발급됐으면 **git도 codex도 띄우기 전에** 생성이 거부된다
+ *   (`controller_provider_authority_mismatch`). git 신원은 실행 경계에도 pin으로 넘어간다.
  *   controller 성공 경로 테스트는 **production 생성 경로 + 실제 OS 자식 프로세스**(결정론적 fake codex
  *   실행 파일)로 argv·env·stdin·파서까지 지난다 — live Codex/Claude 추론·네트워크는 0이다.
  * - `SessionSpec`은 `permissionMode: "plan"`만 받는다 → `ClaudeCliProvider`의 **기본 `acceptEdits`** 는
@@ -119,10 +125,10 @@ import { LIMITS, OrchestrationError, formatTimestamp } from "./orchestrationType
 import { ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, normalizeWorkspacePath } from "./orchestrationTypes.js";
 import { commandAllowed, dependencyAllowed, networkDomainAllowed, pathWithin, validateApprovalManifest, } from "./approvalManifest.js";
 import { verifyArtifactFile } from "./orchestrationStore.js";
-import { verifyExecutionBoundary } from "./executionBoundary.js";
+import { verifyExecutionBoundary, verifyTrustedExecutable } from "./executionBoundary.js";
 import { attestOrchestrationKernel } from "./orchestrationKernel.js";
 import { consumeExactlyOneTerminal } from "./types.js";
-import { attestReadOnlyCodexProvider } from "./codexCliProvider.js";
+import { attestReadOnlyCodexProvider, verifyCodexExecutable } from "./codexCliProvider.js";
 /** 한 turn에서 소비할 이벤트 상한 — provider 스트림이 무한정 돌지 않게 한다. */
 export const MAX_TURN_EVENTS = 10_000;
 /**
@@ -399,6 +405,12 @@ const KERNEL_METHODS = [
     "acknowledgeDelivery",
 ];
 const PROVIDER_METHODS = ["start", "send", "events", "stop"];
+/** controller가 기대 git 실행 파일을 **직접** 검증할 때 쓰는 코드(경계와 같은 규칙·같은 문구). */
+const CONTROLLER_GIT_CODES = {
+    path: "boundary_git_path_invalid",
+    invalid: "boundary_git_untrusted",
+    identity: "boundary_git_identity_changed",
+};
 /**
  * **런타임 사설 권위**(2026-07-28 4차 독립 리뷰 A1).
  *
@@ -428,6 +440,7 @@ export class StableController {
         const handoff = opts.handoff;
         const controllerRepoRoot = opts.controllerRepoRoot;
         const gitExecutablePath = opts.gitExecutablePath;
+        const codexExecutablePath = opts.codexExecutablePath;
         const nowMs = opts.nowMs;
         if (typeof nowMs !== "undefined" && typeof nowMs !== "function") {
             fail("controller_config_invalid", "opts.nowMs는 시각(ms)을 돌려주는 함수여야 한다");
@@ -438,19 +451,29 @@ export class StableController {
         // **read-only bridge 게이트는 생성 시점에 있다**: 실제로 생성된 Codex read-only provider가 아니면
         // 세션을 하나도 열지 못한다. 증명과 메서드 포착이 **같은 한 번의 읽기**다(재읽기 창 없음).
         const kernel = captureKernel(kernelObj);
-        const provider = captureProvider(providerObj);
-        const providerId = providerObj.id;
         const state = kernel.captured.getState();
         // 승인의 출처는 **kernel(SoR)** 이다 — 호출자 객체를 두 번째 승인 원천으로 쓰지 않는다.
         const manifest = deepFreeze(validateApprovalManifest(kernel.captured.getManifest()));
         if (manifest.milestoneId !== state.milestoneId) {
             fail("controller_manifest_mismatch", "kernel manifest의 milestone이 run과 다르다");
         }
+        // 기대 실행 권위는 **controller 소유 입력**으로 직접 검증한다(provider 말을 믿지 않는다).
+        // 실패는 신뢰 검증 자체의 코드다(`codex_executable_invalid`/`boundary_git_untrusted` 등).
+        const gitBin = atTrusted(() => verifyTrustedExecutable(gitExecutablePath, "gitExecutablePath", CONTROLLER_GIT_CODES));
+        const provider = captureProvider(providerObj, {
+            executable: atTrusted(() => verifyCodexExecutable(codexExecutablePath)),
+            git: gitBin,
+            controllerRepoRoot,
+            manifestDigest: JSON.stringify(manifest),
+            clock,
+        });
+        const providerId = providerObj.id;
         this.#sealed = Object.freeze({
             runId: state.runId,
             milestoneId: state.milestoneId,
             controllerRepoRoot,
             gitExecutablePath,
+            gitIdentity: Object.freeze({ ...gitBin.id }),
             providerId: typeof providerId === "string" ? providerId : "",
             clock,
             manifest,
@@ -469,6 +492,7 @@ export class StableController {
             handoff,
             controllerRepoRoot,
             gitExecutablePath,
+            codexExecutablePath,
             providerId,
             clock,
             kernelMethods: kernel.raw,
@@ -696,6 +720,8 @@ export class StableController {
             controllerRepoRoot: this.#sealed.controllerRepoRoot,
             targetWorktree: cwd,
             gitExecutablePath: this.#sealed.gitExecutablePath,
+            // 생성 시점에 고정한 git 신원과 대조한다 — 그 사이 교체된 git으로는 승인 커밋을 증명하지 못한다.
+            gitIdentity: this.#sealed.gitIdentity,
             // 시계는 호출자 콜백이다 — 경계 안에서 던져도 그 코드가 marker가 되지 않게 접어서 넘긴다.
             nowMs: () => this.#now(),
         }));
@@ -793,15 +819,26 @@ function captureKernel(kernel) {
     };
 }
 /**
- * provider 메서드를 생성 시점에 **한 번 읽어** bind해 포착한다 — `provider.start = …` monkey-patch는
- * 실행되지 않는다. 읽기 주체는 **증명 함수**다(A2): 실제로 생성된 Codex read-only provider가 아니면
- * 여기서 끝나고, 통과하면 그 **한 번의 읽기 결과**가 그대로 실행 대상이 된다(A1의 재읽기 창 제거).
+ * provider 메서드를 생성 시점에 **한 번 읽어** bind해 포착하고, 그 provider의 **설정 신원 스냅샷**을
+ * controller 소유 기대값과 대조한다 — `provider.start = …` monkey-patch는 실행되지 않는다.
+ * 읽기 주체는 **증명 함수**다(A2): 실제로 생성된 Codex read-only provider가 아니면 여기서 끝나고,
+ * 통과하면 그 **한 번의 읽기 결과**가 그대로 실행 대상이 된다(A1의 재읽기 창 제거).
+ *
+ * **5차 리뷰 A1**: 이전 판은 메서드 신원만 봤으므로, 사용자 소유 0700 스크립트를 `executablePath`로 준
+ * 인스턴스(또는 다른 git·다른 승인·다른 checkout·다른 시계를 든 인스턴스)도 그대로 bridge를 지났다
+ * (`/bin/echo`·`/bin/true`가 증명을 통과했다). 지금은 아래 `expected`와 **정확히** 같아야 한다:
+ * codex 실행 파일 정규 경로 + dev/ino · git 실행 파일 정규 경로 + dev/ino · controller checkout ·
+ * 같은 canonical 승인 digest · 호환되는 시각 권위. 어긋나면 **git도 codex도 띄우기 전에** 생성이 거부된다.
  */
-function captureProvider(provider) {
-    const raw = attestReadOnlyCodexProvider(provider);
-    if (!raw) {
+function captureProvider(provider, expected) {
+    const attested = attestReadOnlyCodexProvider(provider, expected);
+    if (!attested) {
         fail("controller_provider_not_read_only", "M5b bridge는 실제로 생성된 read-only Codex 실행 provider만 받는다(복사본·prototype 위조·subclass·override·proxy 거부)");
     }
+    if (!attested.authorityMatches) {
+        fail("controller_provider_authority_mismatch", "provider가 controller가 기대한 실행 권위(codex/git 실행 파일 신원 · checkout · 승인 · 시각 권위)와 다르게 발급됐다");
+    }
+    const raw = attested.methods;
     const bound = {};
     for (const m of PROVIDER_METHODS)
         bound[m] = raw[m].bind(provider);
@@ -818,6 +855,7 @@ function buildPins(get, kernel, at) {
         pin("handoff", () => get().handoff, at.handoff),
         pin("controllerRepoRoot", () => get().controllerRepoRoot, at.controllerRepoRoot),
         pin("gitExecutablePath", () => get().gitExecutablePath, at.gitExecutablePath),
+        pin("codexExecutablePath", () => get().codexExecutablePath, at.codexExecutablePath),
         pin("providerId", () => get().provider.id, at.providerId),
         pin("clock", () => get().nowMs ?? Date.now, at.clock),
         // run 신원과 승인 canonical digest(SoR에서 **포착된** kernel로 다시 읽는다).
