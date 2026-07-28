@@ -48,11 +48,23 @@
  *
  * ## 나머지 확정 계약
  *
+ * - **kernel(SoR)도 provider처럼 발급 증명을 받는다(2026-07-28 4차 리뷰 A2).** 이전 판은 메서드 모양과
+ *   `paths.workspaceRoot`만 봤으므로, 스케줄링은 진짜 kernel에 위임하고 `completeTaskWithArtifacts`만
+ *   그럴듯한 값으로 위조하는 delegate가 **디스크 변화 0으로** `completed`/`result_accepted`를 받아낼 수
+ *   있었다. 지금은 `attestOrchestrationKernel`(kernel 모듈의 사설 발급 등록부)이 인정한 진짜 인스턴스만
+ *   권위가 되고, 구조적 객체·delegate·proxy·subclass·prototype 위조·인스턴스 override는 **생성 자체가
+ *   거부**된다(`controller_kernel_not_genuine`) → 성공은 언제나 durable SoR 커밋을 동반한다.
+ * - **controller의 권위·예산 상태는 런타임에서 감춰져 있다(4차 리뷰 A1).** 봉인 권위·pin 목록·토큰
+ *   카운터·호출자 `opts` 참조는 전부 ECMAScript `#private`이고 게이트도 `#private` 메서드이며, 인스턴스와
+ *   prototype은 **freeze**된다 → 밖에서 봉인을 갈아끼우거나 pin을 비우거나 토큰 예산을 리셋하거나
+ *   `defineProperty`로 게이트를 no-op으로 덮을 수 없다(이전 판의 TS `private`은 emitted JS에서 그냥
+ *   public writable own property였다). 밖에 남는 표면은 `advanceOnce`·`usedTokens`·`approvedManifest`·
+ *   `approvedCommit` 넷뿐이다.
  * - **run 하나는 생성 시점에 봉인된 권위에 묶인다.** kernel·provider·handoff **객체 자체와 호출할 메서드
  *   함수까지** 생성자에서 **정확히 한 번씩만 읽어** 포착하고(2026-07-28 2차 리뷰 A1 — 검사한 값과
  *   실행하는 값이 갈리지 않는다: 교대 getter·proxy·재진입 시계가 끼어들 창이 없다), 포착한 함수는
- *   **bind**해 들고 다니므로 나중의 monkey-patch는 실행 대상이 되지 못한다. 이후 실행 입력을
- *   `this.opts`에서 다시 읽지 않는다. `opts`는 **tripwire
+ *   **bind**해 들고 다니므로 나중의 monkey-patch는 실행 대상이 되지 못한다(권위 객체들이 이제 얼어
+ *   있으므로 patch 자체도 성립하지 않는다). 이후 실행 입력을 `#opts`에서 다시 읽지 않는다. `opts`는 **tripwire
  *   전용**이다: 객체 교체·메서드 monkey-patch·경로/시계 교체는 매 게이트에서 **단일 marker
  *   `controller_binding_drift`** 로 fail closed다. 승인 manifest는 kernel(SoR)에서 읽어
  *   `validateApprovalManifest`로 다시 닫고 **깊게 복사·깊게 freeze**해 봉인하며, 밖(handoff·경계)에는
@@ -86,6 +98,9 @@
  * - **완료는 kernel의 단일 원자 트랜잭션이다(3차 리뷰 A3).** 산출물 등록 · result 수락 · `completed`
  *   전이를 `completeTaskWithArtifacts` **한 커밋**으로 한다. 이전 판은 산출물마다 따로 커밋한 뒤
  *   `submitResult`를 불렀으므로 뒤쪽 산출물이 실패하면 앞선 artifact·event·revision만 durable에 남았다.
+ *   **물리 발행의 실패**(디스크 I/O)는 store의 journal 프로토콜이 덮는다(4차 리뷰 A3): 관찰 결과는
+ *   가시적 전이 0이거나, 다음 열기가 결정론적으로 roll forward한 완료 상태다 — 어느 쪽도 반쪽 상태가
+ *   아니고 재시도·전진이 가능하다.
  * - **실패한 turn의 usage도 회계된다(2차 리뷰 A3).** 종료 결과가 1건으로 확정되면 **성공/실패를 해석하기
  *   전에** bounded usage를 정확히 한 번 더한다 → 실패한 turn이 태운 토큰이 전역 예산에서 빠지고,
  *   소진된 뒤의 task는 provider 호출 0으로 닫힌다.
@@ -120,6 +135,7 @@ import {
 } from "./approvalManifest.js";
 import { verifyArtifactFile } from "./orchestrationStore.js";
 import { verifyExecutionBoundary, type VerifiedExecutionBoundary } from "./executionBoundary.js";
+import { attestOrchestrationKernel } from "./orchestrationKernel.js";
 import type { CompleteTaskInput, CompletedTask, OrchestrationKernel } from "./orchestrationKernel.js";
 import { consumeExactlyOneTerminal } from "./types.js";
 import { attestReadOnlyCodexProvider } from "./codexCliProvider.js";
@@ -572,12 +588,27 @@ export interface StableControllerOpts {
   nowMs?: () => number;
 }
 
+/**
+ * **런타임 사설 권위**(2026-07-28 4차 독립 리뷰 A1).
+ *
+ * 이전 판은 TS `private`으로 `opts`·`sealed`·`pins`·`tokensUsed`를 들고 있었는데, 그것은 emitted JS에서
+ * **평범한 writable own property**였다: 밖에서 `controller.sealed`를 갈아끼우면 봉인 manifest·kernel·
+ * provider가 바뀌고, `controller.pins = []`면 드리프트 tripwire가 사라지고, `controller.tokensUsed = 0`이면
+ * 토큰 예산이 리셋됐다. 게다가 TS `private` **메서드**도 prototype 메서드이므로 `defineProperty`로
+ * 인스턴스 own property를 덮으면 `this.#assertGatesOpen()` 같은 게이트를 no-op으로 만들 수 있었다.
+ *
+ * 지금 상태·게이트는 전부 ECMAScript `#private`이고(밖에서 보이지도 대입되지도 않는다) 인스턴스는
+ * 생성자 끝에서 **freeze**된다(own property를 하나도 만들 수 없다 → 메서드 shadowing 불가).
+ * `#private` 필드는 property가 아니므로 freeze 뒤에도 내부 카운터는 정상 동작한다.
+ */
 export class StableController {
-  private readonly sealed: SealedBinding;
-  private readonly pins: ReadonlyArray<Pin>;
-  private tokensUsed = 0;
+  readonly #sealed: SealedBinding;
+  readonly #pins: ReadonlyArray<Pin>;
+  readonly #opts: StableControllerOpts;
+  #tokensUsed = 0;
 
-  constructor(private readonly opts: StableControllerOpts) {
+  constructor(opts: StableControllerOpts) {
+    this.#opts = opts;
     // **호출자 소유 property는 여기서 정확히 한 번씩만 읽는다**(2026-07-28 2차 리뷰 A1). 아래 지역
     // 변수가 유일한 권위이고 검증도 봉인도 실행도 **이 값**에 대고 한다 — 교대 getter·proxy·재진입
     // 시계가 "검증된 값"과 "실제로 쓰이는 값"을 다르게 만들 창이 없다.
@@ -605,7 +636,7 @@ export class StableController {
     if (manifest.milestoneId !== state.milestoneId) {
       fail("controller_manifest_mismatch", "kernel manifest의 milestone이 run과 다르다");
     }
-    this.sealed = Object.freeze({
+    this.#sealed = Object.freeze({
       runId: state.runId,
       milestoneId: state.milestoneId,
       controllerRepoRoot,
@@ -618,9 +649,10 @@ export class StableController {
       handoff,
       startedAtMs: clock(),
     });
-    // pins는 **`this.opts`를 통해 지금 값을 다시 읽고**(tripwire) 위에서 포착한 **바로 그 값**과 비교한다.
-    // 필드 하나를 바꿔도, `opts` 객체를 통째로 갈아끼워도, 메서드를 monkey-patch해도 잡힌다.
-    this.pins = buildPins(() => this.opts, kernel.captured, {
+    // pins는 **봉인된 호출자 `opts` 객체에서 지금 값을 다시 읽고**(tripwire) 위에서 포착한 **바로 그 값**과
+    // 비교한다. 호출자가 자기 객체의 필드를 바꿔도, 메서드를 monkey-patch해도 잡힌다. `opts` 참조 자체는
+    // `#private`이므로 **controller에 다른 opts를 꽂는 경로는 아예 없다**(A1 — 이전 판은 대입 가능했다).
+    this.#pins = buildPins(() => this.#opts, kernel.captured, {
       opts: optsObj,
       kernel: kernelObj,
       provider: providerObj,
@@ -632,21 +664,24 @@ export class StableController {
       kernelMethods: kernel.raw,
       providerMethods: provider.raw,
     });
+    // own property가 0인 인스턴스를 얼린다 → 권위·카운터 대입도, `defineProperty`로 게이트 메서드를
+    // 덮는 것도 불가능하다(`#private` 상태는 property가 아니라 그대로 동작한다).
+    Object.freeze(this);
   }
 
   /** 봉인된 승인 커밋. */
   approvedCommit(): string {
-    return this.sealed.manifest.approvedCommit;
+    return this.#sealed.manifest.approvedCommit;
   }
 
   /** 봉인 승인의 **방어적 불변 사본**(권위 객체를 노출하지 않는다). */
   approvedManifest(): MilestoneApprovalManifest {
-    return frozenClone(this.sealed.manifest, "manifest");
+    return frozenClone(this.#sealed.manifest, "manifest");
   }
 
   /** bounded usage 카운터. **durable state에 들어가지 않는다** — 재시작 회계는 대장 `B-12`(M5c)다. */
   usedTokens(): number {
-    return this.tokensUsed;
+    return this.#tokensUsed;
   }
 
   /**
@@ -654,7 +689,7 @@ export class StableController {
    * 그대로 따르고, 스케줄되지 않은 task를 시작하지 않는다. 실패는 전부 bounded outcome으로 돌아온다.
    */
   async advanceOnce(): Promise<AdvanceOutcome> {
-    const pre = this.preflight();
+    const pre = this.#preflight();
     if (pre) return { blocked: pre, started: [], tasks: [] };
 
     // kernel은 호출자 객체다 — 조회·시작 커밋의 오류도 taxonomy를 고르지 못한다(3차 리뷰 A2).
@@ -662,14 +697,14 @@ export class StableController {
     let started: OrchestrationTask[];
     let startedIds: string[];
     try {
-      const batch = atKernel(() => this.sealed.kernel.scheduleReady());
+      const batch = atKernel(() => this.#sealed.kernel.scheduleReady());
       if (batch.length === 0) return { blocked: null, started: [], tasks: [] };
-      if (batch.length > this.sealed.manifest.maxSessions) {
+      if (batch.length > this.#sealed.manifest.maxSessions) {
         return { blocked: "session_budget_exceeded", started: [], tasks: [] };
       }
       plannedIds = idsOf(batch).join(",");
       // 시작 커밋은 **오직 이 API**로 한다(직접 `startTask`로 우회하지 않는다).
-      started = atKernel(() => this.sealed.kernel.startScheduledBatch());
+      started = atKernel(() => this.#sealed.kernel.startScheduledBatch());
       startedIds = idsOf(started);
       if (startedIds.join(",") !== plannedIds) {
         // 같은 state에서 같은 결정이어야 한다. 다르면 판정 근거가 흔들린 것이므로 진행하지 않는다.
@@ -685,12 +720,12 @@ export class StableController {
     // 그 lifecycle 정리는 대장 `B-11`/`B-13`으로 M5c 소유다 — 조용한 진행은 하지 않는다).
     let gate: string | null = null;
     for (const taskId of startedIds) {
-      gate ??= this.preflight();
+      gate ??= this.#preflight();
       if (gate) {
         tasks.push(emptyOutcome(taskId, gate));
         continue;
       }
-      tasks.push(await this.runTask(taskId));
+      tasks.push(await this.#runTask(taskId));
     }
     return { blocked: null, started: startedIds, tasks };
   }
@@ -698,9 +733,9 @@ export class StableController {
   // ── 내부 ──────────────────────────────────────────────────────────────────
 
   /** 게이트를 코드로 접어 돌려준다(kernel·provider를 건드리지 않는 진입 검사용). */
-  private preflight(): string | null {
+  #preflight(): string | null {
     try {
-      this.assertGatesOpen();
+      this.#assertGatesOpen();
       return null;
     } catch (err) {
       return codeOf(err);
@@ -715,21 +750,21 @@ export class StableController {
    * 시각 권위 호출. `opts.nowMs`는 **호출자 콜백**이므로 던진 값이 taxonomy를 고르지 못하게 접는다
    * (3차 리뷰 A2 — 이전 판은 시계가 던진 `OrchestrationError("result_accepted")`가 그대로 marker가 됐다).
    */
-  private now(): number {
-    const now = atBoundary("controller_clock_unreadable", () => this.sealed.clock());
+  #now(): number {
+    const now = atBoundary("controller_clock_unreadable", () => this.#sealed.clock());
     if (!Number.isFinite(now)) fail("controller_clock_unreadable", "시각 권위가 유한한 ms를 주지 않았다");
     return now;
   }
 
-  private assertGatesOpen(): void {
-    this.assertNoBindingDrift();
-    const now = this.now();
-    const expiresAtMs = Date.parse(this.sealed.manifest.expiresAt);
+  #assertGatesOpen(): void {
+    this.#assertNoBindingDrift();
+    const now = this.#now();
+    const expiresAtMs = Date.parse(this.#sealed.manifest.expiresAt);
     if (!Number.isFinite(expiresAtMs) || now >= expiresAtMs) fail("manifest_expired", "승인 manifest가 만료됐다");
-    if (now - this.sealed.startedAtMs >= this.sealed.manifest.maxElapsedMs) {
+    if (now - this.#sealed.startedAtMs >= this.#sealed.manifest.maxElapsedMs) {
       fail("budget_elapsed_exhausted", "승인된 경과 시간 예산을 넘었다");
     }
-    if (this.sealed.manifest.maxTokens !== null && this.tokensUsed >= this.sealed.manifest.maxTokens) {
+    if (this.#sealed.manifest.maxTokens !== null && this.#tokensUsed >= this.#sealed.manifest.maxTokens) {
       fail("budget_tokens_exhausted", "승인된 토큰 예산을 넘었다");
     }
   }
@@ -739,8 +774,8 @@ export class StableController {
    * kernel 객체·**메서드 함수** · handoff 함수 · 시각 권위가 **하나라도** 달라지면 같은 marker로 닫는다
    * (값·경로는 오류에 싣지 않는다).
    */
-  private assertNoBindingDrift(): void {
-    for (const pin of this.pins) {
+  #assertNoBindingDrift(): void {
+    for (const pin of this.#pins) {
       let now: unknown;
       try {
         now = pin.read();
@@ -751,7 +786,7 @@ export class StableController {
     }
   }
 
-  private async runTask(taskId: string): Promise<TaskOutcome> {
+  async #runTask(taskId: string): Promise<TaskOutcome> {
     const outcome: TaskOutcome = {
       taskId,
       status: "failed",
@@ -761,22 +796,22 @@ export class StableController {
       artifacts: [],
       usage: { inputTokens: 0, outputTokens: 0 },
     };
-    const { kernel, provider } = this.sealed;
+    const { kernel, provider } = this.#sealed;
     let handle: SessionHandle | null = null;
     try {
-      const task = this.requireTask(taskId);
+      const task = this.#requireTask(taskId);
       // 의존 포인터의 **불변 스냅샷** — 이 값을 handoff에 주고, provider 호출 직전에 **이 값으로** 재검증한다.
-      const inputs = this.verifiedInputs(task);
+      const inputs = this.#verifiedInputs(task);
       const ctx = { task: frozenClone(task, "task"), inputs, manifest: this.approvedManifest() };
       // handoff는 호출자 코드다 — 던진 오류의 **코드를 스스로 고르게 두지 않는다**(A5b).
-      const h = sealHandoff(atBoundary("handoff_failed", () => this.sealed.handoff(ctx)));
+      const h = sealHandoff(atBoundary("handoff_failed", () => this.#sealed.handoff(ctx)));
 
-      const boundary = await this.verifyBoundary(h.spec.cwd);
+      const boundary = await this.#verifyBoundary(h.spec.cwd);
       // 경계가 확인한 `targetRoot`로 **새 불변 spec**을 만든다(호출자 cwd 문자열을 다시 쓰지 않는다).
       const spec = frozenClone({ ...h.spec, cwd: boundary.targetRoot }, "spec");
-      this.syncGate(boundary, inputs); // ← 이 다음 문장이 provider 호출이다(사이에 await 없음)
+      this.#syncGate(boundary, inputs); // ← 이 다음 문장이 provider 호출이다(사이에 await 없음)
       handle = await atBoundaryAsync("provider_start_failed", () => provider.start(spec, h.prompt));
-      await this.consumeTurn(handle, outcome);
+      await this.#consumeTurn(handle, outcome);
 
       // inbox: durable 순서 그대로. 경계·게이트·포인터를 **전달 직전에** 다시 확인하고,
       // ack는 그 turn이 **성공 종료 결과**를 낸 뒤에만 한다. inbox 항목은 kernel(호출자 객체)이 준
@@ -784,12 +819,12 @@ export class StableController {
       for (const raw of atKernel(() => kernel.listPendingInbox(taskId))) {
         const entry = frozenClone(raw, "전달 항목", "controller_inbox_invalid");
         const refs = entry.artifactRefs;
-        this.verifyPointers(refs);
-        const b = await this.verifyBoundary(spec.cwd);
-        this.syncGate(b, refs); // ← 이 다음 문장이 send다(사이에 await 없음)
+        this.#verifyPointers(refs);
+        const b = await this.#verifyBoundary(spec.cwd);
+        this.#syncGate(b, refs); // ← 이 다음 문장이 send다(사이에 await 없음)
         const message = deliveryPrompt(entry);
         await atBoundaryAsync("provider_send_failed", () => provider.send(handle!, message));
-        await this.consumeTurn(handle, outcome);
+        await this.#consumeTurn(handle, outcome);
         atKernel(() => kernel.acknowledgeDelivery({ taskId, messageId: entry.messageId }));
         outcome.acknowledged.push(entry.messageId);
       }
@@ -801,9 +836,9 @@ export class StableController {
       // kernel(권위)이 집행한다(`artifact_not_owned` 등) — controller의 선언이 아니다.
       const done = atKernel(() =>
         kernel.completeTaskWithArtifacts({
-          envelope: this.resultEnvelope(this.requireTask(taskId)),
+          envelope: this.#resultEnvelope(this.#requireTask(taskId)),
           body: resultBody(taskId, outcome, h.outputs),
-          summary: this.boundedSummary(outcome),
+          summary: this.#boundedSummary(outcome),
           outputs: h.outputs,
         }),
       );
@@ -831,39 +866,39 @@ export class StableController {
   }
 
   /** kernel(호출자 객체)이 준 task를 **읽는 즉시 봉인 사본**으로 굳힌다(throwing getter도 여기서 닫힌다). */
-  private requireTask(taskId: string): OrchestrationTask {
-    const task = atKernel(() => this.sealed.kernel.getTask(taskId));
+  #requireTask(taskId: string): OrchestrationTask {
+    const task = atKernel(() => this.#sealed.kernel.getTask(taskId));
     if (!task) fail("unknown_task", `미상 task: ${taskId}`);
     return frozenClone(task, "task", "controller_task_invalid");
   }
 
   /** 의존 task가 낸 artifact 포인터 — 여기서 1차 검증하고 **불변 스냅샷**으로 굳힌다. */
-  private verifiedInputs(task: OrchestrationTask): readonly ArtifactPointer[] {
+  #verifiedInputs(task: OrchestrationTask): readonly ArtifactPointer[] {
     const inputs: ArtifactPointer[] = [];
     for (const depId of task.dependsOn) {
-      const dep = this.requireTask(depId); // 사본 — kernel 객체의 getter를 나중에 다시 읽지 않는다
+      const dep = this.#requireTask(depId); // 사본 — kernel 객체의 getter를 나중에 다시 읽지 않는다
       for (const ref of dep.artifactRefs) inputs.push(ref);
     }
     const snapshot = frozenClone<readonly ArtifactPointer[]>(inputs, "의존 포인터", "controller_task_invalid");
-    this.verifyPointers(snapshot);
+    this.#verifyPointers(snapshot);
     return snapshot;
   }
 
   /** 기존 `verifyArtifactFile`로 경로·신원·hash를 다시 본다(symlink·탈출·변조는 fail closed). */
-  private verifyPointers(refs: readonly ArtifactPointer[]): void {
-    for (const ref of refs) atTrusted(() => verifyArtifactFile(this.sealed.kernel.workspaceRoot, ref.path, ref.sha256));
+  #verifyPointers(refs: readonly ArtifactPointer[]): void {
+    for (const ref of refs) atTrusted(() => verifyArtifactFile(this.#sealed.kernel.workspaceRoot, ref.path, ref.sha256));
   }
 
   /** 승인된 커밋·checkout 신원·만료를 확인한다. **반환된 `targetRoot`가 유일한 cwd 근거다.** */
-  private async verifyBoundary(cwd: string): Promise<VerifiedExecutionBoundary> {
+  async #verifyBoundary(cwd: string): Promise<VerifiedExecutionBoundary> {
     return atTrustedAsync(() =>
       verifyExecutionBoundary({
         manifest: this.approvedManifest(), // 방어적 불변 사본(권위 객체를 넘기지 않는다)
-        controllerRepoRoot: this.sealed.controllerRepoRoot,
+        controllerRepoRoot: this.#sealed.controllerRepoRoot,
         targetWorktree: cwd,
-        gitExecutablePath: this.sealed.gitExecutablePath,
+        gitExecutablePath: this.#sealed.gitExecutablePath,
         // 시계는 호출자 콜백이다 — 경계 안에서 던져도 그 코드가 marker가 되지 않게 접어서 넘긴다.
-        nowMs: () => this.now(),
+        nowMs: () => this.#now(),
       }),
     );
   }
@@ -872,10 +907,10 @@ export class StableController {
    * **await 없는 단일 동기 게이트.** 이 함수가 돌아온 **바로 다음 문장**이 provider 호출이므로,
    * 검증과 실제 호출 사이에 호출자·파일 시스템이 끼어들 창이 없다(독립 리뷰 A3·A4).
    */
-  private syncGate(boundary: VerifiedExecutionBoundary, pointers: readonly ArtifactPointer[]): void {
-    this.assertGatesOpen(); // 봉인 드리프트 + 만료·경과·토큰
+  #syncGate(boundary: VerifiedExecutionBoundary, pointers: readonly ArtifactPointer[]): void {
+    this.#assertGatesOpen(); // 봉인 드리프트 + 만료·경과·토큰
     atTrusted(() => boundary.revalidateSync()); // 승인 커밋·git 신원·checkout 신원 동기 재확인
-    this.verifyPointers(pointers); // 경계 await 뒤 포인터 재검증
+    this.#verifyPointers(pointers); // 경계 await 뒤 포인터 재검증
   }
 
   /**
@@ -886,25 +921,25 @@ export class StableController {
    * 공용 소비자가 `isError`에서 먼저 던졌으므로 **실패한 turn이 태운 토큰이 전역 예산에서 빠지지 않았고**,
    * 그 뒤 task가 이미 소진된 예산으로 계속 시작할 수 있었다. 이제 `onTerminal`이 그 창을 닫는다.
    */
-  private consumeTurn(handle: SessionHandle, outcome: TaskOutcome): Promise<Extract<SessionEvent, { kind: "result" }>> {
+  #consumeTurn(handle: SessionHandle, outcome: TaskOutcome): Promise<Extract<SessionEvent, { kind: "result" }>> {
     // `events()` 호출 자체가 던져도 provider가 결과 코드를 고르지 못한다(A5b).
-    const stream = atBoundary("provider_stream_failed", () => this.sealed.provider.events(handle));
+    const stream = atBoundary("provider_stream_failed", () => this.#sealed.provider.events(handle));
     // 소비자가 만드는 오류에도 **이 모듈의 provenance**를 붙인다 — 공개 클래스가 아니라 발급자가 근거다.
     return consumeExactlyOneTerminal(stream, CONTROLLER_TERMINAL_CODES, MAX_TURN_EVENTS, controllerError, (result) =>
-      this.applyTurn(outcome, result),
+      this.#applyTurn(outcome, result),
     );
   }
 
-  private applyTurn(outcome: TaskOutcome, result: Extract<SessionEvent, { kind: "result" }>): void {
+  #applyTurn(outcome: TaskOutcome, result: Extract<SessionEvent, { kind: "result" }>): void {
     outcome.turns += 1;
     outcome.usage.inputTokens += clampCount(result.usage?.inputTokens);
     outcome.usage.outputTokens += clampCount(result.usage?.outputTokens);
-    this.tokensUsed += clampCount(result.usage?.inputTokens) + clampCount(result.usage?.outputTokens);
-    if (this.sealed.manifest.maxTokens !== null && this.tokensUsed > this.sealed.manifest.maxTokens) {
+    this.#tokensUsed += clampCount(result.usage?.inputTokens) + clampCount(result.usage?.outputTokens);
+    if (this.#sealed.manifest.maxTokens !== null && this.#tokensUsed > this.#sealed.manifest.maxTokens) {
       fail("budget_tokens_exhausted", "승인된 토큰 예산을 넘었다");
     }
-    const now = this.now();
-    if (now - this.sealed.startedAtMs >= this.sealed.manifest.maxElapsedMs) {
+    const now = this.#now();
+    if (now - this.#sealed.startedAtMs >= this.#sealed.manifest.maxElapsedMs) {
       fail("budget_elapsed_exhausted", "승인된 경과 시간 예산을 넘었다");
     }
   }
@@ -913,31 +948,34 @@ export class StableController {
    * durable summary. **raw 본문이 아니라 bounded 안정 투사**이며 상한은 기존 `LIMITS.maxSummaryLength`다.
    * 토큰 usage는 여기에 넣지 않는다(durable state 밖).
    */
-  private boundedSummary(outcome: TaskOutcome): string {
+  #boundedSummary(outcome: TaskOutcome): string {
     const stable = `[${outcome.taskId}] turns=${outcome.turns} acked=${outcome.acknowledged.length}`;
     const max = LIMITS.maxSummaryLength;
     return stable.length > max ? stable.slice(0, max) : stable;
   }
 
   /** `artifactRefs`는 **비운다** — 포인터는 kernel 트랜잭션이 등록하며 채운다(3차 리뷰 A3). */
-  private resultEnvelope(task: OrchestrationTask): AgentMessageEnvelope {
+  #resultEnvelope(task: OrchestrationTask): AgentMessageEnvelope {
     return {
       schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
       messageId: `res.${task.taskId}`,
-      runId: this.sealed.runId,
-      milestoneId: this.sealed.milestoneId,
+      runId: this.#sealed.runId,
+      milestoneId: this.#sealed.milestoneId,
       taskId: task.taskId,
       parentTaskId: task.parentTaskId,
       sender: task.roleId,
       recipient: ORCHESTRATOR_ID,
       type: "result",
-      createdAt: formatTimestamp(new Date(this.now())),
+      createdAt: formatTimestamp(new Date(this.#now())),
       dependsOn: [],
       artifactRefs: [],
       supersedes: null,
     };
   }
 }
+
+// prototype을 얼린다 — 모든 인스턴스에 영향을 주는 메서드 monkey-patch를 닫는다(A1).
+Object.freeze(StableController.prototype);
 
 /** 한 번 읽은 원본 메서드 값(pin 대조용) + 그 값을 bind한 실행 대상. */
 interface Captured<T> {
@@ -946,32 +984,32 @@ interface Captured<T> {
 }
 
 /**
- * **property를 정확히 한 번 읽어** 그 값을 검증하고 그 값만 bind한다(2차 리뷰 A1).
- * 이전 판은 `typeof owner[m] === "function"`으로 검사한 **뒤** `owner.m.bind(owner)`로 **다시 읽었으므로**,
- * 교대로 다른 값을 주는 getter/proxy면 "검사한 함수"와 "실행되는 함수"가 갈릴 수 있었다.
+ * **진짜 kernel(SoR)만 포착한다**(2026-07-28 4차 독립 리뷰 A2).
+ *
+ * 이전 판은 메서드 **모양**과 `paths.workspaceRoot`만 봤다. 그래서 스케줄링은 진짜 kernel에 위임하고
+ * `completeTaskWithArtifacts()`만 그럴듯한 task·artifact 값을 돌려주는 delegate를 넣으면, 디스크에
+ * state·event·body·artifact가 **하나도 바뀌지 않았는데도** controller가 `completed`/`result_accepted`를
+ * 발급했다 — M5c 분기가 durable SoR 없이 성공을 읽는 통로였다.
+ *
+ * 지금은 `orchestrationKernel.ts`의 **모듈 사설 발급 등록부**로 판정한다: 평범한 구조적 객체 · delegate ·
+ * `Proxy` · subclass · prototype 위조 · 인스턴스 메서드 override · 메서드 복사본 · 토큰 없이 생성자를
+ * 직접 부른 인스턴스가 전부 거부된다. 증명과 메서드 포착은 **같은 한 번의 읽기**다(재읽기 창 없음).
  */
-function captureMethods(owner: unknown, names: readonly string[], what: string): { raw: Record<string, unknown>; bound: Record<string, unknown> } {
-  if (owner === null || typeof owner !== "object") fail("controller_config_invalid", `${what}가 객체가 아니다`);
-  const raw: Record<string, unknown> = {};
-  const bound: Record<string, unknown> = {};
-  for (const m of names) {
-    const fn = (owner as Record<string, unknown>)[m]; // ← 이 property를 읽는 유일한 지점
-    if (typeof fn !== "function") fail("controller_config_invalid", `${what}에 ${m}가 없다`);
-    raw[m] = fn;
-    bound[m] = (fn as (...a: unknown[]) => unknown).bind(owner);
-  }
-  return { raw: Object.freeze(raw), bound };
-}
-
-/** kernel 메서드를 생성 시점에 **한 번 읽어** bind해 포착한다(이후 교체·patch는 실행 대상이 아니다). */
 function captureKernel(kernel: OrchestrationKernel): Captured<CapturedKernel> {
-  const { raw, bound } = captureMethods(kernel, KERNEL_METHODS, "opts.kernel");
-  const paths = (kernel as { paths?: { workspaceRoot?: unknown } }).paths; // 한 번만 읽는다
-  const workspaceRoot = paths === null || typeof paths !== "object" ? undefined : paths.workspaceRoot;
-  if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) {
-    fail("controller_config_invalid", "opts.kernel에 workspaceRoot가 없다");
+  const attested = attestOrchestrationKernel(kernel, KERNEL_METHODS);
+  if (!attested) {
+    fail(
+      "controller_kernel_not_genuine",
+      "M5b bridge는 실제로 생성된 OrchestrationKernel만 상태 권위로 받는다(구조적 객체·delegate·proxy·subclass·override 거부)",
+    );
   }
-  return { raw, captured: Object.freeze({ workspaceRoot, ...bound }) as unknown as CapturedKernel };
+  const raw = attested.methods;
+  const bound: Record<string, unknown> = {};
+  for (const m of KERNEL_METHODS) bound[m] = (raw[m] as (...a: unknown[]) => unknown).bind(kernel);
+  return {
+    raw: raw as Readonly<Record<string, unknown>>,
+    captured: Object.freeze({ workspaceRoot: attested.workspaceRoot, ...bound }) as unknown as CapturedKernel,
+  };
 }
 
 /**

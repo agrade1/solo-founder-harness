@@ -29,6 +29,13 @@
  * durable에 남고 task는 미완료)이 생기지 않는다. 기존 `registerArtifact`/`submitResult`는 호환을 위해
  * 그대로 두고, 소유권·writableRoots·파일 신원 집행은 **같은 헬퍼 하나**(`addArtifact`)를 공유한다.
  *
+ * M5b 4차 독립 리뷰가 더한 것:
+ * - **발급 증명**(A2): 이 인스턴스는 `create`/`open`만 만들 수 있고(모듈 사설 토큰), own property가 0이며
+ *   생성 시 freeze된다. `attestOrchestrationKernel`만 밖으로 나가고, 구조적으로 비슷한 delegate·proxy·
+ *   subclass·override는 **완료 권위가 되지 못한다** → controller의 성공은 durable commit 없이는 발급되지 않는다.
+ * - **호출자 소유 산출물의 단일 읽기 입양**(A4): `{path, role}`을 정확히 한 번 읽어 불변값으로 굳힌다.
+ * - 발행의 복구 규칙은 `orchestrationStore.commitRun`/`recoverPendingCommit`에 있다(A3).
+ *
  * 불변식:
  * - 유효하지 않은 입력은 state revision을 올리지 않고 영속 파일도 건드리지 않는다(검증 → 커밋 순서).
  * - `listReady()`·`scheduleReady()`·snapshot은 taskId 정렬로 결정론적이다.
@@ -40,14 +47,77 @@ import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import { assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 import { assertReferentialIntegrity, commitRun, ensureRunDir, loadRun, pendingDeliveries, runExists, runPaths, sha256Hex, verifyArtifactFile, writeSnapshot, } from "./orchestrationStore.js";
 const clone = (v) => structuredClone(v);
+/**
+ * **진짜 kernel 발급 등록부**(V3 M5b 4차 독립 리뷰 A2). 이 `WeakSet`은 모듈 밖으로 나가지 않고,
+ * 들어오는 유일한 경로는 아래 생성자다. 밖으로 나가는 것은 판정 함수(`attestOrchestrationKernel`)뿐이며
+ * "임의 객체를 진짜로 만들어 주는" 발급기·토큰·factory는 **하나도 export하지 않는다**.
+ *
+ * 이것이 필요한 이유: `StableController`가 `completeTaskWithArtifacts()`의 **반환값**으로 성공
+ * (`completed`/`result_accepted`)을 발급한다. 이전 판의 controller는 메서드 모양과 `paths.workspaceRoot`만
+ * 봤으므로, 스케줄링은 진짜 kernel에 위임하고 완료만 그럴듯한 값으로 위조하는 delegate가
+ * **디스크 변화 0으로 성공을 만들 수 있었다**.
+ */
+const GENUINE_KERNELS = new WeakSet();
+/**
+ * 모듈 사설 생성 토큰. `private constructor`는 TS 검사일 뿐 emitted JS에서는 호출 가능하므로,
+ * 토큰 없이 `Reflect.construct`로 직접 만든 인스턴스는 등록부에 들어오지 못한다.
+ */
+const ISSUER_TOKEN = Symbol("orchestration-kernel-issuer");
+/**
+ * **이 모듈이 발급한 진짜 `OrchestrationKernel`인가.** 통과하면 요청한 메서드를 정확히 한 번씩 읽은
+ * 값과 `workspaceRoot`를 돌려주고, 아니면 `null`이다(fail closed).
+ *
+ * 거부되는 것: 평범한 구조적 객체, 진짜 kernel에 위임하는 delegate, `Proxy` wrapper, subclass,
+ * prototype 교체·위조, 인스턴스 own property로 만든 메서드 override(`defineProperty` 포함),
+ * 메서드 함수만 복사한 객체, 토큰 없이 생성자를 직접 부른 인스턴스.
+ *
+ * **주장하는 범위**: 같은 프로세스에서 *공개 API만으로는* 위조한 완료 권위를 controller에 넣을 수 없다.
+ * **주장하지 않는 범위**: 모듈 내부를 직접 패치할 수 있는 코드(디버거·로더 조작)는 여전히 프로세스 안에 있다.
+ */
+export function attestOrchestrationKernel(kernel, methods) {
+    if (typeof kernel !== "object" || kernel === null)
+        return null;
+    if (!GENUINE_KERNELS.has(kernel))
+        return null;
+    if (Object.getPrototypeOf(kernel) !== OrchestrationKernel.prototype)
+        return null;
+    // 진짜 인스턴스의 상태는 전부 `#private`이므로 own property는 **하나도 없어야 한다** →
+    // 생성 뒤 `defineProperty`로 만든 메서드 override·권위 교체가 여기서 전부 걸린다.
+    if (Object.getOwnPropertyNames(kernel).length > 0 || Object.getOwnPropertySymbols(kernel).length > 0)
+        return null;
+    const proto = OrchestrationKernel.prototype;
+    const captured = {};
+    for (const m of methods) {
+        const fn = kernel[m]; // ← 이 property를 읽는 유일한 지점
+        if (typeof fn !== "function" || fn !== proto[m])
+            return null;
+        captured[m] = fn;
+    }
+    const workspaceRoot = kernel.paths.workspaceRoot;
+    if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0)
+        return null;
+    return Object.freeze({ workspaceRoot, methods: Object.freeze(captured) });
+}
 export class OrchestrationKernel {
-    paths;
+    /** 발급 시점에 freeze한 경로 묶음. **own property가 아니라 prototype getter**로만 읽힌다(A2). */
+    #paths;
     #state;
     #clock;
-    constructor(paths, state, clock) {
-        this.paths = paths;
+    constructor(token, paths, state, clock) {
+        if (token !== ISSUER_TOKEN) {
+            throw new OrchestrationError("kernel_issuer_required", "OrchestrationKernel은 create/open으로만 만들 수 있다");
+        }
+        this.#paths = Object.freeze({ ...paths });
         this.#state = state;
         this.#clock = clock;
+        // own property가 하나도 없는 인스턴스를 **얼린다** → 밖에서 `defineProperty`로 메서드·권위를
+        // 덧붙일 수 없다(`#private` 필드는 property가 아니므로 내부 상태 전이는 그대로 된다).
+        Object.freeze(this);
+        GENUINE_KERNELS.add(this);
+    }
+    /** 이 run의 경로 묶음(**freeze된 값** — 반환값을 고쳐도 kernel 권위는 바뀌지 않는다). */
+    get paths() {
+        return this.#paths;
     }
     /**
      * 새 run 생성. 이미 있으면 거부한다(조용한 덮어쓰기 금지).
@@ -100,13 +170,13 @@ export class OrchestrationKernel {
             // 최초 커밋 — lock 안에서 "state 파일이 아직 없다"를 다시 확인한다(두 프로세스 동시 create 방지).
             base: null,
         });
-        return new OrchestrationKernel(paths, committed, clock);
+        return new OrchestrationKernel(ISSUER_TOKEN, paths, committed, clock);
     }
     /** 기존 run 적재. state/event/message/artifact 검증에 실패하면 던진다(fail-closed). */
     static open(opts) {
         const paths = runPaths(opts.workspaceRoot, opts.runId);
         const { state } = loadRun(paths);
-        return new OrchestrationKernel(paths, state, opts.clock ?? (() => new Date()));
+        return new OrchestrationKernel(ISSUER_TOKEN, paths, state, opts.clock ?? (() => new Date()));
     }
     // ── 읽기 (전부 깊은 사본) ────────────────────────────────────────────────
     getState() {
@@ -243,8 +313,11 @@ export class OrchestrationKernel {
         let pointer = null;
         this.#mutate((draft, now) => {
             const mutation = { events: [], bodies: [] };
-            const task = requireRunningTask(draft, input.taskId, "artifact 등록");
-            pointer = addArtifact(draft, now, mutation, this.paths, task, input, new Set());
+            // 호출자 소유 입력은 각 property를 **한 번만** 읽어 입양한다(A4 — 두 등록 경로가 같은 규칙이다).
+            const read = readClosedOnce(input, REGISTER_KEYS, "artifact 등록 입력");
+            const out = adoptedOutput(read.path, read.role);
+            const task = requireRunningTask(draft, read.taskId, "artifact 등록");
+            pointer = addArtifact(draft, now, mutation, this.paths, task, out, new Set());
             return mutation;
         });
         return clone(pointer);
@@ -261,8 +334,16 @@ export class OrchestrationKernel {
      * 닫아서 보고, 산출물 전체를 (소유권 · writableRoots · 파일/hash/symlink · role · 개수 상한 ·
      * 경로 중복) 검증하며 등록하고, 그 포인터로 envelope를 채워 `acceptMessage`가 다시 대조한 뒤,
      * artifact record + event + result 메시지 + `completed` 전이를 **`#mutate` 하나**로 반영한다.
-     * 어디서든 실패하면 draft가 버려지므로 artifacts·events·messages·revision·task 상태가 **진입 전과
-     * 완전히 같다**(부분 적용 없음).
+     * 검증 단계에서 실패하면 draft가 버려지므로 artifacts·events·messages·revision·task 상태가
+     * **진입 전과 완전히 같다**(부분 적용 없음).
+     *
+     * **물리 발행의 보장 범위는 여기까지다(4차 독립 리뷰 A3, 정확히 적는다)**: 검증 통과 뒤의 디스크
+     * 발행은 `orchestrationStore.commitRun`의 journal 프로토콜이 담당하며, 발행 도중 I/O가 실패하면
+     * 관찰 결과는 **① 가시적 전이 0** 또는 **② 다음 `commitRun`·`loadRun`이 결정론적으로 roll forward한
+     * 완료 상태** 중 하나다(둘 다 일관되고 재시도·전진이 가능하다). "언제나 전이 0"이라고 주장하지 않는다.
+     *
+     * 호출자 소유 `outputs`는 **각 항목을 정확히 한 번 읽어 입양**한다(4차 독립 리뷰 A4) — 교대 getter가
+     * "검증한 role"과 "저장하는 role"을 가르지 못한다.
      */
     completeTaskWithArtifacts(input) {
         let done = null;
@@ -576,34 +657,89 @@ function requireRunningTask(state, taskId, what) {
     }
     return task;
 }
+const OUTPUT_KEYS = ["path", "role"];
+const REGISTER_KEYS = ["taskId", "path", "role"];
+/**
+ * **호출자 소유 객체를 닫아 단 한 번 읽는다**(V3 M5b 4차 독립 리뷰 A4).
+ *
+ * key 집합을 닫고(string 외 key·미상 key 거부) 허용된 property를 **각각 정확히 한 번** 읽어 평범한
+ * 사본으로 만든다. 읽는 순간 던지는 getter/proxy(`ownKeys` trap 포함)도 여기서 안정 taxonomy로 접힌다 —
+ * 경계 밖 오류가 자기 코드를 고르지 못한다.
+ */
+function readClosedOnce(raw, allowed, what) {
+    if (raw === null || typeof raw !== "object") {
+        throw new OrchestrationError("invalid_artifact_ref", `${what}는 객체여야 한다`);
+    }
+    const read = {};
+    try {
+        for (const k of Reflect.ownKeys(raw)) {
+            if (typeof k !== "string" || !allowed.includes(k)) {
+                throw new OrchestrationError("invalid_artifact_ref", `${what}에 허용되지 않은 필드가 있다(허용: ${allowed.join(", ")})`);
+            }
+        }
+        for (const k of allowed)
+            read[k] = raw[k]; // ← 각 property를 읽는 유일한 지점
+    }
+    catch (e) {
+        if (e instanceof OrchestrationError)
+            throw e;
+        throw new OrchestrationError("invalid_artifact_ref", `${what}를 읽을 수 없다(getter/proxy가 던졌다)`);
+    }
+    return read;
+}
+/**
+ * 이미 한 번 읽은 값으로 **불변 산출물**을 굳힌다. 이전 판은 `out.role`을 검증하고 **다시 읽어**
+ * 기록했으므로, 첫 읽기에 `"output"`을 주고 두 번째 읽기에 계약 밖 role을 주는 교대 getter가 record와
+ * result 포인터를 함께 오염시킬 수 있었다(커밋은 성공하고 reopen만 실패했다).
+ * cyclic·깊은 payload는 path/role이 문자열이 아니므로 같은 자리에서 걸린다.
+ */
+function adoptedOutput(path, role) {
+    if (!ARTIFACT_ROLES.includes(role)) {
+        throw new OrchestrationError("invalid_artifact_ref", `role은 ${ARTIFACT_ROLES.join("|")} 중 하나여야 한다`);
+    }
+    return Object.freeze({ path: normalizeWorkspacePath(path, "artifact path"), role: role });
+}
+/** 호출자 소유 `{path, role}` 1건을 입양한다. 이후 원본 객체는 다시 읽지 않는다. */
+function adoptOutput(raw) {
+    const read = readClosedOnce(raw, OUTPUT_KEYS, "산출물");
+    return adoptedOutput(read.path, read.role);
+}
+/**
+ * 호출자 소유 산출물 **목록**을 한 번에 입양한다. 길이도 한 번만 읽고 각 항목도 한 번만 읽으므로,
+ * 입양 뒤 원본 배열·항목을 바꿔도 등록되는 값은 바뀌지 않는다.
+ */
+function adoptOutputs(outputs) {
+    if (outputs === undefined)
+        return [];
+    if (!Array.isArray(outputs))
+        throw new OrchestrationError("invalid_artifact_ref", "outputs는 배열이어야 한다");
+    const length = outputs.length; // ← 길이를 읽는 유일한 지점
+    if (length > LIMITS.maxArtifactRefs) {
+        throw new OrchestrationError("artifact_refs_too_many", `한 결과의 산출물은 ${LIMITS.maxArtifactRefs}건까지다`);
+    }
+    const adopted = [];
+    for (let i = 0; i < length; i++)
+        adopted.push(adoptOutput(outputs[i]));
+    return Object.freeze(adopted);
+}
 /**
  * 산출물 목록 전체를 **한 트랜잭션 안에서** 등록한다. 개수 상한과 경로 중복은 여기서만 판정한다
  * (한 결과가 같은 경로를 두 번 등록하면 revision 두 개가 생겨 포인터가 서로 모순된다).
  */
 function addArtifacts(draft, now, mutation, paths, task, outputs) {
-    if (outputs === undefined)
-        return [];
-    if (!Array.isArray(outputs))
-        throw new OrchestrationError("invalid_artifact_ref", "outputs는 배열이어야 한다");
-    if (outputs.length > LIMITS.maxArtifactRefs) {
-        throw new OrchestrationError("artifact_refs_too_many", `한 결과의 산출물은 ${LIMITS.maxArtifactRefs}건까지다`);
-    }
+    const adopted = adoptOutputs(outputs);
     const seen = new Set();
-    return outputs.map((out) => addArtifact(draft, now, mutation, paths, task, out, seen));
+    return adopted.map((out) => addArtifact(draft, now, mutation, paths, task, out, seen));
 }
 /**
  * artifact 1건 등록 — **소유권·writableRoots·파일 신원 집행의 유일한 지점**(V3 M5b 독립 리뷰 A2).
  * 조용히 덮어쓰지 않고 revision을 올리며 직전 revision을 `supersedes`로 남긴다.
  * symlink/missing/비일반 파일/workspace 탈출은 fail-closed다.
+ *
+ * `out`은 **이미 입양된 불변 값**이다(A4) — 이 함수는 호출자 소유 객체를 읽지 않는다.
  */
 function addArtifact(draft, now, mutation, paths, task, out, seen) {
-    if (out === null || typeof out !== "object")
-        throw new OrchestrationError("invalid_artifact_ref", "산출물은 {path, role} 객체여야 한다");
-    if (!ARTIFACT_ROLES.includes(out.role)) {
-        throw new OrchestrationError("invalid_artifact_ref", `role은 ${ARTIFACT_ROLES.join("|")} 중 하나여야 한다`);
-    }
-    const role = out.role;
-    const path = normalizeWorkspacePath(out.path, "artifact path");
+    const { path, role } = out;
     if (seen.has(path)) {
         throw new OrchestrationError("artifact_path_duplicate", `한 결과가 같은 경로를 두 번 등록할 수 없다: ${path}`);
     }
@@ -961,6 +1097,8 @@ function recompute(draft, now, mutation) {
         }
     }
 }
+// prototype을 얼린다 — 메서드 monkey-patch(모든 인스턴스에 영향)를 닫는다(A2).
+Object.freeze(OrchestrationKernel.prototype);
 /** 편의 진입점 — production 기본 root는 `<workspace>/outputs/orchestration`이다. */
 export function createOrchestrationRun(opts) {
     return OrchestrationKernel.create(opts);

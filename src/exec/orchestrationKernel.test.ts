@@ -56,6 +56,8 @@ import {
 } from "./approvalManifest.js";
 import {
   ARTIFACT_RECORD_KEYS,
+  COMMIT_STAGES,
+  type CommitStage,
   EVENT_KEYS,
   MESSAGE_KEYS,
   STATE_KEYS,
@@ -66,10 +68,17 @@ import {
   commitRun,
   releaseRunWriterLock,
   runPaths,
+  setCommitFaultHook,
   stateContentDigest,
   validateRunState,
 } from "./orchestrationStore.js";
-import { OrchestrationKernel, createOrchestrationRun, openOrchestrationRun } from "./orchestrationKernel.js";
+import {
+  OrchestrationKernel,
+  attestOrchestrationKernel,
+  createOrchestrationRun,
+  openOrchestrationRun,
+} from "./orchestrationKernel.js";
+import * as kernelModule from "./orchestrationKernel.js";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const RUN_ID = "m4a-run";
@@ -769,6 +778,306 @@ test("[M5b] A3: 실패 후 재시도는 revision 찌꺼기를 만들지 않는�
   assert.deepEqual(done.artifacts.map((a) => a.revision), [1, 1], "실패한 시도가 revision을 태웠다");
 });
 
+// ── M5b 4차 리뷰 A3: 발행은 복구 가능한 트랜잭션이다 ──────────────────────────
+
+/**
+ * 각 발행 경계에 fault를 넣었을 때 **복구 뒤에 관찰돼야 하는 상태**.
+ * `before` = 가시적 전이 0(roll back), `after` = 결정론적 roll forward(감사 이력에 이미 남은 커밋).
+ */
+const STAGE_OUTCOME: Record<CommitStage, "before" | "after"> = {
+  "body:write": "before",
+  "body:rename": "before",
+  "journal:write": "before",
+  "journal:rename": "before",
+  "events:append": "before",
+  "snapshot:write": "after",
+  "snapshot:rename": "after",
+  "state:write": "after",
+  "state:rename": "after",
+  "journal:cleanup": "after",
+};
+
+/** 이 stage에서 정확히 한 번 던지는 hook을 걸고 fn을 돌린다(끝나면 반드시 해제한다). */
+function withCommitFault(stage: CommitStage, fn: () => void): boolean {
+  let fired = 0;
+  setCommitFaultHook((s) => {
+    if (s === stage && fired++ === 0) throw new Error(`주입 실패: ${s}`);
+  });
+  try {
+    fn();
+    return false;
+  } catch {
+    return true;
+  } finally {
+    setCommitFaultHook(null);
+  }
+}
+
+test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 상태 하나이고 전진이 가능하다", () => {
+  for (const stage of COMMIT_STAGES) {
+    const { ws, k } = bootRoot(["second"]);
+    const p = put(ws, "docs/a.md", "a\n");
+    const paths = runPaths(ws, RUN_ID);
+    const before = { state: readFileSync(paths.stateFile, "utf8"), events: readFileSync(paths.eventsFile, "utf8") };
+
+    const threw = withCommitFault(stage, () => {
+      k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]));
+    });
+    assert.equal(threw, true, `${stage}: fault를 넣었는데 커밋이 성공했다(회귀가 공허하다)`);
+
+    if (STAGE_OUTCOME[stage] === "before") {
+      // 가시적 전이 0: state·events 바이트가 그대로다(orphan body는 state가 참조하지 않으므로 무해).
+      assert.equal(readFileSync(paths.stateFile, "utf8"), before.state, `${stage}: state가 바뀌었다`);
+      assert.equal(readFileSync(paths.eventsFile, "utf8"), before.events, `${stage}: event tail이 남았다`);
+    }
+
+    // reopen이 결정론적으로 복구한다(loadRun이 schema·event chain·binding·body·artifact hash를 다 본다).
+    const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+    assert.equal(existsSync(paths.journalFile), false, `${stage}: 복구 뒤에도 journal이 남았다`);
+    const taskState = reopened.getTask("root")!.state;
+    assert.equal(taskState, STAGE_OUTCOME[stage] === "before" ? "running" : "completed", `${stage}: 관찰 상태가 규칙과 다르다`);
+
+    // event·revision 중복 없음: 줄 수가 lastEventId와 같고 artifact revision은 1건뿐이다.
+    const s = reopened.getState();
+    assert.equal(readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0).length, s.lastEventId, `${stage}: event 중복`);
+    assert.deepEqual(s.artifacts.map((a) => `${a.path}@${a.revision}`), taskState === "completed" ? [`${p}@1`] : [], `${stage}: artifact 중복`);
+
+    // 전진 가능: 실패했으면 같은 커밋을 그대로 재시도해 완료되고, roll forward됐으면 다음 커밋이 된다.
+    if (taskState === "running") {
+      const done = reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]));
+      assert.equal(done.task.state, "completed", `${stage}: 재시도가 실패했다`);
+      assert.deepEqual(done.artifacts.map((a) => a.revision), [1], `${stage}: 실패한 시도가 revision을 태웠다`);
+    } else {
+      reopened.createRootTask(seed("second", "tech-lead", { ownership: ["docs"] }));
+      assert.equal(reopened.getTask("second")!.state, "ready", `${stage}: roll forward 뒤 다음 커밋이 막혔다`);
+    }
+    // 어느 경로든 다시 열린다(반쪽 상태가 남지 않았다).
+    assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }).getState().revision, reopened.getState().revision);
+  }
+});
+
+test("[M5b] A3: 찢어진 event append는 기준 길이로 되돌리고 같은 커밋을 재시도할 수 있다", () => {
+  const { ws, k } = bootRoot();
+  const p = put(ws, "docs/a.md", "a\n");
+  const paths = runPaths(ws, RUN_ID);
+  const before = { state: readFileSync(paths.stateFile, "utf8"), events: readFileSync(paths.eventsFile, "utf8") };
+
+  // snapshot 직전에 실패 → journal + **완전한** append가 남는다. 여기에 부분 줄을 덧붙여
+  // "append가 찢어진" 상태를 만든다(체인 검증을 영구히 깨뜨리는 형태다).
+  assert.equal(
+    withCommitFault("snapshot:write", () => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))),
+    true,
+  );
+  assert.equal(existsSync(paths.journalFile), true, "journal이 남지 않아 복구 규칙을 시험할 수 없다");
+  appendFileSync(paths.eventsFile, '{"eventId":99,"partial', { encoding: "utf8" });
+
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), before.state, "찢어진 append가 state를 바꿨다");
+  assert.equal(readFileSync(paths.eventsFile, "utf8"), before.events, "event tail이 기준 길이로 되돌려지지 않았다");
+  assert.equal(reopened.getTask("root")!.state, "running");
+  assert.equal(reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }])).task.state, "completed");
+});
+
+test("[M5b] A3: 손댄 journal은 조용히 넘기지 않고 fail closed다", () => {
+  const cases: Array<[string, (paths: ReturnType<typeof runPaths>, valid: string) => void, string]> = [
+    ["JSON이 아니다", (paths) => writeFileSync(paths.journalFile, "{ not json"), "journal_unparsable"],
+    [
+      "다른 run의 journal이다",
+      (paths, valid) => writeFileSync(paths.journalFile, JSON.stringify({ ...JSON.parse(valid), runId: "다른-run" })),
+      "journal_foreign",
+    ],
+    [
+      "필드 계약이 다르다",
+      (paths, valid) => writeFileSync(paths.journalFile, JSON.stringify({ ...JSON.parse(valid), baseEventBytes: "0" })),
+      "journal_invalid",
+    ],
+    [
+      "디스크 state와 이어지지 않는다",
+      (paths, valid) => {
+        const j = JSON.parse(valid) as { base: { revision: number } };
+        writeFileSync(paths.journalFile, JSON.stringify({ ...j, base: { ...j.base, revision: j.base.revision + 7 } }));
+      },
+      "journal_unrecognized",
+    ],
+  ];
+  for (const [label, tamper, want] of cases) {
+    const { ws, k } = bootRoot();
+    const p = put(ws, "docs/a.md", "a\n");
+    const paths = runPaths(ws, RUN_ID);
+    assert.equal(
+      withCommitFault("events:append", () => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))),
+      true,
+    );
+    const valid = readFileSync(paths.journalFile, "utf8");
+    tamper(paths, valid);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), want, label);
+    // 커밋 경로도 같은 규칙이다(복구를 우회해 그 위에 쓰지 않는다).
+    const k2 = { commit: () => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }])) };
+    assert.equal(codeOf(k2.commit), want, `${label}(커밋 경로)`);
+  }
+});
+
+// ── M5b 4차 리뷰 A4: 호출자 소유 산출물은 한 번만 읽어 입양한다 ────────────────
+
+/** 읽을 때마다 다른 값을 주는 property를 가진 산출물(교대 getter). */
+function alternatingOutput(first: unknown, then: unknown, key: "role" | "path", other: Record<string, unknown>): unknown {
+  let reads = 0;
+  return Object.defineProperty({ ...other }, key, {
+    get: () => (++reads === 1 ? first : then),
+    enumerable: true,
+    configurable: true,
+  });
+}
+
+test("[M5b] A4: 교대 getter는 **첫 읽기 값**으로만 굳는다(두 번째 읽기 값은 durable에 못 들어간다)", () => {
+  // 이전 판은 검증한 뒤 `out.role`을 **다시 읽어** 기록했으므로, 첫 읽기 `"output"` · 두 번째 읽기
+  // 계약 밖 role인 교대 getter가 record와 result 포인터를 함께 오염시켰다(커밋 성공 · reopen 실패).
+  const { ws, k } = bootRoot();
+  const good = put(ws, "docs/a.md", "a\n");
+  put(ws, "src/other/steal.md", "남의 것\n");
+  const outputs = [
+    alternatingOutput("output", "탈취된-role", "role", { path: good }),
+    alternatingOutput(put(ws, "docs/b.md", "b\n"), "src/other/steal.md", "path", { role: "evidence" }),
+  ] as Array<{ path: string; role: "output" }>;
+
+  const done = k.completeTaskWithArtifacts(completeInput(outputs));
+  assert.deepEqual(
+    done.artifacts.map((a) => [a.path, a.role]),
+    [
+      [good, "output"],
+      ["docs/b.md", "evidence"],
+    ],
+    "두 번째 읽기 값이 등록됐다(재읽기 창이 남아 있다)",
+  );
+  assert.deepEqual(
+    k.getState().artifacts.map((a) => [a.path, a.role]),
+    [
+      [good, "output"],
+      ["docs/b.md", "evidence"],
+    ],
+  );
+  assert.deepEqual(k.getTask("root")!.artifactRefs.map((r) => r.role), ["output", "evidence"]);
+  // durable state가 실제로 다시 열린다 — "커밋은 되고 reopen만 실패하는" 오염이 없다.
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(reopened.getTask("root")!.state, "completed");
+  assert.deepEqual(reopened.getState().artifacts.map((a) => a.role), ["output", "evidence"]);
+});
+
+test("[M5b] A4: throwing getter·proxy·미상 key·cyclic·깊은 payload는 durable 변화 0으로 거부된다", () => {
+  // 세 번째 항목은 **기대 코드**다. 전부 안정·bounded 코드이며(값·경로를 싣지 않는다), 경로 타입 위반은
+  // 신뢰된 정규화기(`normalizeWorkspacePath`)의 닫힌 코드로 나온다.
+  const cases: Array<[string, (ws: string) => unknown, string]> = [
+    [
+      "role getter가 던진다",
+      (ws) =>
+        Object.defineProperty({ path: put(ws, "docs/a.md", "a\n") }, "role", {
+          get: () => {
+            throw new Error("탈취");
+          },
+          enumerable: true,
+        }),
+      "invalid_artifact_ref",
+    ],
+    [
+      "proxy가 읽을 때 던진다",
+      (ws) =>
+        new Proxy(
+          { path: put(ws, "docs/a.md", "a\n"), role: "output" },
+          {
+            get: () => {
+              throw new Error("탈취");
+            },
+          },
+        ),
+      "invalid_artifact_ref",
+    ],
+    [
+      "proxy ownKeys가 던진다",
+      (ws) =>
+        new Proxy(
+          { path: put(ws, "docs/a.md", "a\n"), role: "output" },
+          {
+            ownKeys: () => {
+              throw new Error("탈취");
+            },
+          },
+        ),
+      "invalid_artifact_ref",
+    ],
+    ["미상 key", (ws) => ({ path: put(ws, "docs/a.md", "a\n"), role: "output", extra: 1 }), "invalid_artifact_ref"],
+    [
+      "symbol key",
+      (ws) => {
+        const out: Record<string | symbol, unknown> = { path: put(ws, "docs/a.md", "a\n"), role: "output" };
+        out[Symbol("숨은-필드")] = 1;
+        return out;
+      },
+      "invalid_artifact_ref",
+    ],
+    [
+      "cyclic payload를 role로 준다",
+      (ws) => {
+        const cyclic: Record<string, unknown> = { path: put(ws, "docs/a.md", "a\n") };
+        cyclic.role = cyclic;
+        return cyclic;
+      },
+      "invalid_artifact_ref",
+    ],
+    ["깊게 중첩된 객체를 path로 준다", () => ({ path: { a: { b: { c: { d: "docs/a.md" } } } }, role: "output" }), "path_empty"],
+    ["path가 숫자다", () => ({ path: 1, role: "output" }), "path_empty"],
+  ];
+
+  for (const [label, build, want] of cases) {
+    const { ws, k } = bootRoot();
+    const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
+    const before = { fp: dirFingerprint(runDir), rev: k.getState().revision };
+    const outputs = [build(ws)] as Array<{ path: string; role: "output" }>;
+    assert.equal(codeOf(() => k.completeTaskWithArtifacts(completeInput(outputs))), want, label);
+    // 단건 등록 경로도 같은 규칙이다(불변식이 함수 하나에 있다). 입력 객체 **그대로** 넘긴다 —
+    // spread로 미리 평탄화하면 적대적 getter가 사라져 회귀가 공허해진다.
+    const single = build(ws) as Record<string, unknown>;
+    Object.defineProperty(single, "taskId", { value: "root", enumerable: true, configurable: true });
+    assert.equal(
+      codeOf(() => k.registerArtifact(single as unknown as { taskId: string; path: string; role: "output" })),
+      want,
+      `${label}(단건)`,
+    );
+    assert.equal(dirFingerprint(runDir), before.fp, `${label}: durable 파일이 바뀌었다`);
+    assert.equal(k.getState().revision, before.rev, `${label}: revision이 올랐다`);
+    assert.deepEqual(k.getState().artifacts, [], `${label}: artifact가 durable에 남았다`);
+    assert.equal(k.getTask("root")!.state, "running", `${label}: task 상태가 바뀌었다`);
+  }
+});
+
+test("[M5b] A4: 이미 입양한 항목을 나중에 변조해도 등록값은 안 바뀐다", () => {
+  const { ws, k } = bootRoot();
+  const first: Record<string, unknown> = { path: put(ws, "docs/a.md", "a\n"), role: "output" };
+  put(ws, "src/other/steal.md", "남의 것\n");
+  // 두 번째 항목의 `role` getter가 **이미 입양된 첫 항목**을 오염시킨다(입양 이후 mutation).
+  const second = Object.defineProperty({ path: put(ws, "docs/b.md", "b\n") }, "role", {
+    get: () => {
+      first.role = "made-up";
+      first.path = "src/other/steal.md";
+      return "evidence";
+    },
+    enumerable: true,
+  });
+  const done = k.completeTaskWithArtifacts(completeInput([first, second] as Array<{ path: string; role: "output" }>));
+  assert.deepEqual(
+    done.artifacts.map((a) => [a.path, a.role]),
+    [
+      ["docs/a.md", "output"],
+      ["docs/b.md", "evidence"],
+    ],
+    "입양 뒤 원본 변조가 등록값에 반영됐다",
+  );
+  assert.equal(first.role, "made-up", "이 회귀가 공허하다 — 변조 자체가 일어나지 않았다");
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(reopened.getTask("root")!.state, "completed");
+  assert.deepEqual(reopened.getTask("root")!.artifactRefs.map((r) => r.role), ["output", "evidence"]);
+});
+
 test("[M5b] A3: 커밋 단계 실패(stale_writer)도 전이 0이다", () => {
   const { ws, k } = bootRoot();
   const p = put(ws, "docs/a.md", "a\n");
@@ -959,6 +1268,8 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "listPendingInbox",
     "listReady",
     "nextPendingDelivery",
+    // M5b 4차 리뷰 A2: `paths`는 own field가 아니라 **prototype getter**다(freeze된 값만 돌려준다).
+    "paths",
     "rebuildSnapshot",
     "recordDecision",
     "registerArtifact",
@@ -974,6 +1285,101 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "submitReviewResult",
     "submitStatusUpdate",
   ]);
+});
+
+// ── M5b 4차 리뷰 A2: 진짜 kernel 발급 증명 ────────────────────────────────────
+
+test("[M5b] A2: kernel 인스턴스는 own property 0 · freeze · 토큰 없는 직접 생성 거부", () => {
+  const { ws, k } = bootRoot();
+  // ⓐ 상태·경로·시계가 public own property로 새어 있지 않다(대입·defineProperty 통로 0).
+  assert.deepEqual(Object.getOwnPropertyNames(k), [], "kernel 권위가 own property로 노출됐다");
+  assert.deepEqual(Object.getOwnPropertySymbols(k), []);
+  assert.equal(Object.isFrozen(k), true, "kernel 인스턴스가 얼지 않았다");
+  assert.equal(Object.isFrozen(OrchestrationKernel.prototype), true, "kernel prototype이 얼지 않았다");
+  assert.equal(Object.isFrozen(k.paths), true, "paths가 freeze되지 않은 값으로 나갔다");
+
+  // ⓑ 권위 후보에 대입·defineProperty가 전부 실패하고 상태도 바뀌지 않는다.
+  for (const name of ["paths", "getState", "completeTaskWithArtifacts", "registerArtifact", "startScheduledBatch"]) {
+    assert.throws(
+      () => {
+        (k as unknown as Record<string, unknown>)[name] = () => undefined;
+      },
+      TypeError,
+      `${name} 대입이 통과했다`,
+    );
+    assert.throws(
+      () => Object.defineProperty(k, name, { value: () => undefined, configurable: true }),
+      TypeError,
+      `${name} defineProperty가 통과했다`,
+    );
+  }
+  assert.equal(attestOrchestrationKernel(k, ["getState"])!.workspaceRoot, ws, "정상 kernel이 증명을 못 받았다");
+
+  // ⓒ 모듈 사설 토큰 없이 생성자를 직접 부르면 인스턴스가 만들어지지 않는다(TS private은 검사일 뿐이다).
+  const Ctor = OrchestrationKernel as unknown as new (...a: unknown[]) => OrchestrationKernel;
+  assert.equal(codeOf(() => new Ctor(Symbol("위조"), k.paths, k.getState(), () => new Date())), "kernel_issuer_required");
+  assert.equal(codeOf(() => Reflect.construct(Ctor, [undefined, k.paths, k.getState(), () => new Date()])), "kernel_issuer_required");
+});
+
+test("[M5b] A2: 구조적으로 같은 위조 kernel은 증명을 받지 못한다(delegate·proxy·subclass·override)", () => {
+  const { k } = bootRoot();
+  const M = ["getState", "getManifest", "getTask", "completeTaskWithArtifacts"];
+  const proto = Object.getPrototypeOf(k) as Record<string, unknown>;
+
+  // ⓐ 평범한 구조적 객체(메서드 모양과 paths.workspaceRoot만 맞춘 것).
+  assert.equal(
+    attestOrchestrationKernel(
+      {
+        paths: k.paths,
+        getState: () => k.getState(),
+        getManifest: () => k.getManifest(),
+        getTask: (id: string) => k.getTask(id),
+        completeTaskWithArtifacts: () => ({ task: k.getTask("root"), artifacts: [] }),
+      },
+      M,
+    ),
+    null,
+    "구조적 객체가 증명됐다",
+  );
+
+  // ⓑ 진짜 kernel prototype을 쓰지만 완료만 위조하는 delegate.
+  //    (`paths`가 prototype getter라 `Object.assign`으로는 못 얹는다 — 그래서 defineProperty로 만든다.)
+  const delegate = Object.create(proto) as object;
+  const own: Record<string, unknown> = {
+    paths: k.paths,
+    getState: () => k.getState(),
+    getManifest: () => k.getManifest(),
+    getTask: (id: string) => k.getTask(id),
+    completeTaskWithArtifacts: () => ({ task: k.getTask("root"), artifacts: [] }),
+  };
+  for (const [name, value] of Object.entries(own)) {
+    Object.defineProperty(delegate, name, { value, enumerable: true, configurable: true });
+  }
+  assert.equal(attestOrchestrationKernel(delegate, M), null, "delegate가 증명됐다");
+
+  // ⓒ 진짜 kernel을 감싼 Proxy(신원만 빌린다).
+  assert.equal(attestOrchestrationKernel(new Proxy(k, {}), M), null, "Proxy wrapper가 증명됐다");
+
+  // ⓓ 메서드 함수만 복사한 객체.
+  const copied: Record<string, unknown> = { paths: k.paths };
+  for (const m of M) copied[m] = proto[m];
+  assert.equal(attestOrchestrationKernel(copied, M), null, "메서드 복사본이 증명됐다");
+
+  // ⓔ prototype 위조.
+  const spoofed = Object.create(proto) as object;
+  assert.equal(attestOrchestrationKernel(spoofed, M), null, "prototype 위조가 증명됐다");
+
+  // ⓕ 원시값·null·함수.
+  for (const v of [null, undefined, "kernel", 1, () => undefined]) {
+    assert.equal(attestOrchestrationKernel(v, M), null, `${String(v)}가 증명됐다`);
+  }
+
+  // ⓖ 발급기·토큰·factory는 export되어 있지 않다 — 나가는 것은 판정 함수 하나뿐이다.
+  assert.deepEqual(
+    Object.keys(kernelModule).filter((key) => /attest|issue|token|genuine|brand/i.test(key)),
+    ["attestOrchestrationKernel"],
+    "임의 객체를 진짜 kernel로 만들어 줄 표면이 늘었다",
+  );
 });
 
 test("[M4a] 같은 runId로 create를 다시 부르면 거부한다(조용한 덮어쓰기 금지)", () => {

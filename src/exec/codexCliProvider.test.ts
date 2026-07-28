@@ -2170,6 +2170,47 @@ test("[M5a] C-23: 시각 권위는 봉인된다 — 시계를 갈아끼워 만�
   }
 });
 
+test("[M5b] A1: 실행 설정은 생성 시점에 포착된다 — start 전 opts 변조도 그 값으로 열리지 않는다", async () => {
+  // 4차 독립 리뷰 A1: 이전 판은 `private opts`(= emitted JS의 public writable own field)를 **start에서
+  // 다시 읽어** 봉인했으므로, 생성(=증명) 뒤 start 전에 executable·manifest·경로·시계를 갈아끼우면
+  // **그 값이 이 세션의 baseline**이 됐다. 지금은 생성 시점 `#config`가 유일한 권위이고 호출자 객체는
+  // tripwire 전용이므로, 갈아끼운 값은 baseline이 되지 못하고 드리프트로 닫힌다(spawn 0).
+  const repo = await initRepo();
+  const home = codexHome();
+  const calls: FakeCall[] = [];
+  try {
+    const opts: Record<string, unknown> = {
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      gitExecutablePath: TRUSTED_GIT,
+      spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
+    };
+    const provider = new CodexCliProvider(opts as unknown as ConstructorParameters<typeof CodexCliProvider>[0]);
+
+    // ⓐ 설정 객체는 provider 표면에서 보이지도 않고 갈아끼울 수도 없다.
+    assert.deepEqual(Object.getOwnPropertyNames(provider), [], "opts가 own property로 남아 있다");
+    assert.throws(() => {
+      (provider as unknown as Record<string, unknown>).opts = { ...opts };
+    }, TypeError);
+
+    // ⓑ start **전에** 호출자 객체를 바꿔도 그 값으로 세션이 열리지 않는다(spawn 0).
+    opts.manifest = { ...(opts.manifest as Record<string, unknown>), expiresAt: "2099-12-31T23:59:59.000Z" };
+    assert.equal(await codeOfCall(() => provider.start(specFor(repo.root, home), "1차")), "codex_spec_mutated");
+    assert.equal(calls.length, 0, "갈아끼운 승인으로 프로세스가 떴다");
+
+    // ⓒ 되돌리면 **생성 시점에 포착한 설정**으로 정상 동작한다(게이트가 전부를 막는 것이 아니다).
+    opts.manifest = manifest(repo.head);
+    const handle = await provider.start(specFor(repo.root, home), "1차");
+    assert.equal(resultsOf(await drain(provider.events(handle))).length, 1);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, TRUSTED_BIN, "봉인된 실행 파일이 아닌 값으로 떴다");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
 test("[M5a] 시각 권위 계약: 함수 아닌 nowMs는 start에서 거부되고, spawn seam 교체는 무의미하다", async () => {
   // ⓐ 시각을 읽을 수 없는 상태로 만료를 판정하지 않는다(초기 start의 native 코드 유지).
   assert.equal(

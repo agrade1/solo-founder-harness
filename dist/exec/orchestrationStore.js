@@ -7,11 +7,17 @@
  * outputs/orchestration/<run-id>/messages/<id>.md # 검증된 Markdown body
  * outputs/orchestration/<run-id>/snapshot.md      # state에서 결정론적으로 재생성한 파생물
  * outputs/orchestration/<run-id>/run_state.lock   # M4b — run 단위 배타 writer lock(커밋 동안만 존재)
+ * outputs/orchestration/<run-id>/commit.journal   # M5b — 발행 중인 커밋 1건의 복구 기록(발행 완료 시 삭제)
  * ```
  *
  * 계약:
  * - state 저장은 **같은 디렉터리 임시 파일 → rename**으로 교체한다. 과도한 fsync/crash hardening은
  *   M4a/M4b 범위가 아니다(로드맵 M10 hardening 대상).
+ * - **발행은 복구 가능한 단일 트랜잭션이다(V3 M5b 4차 독립 리뷰 A3).** 이전 판은 body → event append →
+ *   snapshot → state를 **각자 실패할 수 있는 네 연산**으로 했으므로, event append가 성공하고 뒤가 실패하면
+ *   디스크에 **새 event tail + 낡은 state**가 남아 reopen(`event_count_mismatch`)도 재시도(`stale_writer`)도
+ *   깨졌다. 지금은 발행 전에 `commit.journal`(원자적 rename)을 남기고, 다음 `commitRun`·`loadRun`이
+ *   **그 journal을 보고 결정론적으로 복구**한다 — 규칙은 아래 `recoverPendingCommit`에 있다.
  * - **커밋은 run 단위 배타 writer lock 안에서만 일어나고**(M4b), lock 안에서 디스크 state의
  *   revision·event tail이 호출자의 커밋 기준과 같은지 확인한다. 다르면 `stale_writer`로 거부하며
  *   **먼저 쓴 writer의 결과를 덮지 않는다**. lock 경합은 대기 없이 `run_lock_held`로 fail-closed다.
@@ -21,7 +27,7 @@
  *   중앙이 보관하는 것은 포인터뿐이다(§3.2).
  */
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, unlinkSync, writeFileSync, } from "node:fs";
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync, } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { AGENT_MESSAGE_TYPES, EVENT_TYPES, GENESIS_HASH, LIMITS, ORCHESTRATION_SCHEMA_VERSION, OrchestrationError, SUMMARY_REQUIRED, TASK_STATES, TRANSITION_REASONS, assertSha256, assertSlug, assertText, assertTimestamp, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
 import { validateArtifactPointer } from "./agentMessage.js";
@@ -43,6 +49,7 @@ export function runPaths(workspaceRoot, runId) {
         messagesDir: join(dir, "messages"),
         snapshotFile: join(dir, "snapshot.md"),
         lockFile: join(dir, "run_state.lock"),
+        journalFile: join(dir, "commit.journal"),
     };
 }
 export function sha256Hex(data) {
@@ -665,11 +672,46 @@ export function renderSnapshot(state) {
     return lines.join("\n");
 }
 // ── 영속화 ──────────────────────────────────────────────────────────────────
+/**
+ * **발행 경계 이름**(A3 fault 주입 대상). 이 목록이 곧 "복구 규칙이 덮어야 하는 실패 지점 전부"다.
+ * `commitRun`이 지나는 순서대로다.
+ */
+export const COMMIT_STAGES = [
+    "body:write",
+    "body:rename",
+    "journal:write",
+    "journal:rename",
+    "events:append",
+    "snapshot:write",
+    "snapshot:rename",
+    "state:write",
+    "state:rename",
+    "journal:cleanup",
+];
+/**
+ * **store 안에만 있는 bounded fault 주입 seam**(V3 M5b 4차 독립 리뷰 A3). 발행 경계마다 실패를 넣어
+ * 복구 규칙을 실제로 검증하기 위한 것이며, **kernel·provider 권위에는 연결되지 않는다**:
+ * 이 hook은 상태를 만들지도 검증을 완화하지도 않고, 부를 수 있는 것은 위 열거된 발행 경계 앞에서
+ * 던지는 일뿐이다(성공 경로에서는 `null`이라 아무 일도 하지 않는다).
+ */
+let commitFaultHook = null;
+/** 테스트 전용. production 호출부는 없다(부르면 그 프로세스의 커밋에만 영향이 있다). */
+export function setCommitFaultHook(hook) {
+    commitFaultHook = hook;
+}
+function faultPoint(stage) {
+    if (commitFaultHook !== null)
+        commitFaultHook(stage);
+}
 /** 같은 디렉터리 임시 파일 → rename. (M4a 범위: 과도한 fsync/crash hardening은 하지 않는다) */
-function writeAtomic(target, data) {
+function writeAtomic(target, data, stage) {
     const tmp = `${target}.tmp-${process.pid}`;
     try {
+        if (stage)
+            faultPoint(`${stage}:write`);
         writeFileSync(tmp, data, { encoding: "utf8", mode: 0o600 });
+        if (stage)
+            faultPoint(`${stage}:rename`);
         renameSync(tmp, target);
     }
     catch (e) {
@@ -802,18 +844,117 @@ function assertDurableBase(paths, base) {
         throw new OrchestrationError("stale_writer", `events.jsonl 줄 수(${tail})가 커밋 기준(${base.lastEventId})과 다르다`);
     }
 }
+function readJournal(paths) {
+    if (!existsSync(paths.journalFile))
+        return null;
+    const st = lstatSync(paths.journalFile);
+    if (st.isSymbolicLink() || !st.isFile()) {
+        throw new OrchestrationError("journal_not_regular_file", "commit.journal이 일반 파일이 아니다");
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(readFileSync(paths.journalFile, "utf8"));
+    }
+    catch {
+        // journal은 rename으로 발행하므로 부분 기록이 생기지 않는다 → 손상은 외부 조작이다(fail closed).
+        throw new OrchestrationError("journal_unparsable", "commit.journal이 JSON이 아니다");
+    }
+    const o = asObject(parsed, "commit.journal");
+    if (o.runId !== paths.runId) {
+        throw new OrchestrationError("journal_foreign", "commit.journal이 다른 run의 것이다");
+    }
+    if (typeof o.events !== "string" || typeof o.state !== "string" || typeof o.baseEventBytes !== "number") {
+        throw new OrchestrationError("journal_invalid", "commit.journal 필드가 계약과 다르다");
+    }
+    return {
+        runId: paths.runId,
+        base: o.base === null ? null : asObject(o.base, "commit.journal.base"),
+        baseEventBytes: o.baseEventBytes,
+        events: o.events,
+        state: o.state,
+    };
+}
+/** 디스크 `run_state.json`의 revision(없으면 null). 복구 판정에만 쓰는 얇은 읽기다. */
+function diskRevision(paths) {
+    if (!runExists(paths))
+        return null;
+    let parsed;
+    try {
+        parsed = JSON.parse(readFileSync(paths.stateFile, "utf8"));
+    }
+    catch {
+        throw new OrchestrationError("state_unparsable", "run_state.json이 JSON이 아니다");
+    }
+    const rev = asObject(parsed, "run_state").revision;
+    if (typeof rev !== "number")
+        throw new OrchestrationError("invalid_state", "run_state.revision이 숫자가 아니다");
+    return rev;
+}
+/**
+ * **미완 커밋 복구(V3 M5b 4차 독립 리뷰 A3).** `commitRun`(lock 안)과 `loadRun`이 부른다.
+ * journal이 없으면 아무 일도 하지 않는다. 규칙은 **결정론적이고 멱등**이다:
+ *
+ * 1. 디스크 state가 이미 journal의 revision이면 → 발행은 끝났다. journal만 지운다(정리 실패 복구).
+ * 2. 디스크 state가 아직 기준(base)이고 **event append가 정확히 journal의 바이트로 끝나 있으면**
+ *    → **roll forward**: snapshot·state를 journal의 값으로 발행하고 journal을 지운다.
+ *    (감사 이력에 이미 기록된 커밋은 버리지 않는다 — append-only 의미 보존.)
+ * 3. 디스크 state가 아직 기준이고 event tail이 journal 바이트와 다르면(0바이트·찢어진 부분 append)
+ *    → **roll back**: `events.jsonl`을 기준 길이로 되돌리고 journal을 지운다. **가시적 전이 0**이며
+ *    호출자가 받은 실패가 그대로 진실이다(같은 커밋을 그대로 재시도할 수 있다).
+ * 4. 그 밖(디스크 state가 기준도 journal도 아님)은 외부 조작이므로 fail closed다.
+ *
+ * body 파일은 어느 경로에서도 지우지 않는다: state가 참조하지 않는 body는 load 검증 대상이 아니고,
+ * 같은 messageId 재시도는 같은 경로를 덮어쓰므로 멱등이다(중복 event·revision을 만들지 않는다).
+ */
+function recoverPendingCommit(paths) {
+    const journal = readJournal(paths);
+    if (journal === null)
+        return "none";
+    const wanted = validateRunState(JSON.parse(journal.state));
+    const rev = diskRevision(paths);
+    if (rev === wanted.revision) {
+        rmSync(paths.journalFile, { force: true });
+        return "completed";
+    }
+    if (rev !== (journal.base === null ? null : journal.base.revision)) {
+        throw new OrchestrationError("journal_unrecognized", `commit.journal이 디스크 state와 이어지지 않는다(디스크 revision ${String(rev)}, 기준 ${String(journal.base?.revision ?? null)}, 목표 ${wanted.revision})`);
+    }
+    const size = existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0;
+    const appendedBytes = Buffer.byteLength(journal.events, "utf8");
+    if (size < journal.baseEventBytes) {
+        throw new OrchestrationError("journal_unrecognized", "events.jsonl이 커밋 기준보다 짧다");
+    }
+    const tail = size === journal.baseEventBytes + appendedBytes && appendedBytes > 0
+        ? readFileSync(paths.eventsFile).subarray(journal.baseEventBytes).toString("utf8")
+        : "";
+    if (tail === journal.events && appendedBytes > 0) {
+        writeAtomic(paths.snapshotFile, renderSnapshot(wanted));
+        writeAtomic(paths.stateFile, journal.state);
+        rmSync(paths.journalFile, { force: true });
+        return "rolled_forward";
+    }
+    if (size !== journal.baseEventBytes)
+        truncateSync(paths.eventsFile, journal.baseEventBytes);
+    rmSync(paths.journalFile, { force: true });
+    return "rolled_back";
+}
 /**
  * 하나의 kernel 변경을 디스크에 반영한다. **검증은 전부 호출 전에 끝나 있어야 한다** —
  * 유효하지 않은 입력은 여기까지 오지 않으므로 invalid input에서는 파일 전이가 0이다.
- * 순서: message body(rename) → events append → snapshot → state(rename).
+ *
+ * 순서는 **준비 → 발행** 두 국면이다(V3 M5b 4차 독립 리뷰 A3):
+ * ① 준비 — 미완 커밋 복구 → 디스크 기준 확인 → event 줄·최종 state 계산 → **런타임 validator 전체와
+ *    참조 무결성으로 예정 state를 검증**(무효한 state는 여기서 끝나므로 절대 발행되지 않는다).
+ * ② 발행 — body → **journal(원자적 rename)** → events append → snapshot → state → journal 삭제.
+ *    journal이 있는 동안 실패하면 다음 `commitRun`·`loadRun`이 `recoverPendingCommit`의 규칙대로
+ *    roll forward 또는 roll back한다 → 관찰 결과는 언제나 **일관된 전 상태 또는 후 상태**다.
  *
  * 커밋의 **마지막** 이벤트가 이 커밋이 남기는 state 내용의 digest를 들고 가고, load가 그것을
  * 재계산해 대조한다 → 문법적으로 유효한 state 편집(예: `state`/`resultSummary` 손대기)만으로는
  * kernel을 우회할 수 없다. 그래서 커밋마다 이벤트가 최소 1건 필요하다.
  *
- * M4b: 위 전 과정(디스크 기준 확인 → body → events → snapshot → state)을 **run 단위 배타 writer
- * lock 하나 안에서** 수행한다. 다른 프로세스가 커밋 중이면 대기 없이 `run_lock_held`, 디스크가
- * 이미 앞서 있으면 `stale_writer`이며 두 경우 다 파일 전이가 0이다.
+ * M4b: 위 전 과정을 **run 단위 배타 writer lock 하나 안에서** 수행한다. 다른 프로세스가 커밋 중이면
+ * 대기 없이 `run_lock_held`, 디스크가 이미 앞서 있으면 `stale_writer`이며 두 경우 다 파일 전이가 0이다.
  */
 export function commitRun(paths, input) {
     ensureRunDir(paths);
@@ -825,10 +966,9 @@ export function commitRun(paths, input) {
     const digest = stateContentDigest(state);
     const lock = acquireRunWriterLock(paths);
     try {
+        recoverPendingCommit(paths);
         assertDurableBase(paths, input.base);
-        for (const b of bodies) {
-            writeAtomic(join(paths.messagesDir, `${b.messageId}.md`), b.body);
-        }
+        // ── ① 준비: 발행 전에 전부 만들고 전부 검증한다 ──────────────────────────
         let prevHash = state.lastEventHash;
         let eventId = state.lastEventId;
         let appended = "";
@@ -844,14 +984,38 @@ export function commitRun(paths, input) {
             appended += `${line}\n`;
             prevHash = sha256Hex(line);
         }
-        appendFileSync(paths.eventsFile, appended, { encoding: "utf8", mode: 0o600 });
         const finalState = { ...state, lastEventId: eventId, lastEventHash: prevHash };
         assertReferentialIntegrity(finalState);
         if (stateContentDigest(finalState) !== digest) {
             throw new OrchestrationError("state_digest_drift", "커밋 중 state 내용이 바뀌었다");
         }
-        writeAtomic(paths.snapshotFile, renderSnapshot(finalState));
-        writeAtomic(paths.stateFile, `${JSON.stringify(finalState, null, 2)}\n`);
+        const stateText = `${JSON.stringify(finalState, null, 2)}\n`;
+        // **예정 state 전체를 load와 같은 validator로 다시 닫는다**(4차 리뷰 A3·A4): 호출자 소유 값에서
+        // 온 role·경로·enum이 durable에 들어간 뒤 reopen에서만 거부되는 창을 없앤다.
+        const validated = validateRunState(JSON.parse(stateText));
+        if (stateContentDigest(validated) !== digest) {
+            throw new OrchestrationError("state_digest_drift", "예정 state가 정규화 결과와 다르다");
+        }
+        const snapshotText = renderSnapshot(finalState);
+        // ── ② 발행: journal이 있는 동안의 실패는 복구 규칙이 덮는다 ───────────────
+        for (const b of bodies) {
+            writeAtomic(join(paths.messagesDir, `${b.messageId}.md`), b.body, "body");
+        }
+        const baseEventBytes = existsSync(paths.eventsFile) ? statSync(paths.eventsFile).size : 0;
+        const journal = {
+            runId: paths.runId,
+            base: input.base,
+            baseEventBytes,
+            events: appended,
+            state: stateText,
+        };
+        writeAtomic(paths.journalFile, JSON.stringify(journal), "journal");
+        faultPoint("events:append");
+        appendFileSync(paths.eventsFile, appended, { encoding: "utf8", mode: 0o600 });
+        writeAtomic(paths.snapshotFile, snapshotText, "snapshot");
+        writeAtomic(paths.stateFile, stateText, "state");
+        faultPoint("journal:cleanup");
+        rmSync(paths.journalFile, { force: true });
         return finalState;
     }
     finally {
@@ -924,6 +1088,17 @@ export function loadEvents(paths, expected) {
  * 빈 run이나 null로 강등하지 않는다.
  */
 export function loadRun(paths) {
+    // 미완 커밋이 있으면 **읽기 전에** 결정론적으로 정리한다(A3). 복구는 쓰기이므로 writer lock 안에서
+    // 하고, 다른 writer가 커밋 중이면 대기 없이 `run_lock_held`로 fail closed다(반쪽 상태를 읽지 않는다).
+    if (existsSync(paths.journalFile)) {
+        const lock = acquireRunWriterLock(paths);
+        try {
+            recoverPendingCommit(paths);
+        }
+        finally {
+            releaseRunWriterLock(paths, lock);
+        }
+    }
     if (!existsSync(paths.stateFile)) {
         throw new OrchestrationError("run_not_found", `run_state.json이 없다: ${paths.stateFile}`);
     }

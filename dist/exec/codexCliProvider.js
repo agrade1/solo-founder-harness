@@ -417,6 +417,10 @@ export function attestReadOnlyCodexProvider(provider) {
         return null; // 생성자를 지나지 않았다(복사본·proxy·위조 prototype)
     if (Object.getPrototypeOf(provider) !== CodexCliProvider.prototype)
         return null; // subclass·prototype 교체
+    // 증명된 인스턴스의 상태·설정은 전부 `#private`이므로 own property는 **0이어야** 한다(4차 리뷰 A1) →
+    // 생성 뒤 `defineProperty`로 만든 어떤 own property(메서드 override·`id` 교체 포함)도 여기서 걸린다.
+    if (Object.getOwnPropertyNames(provider).length > 0 || Object.getOwnPropertySymbols(provider).length > 0)
+        return null;
     const proto = CodexCliProvider.prototype;
     const methods = {};
     for (const m of ATTESTED_METHODS) {
@@ -427,9 +431,23 @@ export function attestReadOnlyCodexProvider(provider) {
     }
     return Object.freeze(methods);
 }
+/** 호출자 manifest를 **한 번 읽어** 평범한 사본으로 입양한다(getter·proxy·cycle은 여기서 닫힌다). */
+function adoptManifestInput(raw) {
+    try {
+        return structuredClone(raw);
+    }
+    catch {
+        fail("codex_config_invalid", "opts.manifest는 직렬화 가능한 평범한 데이터여야 한다");
+    }
+}
 export class CodexCliProvider {
-    opts;
-    id = "codex-cli";
+    /**
+     * **prototype getter**다(4차 리뷰 A1). own field로 두면 `provider.id = …`·`defineProperty`로 바꿀 수
+     * 있는 값이 하나 남고, 증명된 인스턴스의 own property는 **0이어야** 한다는 불변식이 깨진다.
+     */
+    get id() {
+        return "codex-cli";
+    }
     /**
      * 세션 상태. **ECMAScript `#private`** 이므로 밖에서 대입·`defineProperty`로 갈아끼울 수 없다
      * (TS `private`은 emitted JS에서 그냥 public own field였고, 증명된 인스턴스의 내부 상태를 테스트가
@@ -442,11 +460,29 @@ export class CodexCliProvider {
      * 증명된 인스턴스에서는 항상 `PRODUCTION_SPAWN`이다.
      */
     #spawn;
+    /**
+     * **실행 권위**: 생성 시점에 각 property를 정확히 한 번 읽어 굳힌 설정. `#private`이므로 밖에서
+     * 보이지도 바뀌지도 않고, 실행 경로는 이 값만 쓴다(A1).
+     */
+    #config;
+    /**
+     * **드리프트 tripwire 전용** 호출자 객체 참조. 실행 입력으로 읽지 않는다 — `assertNoSpecDrift`가
+     * "호출자가 봉인 뒤에 자기 객체를 바꿨는가"를 판정할 때만 쓴다(바뀌면 `codex_spec_mutated`).
+     */
+    #optsRef;
     /** invocation generation 발급기 — 단조 증가하며 재사용되지 않는다. */
     #nextGen = 1;
     constructor(opts) {
-        this.opts = opts;
+        // 호출자 소유 property는 **여기서 정확히 한 번씩만** 읽는다 — 아래 `#config`가 유일한 실행 권위다.
         const injected = opts.spawn; // ← 이 property를 읽는 유일한 지점
+        this.#optsRef = opts;
+        this.#config = Object.freeze({
+            manifest: adoptManifestInput(opts.manifest),
+            controllerRepoRoot: opts.controllerRepoRoot,
+            executablePath: opts.executablePath,
+            gitExecutablePath: opts.gitExecutablePath,
+            nowMs: opts.nowMs,
+        });
         if (injected === undefined) {
             this.#spawn = PRODUCTION_SPAWN;
             // **read-only 실행 권위는 여기서만 발급된다**(A2 · 3차 리뷰 A1). 이 구현이 sandbox
@@ -461,6 +497,12 @@ export class CodexCliProvider {
         else {
             fail("codex_config_invalid", "opts.spawn은 함수여야 한다");
         }
+        // own property가 하나도 없는 인스턴스를 얼린다(A1) → `defineProperty`로 메서드·설정을 덧붙일 수
+        // 없고, `attestReadOnlyCodexProvider`의 "own property 0" 불변식이 성립한다.
+        // (TS `private` 메서드는 prototype에 있고 prototype도 얼려 있다. 밖에서 부를 수는 있지만
+        //  실행 설정은 `#config`에 봉인되어 있고 드리프트 대조가 위조 seal을 거부하므로 `start`보다
+        //  넓은 권한이 생기지 않는다.)
+        Object.freeze(this);
     }
     /**
      * 호출자에게 주는 promise에 **항상 handler를 하나 붙인다**(대장 `C-27`). 반환값은 그대로 호출자
@@ -481,7 +523,7 @@ export class CodexCliProvider {
         if (this.#sessions.has(spec.sessionId))
             fail("codex_session_exists", `harness 세션 id가 이미 있다: ${spec.sessionId}`);
         // 설정·승인 거부는 상태를 만들기 전에 일어난다. 통과하면 그 해석값이 이 세션의 **봉인 baseline**이다.
-        const sealed = sealCodexSpec(spec, this.opts);
+        const sealed = sealCodexSpec(spec, this.#config);
         const state = {
             sessionId: spec.sessionId,
             binding: Object.freeze({}),
@@ -664,7 +706,7 @@ export class CodexCliProvider {
         const s = state.sealed; // 권위는 봉인값이다 — 아래 어디서도 `state.spec`의 값으로 실행하지 않는다
         // ── 사전 검증(빠른 거부 + 신원 고정) ──────────────────────────────────
         // turn 사이 변조는 여기서 먼저 걸린다(`C-23`): 호출자 객체가 새 baseline이 되지 못한다.
-        assertNoSpecDrift(s, state.spec, this.opts);
+        assertNoSpecDrift(s, state.spec, this.#optsRef);
         const homeExpect = state.homeId
             ? { identity: state.homeId } // resume: 소유 홈(상태 있음이 정상)
             : { requireEmpty: true }; // 첫 invocation: 빈 홈
@@ -696,7 +738,7 @@ export class CodexCliProvider {
         // 같은 권한의 다른 실행 파일 교체까지 거부).
         // 남는 창은 syscall 몇 개 규모다(Node에 `fexecve`·디렉터리 fd 상대 실행이 없다) — 0이라고 주장하지 않는다.
         this.assertOwned(state, gen);
-        assertNoSpecDrift(s, state.spec, this.opts);
+        assertNoSpecDrift(s, state.spec, this.#optsRef);
         boundary.revalidateSync();
         const home = verifyCodexHome(s.codexHome, { ...homeExpect, identity: preHome.id });
         const bin = verifyCodexExecutable(s.executablePath, preBin.id);

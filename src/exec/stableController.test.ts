@@ -10,12 +10,12 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { runProcess } from "./runProcess.js";
-import { OrchestrationKernel, createOrchestrationRun } from "./orchestrationKernel.js";
+import { OrchestrationKernel, createOrchestrationRun, openOrchestrationRun } from "./orchestrationKernel.js";
 import { LIMITS, OrchestrationError, REQUIRED_BODY_HEADINGS } from "./orchestrationTypes.js";
 import type { AgentMessageType } from "./orchestrationTypes.js";
 import { runPaths } from "./orchestrationStore.js";
@@ -323,6 +323,12 @@ interface Fixture {
   provider: CodexHarness;
   controller: StableController;
   handoffs: HandoffContext[];
+  /**
+   * controller에 넘긴 **호출자 소유 opts 객체**. 4차 리뷰 A1 이후 controller는 이 참조를 `#private`으로
+   * 들고 tripwire로만 읽으므로, 드리프트 회귀는 (controller의 필드가 아니라) 이 객체를 바꿔서 시험한다 —
+   * 그것이 호출자가 실제로 할 수 있는 유일한 조작이다.
+   */
+  opts: Record<string, unknown>;
 }
 
 interface FixtureOpts {
@@ -380,13 +386,13 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
     executablePath: opts.breakExecutable ? brokenCodexBin() : undefined,
   });
   const handoffs: HandoffContext[] = [];
-  const controller = new StableController({
+  const controllerOpts = {
     kernel: opts.wrapKernel ? opts.wrapKernel(kernel) : kernel,
     provider: provider.codex,
     controllerRepoRoot: repo.root,
     gitExecutablePath: TRUSTED_GIT,
     nowMs: opts.nowMs ?? msClock(),
-    handoff: (ctx) => {
+    handoff: (ctx: HandoffContext) => {
       handoffs.push(ctx);
       return opts.handoff
         ? opts.handoff(ctx, repo.root)
@@ -395,8 +401,9 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
             prompt: `# ${ctx.task.title}\n${ctx.inputs.map((i) => `- ${i.path}@${i.revision}`).join("\n")}`,
           };
     },
-  });
-  return { repo, kernel, provider, controller, handoffs };
+  };
+  const controller = new StableController(controllerOpts);
+  return { repo, kernel, provider, controller, handoffs, opts: controllerOpts as unknown as Record<string, unknown> };
 }
 
 /** durable 산출물 전부(state·events·messages·snapshot)를 한 문자열로. sentinel 부재 단정용. */
@@ -537,13 +544,13 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     executablePath: over.breakExecutable ? brokenCodexBin() : undefined,
   });
   const handoffs: HandoffContext[] = [];
-  const controller = new StableController({
+  const controllerOpts = {
     kernel: over.wrapKernel ? over.wrapKernel(kernel) : kernel,
     provider: provider.codex,
     controllerRepoRoot: repo.root,
     gitExecutablePath: TRUSTED_GIT,
     nowMs: over.nowMs ?? msClock(),
-    handoff: (ctx) => {
+    handoff: (ctx: HandoffContext) => {
       handoffs.push(ctx);
       return over.handoff
         ? over.handoff(ctx, repo.root)
@@ -552,8 +559,9 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
             prompt: `# ${ctx.task.title}`,
           };
     },
-  });
-  return { repo, kernel, provider, controller, handoffs };
+  };
+  const controller = new StableController(controllerOpts);
+  return { repo, kernel, provider, controller, handoffs, opts: controllerOpts as unknown as Record<string, unknown> };
 }
 
 // ── 3. 전달 수령 순서: provider가 안전히 받은 뒤에만 ack ──────────────────────
@@ -698,16 +706,15 @@ test("[M5b] 승인 목록에 들어온 hard deny 명령도 선언 검증기가 �
 
 test("[M5b] 승인·controller 신원 드리프트는 kernel·provider를 건드리지 않고 차단한다", async () => {
   const f = await fixture();
-  const mutable = f.controller as unknown as { opts: { controllerRepoRoot: string; gitExecutablePath: string } };
   const revBefore = f.kernel.getState().revision;
-  const origRoot = mutable.opts.controllerRepoRoot;
-  mutable.opts.controllerRepoRoot = "/tmp";
+  const origRoot = f.opts.controllerRepoRoot;
+  f.opts.controllerRepoRoot = "/tmp";
   assert.deepEqual(await f.controller.advanceOnce(), { blocked: "controller_binding_drift", started: [], tasks: [] });
-  mutable.opts.controllerRepoRoot = origRoot;
-  const origGit = mutable.opts.gitExecutablePath;
-  mutable.opts.gitExecutablePath = "/usr/bin/env";
+  f.opts.controllerRepoRoot = origRoot;
+  const origGit = f.opts.gitExecutablePath;
+  f.opts.gitExecutablePath = "/usr/bin/env";
   assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift");
-  mutable.opts.gitExecutablePath = origGit;
+  f.opts.gitExecutablePath = origGit;
   assert.equal(f.kernel.getState().revision, revBefore, "차단이 state를 바꿨다");
   assert.equal(f.provider.turns.length, 0);
   // 되돌리면 정상 진행한다.
@@ -871,42 +878,46 @@ test("[M5b] 늦은 writer는 stale_writer로 거부된다(남의 결과를 덮�
 
 test("[M5b] A1: kernel·provider·handoff **객체 교체**는 드리프트다(같은 state·같은 id도 거부)", async () => {
   const f = await fixture({ taskIds: ["task-a"] });
-  const m = f.controller as unknown as { opts: Record<string, unknown> };
+  const m = f.opts;
   const revBefore = f.kernel.getState().revision;
 
   // 같은 run을 여는 **다른** kernel 객체 — 상태는 동일하지만 권위는 봉인된 그 객체뿐이다.
   const twin = OrchestrationKernel.open({ workspaceRoot: f.repo.root, runId: RUN_ID });
-  const origKernel = m.opts.kernel;
-  m.opts.kernel = twin;
+  const origKernel = m.kernel;
+  m.kernel = twin;
   assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift", "같은 state의 다른 kernel을 받아들였다");
-  m.opts.kernel = origKernel;
+  m.kernel = origKernel;
 
   // 같은 `id`를 단 **다른 진짜 provider 객체**(증명을 통과하는 provider라도 봉인된 그것이 아니면 거부다).
-  const origProvider = m.opts.provider;
-  m.opts.provider = new CodexHarness(() => okTurn(), {
+  const origProvider = m.provider;
+  m.provider = new CodexHarness(() => okTurn(), {
     manifest: manifestFor(f.repo.head, ["task-a"]),
     controllerRepoRoot: f.repo.root,
     cwd: f.repo.root,
   }).codex;
   assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift", "같은 id의 다른 provider를 받아들였다");
-  m.opts.provider = origProvider;
+  m.provider = origProvider;
 
   // handoff 함수 교체.
-  const origHandoff = m.opts.handoff;
-  m.opts.handoff = () => ({ spec: readOnlySpec("x", "dev-lead", f.repo.root), prompt: "탈취" });
+  const origHandoff = m.handoff;
+  m.handoff = () => ({ spec: readOnlySpec("x", "dev-lead", f.repo.root), prompt: "탈취" });
   assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift", "handoff 교체를 받아들였다");
-  m.opts.handoff = origHandoff;
+  m.handoff = origHandoff;
 
-  // `opts` 객체 자체를 통째로 갈아끼우는 경로도 막힌다.
-  const origOpts = m.opts;
-  m.opts = { ...origOpts };
-  assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift", "opts 교체를 받아들였다");
-  m.opts = origOpts;
+  // **`opts` 참조 자체를 갈아끼우는 경로는 아예 없다**(4차 리뷰 A1): controller는 그것을 `#private`으로
+  // 들고 있고 인스턴스는 얼어 있으므로 대입·`defineProperty`가 전부 던지고 tripwire 대상도 그대로다.
+  assert.throws(() => {
+    (f.controller as unknown as Record<string, unknown>).opts = { ...m };
+  }, TypeError);
+  assert.throws(() => Object.defineProperty(f.controller, "opts", { value: { ...m }, configurable: true }), TypeError);
 
   assert.equal(f.kernel.getState().revision, revBefore, "차단이 durable state를 바꿨다");
   assert.equal(f.provider.turns.length, 0, "차단인데 provider를 불렀다");
   assert.equal((await f.controller.advanceOnce()).blocked, null, "되돌린 뒤 정상 진행하지 않는다");
 });
+
+/** controller가 밖에 내놓는 API 전부(그 밖의 이름은 밖에서 읽히지 않아야 한다). */
+const PUBLIC_API = ["advanceOnce", "usedTokens", "approvedManifest", "approvedCommit"];
 
 /**
  * `CodexCliProvider.prototype`은 얼려 두었으므로(A2) 평범한 대입(`p.start = …`)은 strict mode에서
@@ -922,69 +933,108 @@ function definePatch(target: Record<string, unknown>, name: string, value: unkno
   };
 }
 
-test("[M5b] A1: 생성 뒤 메서드 monkey-patch는 실행되지 않고 드리프트로 닫힌다", async () => {
-  const cases: Array<[string, (o: Record<string, unknown>) => () => void]> = [
-    [
-      "provider.start",
-      (o) =>
-        definePatch(o.provider as Record<string, unknown>, "start", async () => {
-          throw new Error("이 패치는 실행되면 안 된다");
-        }),
-    ],
-    [
-      "provider.events",
-      (o) =>
-        definePatch(o.provider as Record<string, unknown>, "events", () => {
-          throw new Error("이 패치는 실행되면 안 된다");
-        }),
-    ],
-    [
-      "kernel.completeTaskWithArtifacts",
-      (o) => {
-        const k = o.kernel as Record<string, unknown>;
-        const orig = k.completeTaskWithArtifacts;
-        k.completeTaskWithArtifacts = () => {
-          throw new Error("이 패치는 실행되면 안 된다");
-        };
-        return () => {
-          k.completeTaskWithArtifacts = orig;
-        };
-      },
-    ],
-    [
-      "kernel.scheduleReady",
-      (o) => {
-        const k = o.kernel as Record<string, unknown>;
-        const orig = k.scheduleReady;
-        k.scheduleReady = () => [];
-        return () => {
-          k.scheduleReady = orig;
-        };
-      },
-    ],
+test("[M5b] A1: 봉인된 kernel·provider는 메서드 monkey-patch 자체를 거부한다(그래도 진행은 정상)", async () => {
+  // 4차 리뷰 A1·A2 이후 **양쪽 권위 객체가 얼어 있다** → 예전처럼 `k.completeTaskWithArtifacts = evil`이나
+  // `defineProperty`로 갈아끼울 수 없다(패치 시도 자체가 TypeError). 드리프트 tripwire는 방어선으로
+  // 그대로 남아 있고(객체 교체는 위 테스트가 잡는다), 여기서는 **패치 경로가 닫혔음**을 고정한다.
+  const f = await fixture({ taskIds: ["task-a"] });
+  const revBefore = f.kernel.getState().revision;
+  const targets: Array<[string, Record<string, unknown>, string]> = [
+    ["provider.start", f.opts.provider as Record<string, unknown>, "start"],
+    ["provider.events", f.opts.provider as Record<string, unknown>, "events"],
+    ["kernel.completeTaskWithArtifacts", f.opts.kernel as Record<string, unknown>, "completeTaskWithArtifacts"],
+    ["kernel.scheduleReady", f.opts.kernel as Record<string, unknown>, "scheduleReady"],
   ];
-  for (const [label, patch] of cases) {
-    const f = await fixture({ taskIds: ["task-a"] });
-    const m = f.controller as unknown as { opts: Record<string, unknown> };
-    const revBefore = f.kernel.getState().revision;
-    const restore = patch(m.opts);
-    assert.deepEqual(
-      await f.controller.advanceOnce(),
-      { blocked: "controller_binding_drift", started: [], tasks: [] },
-      `${label} patch를 받아들였다`,
+  for (const [label, target, name] of targets) {
+    assert.throws(
+      () => {
+        target[name] = () => {
+          throw new Error("이 패치는 실행되면 안 된다");
+        };
+      },
+      TypeError,
+      `${label}: 대입이 통과했다`,
     );
-    assert.equal(f.provider.turns.length, 0, `${label}: 차단인데 provider를 불렀다`);
-    assert.equal(f.kernel.getState().revision, revBefore, `${label}: 차단이 state를 바꿨다`);
-    restore();
-    assert.equal((await f.controller.advanceOnce()).blocked, null, `${label}: 되돌린 뒤 진행하지 않는다`);
+    assert.throws(
+      () => Object.defineProperty(target, name, { value: () => undefined, configurable: true }),
+      TypeError,
+      `${label}: defineProperty가 통과했다`,
+    );
   }
+  // 패치가 하나도 성립하지 않았으므로 정상 진행이고, durable state는 그 커밋만 늘어난다.
+  const out = await f.controller.advanceOnce();
+  assert.equal(out.tasks[0].status, "completed", out.tasks[0].marker);
+  assert.ok(f.kernel.getState().revision > revBefore);
 });
 
-test("[M5b] A1: 재진입 시계가 게이트 통과 뒤 메서드를 갈아끼워도 그 함수는 실행되지 않는다", async () => {
-  // 시계는 **봉인 대조를 지난 뒤에** 불린다(`assertGatesOpen`: 드리프트 → clock → 만료·예산).
-  // 이전 판의 `scheduleReady`/`startScheduledBatch`는 호출 시점에 caller 소유 property를 **다시 읽는**
-  // wrapper였으므로, 재진입 시계가 그 창에서 갈아끼운 함수가 그대로 실행됐다.
+test("[M5b] A1: controller 권위·카운터는 밖에서 보이지도 바뀌지도 않는다(토큰 리셋 불가)", async () => {
+  const f = await fixture({ manifest: { maxTokens: 5 }, taskIds: ["task-a", "task-b"] });
+  // ⓐ own property 0 + freeze: 권위(`opts`/`sealed`/`pins`)와 카운터(`tokensUsed`)가 표면에 없다.
+  assert.deepEqual(Object.getOwnPropertyNames(f.controller), [], "controller 권위가 own property로 노출됐다");
+  assert.deepEqual(Object.getOwnPropertySymbols(f.controller), []);
+  assert.equal(Object.isFrozen(f.controller), true, "controller 인스턴스가 얼지 않았다");
+  assert.equal(Object.isFrozen(StableController.prototype), true, "controller prototype이 얼지 않았다");
+
+  // ⓑ 권위·카운터·게이트 **후보 전부**에 대입과 defineProperty를 시도한다 — 전부 던진다.
+  const candidates = [
+    "opts",
+    "sealed",
+    "pins",
+    "tokensUsed",
+    "assertGatesOpen",
+    "assertNoBindingDrift",
+    "preflight",
+    "now",
+    "runTask",
+    "syncGate",
+    "verifyPointers",
+    "verifyBoundary",
+    "consumeTurn",
+    "applyTurn",
+    "requireTask",
+    "advanceOnce",
+    "usedTokens",
+    "approvedManifest",
+    "approvedCommit",
+  ];
+  for (const name of candidates) {
+    assert.throws(
+      () => {
+        (f.controller as unknown as Record<string, unknown>)[name] = () => undefined;
+      },
+      TypeError,
+      `${name} 대입이 통과했다`,
+    );
+    assert.throws(
+      () => Object.defineProperty(f.controller, name, { value: () => undefined, configurable: true, writable: true }),
+      TypeError,
+      `${name} defineProperty가 통과했다`,
+    );
+    assert.equal((f.controller as unknown as Record<string, unknown>)[name] === undefined, !PUBLIC_API.includes(name), name);
+  }
+
+  // ⓒ 토큰 예산은 리셋할 수 없다: 소진된 뒤 어떤 조작으로도 다시 열리지 않는다.
+  const out = await f.controller.advanceOnce();
+  assert.equal(out.tasks[1].marker, "budget_tokens_exhausted");
+  assert.equal(f.controller.usedTokens(), 5);
+  for (const name of ["tokensUsed", "usedTokens", "sealed"]) {
+    try {
+      (f.controller as unknown as Record<string, unknown>)[name] = name === "usedTokens" ? () => 0 : 0;
+    } catch {
+      /* 얼어 있으므로 던지는 것이 정상 */
+    }
+  }
+  assert.equal(f.controller.usedTokens(), 5, "토큰 카운터가 리셋됐다");
+  assert.equal((await f.controller.advanceOnce()).blocked, "budget_tokens_exhausted", "소진 뒤 advance가 다시 열렸다");
+});
+
+test("[M5b] A1: 재진입 시계는 봉인된 kernel 메서드를 갈아끼울 수 없다(진행은 정상)", async () => {
+  // 시계는 **봉인 대조를 지난 뒤에** 불린다(`assertGatesOpen`: 드리프트 → clock → 만료·예산). 이전 판의
+  // `scheduleReady`/`startScheduledBatch`는 호출 시점에 caller 소유 property를 **다시 읽는** wrapper였으므로
+  // 재진입 시계가 그 창에서 갈아끼운 함수가 그대로 실행됐다. 지금은 ⓐ 포착한 함수만 실행되고
+  // ⓑ kernel 자체가 얼어 있어 **패치 시도가 성립하지 않는다**(4차 리뷰 A2).
   let patched = 0;
+  let refused = 0;
   let armed = false;
   const holder: { kernel: Record<string, unknown> | null } = { kernel: null };
   const base = msClock();
@@ -996,61 +1046,72 @@ test("[M5b] A1: 재진입 시계가 게이트 통과 뒤 메서드를 갈아끼�
           patched++;
           return [];
         };
-        definePatch(holder.kernel, "scheduleReady", evil);
-        definePatch(holder.kernel, "startScheduledBatch", evil);
+        for (const name of ["scheduleReady", "startScheduledBatch"]) {
+          try {
+            definePatch(holder.kernel, name, evil);
+          } catch {
+            refused++;
+          }
+        }
       }
       return base();
     },
   });
   holder.kernel = f.kernel as unknown as Record<string, unknown>;
-  const revBefore = f.kernel.getState().revision;
   armed = true;
   const out = await f.controller.advanceOnce();
 
-  assert.equal(patched, 0, "봉인 뒤 갈아끼운 kernel 메서드가 실행됐다");
-  assert.deepEqual(out.started, ["task-a", "task-b"], "교체된 scheduleReady의 결과가 쓰였다");
-  // 갈아끼운 사실 자체는 **조용히 넘어가지 않는다** — 다음 게이트에서 단일 marker로 닫힌다.
+  assert.equal(refused, 2, "봉인된 kernel에 패치가 성립했다(회귀가 공허하다)");
+  assert.equal(patched, 0, "갈아끼운 kernel 메서드가 실행됐다");
+  assert.deepEqual(out.started, ["task-a", "task-b"]);
   assert.deepEqual(
-    out.tasks.map((t) => [t.taskId, t.marker]),
+    out.tasks.map((t) => [t.taskId, t.status]),
     [
-      ["task-a", "controller_binding_drift"],
-      ["task-b", "controller_binding_drift"],
+      ["task-a", "completed"],
+      ["task-b", "completed"],
     ],
   );
-  assert.equal(f.provider.turns.length, 0, "드리프트인데 provider를 불렀다");
-  assert.ok(f.kernel.getState().revision > revBefore, "batch 시작 커밋은 있어야 한다");
-  assert.equal(f.kernel.getMessage("res.task-a"), null);
 });
 
-test("[M5b] A1: 교대 getter는 '검증한 값'과 '실행하는 값'을 가르지 못한다", async () => {
-  // 이전 판은 `typeof k[m] === "function"`으로 검사한 **뒤** `k.m.bind(k)`로 다시 읽었다.
-  // 교대 getter를 두면 검사에는 진짜가, 실행에는 공격자 함수가 들어갔고 pin도 (둘 다 두 번째 값이라)
-  // 같은 값을 봐서 통과했다. 지금은 **한 번 읽은 그 값**만 포착·검증·실행하고 pin의 기준도 그 값이다.
+test("[M5b] A1/A2: 교대 getter를 단 kernel은 '권위'가 되지 못한다(생성 자체 거부)", async () => {
+  // 이전 판은 `typeof k[m] === "function"`으로 검사한 **뒤** `k.m.bind(k)`로 다시 읽었으므로, 교대
+  // getter가 검사에는 진짜를 실행에는 공격자 함수를 줄 수 있었다. 그 다음 판은 한 번만 읽어 그 값을
+  // 실행했다. 지금은 그런 객체가 **진짜 kernel이 아니므로**(own property 0 · prototype 메서드 동일성)
+  // controller 생성 자체가 거부된다 — 봉인된 진짜 kernel에는 getter를 달 수도 없다(frozen).
   const f = await fixture({ taskIds: ["task-a"] });
-  const kernel = f.kernel as unknown as Record<string, unknown>;
+  const real = f.kernel as unknown as Record<string, unknown>;
+  assert.throws(
+    () =>
+      Object.defineProperty(real, "scheduleReady", {
+        configurable: true,
+        get: () => real.scheduleReady,
+      }),
+    TypeError,
+    "봉인된 kernel에 교대 getter를 달 수 있었다",
+  );
+
   let evilCalls = 0;
-  const evil = (): unknown[] => {
-    evilCalls++;
-    return [];
-  };
-  const real = kernel.scheduleReady;
+  const alternating = Object.create(Object.getPrototypeOf(f.kernel) as object) as Record<string, unknown>;
   let reads = 0;
-  Object.defineProperty(kernel, "scheduleReady", {
+  Object.defineProperty(alternating, "scheduleReady", {
     configurable: true,
-    get: () => (reads++ === 0 ? real : evil), // 첫 읽기만 진짜다
+    enumerable: true,
+    get: () => (reads++ === 0 ? () => f.kernel.scheduleReady() : () => (evilCalls++, [])),
   });
-  const controller = new StableController({
-    kernel: f.kernel,
-    provider: f.provider.codex,
-    controllerRepoRoot: f.repo.root,
-    gitExecutablePath: TRUSTED_GIT,
-    nowMs: msClock(),
-    handoff: (ctx) => ({ spec: readOnlySpec(`sess-${ctx.task.taskId}`, ctx.task.roleId, f.repo.root), prompt: "p" }),
-  });
-  const out = await controller.advanceOnce();
-  assert.equal(evilCalls, 0, "두 번째 읽기 값이 실행됐다");
-  assert.equal(out.blocked, "controller_binding_drift", "두 번째 읽기 값을 권위로 받아들였다");
-  assert.equal(f.provider.turns.length, 0);
+  for (const m of ["getState", "getManifest", "getTask", "startScheduledBatch", "listPendingInbox", "completeTaskWithArtifacts", "acknowledgeDelivery"]) {
+    Object.defineProperty(alternating, m, {
+      configurable: true,
+      enumerable: true,
+      value: (...a: unknown[]) => (f.kernel as unknown as Record<string, (...x: unknown[]) => unknown>)[m](...a),
+    });
+  }
+  Object.defineProperty(alternating, "paths", { configurable: true, enumerable: true, value: f.kernel.paths });
+
+  assert.equal(
+    await controllerKernelGateCode(alternating as unknown as OrchestrationKernel, f.repo, f.provider.codex),
+    "controller_kernel_not_genuine",
+  );
+  assert.equal(evilCalls, 0, "위조 kernel의 두 번째 읽기 값이 실행됐다");
 });
 
 test("[M5b] A1: handoff가 받는 manifest는 **중첩까지 불변**이고 권위 객체가 아니다", async () => {
@@ -1166,6 +1227,30 @@ test("[M5b] A1: handoff 산출물은 closed 검증을 지난다(미상 필드·�
 // ── 11. A2: read-only bridge 게이트 ─────────────────────────────────────────
 
 /**
+ * A2(4차) 회귀 공용 러너 — **kernel 후보** 하나를 controller 생성자에 넣고 코드를 돌려준다.
+ * 통과하면 `"(생성됨)"`이다(그 경우가 하나라도 나오면 위조 완료 권위가 다시 열린 것이다).
+ */
+async function controllerKernelGateCode(
+  kernel: OrchestrationKernel,
+  repo: { root: string; head: string },
+  provider: ExecutionProvider,
+): Promise<string> {
+  try {
+    new StableController({
+      kernel,
+      provider,
+      controllerRepoRoot: repo.root,
+      gitExecutablePath: TRUSTED_GIT,
+      handoff: () => ({ spec: readOnlySpec("s", "dev-lead", repo.root), prompt: "p" }),
+    });
+    return "(생성됨)";
+  } catch (e) {
+    assert.ok(e instanceof OrchestrationError, `OrchestrationError가 아니다: ${String(e)}`);
+    return e.code;
+  }
+}
+
+/**
  * A2 회귀 공용 러너 — provider 후보 하나를 controller 생성자에 넣고 코드를 돌려준다.
  * 통과하면 `"(생성됨)"`이다(그 경우가 하나라도 나오면 이 finding이 다시 열린 것이다).
  */
@@ -1231,19 +1316,32 @@ test("[M5b] A1: 임의 executor를 주입한 인스턴스는 증명을 받지 �
   assert.notEqual(attestReadOnlyCodexProvider(genuineCodex()), null, "production 인스턴스가 증명을 못 받았다");
   assert.equal(await controllerGateCode(genuineCodex()), "(생성됨)");
 
-  // ⓒ 생성 뒤 executor 필드를 덮어써도 **무효**다: `#private`이라 밖에서 보이지도 바뀌지도 않는다.
+  // ⓒ 생성 뒤에는 **어떤 필드도 덧붙일 수 없다**(4차 리뷰 A1 — 인스턴스가 얼어 있다).
+  //   executor·세션·설정·`id`가 전부 `#private`/prototype이므로 own property는 0이어야 한다.
   const patched = genuineCodex();
-  (patched as unknown as Record<string, unknown>).spawnFn = () => {
-    throw new Error("실행되면 안 된다");
-  };
-  Object.defineProperty(patched, "spawn", { value: () => undefined, configurable: true });
-  assert.notEqual(attestReadOnlyCodexProvider(patched), null, "무해한 덮어쓰기가 증명을 깨뜨렸다");
-  assert.equal(await controllerGateCode(patched), "(생성됨)");
   assert.deepEqual(
-    Object.getOwnPropertyNames(genuineCodex()).filter((k) => /spawn|session/i.test(k)),
+    [...Object.getOwnPropertyNames(patched), ...Object.getOwnPropertySymbols(patched)],
     [],
-    "executor·세션 상태가 public own field로 노출됐다(대입·defineProperty 통로)",
+    "provider 상태·설정이 public own property로 노출됐다(대입·defineProperty 통로)",
   );
+  assert.equal(Object.isFrozen(patched), true, "provider 인스턴스가 얼지 않았다");
+  for (const name of ["spawn", "spawnFn", "opts", "id", "sessions"]) {
+    assert.throws(
+      () => {
+        (patched as unknown as Record<string, unknown>)[name] = () => undefined;
+      },
+      TypeError,
+      `${name} 대입이 통과했다`,
+    );
+    assert.throws(
+      () => Object.defineProperty(patched, name, { value: () => undefined, configurable: true }),
+      TypeError,
+      `${name} defineProperty가 통과했다`,
+    );
+  }
+  assert.equal(patched.id, "codex-cli", "id가 prototype 상수가 아니다");
+  assert.notEqual(attestReadOnlyCodexProvider(patched), null, "거부된 덮어쓰기 시도가 증명을 깨뜨렸다");
+  assert.equal(await controllerGateCode(patched), "(생성됨)");
 
   // ⓓ 함수가 아닌 spawn은 생성 자체가 거부다.
   assert.throws(
@@ -1281,7 +1379,8 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
 
   // ⓒ prototype 위조: 겉모습·프로토타입이 같아도 생성자를 지나지 않았다.
   const spoofedProto = Object.create(CodexCliProvider.prototype) as Record<string, unknown>;
-  spoofedProto.id = "codex-cli";
+  // `id`는 prototype getter다(A1) — setter가 없으므로 대입이 아니라 own property로 심어야 한다.
+  Object.defineProperty(spoofedProto, "id", { value: "codex-cli", enumerable: true, configurable: true });
   assert.equal(await controllerGateCode(spoofedProto), "controller_provider_not_read_only", "prototype 위조가 통과했다");
   const setProto = { id: "codex-cli" };
   Object.setPrototypeOf(setProto, CodexCliProvider.prototype);
@@ -1304,15 +1403,21 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
   const plain = new PlainSubclass(subOpts);
   assert.equal(await controllerGateCode(plain), "controller_provider_not_read_only", "override 없는 subclass가 통과했다");
 
-  // ⓔ 인스턴스 메서드 override. prototype이 얼어 있어 **평범한 대입은 아예 던지고**,
-  //    `defineProperty`로 own property를 만들어도 함수 신원 대조에서 거부된다.
+  // ⓔ 인스턴스 메서드 override. **4차 리뷰 A1 이후 인스턴스가 얼어 있어 두 경로 모두 던진다** —
+  //    대입도, `defineProperty`도 own property를 만들지 못한다. 그래도 방어선(함수 신원 대조 +
+  //    own property 0 검사)은 남기고, 그 판정 자체는 **subclass 인스턴스**(얼리지 않은 표면)로 시험한다.
   for (const m of ["start", "send", "events", "stop"] as const) {
-    const patched = genuineCodex();
+    const frozen = genuineCodex();
     assert.throws(() => {
-      (patched as unknown as Record<string, unknown>)[m] = () => undefined;
+      (frozen as unknown as Record<string, unknown>)[m] = () => undefined;
     }, TypeError);
-    definePatch(patched as unknown as Record<string, unknown>, m, () => undefined);
-    assert.equal(await controllerGateCode(patched), "controller_provider_not_read_only", `${m} override가 통과했다`);
+    assert.throws(() => definePatch(frozen as unknown as Record<string, unknown>, m, () => undefined), TypeError);
+    assert.notEqual(attestReadOnlyCodexProvider(frozen), null, `${m}: 거부된 override 시도가 증명을 깨뜨렸다`);
+
+    // own property가 하나라도 있으면(= 여기서는 override) 증명은 `null`이다.
+    const overridden = Object.create(CodexCliProvider.prototype) as Record<string, unknown>;
+    definePatch(overridden, m, () => undefined);
+    assert.equal(await controllerGateCode(overridden), "controller_provider_not_read_only", `${m} override가 통과했다`);
   }
 
   // ⓕ 진짜 provider를 감싼 Proxy(호출을 가로채면서 신원만 빌린다).
@@ -1778,11 +1883,15 @@ async function consumeThrowing(err: unknown): Promise<string> {
 }
 
 /**
- * 진짜 kernel에 위임하되 지정 메서드만 갈아끼운 **호출자 소유 kernel**. controller는 `opts.kernel`을
- * 증명하지 않으므로(권위는 맞지만 객체는 호출자 것이다) 이것이 A2가 말하는 "인접 kernel seam"이다.
+ * 진짜 kernel에 위임하되 지정 메서드만 갈아끼운 **호출자 소유 kernel**.
+ *
+ * **4차 리뷰 A2 이후 이것은 controller 권위가 되지 못한다** — 아래 회귀들은 이 seam이 성공/실패
+ * 경계에 들어오는 것이 아니라 **생성 자체에서 거부됨**을 고정한다. production 성공 권위는 진짜
+ * `OrchestrationKernel`만이고, 그 증명은 `orchestrationKernel.ts`의 모듈 사설 등록부가 발급한다.
  */
 function delegateKernel(k: OrchestrationKernel, over: Partial<Record<string, unknown>>): OrchestrationKernel {
-  return Object.assign(Object.create(Object.getPrototypeOf(k) as object), k, {
+  const fake = Object.create(Object.getPrototypeOf(k) as object) as Record<string, unknown>;
+  const own: Record<string, unknown> = {
     paths: k.paths,
     getState: () => k.getState(),
     getManifest: () => k.getManifest(),
@@ -1794,7 +1903,11 @@ function delegateKernel(k: OrchestrationKernel, over: Partial<Record<string, unk
     completeTaskWithArtifacts: (i: Parameters<OrchestrationKernel["completeTaskWithArtifacts"]>[0]) =>
       k.completeTaskWithArtifacts(i),
     ...over,
-  }) as OrchestrationKernel;
+  };
+  for (const [name, value] of Object.entries(own)) {
+    Object.defineProperty(fake, name, { value, enumerable: true, configurable: true });
+  }
+  return fake as unknown as OrchestrationKernel;
 }
 
 /** 경계 밖이 던질 수 있는 값 전수 — 진짜 클래스·코드 있는 객체·원시값·null까지. */
@@ -1857,74 +1970,142 @@ test("[M5b] A2: 호출자 시계가 던진 임의 코드도 marker가 되지 못
   }
 });
 
-test("[M5b] A2: 호출자 kernel(SoR)이 던진 임의 코드는 닫힌 taxonomy로만 나온다", async () => {
-  // kernel은 **호출자 객체**다(`opts.kernel`). native 코드에 진단 가치가 있지만 무조건 믿으면 위조 통로다.
-  // 닫힌 집합 밖(= 흉내낸 성공 marker 포함)은 전부 `kernel_rejected`로 접히고, 집합 안(`unknown_task`)만
-  // 그대로 올라온다.
-  const cases: Array<[unknown, string]> = [
-    ...HOSTILE_THROWS.map((e) => [e, "kernel_rejected"] as [unknown, string]),
-    [new OrchestrationError("unknown_task", "닫힌 집합 안"), "unknown_task"],
-    [new OrchestrationError("artifact_not_owned", "닫힌 집합 안"), "artifact_not_owned"],
-  ];
-  for (const [err, want] of cases) {
-    const f = await fixture({
-      taskIds: ["task-a"],
-      wrapKernel: (k) =>
-        delegateKernel(k, {
-          completeTaskWithArtifacts: () => {
-            throw err;
-          },
-        }),
-    });
-    const a = (await f.controller.advanceOnce()).tasks[0];
-    assert.deepEqual([a.status, a.marker], ["failed", want], String((err as { code?: string })?.code ?? err));
-    assert.equal(f.kernel.getTask("task-a")!.state, "running", "거부인데 완료로 만들었다");
+/** controller가 kernel(SoR)에 대고 부르는 좁은 API 전부. */
+const KERNEL_API = [
+  "getState",
+  "getManifest",
+  "getTask",
+  "scheduleReady",
+  "startScheduledBatch",
+  "listPendingInbox",
+  "completeTaskWithArtifacts",
+  "acknowledgeDelivery",
+];
+
+test("[M5b] A2(4차): 위조 완료 권위는 controller 생성에서 거부된다 — 성공을 만들 수 없다", async () => {
+  const f = await fixture({ taskIds: ["task-a"] });
+  const real = f.kernel;
+  const provider = f.provider.codex;
+  const proto = Object.getPrototypeOf(real) as Record<string, unknown>;
+
+  // ⓐ **A2의 핵심**: 스케줄링은 진짜에 위임하고 완료만 그럴듯하게 위조하는 delegate.
+  //   이전 판은 이것을 받아들여 디스크 변화 0으로 `completed`/`result_accepted`를 발급했다.
+  let fakeCompletions = 0;
+  const forged = delegateKernel(real, {
+    completeTaskWithArtifacts: () => {
+      fakeCompletions++;
+      return {
+        task: { ...real.getTask("task-a")!, state: "completed" as const, resultSummary: "위조" },
+        artifacts: [{ path: "src/task-a/x.md", sha256: "0".repeat(64), revision: 1, producerTaskId: "task-a", role: "output" as const }],
+      };
+    },
+  });
+  assert.equal(await controllerKernelGateCode(forged, f.repo, provider), "controller_kernel_not_genuine", "위조 완료 권위가 통과했다");
+  assert.equal(fakeCompletions, 0, "위조 완료가 한 번이라도 불렸다");
+
+  // ⓑ 평범한 구조적 객체(메서드 모양 + paths.workspaceRoot만 맞춘 것).
+  const structural: Record<string, unknown> = { paths: real.paths };
+  for (const m of ["getState", "getManifest", "getTask", "scheduleReady", "startScheduledBatch", "listPendingInbox", "completeTaskWithArtifacts", "acknowledgeDelivery"]) {
+    structural[m] = (...a: unknown[]) => (real as unknown as Record<string, (...x: unknown[]) => unknown>)[m](...a);
   }
+  assert.equal(
+    await controllerKernelGateCode(structural as unknown as OrchestrationKernel, f.repo, provider),
+    "controller_kernel_not_genuine",
+    "구조적 객체가 통과했다",
+  );
+
+  // ⓒ Proxy wrapper · subclass · prototype 위조 · 메서드 복사본.
+  assert.equal(await controllerKernelGateCode(new Proxy(real, {}), f.repo, provider), "controller_kernel_not_genuine", "Proxy가 통과했다");
+  const copied: Record<string, unknown> = { paths: real.paths };
+  for (const m of KERNEL_API) copied[m] = proto[m];
+  assert.equal(
+    await controllerKernelGateCode(copied as unknown as OrchestrationKernel, f.repo, provider),
+    "controller_kernel_not_genuine",
+    "메서드 복사본이 통과했다",
+  );
+  assert.equal(
+    await controllerKernelGateCode(Object.create(proto) as OrchestrationKernel, f.repo, provider),
+    "controller_kernel_not_genuine",
+    "prototype 위조가 통과했다",
+  );
+  // ⓓ 진짜 kernel은 통과한다(양성 대조군 — 게이트가 전부를 막는 것이 아니다).
+  const fresh = await fixture({ taskIds: ["task-a"] });
+  assert.equal(await controllerKernelGateCode(fresh.kernel, fresh.repo, fresh.provider.codex), "(생성됨)");
 });
 
-test("[M5b] A2: kernel이 **돌려준 값**의 getter가 던져도 marker를 고르지 못한다", async () => {
-  // 접힘은 호출뿐 아니라 **반환값을 읽는 것**까지 덮어야 한다: `scheduleReady()`가 준 task의 `taskId`
-  // getter가 `result_accepted`를 던지면 이전 판의 `codeOf`는 그것을 그대로 blocked marker로 올렸다.
+test("[M5b] A2(4차): 성공은 durable SoR 변화를 동반하고 새 kernel로 reopen하면 completed다", async () => {
   const f = await fixture({
     taskIds: ["task-a"],
-    wrapKernel: (k) =>
-      delegateKernel(k, {
-        scheduleReady: () =>
-          k.scheduleReady().map((t) =>
-            Object.defineProperty({ ...t }, "taskId", {
-              get: () => {
-                throw new OrchestrationError("result_accepted", "탈취");
-              },
-              enumerable: true,
-            }),
-          ),
-      }),
+    handoff: (ctx, root) => ({
+      spec: readOnlySpec("s", ctx.task.roleId, root),
+      prompt: "p",
+      outputs: [{ path: "src/task-a/out.md", role: "output" as const }],
+    }),
   });
-  const out = await f.controller.advanceOnce();
-  assert.deepEqual(out, { blocked: "controller_internal_error", started: [], tasks: [] });
-  assert.equal(f.kernel.getTask("task-a")!.state, "ready", "차단인데 state가 바뀌었다");
+  writeArtifact(f.repo.root, "src/task-a/out.md", "# 산출물\n");
+  const paths = runPaths(f.repo.root, RUN_ID);
+  const before = {
+    rev: f.kernel.getState().revision,
+    events: readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0).length,
+    bodies: readdirSync(paths.messagesDir).length,
+  };
+
+  const a = (await f.controller.advanceOnce()).tasks[0];
+  assert.deepEqual([a.status, a.marker], ["completed", "result_accepted"]);
+
+  // ⓐ 디스크가 실제로 움직였다: revision · event tail · result body · artifact record · state 파일.
+  const after = f.kernel.getState();
+  assert.ok(after.revision > before.rev, "성공인데 revision이 그대로다");
+  assert.ok(readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0).length > before.events, "event가 append되지 않았다");
+  assert.ok(readdirSync(paths.messagesDir).length > before.bodies, "result body가 디스크에 없다");
+  assert.deepEqual(after.artifacts.map((x) => x.artifactId), ["src/task-a/out.md@1"]);
+  assert.ok(readFileSync(paths.stateFile, "utf8").includes("result_accepted") === false, "state에 marker 문자열을 넣지 않는다");
+  assert.ok(readFileSync(paths.snapshotFile, "utf8").includes("src/task-a/out.md@1"), "snapshot이 갱신되지 않았다");
+  assert.equal(existsSync(paths.journalFile), false, "커밋 journal이 남았다");
+
+  // ⓑ **새 genuine kernel로 reopen**하면 completed이고 포인터가 그대로다(fail-closed load를 지난다).
+  const reopened = openOrchestrationRun({ workspaceRoot: f.repo.root, runId: RUN_ID });
+  const task = reopened.getTask("task-a")!;
+  assert.equal(task.state, "completed");
+  assert.deepEqual(
+    task.artifactRefs.map((r: { path: string; revision: number }) => `${r.path}@${r.revision}`),
+    ["src/task-a/out.md@1"],
+  );
+  assert.equal(reopened.getMessage("res.task-a")!.summary, "[task-a] turns=1 acked=0");
 });
 
-test("[M5b] C: inbox 항목은 **한 번만 읽고** 그 사본으로 전달한다(교대 getter 무효)", async () => {
-  // 3차 독립 리뷰 C: 이전 판은 검증한 `refs`와 별개로 `deliveryPrompt(entry)`가 **원본 alias를 다시**
-  // 읽었다. 지금은 읽는 즉시 봉인 사본을 만들므로, 두 번째 읽기에 다른 값을 주는 getter는 소용이 없다.
-  const g = await fixtureWithDelivery({
-    wrapKernel: (k) =>
-      delegateKernel(k, {
-        listPendingInbox: (id: string) =>
-          k.listPendingInbox(id).map((entry) => {
-            let reads = 0;
-            return Object.defineProperty({ ...entry }, "summary", {
-              get: () => (++reads === 1 ? entry.summary : "탈취된 두 번째 읽기"),
-              enumerable: true,
-            }) as typeof entry;
-          }),
-      }),
+test("[M5b] A2: 호출자 kernel(SoR)의 닫힌 집합 밖 코드는 kernel_rejected로 접힌다", async () => {
+  // kernel은 **호출자가 주는 객체**다. 이제 진짜 kernel만 받으므로 임의 코드를 던지는 kernel은 넣을 수
+  // 없고, 남는 것은 **진짜 kernel이 실제로 낼 수 있는** 코드다. 닫힌 집합 안(`artifact_not_owned`)은
+  // 그대로 올라오고(위 소유권 테스트), 밖(`run_lock_held`)은 `kernel_rejected`로 접힌다.
+  const f = await fixture({
+    taskIds: ["task-a"],
+    handoff: (ctx, root) => {
+      // handoff는 batch 시작 커밋 **뒤**, 완료 커밋 **앞**이다 → 여기서 lock을 잡아 두면 완료 커밋이
+      // `run_lock_held`(닫힌 집합 밖)로 거부된다.
+      writeFileSync(runPaths(root, RUN_ID).lockFile, "다른 writer\n");
+      return { spec: readOnlySpec("s", ctx.task.roleId, root), prompt: "p" };
+    },
   });
+  const a = (await f.controller.advanceOnce()).tasks[0];
+  assert.deepEqual([a.status, a.marker], ["failed", "kernel_rejected"], "kernel native 코드가 그대로 새어나갔다");
+  rmSync(runPaths(f.repo.root, RUN_ID).lockFile, { force: true });
+  assert.equal(openOrchestrationRun({ workspaceRoot: f.repo.root, runId: RUN_ID }).getTask("task-a")!.state, "running");
+});
+
+test("[M5b] C: inbox 항목은 **한 번만 읽고** 그 사본으로 전달한다", async () => {
+  // 3차 독립 리뷰 C: 이전 판은 검증한 `refs`와 별개로 `deliveryPrompt(entry)`가 **원본 alias를 다시**
+  // 읽었다. 지금은 읽는 즉시 봉인 사본을 만든다. 진짜 kernel은 깊은 사본을 주므로 적대적 getter를
+  // 끼울 표면이 없고(그 자체가 A2의 결과다), 여기서는 전달 내용이 **durable state의 값**임을 고정한다.
+  const g = await fixtureWithDelivery();
   await g.controller.advanceOnce();
   const send = g.provider.turns.find((t) => t.kind === "send")!;
-  assert.ok(send.text.includes("producer 중간 산출물"), "봉인 사본이 아니라 두 번째 읽기가 전달됐다");
-  assert.ok(!send.text.includes("탈취된 두 번째 읽기"), "전달 프롬프트가 원본 alias를 다시 읽었다");
+  const entry = g.kernel.getMessage("su-1")!;
+  assert.ok(send.text.includes(entry.summary!), "durable summary가 전달되지 않았다");
+  for (const ref of entry.artifactRefs) assert.ok(send.text.includes(`${ref.path}@${ref.revision}`), "검증된 포인터가 빠졌다");
+  // 교대 getter를 심을 수 있는 유일한 경로(위조 kernel)는 생성 자체가 거부된다.
+  const forged = delegateKernel(g.kernel, { listPendingInbox: () => [] });
+  assert.equal(await controllerKernelGateCode(forged, g.repo, g.provider.codex), "controller_kernel_not_genuine");
 });
 
 test("[M5b] A2: provider start·send의 native 코드도 controller taxonomy로 접힌다", async () => {
