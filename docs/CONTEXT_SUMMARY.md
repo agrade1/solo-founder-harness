@@ -2,7 +2,55 @@
 
 최종 갱신: 2026-07-28
 
-## 최신 (2026-07-28 — **V3 M5b 4차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=4 · B=7 · C=5) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-28 — **V3 M5b 5차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=4 · B=7 · C=9) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `35de547` 위에 **5차 리비전 커밋** — code/tests/dist
+  `e477235` + docs 1건. **fresh Claude Opus 5 세션**(이전 transcript·자기평가 미상속 · subagent·병렬 writer 0).
+  원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · **live provider 추론** · secret 0.
+  `node_modules` stage 0. Ponytail(full) 적용.
+- **⚠ 4차 리비전 기록의 과장 정정**: 5차 독립 리뷰(`409dee2..35de547`)는 **A1을 PARTIAL** · **A3를 OPEN(3건)** ·
+  **A4를 PARTIAL**로 판정했다(**A2만 CLOSED**). ⓐ 증명이 **메서드 신원만** 보므로 숨은 `executablePath`·
+  `gitExecutablePath`·manifest·checkout이 무엇이든 통과했다(**실측: `/bin/echo`·`/bin/true` 증명 통과**) →
+  사용자 소유 0700 스크립트가 승인 경계 안에서 실제로 실행될 수 있었다 ⓑ **최종 message body가 journal보다
+  먼저** 생겨 실패한 전이가 색인되지 않은 durable 파일을 남겼다(다른 id로 재시도하면 영구) ⓒ 복구가 **정확히
+  일치하지 않는 모든 event suffix를 truncate**해 남의 append-only 감사 바이트를 파괴할 수 있었다 ⓓ journal
+  schema가 **열려 있고 전이에 묶이지 않아** 그럴듯한 journal 하나로 유효 state를 덮어쓸 수 있었다.
+  **지금도 self-approved가 아니다.**
+- **5차 리비전이 닫은 것(A 4건)**:
+  ⓐ **A1** — 증명이 **불변·정규·런타임 검증된 설정 신원**(codex/git 실행 파일 dev+ino · checkout · 승인
+  canonical digest · 시각 권위)을 근거로 하고, 판정 함수는 **호출자가 스스로 검증해 온 기대값과의 대조 결과만**
+  준다. `StableController`에 **명시 필수 `codexExecutablePath`** 추가 → 불일치는 **git·codex spawn 이전에**
+  `controller_provider_authority_mismatch`로 생성 거부. 실행 파일 신원은 **매 invocation 생성 시점 pin으로**
+  재검증하고 git 신원은 실행 경계에도 pin으로 간다. 시각 권위는 **controller와 같은 함수 또는 진짜 `Date.now`**만.
+  ⓑ **A3(body)** — **staging → journal → 최종 이름** 순서. journal 전 실패는 스스로 정리(최종 body 0),
+  이후는 복구가 유일한 정리 주체(roll forward는 참조 body **전부** 확인·발행 / roll back은 **자기 파일만** 삭제).
+  ⓒ **A3(suffix)** — `baseEventBytes` 이후 **실제 바이트**로 판정: 완전 append → roll forward · **정확한 접두**
+  → roll back · 그 밖은 `journal_foreign` fail closed + **모든 파일 바이트 보존**.
+  ⓓ **A3(journal)** — **closed schema + 전이 전수 묶기**(경로 runId · milestone · 승인 digest · 기준 state
+  원본 바이트 digest·chain · 후속 revision · 정규 event record · eventId/prevHash 체인 · 최종 hash ·
+  state 정규 바이트/내용 digest · body 대상+digest), **쓰기·삭제 전에 전수 검증**.
+- **B 7건은 하나도 닫지 않았다**(리뷰 원문 그대로): `B-7`·`B-9`(첫 live 실행 전) · `B-10`(edit 가능 provider
+  활성화 전) · `B-11`(무인 autopilot 전) · `B-12`(첫 restart/resume 전) · `B-13`(live runner 또는 두 번째
+  process-backed provider 전) · `C-12`→B(M5c autopilot 전).
+  **C 9건**: `C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30` 사실·기한 유지 + **신규 `C-38`**
+  (caller getter가 artifact 거부 taxonomy를 고를 수 있다 — durable 오염·성공 marker는 불가능).
+  `C-36`/`C-37`은 **직접 증거가 없어 재분류하지 않았다**(그대로 open).
+- **테스트(worker 자기보고 — 독립 실측 아님)**: `orchestrationKernel` **89/89** · `stableController` **57/57** ·
+  `codexCliProvider` **59/59** · `executionBoundary` **17/17** · `reviewer` **21/21** ·
+  `npm run test:exec` **343/343**(최종 원복 구현으로 1회) · authority/provenance/recovery subset
+  **3회 직렬 205/205** · `tsc --noEmit` clean · `build` PASS + **dist 런타임 프로브**(emitted JS에서 임의
+  실행 파일 provider 대조 실패 · foreign suffix `journal_foreign` + 바이트 보존 · 미상 필드 journal
+  `journal_invalid` · sentinel 프로세스 0) · `git diff --check` clean · kernel 계열 offline acceptance 개별
+  재실행(`m4a` 31 · `m4b` 42 · `m4c` 77). **mutation 11종 전부 kill · 살아남은 0 · 바이트 동일 원복.**
+  **정직한 관측**: `test:exec` 첫 실행에 부하 기인 `boundary_git_failed` 1건(고정 10초 git 상한), 즉시
+  재실행 343/343 — 완화 없이 기록만 남겼다.
+- **미실행**: `npm test` 전체 · `test:core` · 전체 `acceptance.sh` · stress · live · MCP · 실제 Codex/Claude 추론.
+  전체 suite 1회는 **최종 M5 handoff(M5d 이후) 직렬 1회**로 예약돼 있다.
+- **다음 게이트**: supervisor의 **fresh Codex `gpt-5.6-sol` xhigh read-only 독립 재리뷰**. 위 fixed 판정
+  **전부가 재확인 대상**이다 — 이 세션은 스스로를 승인하지 않는다.
+
+## 이전 (2026-07-28 — **V3 M5b 4차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=4 · B=7 · C=5) 대응** · dated history)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `d554a46` 위에 **4차 리비전 커밋** — code/tests/dist

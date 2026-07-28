@@ -3,7 +3,51 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 4차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 5차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+
+- **M5b 5차 리비전** — 시작 HEAD `35de547` 위에 code/tests/dist `e477235` + docs 커밋.
+  worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller` · 승인 base = M5a
+  `409dee2`. fresh Claude Opus 5 단일 세션(subagent·병렬 writer 0). 원격 push/PR/merge·네트워크·MCP·
+  패키지 설치·live provider 추론·secret 0. `node_modules` stage 0.
+- **⚠ 아래 "4차 리비전이 A=4를 넷 다 닫았다" 서술은 부분적이었다.** 5차 독립 fresh Codex `gpt-5.6-sol`
+  xhigh read-only 재리뷰(`409dee2..35de547`)가 **REVISE · A/P1=4 · B=7 · C=9**를 냈고 **A1 PARTIAL ·
+  A3 OPEN(3건) · A4 PARTIAL**(A2만 CLOSED)로 판정했다. 공통 뿌리는 **"증명·복구의 근거를 좁게 잡았다"** 이다.
+  5차 리비전이 닫은 것:
+  - **A1 — 임의 executable/git 권위가 read-only provider로 증명됐다.** 증명이 WeakSet·prototype·own
+    property·**메서드 신원**만 봤으므로 숨은 `executablePath`(사용자 소유 0700 스크립트 · 실측
+    `/bin/echo`·`/bin/true`)·`gitExecutablePath`·manifest·checkout이 무엇이든 통과했고, controller는 기대
+    codex 실행 파일 신원을 **아예 받지 않았다**. → ① provider production 분기가 **생성 시점에 런타임 검증**한
+    codex/git 실행 파일(정규·비symlink·일반 파일·실행 비트·타인 쓰기 없음·**dev+ino**)·checkout·**승인
+    canonical digest**·시각 권위를 **불변 스냅샷**으로 고정(검증 불가면 생성 자체 실패) ② 판정 함수는
+    `attestReadOnlyCodexProvider(provider, expected)`로 **대조 결과만** 준다(신원 객체 미export)
+    ③ `StableController`에 **명시 필수 `codexExecutablePath`** 추가 — controller가 그 경로·git 경로를 직접
+    검증하고 kernel(SoR) 승인 digest·checkout·시각 권위와 대조 → 불일치는 **git·codex spawn 이전에**
+    `controller_provider_authority_mismatch`로 생성 거부 ④ 실행 파일 신원은 **매 invocation 생성 시점
+    pin으로** 재검증, git 신원은 실행 경계에도 pin(`gitIdentity`) ⑤ 시각 권위는 **controller와 같은 함수
+    또는 진짜 `Date.now`** 만 인정.
+  - **A3 — 최종 message body가 journal보다 먼저 생겼다.** → **staging(`.staged-<txn>.<id>.md`) → journal →
+    `body:publish`** 순서. journal 전 실패는 이 invocation의 staging을 스스로 지운다(최종 body 0 · 복구 대상
+    전이 0). roll forward는 참조되는 body를 **전부** 확인·발행하고(없으면 `journal_body_missing`) roll back은
+    **자기 트랜잭션 파일만** 지운다 — 기존·남의 body는 어떤 경로에서도 보존한다.
+  - **A3 — 복구가 남의 event suffix를 잘라냈다.** → `baseEventBytes` 이후 **실제 바이트**로 판정:
+    완전 append → roll forward · **정확한 바이트 접두** → roll back · 그 밖(같은 길이의 남의 바이트 ·
+    접두 아닌 짧은 바이트 · 완전 append + 여분) → `journal_foreign` fail closed + **모든 파일 바이트 보존**.
+  - **A3 — journal schema가 열려 있었다.** → **closed schema + 전이 전수 묶기**(경로 runId · milestone ·
+    승인 digest · **기준 state 원본 바이트 digest**와 chain · 후속 revision · 정규 event record ·
+    eventId/prevHash 체인 · 최종 hash · state 정규 바이트/내용 digest · body 대상+digest)이고, 복구는
+    **어떤 쓰기·삭제보다 먼저** 전부 검증한다. 무효 journal은 아무 바이트도 바꾸지 않는다.
+- **B 7건은 하나도 닫지 않았다**(`B-7`·`B-9`·`B-10`·`B-11`·`B-12`·`B-13`·`C-12`→B — 기한·트리거 원문 유지).
+  **C 9건**: 8건 유지 + ID 없던 caller getter artifact taxonomy를 **`C-38`** 로 등록. `C-36`/`C-37`은
+  **직접 증거가 없어 재분류하지 않았다.**
+- **테스트(worker 자기보고 — 독립 실측 아님)**: kernel **89/89** · controller **57/57** · provider **59/59** ·
+  boundary **17/17** · reviewer **21/21** · `npm run test:exec` **343/343**(최종 원복 구현으로 1회) ·
+  authority/provenance/recovery subset **3회 직렬 205/205** · `tsc --noEmit` clean · `build` +
+  **dist 런타임 프로브** · `git diff --check` clean · `m4a` 31 · `m4b` 42 · `m4c` 77 ·
+  **mutation 11종 전부 kill(살아남은 0)**. **정직한 관측**: `test:exec` 첫 실행에 부하 기인
+  `boundary_git_failed` 1건(고정 10초 git 상한), 즉시 재실행 343/343 — 완화 없이 기록만 남겼다.
+- **다음 게이트는 fresh Codex xhigh read-only 독립 재리뷰**이고 위 fixed 판정 **전부가 재확인 대상**이다.
+
+## 이전 상태 (2026-07-28 — V3 **M5b stable controller · 4차 리비전 완료** · dated history)
 
 - **M5b 4차 리비전** — 시작 HEAD `d554a46` 위에 code/tests/dist `b64974a` + docs 커밋.
   worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller` · 승인 base = M5a

@@ -1,5 +1,60 @@
 # WORKLOG.md
 
+## 2026-07-28 (V3 **M5b 5차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=4): 임의 executable/git 권위가 증명됨 · journal 전에 생긴 최종 body · 남의 event suffix 파괴 · 열린 journal schema** · **독립 재리뷰 대기**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
+시작 HEAD `35de547`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가
+미상속). amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · 패키지 설치 · 의존성/lockfile 변경 ·
+MCP · **live Codex/Claude provider 추론** · secret 사용 · deploy · DB · production · live billing **없음**.
+subagent·병렬 writer 없음(단일 세션 직렬). `node_modules`(supervisor symlink)는 **stage하지 않았다**.
+Ponytail(full) 적용.
+
+> **정정 — 4차 리비전 기록의 과장.** 4차 기록은 A1~A4를 "넷 다 닫았다"고 적었지만 5차 독립 리뷰는
+> **A1을 PARTIAL** · **A3를 OPEN(3건)** · **A4를 PARTIAL**로 판정했다(A2만 CLOSED). 공통 뿌리는
+> **"증명·복구의 근거를 좁게 잡았다"** 이다: 증명은 *누가*(발급 등록부·메서드 신원)만 봤고 *무엇을 실행하는가*
+> (숨은 executable·git·승인·checkout·시계)는 보지 않았고, 복구는 **바이트가 아니라 크기·revision 숫자**로
+> 판정했으며 최종 body가 **journal보다 먼저** 생겼다. 이전 절은 dated history로 보존하고 아래가 현행 사실이다.
+
+- **A1 — 증명이 "설정 신원"까지 본다.** provider production 분기가 생성 시점에 codex/git 실행 파일(정규 ·
+  비symlink · 일반 파일 · 실행 비트 · 타인 쓰기 없음 · **dev+ino**) · controller checkout · **승인 canonical
+  digest** · 시각 권위를 런타임 검증해 **불변 스냅샷**으로 고정한다(검증 불가면 **생성 자체 실패**).
+  판정 함수는 `attestReadOnlyCodexProvider(provider, expected)`로 바뀌어 **호출자가 스스로 검증해 온 기대
+  권위와의 대조 결과만** 준다(신원 객체 미export → 임의 실행 파일에 "승인처럼 읽히는 답"이 없다).
+  `StableController`에 **명시 필수 `codexExecutablePath`** 를 추가해 controller가 그 경로와 git 경로를 직접
+  검증하고 kernel(SoR) 승인 digest·checkout·시각 권위와 함께 대조 → 불일치는 **git·codex spawn 이전에**
+  `controller_provider_authority_mismatch`로 생성 거부. 실행 파일 신원은 **매 invocation 생성 시점 pin으로**
+  재검증하고 git 신원은 실행 경계에도 pin으로 넘어간다. 회귀: **valid-mode sentinel 실행 파일** 6케이스
+  (임의 codex · 다른 git · controller가 다른 git 기대 · 다른 승인 · 다른 checkout · 다른 시계) 전부 생성 거부 +
+  **두 sentinel 모두 미실행**, **명시로 pin한 sentinel은 사용 가능**(양성 대조군), 같은 경로 다른 inode 거부
+  (생성·실행 두 시점), custom-spawn 비증명·freeze·own property 0·production 성공 경로 유지.
+- **A3 — 최종 body는 journal 뒤에만 생긴다.** body는 **트랜잭션 소유 staging**(`.staged-<txn>.<id>.md`)으로
+  먼저 쓰고 journal에 **대상 + 내용 digest**를 담은 뒤 `body:publish` 단계에서만 최종 이름이 된다. journal
+  발행 전 실패는 이 invocation의 staging을 스스로 지운다(최종 body 0). roll forward는 참조되는 body를 **전부**
+  확인·발행하고(없으면 `journal_body_missing`으로 state를 쓰지 않는다) roll back은 **자기 트랜잭션 파일만**
+  지운다. 회귀: 발행 경계 11곳 · **다중 body** · 같은/다른 id 재시도 · reopen · staging 정리 ·
+  **최종 디렉터리 열거 = 색인** · 기존 body 보존. "orphan은 무해" 단정·주석은 **삭제**했다.
+- **A3 — 남의 event 바이트를 보존한다.** `baseEventBytes` 이후 **실제 바이트**를 읽어 완전 append면 roll
+  forward · **정확한 접두**면 roll back · 그 밖(같은 길이의 남의 바이트 · 접두 아닌 짧은 바이트 · 완전
+  append + 여분)은 `journal_foreign`으로 fail closed이고 **모든 파일이 바이트 그대로** 남는다.
+- **A3 — journal은 closed schema + 전이 전수 묶기다.** 미상/누락 필드 거부 · bounded 정수 · 정규형 ·
+  경로 runId · milestone · 승인 digest · **기준 state 원본 바이트 digest**와 chain · 후속 revision · 정규
+  event record · eventId/prevHash 체인 · 최종 hash · state 정규 바이트/내용 digest · body 대상+digest.
+  복구는 **쓰기·삭제 전에** 전부 검증하고, 무효 journal은 아무 바이트도 바꾸지 않는다. 회귀 26케이스.
+- **B 7건은 하나도 닫지 않았다**(`B-7`·`B-9`·`B-10`·`B-11`·`B-12`·`B-13`·`C-12`→B — 기한·트리거 원문 유지).
+  **C 9건**: 8건(`C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`) 사실·기한 유지 + ID 없던 caller
+  getter artifact taxonomy를 **`C-38`** 로 등록. `C-36`/`C-37`은 **직접 증거가 없어 재분류하지 않았다.**
+- **테스트(worker 자기보고 — 독립 실측 아님)**: kernel **89/89**(82 → 89) · controller **57/57**(54 → 57) ·
+  provider **59/59** · boundary **17/17** · reviewer **21/21** · `npm run test:exec` **343/343**(최종 원복
+  구현으로 1회) · authority/provenance/recovery subset **3회 직렬 205/205** · `tsc --noEmit` clean ·
+  `build` + `git diff --check` clean + **dist 런타임 프로브** · `m4a` 31 · `m4b` 42 · `m4c` 77.
+  **mutation 11종 전부 kill · 살아남은 0 · 바이트 동일 원복 · `MUTATION` 잔재 0**(⑧ `stateContentDigest`
+  묶기는 처음 살아남아 **정합적 위조 회귀**를 추가해 kill했다 — 이 이력을 지우지 않는다).
+  **정직한 관측**: `test:exec` 첫 실행에서 호스트 부하 기인 `boundary_git_failed` 1건(고정 10초 git 상한),
+  즉시 재실행 343/343. 테스트를 완화하지 않고 §0-0에 기록했으며, 게이트 회귀들이 run 하나를 공유하도록
+  정리해 git 프로세스 수를 줄였다(단정 불변).
+- **미실행**: `npm test` 전체 · `test:core` · 전체 `acceptance.sh` · stress · live · MCP · 실제 추론.
+- **이 세션은 스스로를 승인하지 않는다** — 다음 fresh Codex xhigh read-only 리뷰가 게이트다.
+
 ## 2026-07-28 (V3 **M5b 4차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=4): 런타임에서 writable한 권위·예산 · 위조 가능한 완료 권위 · 비원자적 물리 발행 · caller getter 재읽기** · **독립 재리뷰 대기**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
