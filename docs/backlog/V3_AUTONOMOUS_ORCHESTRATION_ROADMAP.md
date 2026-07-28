@@ -32,7 +32,23 @@
     **M5a 최종 로컬 HEAD `409dee2`는 다섯 번째 fresh 독립 Codex 리뷰에서 `APPROVE_TO_STACK` ·
     A finding 0으로 승인됐다.** 이 문서 아래쪽의 "5차 이후에도 M5a는 다음 fresh 독립 리뷰 전까지 승인된
     것이 아니다"류 표기는 **그 승인 이전 시점의 기록**이며 현행 판정이 아니다(원문은 이력으로 보존한다).
-  - **M5b — 3차 리비전 완료 · 독립 재리뷰 대기.** 승인된 `409dee2` 위에 stable controller bridge를
+  - **M5b — 4차 리비전 완료 · 독립 재리뷰 대기(현행 판정).** 2026-07-28 **4차 독립 fresh Codex
+    `gpt-5.6-sol` xhigh read-only 리뷰가 `409dee2..d554a46` 전체를 보고 다시 REVISE(A/P1 4건 · B 7 · C 5)**
+    했다. 3차 리비전의 자기평가는 승인 근거가 아니었고, 리뷰는 3차 A1~A3를 **PARTIAL**로 판정했다:
+    ① **A1** — TS `private`은 emitted JS에서 writable own property이므로 `controller.sealed`·`pins`·
+    `tokensUsed`·attested provider의 `opts`가 밖에서 교체·리셋 가능했다(승인·executable 신원·kernel/provider
+    권위·예산 우회). ② **A2** — controller가 kernel을 **메서드 모양**으로만 봤으므로, 스케줄링은 진짜
+    kernel에 위임하고 `completeTaskWithArtifacts`만 위조하는 delegate가 **디스크 변화 0으로**
+    `completed`/`result_accepted`를 받아냈다. ③ **A3** — 논리적 단일 `#mutate`와 달리 물리 발행은
+    body → event append → snapshot → state 네 연산이라, append 성공 뒤 실패가 **낡은 state + 새 event
+    tail**을 남겨 reopen과 재시도가 함께 깨졌다. ④ **A4** — `addArtifact`가 caller-owned `out.role`을
+    검증 뒤 **다시 읽어** 교대 getter가 invalid role을 durable에 심을 수 있었다(커밋 성공 · reopen 실패).
+    **4차 리비전(`b64974a`)이 넷을 닫았다**: 런타임 사설 권위(`#private` 상태·게이트 + 인스턴스·prototype
+    freeze) · **진짜 kernel 발급 증명**(모듈 사설 WeakSet + 사설 생성 토큰 + own property 0 + 메서드 신원) ·
+    **복구 가능한 발행**(`commit.journal` + 결정론적 roll forward/roll back 규칙 + 발행 전 런타임 validator
+    전수) · **단일 읽기 산출물 입양**. 상세·증거는 §10 M5 → **M5b 4차 리비전**.
+    **이 판정도 스스로 승인이 아니다** — 다음 fresh Codex 독립 read-only 리뷰가 게이트다.
+  - **M5b 3차 리비전(dated history — 위 4차 판정이 현행이다).** 승인된 `409dee2` 위에 stable controller bridge를
     구현했고(`1a94261` + `42777d9`), **1차 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰가
     REVISE(A/P1 5건)** → 리비전 `6bc390d`. 그 뒤 **2차 독립 리뷰가 같은 다섯 자리에서 다시 REVISE(A=5)**
     → **2차 리비전 `55b488f`** (§10 M5 → M5b · M5b 2차 리비전).
@@ -76,17 +92,18 @@
   **M4c 최종 HEAD = `c963cb0832d66a58fefdaa2025a9213966c3cc27`.** 원본 checkout은 `bbb8b72`로 clean·무수정.
   이 문서 아래쪽의 "미커밋 working tree / 아직 commit·push·PR 없음" 표기는 **각 구현 세션 시점의 기록**이며
   현행 사실이 아니다(현행: 로컬 커밋 있음 · 원격 push/PR/merge 없음).
-- 현행 offline 테스트 범위 라벨(2026-07-28 **M5b 3차 리비전** 기준 — **worker 자기보고**이며 독립 리뷰
-  실측이 아니다): **파일 단독** `src/exec/stableController.test.ts` **52/52**(19 → 36 → 51 → 52) ·
+- 현행 offline 테스트 범위 라벨(2026-07-28 **M5b 4차 리비전** 기준 — **worker 자기보고**이며 독립 리뷰
+  실측이 아니다): **파일 단독** `src/exec/stableController.test.ts` **54/54**(19 → 36 → 51 → 52 → 54) ·
   `src/exec/reviewer.test.ts` **21/21**(14 → 19 → 21) ·
-  `src/exec/orchestrationKernel.test.ts` **74/74**(M4a 37 → M4b 50 → M4c 67 → M5b 68 → 70 → 74) ·
-  `src/exec/codexCliProvider.test.ts` **58/58** · `src/exec/executionBoundary.test.ts` **17/17**,
-  **`npm run test:exec` 전체 suite 322/322**(125 → 142 → 240 → 268 → 295 → 322).
-  authority/atomicity/timing subset(위 4파일) **3회 직렬 205/205**.
-  **322/322를 "파일 단독 focused"로 적지 않는다.** core **374/374** · 전체 acceptance **92/92**는
+  `src/exec/orchestrationKernel.test.ts` **82/82**(M4a 37 → M4b 50 → M4c 67 → M5b 68 → 70 → 74 → 82) ·
+  `src/exec/codexCliProvider.test.ts` **59/59**(58 → 59) · `src/exec/executionBoundary.test.ts` **17/17**,
+  **`npm run test:exec` 전체 suite 333/333**(125 → 142 → 240 → 268 → 295 → 322 → 333).
+  authority/provenance/recovery/atomicity subset(kernel·controller·provider 3파일) **3회 직렬 195/195**.
+  **333/333을 "파일 단독 focused"로 적지 않는다.** core **374/374** · 전체 acceptance **92/92**는
   **M4c 시점의 마지막 실측**이며 M5a/M5b 세션에서는 돌리지 않았다(전체 suite 1회는 최종 M5 handoff 예약).
-  단, M5b 리비전이 `registerArtifact` 불변식을 건드렸으므로 **kernel 계열 offline acceptance 3개는
-  개별로 재실행**했다: `m4a` **31/31** · `m4b` **42/42** · `m4c` **77/77**(전체 `acceptance.sh`는 미실행).
+  단, M5b 리비전이 `registerArtifact` 불변식과 **4차 리비전에서 커밋 발행 프로토콜**을 건드렸으므로
+  **kernel 계열 offline acceptance 3개는 개별로 재실행**했다: `m4a` **31/31** · `m4b` **42/42** ·
+  `m4c` **77/77**(4차 리비전에서 다시 실행 — 전체 `acceptance.sh`·`npm test`·stress·live는 미실행).
 
 ## 0. 문서 우선순위와 기존 설계의 처리
 
@@ -1657,6 +1674,35 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | `C-33` | C (P3) | **`KERNEL_MARKERS`는 손으로 유지하는 닫힌 목록이다.** kernel이 새 코드를 도입하면 controller는 그것을 자동으로 올리지 않고 `kernel_rejected`로 접는다(fail closed로 의도한 동작이지만 **진단 정보가 조용히 줄어든다**). 목록과 kernel 코드 집합을 묶는 컴파일 타임·테스트 타임 검사는 없다 | 중간(kernel에 코드를 추가할 때마다) | M5c 분기의 진단 해상도(정확성·durable 무결성 무관 — 성공 marker는 어떤 경우에도 불가능하다) | 낮~중 — M5c가 marker로 분기하기 시작하면 "왜 `kernel_rejected`인가"를 다시 파야 한다 | 소~중(kernel 코드 상수화 + 목록 대조 테스트) | **M5c가 outcome marker로 실제 분기 로직을 만들 때** | M5c 구현 세션 | 3차 리비전 세션 · `stableController.ts` `KERNEL_MARKERS`/`atKernel` · focused "[M5b] A2: 호출자 kernel(SoR)이 던진 임의 코드는 닫힌 taxonomy로만 나온다" | open |
 | `C-34` | C (P3) | **`codeOf`의 provenance 검사 하나만 느슨하게 해도 실패하는 테스트가 "kernel 반환값 getter" 1경로뿐이다**(mutation 실측). 나머지 경로는 `atBoundary`/`atKernel`/`atTrusted` 래퍼가 **이미 owned 오류로 접어서** 올려보내므로 `codeOf`는 그 지점에서 **중복 방어**다. 정직한 한계 표기이며 방어를 지우지 않는다 | 확실(설계상) | 없음(현재) | 낮음 — 미래에 래퍼를 빠뜨린 경로가 생기면 그때 유일한 방어가 된다 | 소(래퍼 누락을 잡는 정적 검사) | **새 kernel/provider seam을 controller에 배선할 때** | M5c 구현 세션 | 3차 리비전 세션 mutation 실측(§10 M5b 3차 리비전 "mutation 비공허성") | open |
 
+##### M5b 4차 리비전 신규·갱신 유예 (2026-07-28)
+
+> **3차 리비전도 A를 전부 닫지 못했다.** 4차 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰가
+> `409dee2..d554a46`에 대해 **REVISE · A/P1 4건 · B 7 · C 5**를 냈고, 3차 A1~A3를 **PARTIAL**로 판정했다
+> (A1: 증명은 닫혔지만 controller/provider 설정·예산 상태가 여전히 writable · A2: 오류 provenance는 닫혔지만
+> **구조적 kernel이 durable commit 없이 성공을 발급** · A3: 논리 트랜잭션은 닫혔지만 **물리 발행이 비원자적**).
+> 네 번째 A는 **caller-owned artifact getter 재읽기**(A4)다. **넷 다 이번 리비전(`b64974a`)에서 닫았다**
+> (아래 §10 M5b 4차 리비전). 3차 절의 "A 3건 전부 fixed" 서술은 **부분적으로만 사실**이었고 dated history로
+> 보존한다 — 현행 판정은 이 절이다. **여전히 self-approved가 아니다.**
+>
+> **B 7건은 4차 리뷰 원문 그대로 유지한다**(이번 A 작업과 겹쳐 실제로 닫힌 것은 없다):
+> `B-7`(live 인증·secret redaction — 첫 live 실행 전 · 사용자+M5c) · `B-9`(live JSONL 필드 확인 — 첫 live
+> 실행 전 · 사용자+M5c) · `B-10`(타입 있는 edit 실행 집행 — Claude/edit 가능 provider 활성화 전 · M5c+사용자
+> 승인 형식 결정) · `B-11`(per-task preflight 전에 batch 전체가 running — 무인 autopilot/advance 전 · M5c) ·
+> `B-12`(재시작·resume 후 토큰·경과 회계 — 첫 자동 restart/resume 전, 늦어도 M5c · M5c) ·
+> `B-13`(provider 정리 확인 뒤 durable 완료 — live runner 또는 두 번째 process-backed provider 전 · M5c) ·
+> `C-12→B`(미수령 전달의 재전송 불가 — M5c autopilot 전 · M5c). 각 행의 심각도·확률·영향 반경·유예 비용·
+> 공수·증거는 위 `B-7`/`B-9` 본표와 "M5b 1차 리비전" 표의 해당 행에 그대로 있다.
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-35` | C (P2) | **`ReviewSubject`는 스냅샷 안전하지만 완전히 closed·taxonomy-safe는 아니다**(4차 리뷰 C-1). 여분·cyclic·깊은 key는 조용히 무시되고, `revision`/`hash` **getter가 던지면** 그 오류가 입양(`reviewer_subject_invalid`) **전에** 새어나간다. 유효 값은 한 번 읽고 freeze해 alias 없이 반환한다 | 낮음 — 호출자가 controller 코드일 때만 | review 호출 1건 | 낮음 — durable reviewer 배선 전이면 되돌리기 쉽다 | 소(closed key 검사 + 읽기 try) | **`C-19`/durable reviewer integration 착수 전(M5c)** | M5c 구현 세션 | 4차 독립 리뷰 C-1 · `reviewer.ts:167`/`:228` · `reviewer.test.ts:265` | open |
+| `C-5` | C (P2) — **갱신(4차 리뷰 C-2)** | **경로 기반 artifact 신원 TOCTOU.** `lstat`/`realpath`/`readFile`가 별개 syscall이라 그 사이의 교체를 0으로 만들 수 없다(Node 18에 descriptor 상대 접근이 없다) | 낮음 | artifact hash 판정 1건 | 낮음 | 중 — 런타임 지원에 의존 | **descriptor 상대 접근이 가능한 Node 런타임 또는 M10 하드닝** | 미배정 | 4차 독립 리뷰 C-2 · `orchestrationStore.ts:108` `verifyArtifactFile` | open |
+| `C-17` | C (P2) — **갱신(4차 리뷰 C-3)** | **kernel 만료 비교가 `>`라서 `expiresAt`과 **정확히 같은** 시각에 상태 변경 1건이 통과한다**(controller·실행 경계는 `>=`). 경계 하나의 불일치다 | 낮음 | 상태 전이 1건 | 낮음 | 소 | **M5c 장시간 autopilot/재승인 도입 전** | M5c 구현 세션 | 4차 독립 리뷰 C-3 · `orchestrationKernel.ts` `assertNotExpired`(`>`) vs controller `>=` | open |
+| `C-29` | C (P3) — **갱신(4차 리뷰 C-4)** | **중첩 handoff schema가 closed가 아니다.** `spec`·`outputs[]`의 여분 key가 복사·freeze를 지나 살아남는다(현재 읽는 소비자는 없다) | 낮음 | 미래 handoff 1건의 오타·필드 모호성 | 낮음 | 소~중 | **`B-10`이 구조화된 edit 요청을 도입할 때** | M5c 구현 세션 | 4차 독립 리뷰 C-4 · `stableController.ts` `sealHandoff` | open |
+| `C-19` | C (P2) — **갱신(4차 리뷰 C-5)** | **live `--output-schema` 결과를 그 schema로 검증하지 않는다** | live 사용 시 중간 | 구조화 결과 1건 | 낮음 | 소~중 | **reviewer 출력을 kernel state로 옮기기 시작할 때(M5c)** | M5c 구현 세션 | 4차 독립 리뷰 C-5 · roadmap:1600 · `codexStreamParser` `lastMessage` | open |
+| `C-36` | C (P3) | **store에 테스트 전용 fault seam이 있다**(`setCommitFaultHook` — A3 복구 규칙을 발행 경계 10곳에서 실제로 검증하기 위한 것). production 호출부는 없고 kernel·provider 권위에 연결되지 않으며 기본값 `null`이라 성공 경로에 영향이 없지만, **export된 가변 전역**이라는 절충은 남는다 | 확실(설계상) | 없음(현재) — 잘못 쓰면 그 프로세스의 커밋만 실패한다 | 낮음 | 소(런타임 가드나 별도 test-only 진입점) | **store 발행 경로를 다시 여는 다음 승인 범위(M5c/M10 하드닝)** | M5c 구현 세션 | 4차 리비전 세션 · `orchestrationStore.ts` `COMMIT_STAGES`/`setCommitFaultHook` · focused "[M5b] A3: 발행 경계마다 fault를…" | open |
+| `C-37` | C (P3) | **journal roll-forward는 "미승인 커밋을 완료로 만든다".** event append가 **완전히** 끝난 뒤 실패하면 호출자는 실패를 받지만 다음 열기가 그 커밋을 완료시킨다(append-only 감사 이력에 이미 남은 커밋을 버리지 않는 선택). 결과는 항상 일관되고 전진 가능하지만, **호출자가 본 실패와 durable 진실이 갈릴 수 있다** — M5c가 outcome marker로 분기할 때 "실패했지만 완료됐다"를 다룰 수 있어야 한다 | 낮~중(디스크 I/O 실패 시) | run 1건의 완료 1건에 대한 호출자 인식 | 중 — M5c가 재시도 로직을 짤 때 이 규칙을 알아야 한다 | 중(호출자에게 "복구 여부 재조회" API를 주거나 커밋 id를 반환) | **M5c가 outcome marker로 재시도·pause를 분기할 때** | M5c 구현 세션 | 4차 리비전 세션 · `orchestrationStore.recoverPendingCommit` 규칙 2 · focused "[M5b] A3: 발행 경계마다…"의 `after` 케이스 | open |
+
 > **`C-30` 갱신(2026-07-28, 3차 리비전).** "중복 종료·결과 부재 방어가 codex 경로로는 도달 불가"는 그대로
 > open이지만 **범위가 줄었다**: 위 `B-14` 수정으로 그 방어 경로의 **usage 회계**는 공용 소비자 수준에서
 > end-to-end로 고정됐다(늦은 이벤트·중복 종료·종료 뒤 throw). 남은 것은 `provider_duplicate_terminal`/
@@ -2000,6 +2046,54 @@ Claude/edit 가능 provider를 켜기 전** · `B-11` **M5c autopilot/무인 adv
 > **후속(2026-07-28, 같은 날 늦게): 위 A2·A5b "fixed"도 같은 뿌리가 남아 있었다.** 3차 독립 리뷰가
 > **A=3**(공개 `spawn` seam으로 증명 위조 · exported class로 오류 provenance 위조 · 비원자적 완료)을 냈다.
 > 아래 절이 현행이다.
+
+#### M5b 4차 리비전 (2026-07-28, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰 `409dee2..d554a46` → **REVISE, A/P1=4 · B=7 · C=5**)
+
+**공통 뿌리는 "TypeScript 수준의 사설성·논리적 원자성을 런타임 보장으로 착각했다"** 이다. 3차 리비전은
+executor 신원과 오류 provenance를 언어 수준 사설로 옮겼지만, **같은 클래스의 나머지 상태**(controller의
+봉인 권위·pin·토큰 카운터, provider의 설정)는 TS `private`에 남아 emitted JS에서 writable own property였다.
+kernel 쪽도 **논리 트랜잭션은 하나**였지만 **물리 발행은 네 연산**이었고, **완료 권위 자체**는 구조적으로만
+검사됐다. 이번 리비전은 ⓐ 상태를 `#private` + freeze로 실제로 감추고 ⓑ 완료 권위에 **발급 증명**을 붙이고
+ⓒ 발행에 **journal 기반 복구 규칙**을 넣고 ⓓ caller-owned 입력을 **단일 읽기로 입양**한다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| A1 | **A (P1)** | **controller/provider의 권한·설정·예산 상태가 emitted JS에서 writable.** `controller.sealed`(봉인 manifest/kernel/provider)·`pins`(드리프트 tripwire)·`tokensUsed`(예산)·`opts`가 전부 public writable own property였고, attested `CodexCliProvider`의 `opts`도 그랬으며 **실행마다 그것을 권위로 다시 읽었다**(executable·manifest·repo·git·clock 교체 가능). TS `private` **메서드**도 prototype 메서드이므로 `defineProperty`로 `assertGatesOpen`을 no-op으로 덮으면 만료·예산 게이트가 사라졌다 | **fixed** — ① controller의 `#sealed`·`#pins`·`#tokensUsed`·`#opts`와 **게이트 메서드 14개 전부**를 ECMAScript `#private`으로 전환 ② 생성자 끝에서 `Object.freeze(this)` + `Object.freeze(StableController.prototype)` → own property가 0이고 **어떤 대입·`defineProperty`도 던진다**(`#private`은 property가 아니라 내부 상태는 정상 동작) ③ 밖에 남는 표면은 `advanceOnce`·`usedTokens`·`approvedManifest`·`approvedCommit` 넷뿐 ④ provider는 **생성 시점에 정규화된 immutable `#config`**(manifest는 구조적 복제로 입양)를 한 번 포착해 그것만 실행 권위로 쓰고, 호출자 `opts` 참조(`#optsRef`)는 **드리프트 tripwire 전용**이다 ⑤ `id`를 prototype getter로 옮기고 인스턴스를 freeze ⑥ 증명은 **own property가 0인 인스턴스만** 통과시킨다(사후 `defineProperty` override 차단) ⑦ 회귀: 전체 own-property 목록 · 권위·카운터·게이트 **19개 후보**에 대입+`defineProperty` 시도 · **토큰 리셋 불가**(소진 뒤 어떤 조작으로도 advance가 다시 열리지 않는다) · **start 전 `opts` 변조도 baseline이 되지 못한다**(spawn 0) · custom-spawn 비증명과 실제 OS 자식 프로세스 성공 경로 유지 |
+| A2 | **A (P1)** | **구조적으로 비슷한 kernel이 durable commit 없이 success를 발급.** `captureKernel()`이 메서드 모양과 `paths.workspaceRoot`만 봤으므로, 스케줄링은 진짜 kernel에 위임하고 `completeTaskWithArtifacts()`만 그럴듯한 task·artifact를 돌려주는 delegate를 넣으면 **state·event·body·artifact가 하나도 안 바뀐 채** `status:"completed"`·`marker:"result_accepted"`가 나왔다(M5c가 durable SoR 없이 성공을 읽는 통로) | **fixed** — ① `orchestrationKernel.ts`에 **모듈 사설 발급 등록부**(`GENUINE_KERNELS` WeakSet) + **모듈 사설 생성 토큰**(`ISSUER_TOKEN` — TS `private constructor`는 emitted JS에서 호출 가능하므로 토큰 없는 직접 생성은 `kernel_issuer_required`) ② kernel 인스턴스는 **own property 0 · `Object.freeze(this)`** 이고 `paths`는 **prototype getter**가 freeze된 값만 준다(`#paths`), prototype도 freeze ③ 밖으로 나가는 것은 판정 함수 `attestOrchestrationKernel` 하나뿐 — 발급기·토큰·factory는 export하지 않는다 ④ controller는 **정확한 instance/prototype/메서드 신원**만 캡처하고 구조적 객체·delegate·proxy·subclass·prototype 위조·메서드 복사본·override를 **생성 자체에서 거부**한다(`controller_kernel_not_genuine`) ⑤ 기존 `delegateKernel` 테스트를 **성공/실패 경계에서 떼어내** "생성 거부" 회귀로 재구성했다 — production 성공 권위에 fake seam이 연결되지 않는다 ⑥ 성공 회귀는 **revision·event tail·result body 파일·artifact record·snapshot이 실제로 바뀌었고 새 genuine kernel로 reopen한 task가 `completed`** 임을 확인한다 ⑦ kernel 오류 taxonomy 회귀는 이제 **진짜 kernel이 실제로 내는** 닫힌 집합 밖 코드(`run_lock_held`)로 `kernel_rejected` 접힘을 고정한다 |
+| A3 | **A (P1)** | **물리 발행이 원자적·복구 가능하지 않다.** `commitRun()`이 body publication → event append → snapshot → state 교체를 각자 실패할 수 있는 순서로 했다 → append 성공 뒤 snapshot/state 실패면 디스크에 **낡은 state + 새 event tail**이 남아 reopen은 `event_count_mismatch`, 재시도는 `stale_writer`로 **둘 다 깨졌다**(forward progress 상실). 이전 판의 `C-4` crash-hardening 유예로 덮을 수 없는 **일반 I/O 실패**다 | **fixed(신규 의존성 0 · 별도 오케스트레이터 0)** — ① `commitRun`을 **준비/발행** 두 국면으로 분리: 준비에서 event 줄·최종 state를 만들고 **참조 무결성 + 런타임 validator 전수**(`validateRunState`를 발행할 바이트에 대고) + digest 재확인을 통과해야 발행에 들어간다(무효 state는 절대 발행되지 않는다 — A4와 같은 자리) ② 발행 직전 **`commit.journal`**(base 신원 · 기준 event 바이트 길이 · append할 줄 전체 · 발행할 state 바이트)을 **원자적 rename**으로 남긴다 ③ 다음 `commitRun`·`loadRun`이 `recoverPendingCommit`으로 **결정론적·멱등** 복구: 디스크가 이미 journal revision이면 journal만 삭제 / 기준 state + **정확히 journal 바이트로 끝난 append**면 **roll forward**(snapshot·state 발행) / 기준 state + 다른 tail(0바이트·찢어진 부분 append)이면 **roll back**(기준 길이로 truncate) / 그 밖은 fail closed(`journal_unrecognized`·`journal_foreign`·`journal_unparsable`·`journal_invalid`) ④ body 파일은 어느 경로에서도 지우지 않는다(state가 참조하지 않으면 load 검증 대상이 아니고 같은 messageId 재시도는 같은 경로를 덮으므로 멱등) ⑤ append-only 감사 의미 보존: **커밋된 이력은 버리지 않고**(roll forward) 미승인·찢어진 tail만 되돌린다 ⑥ 테스트 seam은 **store 안에만 있는 bounded fault hook**이다(kernel·provider 권위에 노출 0) ⑦ 회귀: 발행 경계 **10곳 전수**(body write/rename · journal write/rename · events append · snapshot write/rename · state write/rename · journal cleanup)에 fault 주입 → 각각 **가시적 전이 0 또는 결정론적 roll forward**, journal 잔여 0, event 줄 수 = `lastEventId`, artifact revision 중복 0, **재시도 또는 다음 커밋 성공**, 두 번째 reopen도 같은 revision. 추가로 **찢어진 append**(부분 줄 덧붙임) 되돌림 + 재시도 성공, journal 변조 4종 fail closed |
+| A4 | **A (P1)** | **caller-owned artifact getter를 반복 읽어 invalid role을 durable state에 저장 가능.** `addArtifact()`가 `out.role`을 검증한 뒤 **다시 읽어** 기록했으므로, 첫 읽기 `"output"` · 두 번째 읽기 계약 밖 role인 교대 getter가 artifact record와 result 포인터를 **함께** 오염시켰다(`acceptMessage`는 공격자 유래 두 값을 서로 비교하므로 통과, 커밋 성공, **reopen만 실패** = 읽을 수 없는 run) | **fixed** — ① 호출자 소유 `{path, role}`을 **닫힌 key 집합**(string 외 key·symbol·미상 key 거부)으로 확인하고 각 property를 **정확히 한 번** 읽어 평범한 불변값으로 입양한다(`readClosedOnce` + `adoptedOutput`) — 이후 원본 객체를 다시 읽지 않는다 ② 읽는 순간 던지는 getter/proxy(`ownKeys` trap 포함)는 안정 코드 `invalid_artifact_ref`로 접힌다(경계 밖 오류가 자기 코드를 고르지 못한다) ③ 목록도 길이를 한 번만 읽고 항목마다 즉시 입양한다 ④ **단건(`registerArtifact`)·트랜잭션(`completeTaskWithArtifacts`) 두 등록 경로가 같은 헬퍼**를 쓴다 ⑤ cyclic·깊은 payload는 path/role 타입 검사에서 걸린다 ⑥ **예정 state 전체를 발행 전에 런타임 validator로 다시 닫는다**(A3 ①과 같은 자리) → 어떤 경로로도 "커밋은 되고 reopen만 실패하는" state가 나오지 않는다 ⑦ 회귀: 교대 getter는 **첫(검증된) 값으로만 굳고** reopen 성공 · 입양 뒤 원본 변조 무효(비공허성 단정 포함) · throwing getter/proxy/미상 key/symbol key/cyclic/깊은 payload는 **durable delta 0**으로 거부 |
+
+**B/C 처리(§9.1 "M5b 4차 리비전 신규·갱신 유예" 표)**: 리뷰의 **B 7건은 그대로 유지**한다
+(`B-7` · `B-9` · `B-10` · `B-11` · `B-12` · `B-13` · `C-12`→B) — 이번 A 작업과 겹쳐 실제로 닫힌 것은
+**하나도 없으므로 닫았다고 적지 않는다.** 각 항목의 기한·트리거·담당·증거·상태는 본표와 1차 리비전 표에
+그대로 있다. 리뷰의 **C 5건**은 `C-35`(신규 — `ReviewSubject` closed/taxonomy) · `C-5`(갱신 — artifact
+TOCTOU) · `C-17`(갱신 — 만료 equality) · `C-29`(갱신 — 중첩 handoff schema) · `C-19`(갱신 — output-schema
+검증)로 **전부 완전한 행으로 유지**했고, 이번 리비전이 만든 절충 2건을 **신규 등록**했다:
+`C-36`(store 전용 fault seam) · `C-37`(roll-forward가 미승인 커밋을 완료로 만들 수 있다).
+**C만으로 추가 리비전 루프를 돌리지 않는다.**
+
+**mutation 비공허성(실측 6종, 전부 정확히 원복)**: ① A1 controller — `Object.freeze(this)` 제거 →
+"권위·카운터는 밖에서 보이지도 바뀌지도 않는다" + "객체 교체는 드리프트다" **2건 fail** ② A1 provider —
+`Object.freeze(this)` 제거 → controller **3건** + provider **1건 fail** ③ A1 provider 권위 — 실행 봉인을
+`#config` 대신 `#optsRef`(호출자 객체)로 되돌림 → "실행 설정은 생성 시점에 포착된다" **fail** ④ A2 kernel —
+발급 등록부 검사 무력화 → "구조적으로 같은 위조 kernel은 증명을 받지 못한다" **fail** ⑤ A2 controller —
+`captureKernel`을 구조적 검사로 되돌림 → controller **3건 fail**(위조 완료 권위 · 교대 getter kernel · inbox)
+⑥ A3 — `recoverPendingCommit` 무력화 → kernel **3건 fail** ⑦ A4 — `adoptOutput`이 role을 원본에서 다시
+읽게 되돌림 → "교대 getter는 첫 읽기 값으로만 굳는다" **fail**. **살아남은 mutation 0건.**
+
+**이 리비전이 실행한 테스트(worker 자기보고 — 독립 리뷰 아님)**: 파일 단독 `orchestrationKernel.test.ts`
+**82/82**(74 → 82) · `stableController.test.ts` **54/54**(52 → 54) · `codexCliProvider.test.ts`
+**59/59**(58 → 59) · `npm run test:exec` **333/333**(322 → 333) ·
+authority/provenance/recovery/atomicity subset(kernel·controller·provider) **3회 직렬 195/195** ·
+`npx tsc --noEmit --pretty false` clean · `npm run build` + source/dist parity(emitted JS의 `#private`·
+freeze·발급 등록부 런타임 확인) · `git diff --check` clean ·
+발행 프로토콜을 건드렸으므로 **kernel 계열 offline acceptance 3개 개별 재실행**: `m4a` **31/31** ·
+`m4b` **42/42** · `m4c` **77/77**.
+**`npm test` 전체 suite·전체 `acceptance.sh`·stress·live는 실행하지 않았다**(최종 M5d handoff에서
+supervisor가 직렬 1회). live provider 추론·네트워크·secret·MCP·remote git 쓰기는 0이다.
+
+**이 리비전 이후에도 아닌 것**: **독립 재리뷰·승인**(다음 fresh Codex read-only 리뷰가 게이트이고 위 fixed
+판정 전부가 재확인 대상이다 — 이 세션은 스스로를 승인하지 않는다) · M5c/M5d 착수 · live 실행.
 
 #### M5b 3차 리비전 (2026-07-28, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰 `409dee2..38b8d32` → **REVISE, A/P1=3**)
 

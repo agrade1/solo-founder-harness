@@ -1,5 +1,41 @@
 # DECISIONS.md
 
+## 2026-07-28 (V3 M5b 4차 리비전 — **감춤은 런타임에서 증명돼야 한다 · 성공 권위는 발급받은 것만 · 원자성은 논리가 아니라 물리에서 필요하다 · caller 입력은 한 번만 읽는다**)
+
+- **"TS `private`을 `#private`으로 바꿨다"는 파일 단위가 아니라 필드 단위 작업이다.** 3차 리비전은
+  executor·세션 map만 `#private`으로 옮기고 **같은 클래스의 나머지 상태**(controller의 봉인 권위·pin·토큰
+  카운터·`opts`, provider의 설정)를 TS `private`에 남겼다 → 리뷰어가 런타임 descriptor로 그대로 재현했다.
+  규칙: 권위·카운터·게이트를 옮길 때는 **인스턴스의 own-property 목록이 비었는지**를 테스트가 단정하고,
+  거기에 **`Object.freeze(this)` + `Object.freeze(prototype)`** 를 더한다. freeze는 `#private` 상태를 건드리지
+  않으므로(property가 아니다) 내부 카운터는 그대로 동작하고, **prototype 메서드를 own property로 덮어
+  게이트를 no-op으로 만드는 경로**까지 함께 닫힌다. TS `private` **메서드**도 이 통로였다.
+- **성공을 발급하는 권위는 "모양"이 아니라 "발급 기록"으로 판정한다.** kernel처럼 **성공을 만들어 내는**
+  협력자는 메서드 shape 검사로 받아들이면 안 된다 — 스케줄링은 진짜에 위임하고 완료만 위조하는 delegate가
+  **디스크 변화 0으로 success**를 만든다. 규칙: 그 모듈 안에서만 채워지는 **사설 등록부 + 사설 생성 토큰**
+  으로 발급을 기록하고(exported TS `private constructor`는 emitted JS에서 호출 가능하므로 토큰이 필요하다),
+  밖으로는 **판정 함수 하나만** 내보낸다. 인스턴스는 own property 0 · freeze, 공개 getter는 **freeze된 값만**
+  돌려준다. 그리고 **성공 테스트는 디스크와 reopen으로 확인한다** — 반환값만 보는 성공 테스트는 위조 권위를
+  통과시킨다.
+- **테스트 seam이 production 성공 권위에 연결되면 그 seam이 결함이다.** 기존 `delegateKernel`은 taxonomy
+  테스트용이었지만 controller의 성공/실패 경계에 그대로 꽂혀 있었다. 규칙: 임의 seam이 필요하면 그것을
+  **"거부됨"을 증명하는 자리**로 옮기고, 실제 taxonomy는 **진짜 권위가 실제로 낼 수 있는 코드**로 시험한다
+  (여기서는 `run_lock_held`). seam이 필요한 계층은 store처럼 **권위가 아닌 곳에 bounded hook**으로 둔다.
+- **논리적 트랜잭션 하나가 물리적 원자성을 주지 않는다.** `#mutate` 하나로 합쳐도 발행이 body → event →
+  snapshot → state 네 연산이면 **append 성공 뒤 실패**가 낡은 state + 새 event tail을 남겨 reopen과 재시도가
+  **동시에** 깨진다(forward progress 상실). 규칙: 발행 전에 **journal을 원자적으로 남기고** 다음 열기가
+  **결정론적·멱등 규칙**으로 roll forward/roll back한다. 관찰 결과는 **가시적 전이 0 또는 일관된 후 상태**
+  둘 중 하나여야 하고 문서의 "원자적/불변" 표현을 그 보장과 정확히 일치시킨다("언제나 전이 0"이라고 적지
+  않는다). append-only 감사 이력은 **커밋된 것은 버리지 않고**(roll forward) 미승인·찢어진 tail만 되돌린다.
+  대가는 "호출자는 실패를 받았는데 durable은 완료"라는 창이며, 숨기지 않고 대장(`C-37`)에 남긴다.
+- **발행 전에 예정 state 전체를 load와 같은 validator로 다시 닫는다.** 커밋 경로와 load 경로가 다른 강도로
+  검증하면, caller 유래 값이 durable에 들어간 뒤 **reopen만 실패하는** 상태가 생긴다(A4가 정확히 그것이다).
+  규칙: 커밋은 **발행할 바이트**를 런타임 validator + 참조 무결성 + digest 동일성으로 통과시킨 뒤에만 쓴다.
+- **caller-owned 입력은 "검증 → 재읽기"가 아니라 "한 번 읽어 입양"이다.** 검증한 값과 저장하는 값이 다른
+  읽기에서 오면 교대 getter가 그 사이를 벌린다. 규칙: key 집합을 **닫고**(string 외 key·symbol·미상 key 거부)
+  각 property를 **정확히 한 번** 읽어 평범한 불변값으로 굳히고, 그 뒤로는 원본을 보지 않는다. 읽는 중의
+  throw(`get`/`ownKeys` trap)는 **안정 코드로 접는다** — 경계 밖 오류가 taxonomy를 고르지 못하게 한다.
+  진입점이 둘이면(단건·트랜잭션) **같은 헬퍼**를 쓰게 해서 규칙이 갈라지지 않게 한다.
+
 ## 2026-07-28 (V3 M5b 3차 리비전 — **권위의 근거는 공개 API 밖에 있어야 한다 · 완료는 한 커밋이어야 한다**)
 
 - **증명의 근거는 "생성자를 지났는가"가 아니라 "무엇을 실행하는가"다.** 2차 리비전은 `CodexCliProvider`

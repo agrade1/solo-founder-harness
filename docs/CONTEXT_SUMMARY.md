@@ -2,7 +2,45 @@
 
 최종 갱신: 2026-07-28
 
-## 최신 (2026-07-28 — **V3 M5b 3차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=3) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-28 — **V3 M5b 4차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=4 · B=7 · C=5) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `d554a46` 위에 **4차 리비전 커밋** — code/tests/dist
+  `b64974a` + docs 1건. **fresh Claude Opus 5 세션**(이전 transcript·자기평가 미상속 · subagent·병렬 writer 0).
+  원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · **live provider 추론** · secret 0.
+  `node_modules` stage 0. Ponytail(full) 적용.
+- **⚠ 3차 리비전 기록의 과장 정정**: 4차 독립 리뷰(`409dee2..d554a46`)는 3차 A1~A3를 **PARTIAL**로 판정했다 —
+  executor 신원·오류 provenance는 닫혔지만 ⓐ controller/provider의 **나머지 상태가 런타임에서 writable**
+  (`sealed`·`pins`·`tokensUsed`·`opts`) ⓑ **완료 권위가 구조적 검사뿐**이라 가짜 kernel이 디스크 변화 0으로
+  success 발급 ⓒ **물리 발행이 여전히 네 연산**. 네 번째는 caller-owned artifact getter 재읽기(A4).
+  **지금도 self-approved가 아니다.**
+- **4차 리비전이 닫은 것(A 4건)**:
+  ⓐ **A1** — controller 권위·pin·토큰 카운터·`opts`와 **게이트 메서드 14개**를 `#private`으로, 인스턴스·
+  prototype을 **freeze**(own property 0 · 대입/`defineProperty` 전부 throw · 토큰 리셋 불가 · 게이트
+  no-op 덮어쓰기 불가). provider는 **생성 시점 immutable `#config`** 만 실행 권위로 쓰고(호출자 `opts`는
+  tripwire 전용), `id`는 prototype getter, 증명은 **own property 0**만 통과.
+  ⓑ **A2** — kernel 모듈에 **사설 발급 등록부 + 사설 생성 토큰**, 인스턴스 own property 0 · freeze,
+  `paths`는 prototype getter(freeze된 값). controller는 진짜 instance/prototype/메서드 신원만 캡처하고
+  구조적 객체·delegate·proxy·subclass·override는 **생성에서 거부**(`controller_kernel_not_genuine`).
+  성공 회귀는 **디스크 변화 + 새 kernel reopen `completed`** 로 확인한다.
+  ⓒ **A3** — `commitRun`이 준비(예정 state를 **런타임 validator 전수**로 재검증) → 발행(**`commit.journal`**
+  원자적 rename → append → snapshot → state → journal 삭제)이고, 다음 열기가 **결정론적·멱등** roll
+  forward/roll back한다. 발행 경계 **10곳 전수** fault 주입 + 찢어진 append + journal 변조 4종 회귀.
+  ⓓ **A4** — caller-owned `{path, role}`을 **닫힌 key 집합 + 단일 읽기**로 입양(두 등록 경로 같은 헬퍼),
+  교대 getter는 첫(검증된) 값으로만 굳고 나머지 적대 입력은 durable delta 0으로 거부.
+- **B 7건은 하나도 닫지 않았다**(리뷰 원문 그대로 유지): `B-7`·`B-9`(첫 live 실행 전) · `B-10`(edit 가능
+  provider 활성화 전) · `B-11`(무인 autopilot 전) · `B-12`(첫 restart/resume 전) · `B-13`(live runner 또는
+  두 번째 process-backed provider 전) · `C-12`→B(M5c autopilot 전).
+  **C 5건 유지·갱신**: `C-35`(신규 `ReviewSubject` closed) · `C-5` · `C-17` · `C-29` · `C-19`.
+  **신규 절충 2건 등록**: `C-36`(store 전용 fault seam) · `C-37`(roll-forward가 미승인 커밋을 완료로 만든다).
+- **테스트(worker 자기보고 — 독립 실측 아님)**: `orchestrationKernel` **82/82** · `stableController` **54/54** ·
+  `codexCliProvider` **59/59** · `npm run test:exec` **333/333** · authority/provenance/recovery subset
+  **3회 직렬 195/195** · `tsc --noEmit` clean · `build` PASS + dist parity(emitted JS의 `#private`·freeze·
+  발급 등록부 런타임 확인) · `git diff --check` clean · kernel 계열 offline acceptance 개별 재실행
+  (`m4a` 31 · `m4b` 42 · `m4c` 77). **mutation 7종 전부 kill · 살아남은 것 0 · 정확히 원복.**
+  **`npm test` 전체·전체 acceptance·stress·live 미실행**(최종 M5d handoff에서 supervisor 직렬 1회).
+
+## 이전 (2026-07-28 — **V3 M5b 3차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=3) 대응**)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `38b8d32` 위에 **3차 리비전 커밋**(code/tests/dist + docs).

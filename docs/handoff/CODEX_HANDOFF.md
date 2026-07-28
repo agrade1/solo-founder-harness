@@ -3,7 +3,64 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 3차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 4차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+
+- **M5b 4차 리비전** — 시작 HEAD `d554a46` 위에 code/tests/dist `b64974a` + docs 커밋.
+  worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller` · 승인 base = M5a
+  `409dee2`. fresh Claude Opus 5 단일 세션(subagent·병렬 writer 0).
+- **⚠ 아래 "3차 리비전이 A=3을 전부 닫았다" 서술은 부분적이었다.** 4차 독립 fresh Codex `gpt-5.6-sol`
+  xhigh read-only 재리뷰(`409dee2..d554a46`)가 **REVISE · A/P1=4 · B=7 · C=5**를 냈고 3차 A1~A3를
+  **PARTIAL**로 판정했다. 공통 뿌리는 **"TS 수준의 사설성·논리적 원자성을 런타임 보장으로 착각했다"** 이다.
+  4차 리비전이 닫은 것:
+  - **A1 — controller/provider의 권한·설정·예산 상태가 런타임에서 writable.** `controller.sealed`(봉인
+    manifest/kernel/provider) · `pins`(드리프트 tripwire) · `tokensUsed`(예산) · `opts`가 전부 public writable
+    own property였고, attested provider의 `opts`도 그랬으며 **실행마다 그것을 권위로 다시 읽었다**.
+    TS `private` **메서드**도 prototype 메서드이므로 `defineProperty`로 `assertGatesOpen`을 no-op으로 덮으면
+    만료·예산 게이트가 사라졌다. → ① controller의 `#sealed`·`#pins`·`#tokensUsed`·`#opts` + **게이트 메서드
+    14개 전부**를 ECMAScript `#private`으로 ② `Object.freeze(this)` + `Object.freeze(prototype)`(own property
+    0 · 모든 대입·`defineProperty`가 throw · `#private`은 property가 아니므로 내부 카운터는 정상)
+    ③ 공개 표면은 `advanceOnce`·`usedTokens`·`approvedManifest`·`approvedCommit` 넷뿐 ④ provider는 **생성
+    시점의 정규화된 immutable `#config`** 만 실행 권위로 쓰고 호출자 `opts` 참조는 **tripwire 전용**
+    ⑤ `id`는 prototype getter, 인스턴스 freeze ⑥ 증명은 **own property 0**인 인스턴스만 통과.
+  - **A2 — 구조적으로 비슷한 kernel이 durable commit 없이 success를 발급.** `captureKernel()`이 메서드 모양과
+    `paths.workspaceRoot`만 봤으므로, 스케줄링은 진짜 kernel에 위임하고 `completeTaskWithArtifacts()`만
+    위조한 delegate가 **state·event·body·artifact 변화 0으로** `completed`/`result_accepted`를 받아냈다.
+    → kernel 모듈에 **사설 발급 등록부(WeakSet) + 사설 생성 토큰**(토큰 없는 직접 생성은
+    `kernel_issuer_required`), 인스턴스 own property 0 · freeze, `paths`는 prototype getter(freeze된 값),
+    prototype freeze, 밖으로는 **판정 함수 `attestOrchestrationKernel` 하나만**. controller는 정확한
+    instance/prototype/메서드 신원만 캡처하고 구조적 객체·delegate·proxy·subclass·override를 **생성에서
+    거부**(`controller_kernel_not_genuine`). 기존 `delegateKernel` 테스트는 성공/실패 경계에서 떼어내
+    "생성 거부" 회귀로 재구성했고, 성공 회귀는 **디스크 변화(revision·event tail·body 파일·artifact record·
+    snapshot) + 새 genuine kernel reopen이 `completed`** 임을 확인한다.
+  - **A3 — 물리 발행이 원자적·복구 가능하지 않다.** body → append → snapshot → state가 각자 실패할 수 있어,
+    append 성공 뒤 실패면 **낡은 state + 새 event tail**이 남아 reopen(`event_count_mismatch`)과
+    재시도(`stale_writer`)가 **둘 다** 깨졌다. → `commitRun`을 **준비/발행** 두 국면으로 나누고(준비에서
+    예정 state를 **런타임 validator 전수**+참조 무결성+digest로 다시 닫는다) 발행 직전 **`commit.journal`**
+    을 원자적 rename으로 남긴다. 다음 `commitRun`·`loadRun`이 **결정론적·멱등**으로 roll forward(append가
+    정확히 journal 바이트로 끝났을 때 — 감사 이력에 남은 커밋은 버리지 않는다) 또는 roll back(0바이트·찢어진
+    부분 append는 기준 길이로 truncate)하고, 그 밖은 fail closed(`journal_unrecognized`·`journal_foreign`·
+    `journal_unparsable`·`journal_invalid`). **신규 런타임 의존성 0 · 별도 오케스트레이터 0.** 테스트 seam은
+    store 안에만 있는 bounded hook(`setCommitFaultHook` — kernel/provider 권위에 노출 0, 대장 `C-36`).
+    남는 절충: "호출자는 실패를 받았는데 durable은 완료"인 창(대장 `C-37`).
+  - **A4 — caller-owned artifact getter 재읽기.** `addArtifact()`가 `out.role`을 검증 뒤 다시 읽었으므로 교대
+    getter가 record와 result 포인터를 함께 오염시켜 **커밋 성공 · reopen 실패**(읽을 수 없는 run)를 만들었다.
+    → `{path, role}`을 **닫힌 key 집합**(string 외 key·symbol·미상 key 거부)으로 확인하고 각 property를
+    **정확히 한 번** 읽어 불변값으로 굳힌다(단건·트랜잭션 두 등록 경로가 같은 헬퍼). 읽는 중의 throw
+    (`get`/`ownKeys` trap)는 `invalid_artifact_ref`로 접히고, **예정 state 전체를 발행 전에 다시 닫는다**.
+- **4차 리뷰의 B 7건은 하나도 닫지 않았다**(원문 그대로 유지 · 기한·담당·증거는 로드맵 §9.1):
+  `B-7`·`B-9`(첫 live 실행 전 · 사용자+M5c) · `B-10`(edit 가능 provider 활성화 전) · `B-11`(무인 autopilot 전) ·
+  `B-12`(첫 restart/resume 전) · `B-13`(live runner/두 번째 process-backed provider 전) · `C-12`→B(M5c
+  autopilot 전). **C 5건 유지·갱신**: `C-35`(신규 — `ReviewSubject` closed/taxonomy) · `C-5` · `C-17` ·
+  `C-29` · `C-19`. **신규 절충 2건**: `C-36`(store fault seam) · `C-37`(roll-forward의 미승인 완료 창).
+- **4차 리비전 테스트(worker 자기보고 — 독립 실측 아님)**: `orchestrationKernel` **82/82** ·
+  `stableController` **54/54** · `codexCliProvider` **59/59** · `npm run test:exec` **333/333** ·
+  authority/provenance/recovery subset(3파일) **3회 직렬 195/195** · `npx tsc --noEmit` clean ·
+  `npm run build` + dist parity(emitted JS의 `#private`·freeze·발급 등록부 런타임 확인) ·
+  `git diff --check` clean · kernel 계열 offline acceptance 개별 재실행(`m4a` 31 · `m4b` 42 · `m4c` 77) ·
+  **mutation 7종 전부 kill · 살아남은 것 0 · 정확히 원복**.
+  **`npm test` 전체 suite·전체 `acceptance.sh`·stress·live는 미실행**(최종 M5d handoff에서 supervisor 직렬 1회).
+
+### 이전 절 (dated history — 3차 리비전)
 
 - **M5b 3차 리비전** — 시작 HEAD `38b8d32` 위의 code/tests/dist 커밋 + docs 커밋. base·worktree·branch는
   아래와 같다(승인 base = M5a `409dee2`).

@@ -1,5 +1,59 @@
 # WORKLOG.md
 
+## 2026-07-28 (V3 **M5b 4차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=4): 런타임에서 writable한 권위·예산 · 위조 가능한 완료 권위 · 비원자적 물리 발행 · caller getter 재읽기** · **독립 재리뷰 대기**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
+시작 HEAD `d554a46`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가
+미상속). amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · 패키지 설치 · 의존성/lockfile 변경 ·
+MCP · **live Codex/Claude provider 추론** · secret 사용 · deploy · DB · production · live billing **없음**.
+subagent·병렬 writer 없음(단일 세션 직렬). `node_modules`(supervisor symlink)는 **stage하지 않았다**.
+Ponytail(full) 적용.
+
+> **정정 — 3차 리비전 기록의 과장.** 3차 기록은 A1~A3를 "전부 닫았다"고 적었지만 4차 독립 리뷰는 셋을
+> **PARTIAL**로 판정했다: executor 신원·오류 provenance는 닫혔으나 **같은 클래스의 나머지 상태**
+> (controller의 봉인 권위·pin·토큰 카운터, provider의 설정)가 TS `private`에 남아 **런타임에서 writable**
+> 이었고, **완료 권위 자체는 구조적으로만** 검사됐으며(가짜 kernel이 디스크 변화 0으로 success 발급),
+> **물리 발행은 여전히 네 연산**이었다. 이전 절은 dated history로 보존하고 아래가 현행 사실이다.
+
+- **A1 — 권위·예산 상태를 런타임에서 감췄다.** `StableController`의 `#sealed`·`#pins`·`#tokensUsed`·`#opts`와
+  **게이트 메서드 14개 전부**를 ECMAScript `#private`으로 옮기고 인스턴스·prototype을 freeze했다 →
+  own property 0, 어떤 대입·`defineProperty`도 던지며, `defineProperty`로 `assertGatesOpen`을 no-op으로
+  덮어 만료·예산 게이트를 지우는 경로도 사라졌다(밖에 남는 표면은 `advanceOnce`·`usedTokens`·
+  `approvedManifest`·`approvedCommit` 넷). `CodexCliProvider`는 **생성 시점의 정규화된 immutable `#config`**
+  하나만 실행 권위로 쓰고(호출자 `opts`는 tripwire 전용 참조), `id`를 prototype getter로 옮기고 인스턴스를
+  freeze했으며, 증명은 **own property가 0인 인스턴스만** 통과시킨다. 회귀: own-property 전수 · 권위·카운터·
+  게이트 19개 후보에 대입+`defineProperty` · **토큰 리셋 불가** · **start 전 opts 변조도 baseline이 되지
+  못한다(spawn 0)** · custom-spawn 비증명 + 실제 OS 자식 프로세스 성공 경로 유지.
+- **A2 — 완료 권위에 발급 증명을 붙였다.** kernel 모듈에 사설 발급 등록부(WeakSet)와 **사설 생성 토큰**을
+  두고(토큰 없는 직접 생성은 `kernel_issuer_required`), 인스턴스는 own property 0 · freeze이며 `paths`는
+  prototype getter가 freeze된 값만 준다. 밖으로 나가는 것은 판정 함수 하나뿐이고, controller는 **정확한
+  instance/prototype/메서드 신원**만 캡처해 구조적 객체·delegate·proxy·subclass·override를 **생성에서
+  거부**한다(`controller_kernel_not_genuine`). 기존 `delegateKernel` 테스트를 성공/실패 경계에서 떼어내
+  "생성 거부" 회귀로 재구성했고, 성공 회귀는 **revision·event tail·body 파일·artifact record·snapshot의
+  실제 변화 + 새 genuine kernel reopen이 `completed`** 임을 확인한다.
+- **A3 — 발행을 복구 가능한 트랜잭션으로 바꿨다.** `commitRun`이 준비(예정 state를 **런타임 validator
+  전수**로 다시 닫는다) → 발행(body → **`commit.journal` 원자적 rename** → event append → snapshot → state →
+  journal 삭제) 두 국면이고, 다음 `commitRun`·`loadRun`이 journal을 보고 **결정론적·멱등**으로 roll
+  forward(append가 정확히 journal 바이트로 끝났을 때) 또는 roll back(0바이트·찢어진 부분 append)한다.
+  신규 런타임 의존성 0 · 별도 오케스트레이터 0. 발행 경계 **10곳 전수** fault 주입으로 "가시적 전이 0
+  또는 결정론적 복구 + 재시도·전진 성공 + event/revision 중복 0"을 검증했고, 찢어진 append 되돌림과
+  journal 변조 4종 fail closed도 고정했다. 테스트 seam은 **store 안에만 있는 bounded hook**이다.
+- **A4 — caller-owned 산출물을 단일 읽기로 입양한다.** `{path, role}`을 닫힌 key 집합으로 확인하고 각
+  property를 정확히 한 번 읽어 불변값으로 굳힌 뒤 원본을 다시 읽지 않는다(단건·트랜잭션 두 등록 경로가
+  같은 헬퍼). throwing getter/proxy(`ownKeys` trap)·미상/symbol key·cyclic·깊은 payload는 안정 코드로
+  거부하고 durable delta 0이며, 교대 getter는 **첫(검증된) 값으로만 굳고** reopen이 성공한다.
+- **테스트(worker 자기보고)**: `orchestrationKernel.test.ts` **82/82** · `stableController.test.ts`
+  **54/54** · `codexCliProvider.test.ts` **59/59** · `npm run test:exec` **333/333** ·
+  authority/provenance/recovery subset 3파일 **3회 직렬 195/195** · `npx tsc --noEmit` clean ·
+  `npm run build` + source/dist parity(emitted JS의 `#private`·freeze·발급 등록부를 런타임으로 확인) ·
+  `git diff --check` clean · 발행 프로토콜을 건드렸으므로 kernel 계열 offline acceptance 개별 재실행
+  (`m4a` 31/31 · `m4b` 42/42 · `m4c` 77/77). **`npm test` 전체 suite·전체 `acceptance.sh`·stress·live는
+  실행하지 않았다.**
+- **mutation 비공허성 7종 실측 · 전부 kill · 정확히 원복 · 살아남은 것 0건**(상세: 로드맵 §10 M5b 4차 리비전).
+- **커밋**: code/tests/dist `b64974a` + docs(이 절).
+- **여전히 아닌 것**: 독립 재리뷰·승인(다음 fresh Codex read-only 리뷰가 게이트) · M5c 착수 · live 실행.
+  B 7건(`B-7`·`B-9`·`B-10`~`B-13`·`C-12`→B)은 **하나도 닫지 않았다**.
+
 ## 2026-07-28 (V3 **M5b 3차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=3): 공개 `spawn` seam으로 증명 위조 · exported class로 오류 provenance 위조 · 비원자적 다중 artifact 완료** · **독립 재리뷰 대기**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
