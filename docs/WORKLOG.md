@@ -1,5 +1,61 @@
 # WORKLOG.md
 
+## 2026-07-28 (V3 **M5b 3차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=3): 공개 `spawn` seam으로 증명 위조 · exported class로 오류 provenance 위조 · 비원자적 다중 artifact 완료** · **독립 재리뷰 대기**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
+시작 HEAD `38b8d32`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가
+미상속). amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · 패키지 설치 · 의존성/lockfile 변경 ·
+MCP · **live Codex/Claude provider 추론** · secret 사용 · deploy · DB · production · live billing **없음**.
+`node_modules`(supervisor symlink)는 **stage하지 않았다**. Ponytail(full) 적용.
+
+> **정정 — 2차 리비전 기록의 과장.** 2차 기록은 A2(증명)·A5b(닫힌 taxonomy)를 "닫았다"고 적었다.
+> **같은 뿌리가 남아 있었다**: 증명과 provenance의 근거가 여전히 **공개 API 표면**(`opts.spawn` 콜백,
+> exported `ControllerError` 클래스)이었으므로 다른 공개 표면으로 같은 위조가 가능했다.
+> 3차 독립 리뷰가 **A/P1=3**을 냈고 아래가 현행 사실이다. 이전 절은 dated history로 보존한다.
+
+- **A1 — 임의 executor를 주입한 인스턴스는 증명받지 못한다.** `CodexCliProviderOpts.spawn`은 공개 임의
+  callback인데 생성자가 `opts.spawn ?? nodeSpawn`을 포착한 **모든** 인스턴스를 증명 등록부에 넣었다 →
+  증명을 통과한 callback이 argv·env를 무시하고 임의 write/command/network를 할 수 있었다. TS
+  `private readonly spawnFn`도 emitted JS에서는 writable own field였고 **controller 테스트가 실제로 그것을
+  덮어썼다**. 지금: 모듈 사설 `PRODUCTION_SPAWN`(적재 시점의 진짜 `node:child_process.spawn`) +
+  `#spawn`·`#sessions`를 **ECMAScript `#private`** 로 봉인 + **`opts.spawn`을 준 인스턴스는 등록하지
+  않는다**(하위 계층 단위 테스트용 untrusted seam으로 유지 — provider 테스트 58건 커버리지 그대로).
+  **controller 성공 경로 테스트를 실제 OS 자식 프로세스로 전환**했다: 기존 `__fixtures__/fake-codex.mjs`를
+  절대 `process.execPath` shebang 래퍼(0700)로 감싸 default `nodeSpawn`이 직접 실행 → 생성·증명·봉인·경계·
+  argv·env·stdin·파서가 전부 production 경로다(codex/claude 추론·네트워크 0). 세션 종료 관측도 내부 map
+  교체를 버리고 **공개 API 프로브**로 바꿨다.
+- **A2 — marker는 이 모듈이 발급한 오류에서만 나온다.** `ControllerError`가 public constructible이고
+  `atBoundary`가 `instanceof ControllerError`를 내부 오류로 보존했으므로 handoff가
+  `new ControllerError("result_accepted", …)`만 던지면 `status:"failed"` + `marker:"result_accepted"`가
+  만들어졌다. 지금: 모듈 사설 `ISSUED_HERE` WeakSet이 provenance이고, 경계는 **예외 없이** 고정 코드로
+  접는다. 호출자 콜백 전수 차단 — handoff · provider start/send/events · **`opts.nowMs` 시계** ·
+  **`opts.kernel` 전 메서드**. kernel native 코드는 **닫힌 집합 `KERNEL_MARKERS`(23종)** 일 때만 입양하고
+  나머지는 `kernel_rejected`다. 신뢰된 정적 import만 `atTrusted`로 코드를 입양한다(근거는 호출 지점).
+  kernel이 **돌려준 값의 throwing getter**까지 접는다. `consumeExactlyOneTerminal`은 클래스 대신
+  **factory**를 받아 소비자가 자기 provenance를 붙인다.
+- **A3 — 완료는 kernel의 단일 원자 트랜잭션이다.** controller가 `registerArtifact`를 산출물마다 durable
+  commit한 뒤 별도로 `submitResult`를 불렀으므로, 뒤쪽 산출물이 없거나 무효·중복·상한 초과이거나
+  envelope/body 검증이 실패하면 **앞선 artifact·event·revision만 durable에 남았고** 재시도가 revision을
+  계속 올렸다. 새 kernel API `completeTaskWithArtifacts`가 검증(envelope·summary·body·전이 → 산출물 전체의
+  소유권·writableRoots·파일/hash/symlink·role·개수 상한 16·경로 중복) 뒤 artifact record + event +
+  result 메시지 + `completed` 전이를 **한 커밋**으로 반영한다. 소유권·파일 신원 집행은 `registerArtifact`와
+  **같은 헬퍼**(`addArtifact`)라 진입점이 둘이어도 불변식은 하나다. 기존 API·테스트는 호환 유지.
+- **리뷰 B 2건도 유예하지 않고 닫았다.** `B-14`(종료를 **처음 본 자리에서** 회계 → 늦은 이벤트·중복 종료·
+  종료 뒤 iterator throw 경로에서도 태운 토큰이 예산에서 빠진다) · `B-15`(`ReviewSubject`를 한 줄·정규형·
+  bounded·정규 16진 hash로 closed 검증하고 **frozen 스냅샷**만 프롬프트·대조·반환값에 쓴다).
+  리뷰 C 1건은 `C-32`로 등록 후 닫았다(inbox 항목 단일 읽기 — `deliveryPrompt`가 원본 alias를 다시 읽지 않는다).
+- **테스트(worker 자기보고 — 독립 리뷰 실측 아님)**: `stableController` **52/52** · `orchestrationKernel`
+  **74/74** · `codexCliProvider` **58/58** · `reviewer` **21/21** · `npm run test:exec` **322/322** ·
+  authority/atomicity/timing subset **3회 직렬 205/205** · `npx tsc --noEmit` clean · `npm run build` +
+  source/dist parity · `git diff --check` clean. **`npm test` 전체 suite·acceptance·stress·live는 미실행**
+  (최종 M5d handoff에서 supervisor가 직렬 1회).
+- **mutation 비공허성**: A1/A2/A3 핵심 게이트를 각각 되돌려 회귀가 죽는 것을 확인하고 정확히 원복했다.
+  **살아남은 mutation 1건**: `codeOf`의 provenance 검사를 느슨하게 해도 처음에는 아무 테스트도 실패하지
+  않았다(래퍼들이 이미 owned 오류로 접기 때문). 실제 도달 경로를 찾아 회귀를 추가해 죽였고, 남은 중복성은
+  대장 `C-34`로 등록했다. 숨기지 않는다.
+- **여전히 self-approved가 아니다.** 위 fixed 판정 전부가 다음 fresh Codex 독립 read-only 리뷰의
+  재확인 대상이다.
+
 ## 2026-07-28 (V3 **M5b 2차 리비전 — 독립 Codex 재리뷰 REVISE(A=5): 재읽기 가능한 authority · 위조 가능한 read-only brand · 실패 turn 예산 누락 · 파서 허위 승인 · 열린 오류 taxonomy** · **독립 재리뷰 대기 · M5 미완료**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,

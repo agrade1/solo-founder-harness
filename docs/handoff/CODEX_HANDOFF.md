@@ -3,7 +3,67 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 2차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-28 — V3 **M5b stable controller · 3차 리비전 완료** · **독립 재리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+
+- **M5b 3차 리비전** — 시작 HEAD `38b8d32` 위의 code/tests/dist 커밋 + docs 커밋. base·worktree·branch는
+  아래와 같다(승인 base = M5a `409dee2`).
+- **⚠ 아래 "2차 리비전이 A=5를 전부 닫았다" 서술 중 A2·A5b는 부분적이었다.** 3차 독립 fresh Codex
+  `gpt-5.6-sol` xhigh read-only 재리뷰(`409dee2..38b8d32`)가 **REVISE · A/P1=3**을 냈다. 공통 뿌리는
+  **"공개 표면을 권위로 신뢰했다"** 이다. 3차 리비전이 닫은 것:
+  - **A1 — attested read-only provider가 공개 `spawn` seam으로 위조 가능.** `CodexCliProviderOpts.spawn`은
+    공개 임의 callback인데 생성자가 `opts.spawn ?? nodeSpawn`을 포착한 **모든** 인스턴스를 증명했다 →
+    증명을 통과한 callback이 argv·env를 무시하고 임의 write/command/network를 할 수 있었다. TS
+    `private readonly spawnFn`도 emitted JS에서 writable own field였고 **controller 테스트가 실제로 그것을
+    덮어썼다**. → ① 모듈 사설 `PRODUCTION_SPAWN`(적재 시점의 진짜 `node:child_process.spawn`)
+    ② `#spawn`·`#sessions`를 **ECMAScript `#private`** 로 봉인(대입·`defineProperty` 불가)
+    ③ **`opts.spawn`을 준 인스턴스는 증명하지 않는다**(하위 계층 provider 단위 테스트용 untrusted seam으로
+    유지 — `codexCliProvider.test.ts` **58건 커버리지 그대로**) ④ 함수 아닌 `spawn`은 `codex_config_invalid`
+    ⑤ **controller 성공 경로 테스트를 실제 OS 자식 프로세스로 전환**: 기존 `src/exec/__fixtures__/fake-codex.mjs`를
+    절대 `process.execPath` shebang 래퍼(0700)로 감싸 default `nodeSpawn`이 직접 실행 → production
+    생성·증명·봉인·경계·argv·env·stdin·파서를 전부 지난다(codex/claude 추론·네트워크 **0**).
+    세션 종료 관측도 내부 map 교체를 버리고 **공개 API 프로브**(같은 id `start`가 `codex_session_exists`인지
+    `codex_prompt_invalid`인지)로 바꿨다.
+  - **A2 — error taxonomy provenance가 exported class로 위조 가능.** `ControllerError`가 public
+    constructible이고 `atBoundary`가 `instanceof ControllerError`를 보존했으므로 handoff가
+    `new ControllerError("result_accepted", …)`만 던지면 `status:"failed"` + `marker:"result_accepted"`가
+    만들어졌다. → 모듈 사설 `ISSUED_HERE` WeakSet만 provenance이고 경계는 **예외 없이** 고정 코드로 접는다.
+    호출자 콜백 전수 차단: handoff · provider start/send/events · **`opts.nowMs` 시계**
+    (`controller_clock_unreadable`) · **`opts.kernel` 전 메서드**(`atKernel`) · **kernel 반환값의 throwing
+    getter**. kernel native 코드는 **닫힌 허용 집합 `KERNEL_MARKERS`(23종)** 일 때만 입양하고 나머지는
+    `kernel_rejected`다 — `result_accepted`는 어떤 경로로도 실패 marker가 될 수 없다. 신뢰된 정적
+    import(`verifyArtifactFile`·`verifyExecutionBoundary`)만 `atTrusted`로 코드를 입양한다(근거는 호출 지점).
+    `consumeExactlyOneTerminal`은 클래스 대신 **factory**를 받아 소비자가 자기 provenance를 붙인다.
+  - **A3 — 다중 artifact 등록과 완료가 비원자적.** `registerArtifact`를 산출물마다 durable commit한 뒤 별도
+    `submitResult`였으므로 뒤쪽 실패 시 **앞선 artifact·event·revision만 남고** 재시도가 revision을 쌓았다.
+    → kernel 원자 트랜잭션 **`completeTaskWithArtifacts`**: 한 `#mutate` 안에서 envelope(`artifactRefs`는
+    비어 있어야 함) · summary · body · 전이를 먼저 닫고, 산출물 전체를 소유권 · writableRoots · 파일/hash/
+    symlink · role · **개수 상한 `LIMITS.maxArtifactRefs`=16** · **경로 중복 `artifact_path_duplicate`** 로
+    검증·등록한 뒤 그 포인터로 envelope를 채워 `acceptMessage`가 재대조하고 record+event+메시지+`completed`를
+    **한 커밋**으로 반영한다. 집행 불변식은 `registerArtifact`와 **같은 헬퍼**(`addArtifact`) 공유.
+    기존 `registerArtifact`/`submitResult` API·테스트는 호환 유지.
+- **같은 라운드의 B 2건도 유예하지 않고 닫았다**: **`B-14`**(첫 terminal 뒤 늦은 이벤트·중복 종료·iterator
+  throw 경로의 usage 회계 — 원 기한 *M5c 두 번째 provider/retry 배선 전*) · **`B-15`**(`ReviewSubject`
+  한 줄·정규형·bounded·정규 16진 hash closed 검증 + frozen 스냅샷 — 원 기한 *M5c/`C-19`*).
+  리뷰 C 1건은 **`C-32`**로 등록 후 닫았다(inbox 항목 단일 읽기). **신규 open C**: `C-33`(`KERNEL_MARKERS`가
+  수동 유지 목록 — M5c marker 분기 로직 도입 시) · `C-34`(`codeOf`가 대부분 경로에서 중복 방어 — mutation
+  실측 기반 정직 표기). **`C-31` 축소 재기술**(white-box 관측 2곳 제거, 남은 절충은 "자식 프로세스 회수까지는
+  보지 않는다" — 기한 그대로 `B-13`) · **`C-30` 범위 축소**(usage 회계는 `B-14`가 닫았고 marker e2e만 남음).
+- **3차 리비전 검증(worker 자기보고 — 독립 실측 아님)**: `stableController` **52/52** ·
+  `orchestrationKernel` **74/74** · `codexCliProvider` **58/58** · `reviewer` **21/21** ·
+  `npm run test:exec` **322/322** · authority/atomicity/timing subset **3회 직렬 205/205** ·
+  `npx tsc --noEmit` clean · `npm run build` + source/dist parity · `git diff --check` clean.
+  **mutation**: A1/A2/A3 핵심 게이트를 각각 되돌려 회귀가 죽는 것을 확인하고 정확히 원복했다.
+  **살아남은 mutation 1건**(`codeOf` provenance 느슨화)은 실제 도달 경로(kernel 반환값 getter) 회귀를
+  추가해 죽였고 남은 중복성은 `C-34`로 등록했다 — 숨기지 않는다.
+  **`npm test` 전체 suite·acceptance·stress·live는 실행하지 않았다**(최종 M5d handoff에서 supervisor가 직렬 1회).
+- **다음 독립 리뷰가 특히 볼 지점**: ① `#private` 봉인과 증명 등록 분기가 **정말로** 임의 executor를 배제하는가
+  (subclass·proxy·`defineProperty`·모듈 재적재) ② `atBoundary`/`atKernel`/`atTrusted` **누락된 seam이 없는가**
+  (특히 새로 추가한 kernel 반환값 읽기 경로) ③ `KERNEL_MARKERS`가 성공 marker를 담지 않고 **닫혀 있는가**
+  ④ `completeTaskWithArtifacts`가 **모든** 실패 경로에서 부분 적용 0인가(특히 `commitRun`의 body 파일 쓰기)
+  ⑤ 새 controller 테스트 harness가 실제로 production 경로를 지나는가(주입 seam 잔존 여부).
+- **아래 2차 리비전 서술은 dated history로 보존한다** — 충돌 시 이 절이 현행이다.
+
+## 이전 (2026-07-28 — V3 **M5b 2차 리비전**)
 
 - **M5b 2차 리비전 커밋 `55b488f`** — `fix(v3-m5b): 봉인 단일 읽기 · 위조 불가 read-only 증명 ·
   실패 turn 회계 · 닫힌 리뷰/오류 taxonomy` + 이 docs 커밋. base·worktree·branch는 아래와 같다.

@@ -2,7 +2,45 @@
 
 최종 갱신: 2026-07-28
 
-## 최신 (2026-07-28 — **V3 M5b 2차 리비전: 독립 Codex 재리뷰(REVISE, A=5) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-28 — **V3 M5b 3차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=3) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `38b8d32` 위에 **3차 리비전 커밋**(code/tests/dist + docs).
+  **fresh Claude Opus 5 세션.** 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · **live provider 추론** ·
+  secret 사용 0. `node_modules` stage 0. Ponytail(full) 적용.
+- **⚠ 2차 리비전 기록의 과장 정정**: 2차는 A2(증명)·A5b(닫힌 taxonomy)를 "닫았다"고 적었지만 **같은
+  뿌리가 남아 있었다** — 증명과 provenance의 근거가 여전히 **공개 API 표면**이었다. 3차 독립 리뷰
+  (`409dee2..38b8d32`)가 **A/P1=3**을 냈다. **지금도 self-approved가 아니다.**
+- **3차 리비전이 닫은 것**:
+  ⓐ **A1 (증명 위조)** — 공개 `opts.spawn`으로 **임의 executor를 주입한 인스턴스도 증명**됐고 TS
+  `private spawnFn`은 writable own field라 테스트가 실제로 덮어썼다 → 모듈 사설 `PRODUCTION_SPAWN` +
+  `#spawn`·`#sessions` **ECMAScript `#private`** + **`opts.spawn`을 준 인스턴스는 비증명**(하위 계층
+  테스트용 untrusted seam은 유지). **controller 성공 경로 테스트는 실제 OS 자식 프로세스**(기존
+  `__fixtures__/fake-codex.mjs`를 절대 `process.execPath` shebang 래퍼로 감싼 0700 실행 파일)로
+  production 생성·argv·env·stdin·파서를 지난다. 세션 종료 관측도 **공개 API 프로브**로 바꿨다.
+  ⓑ **A2 (provenance 위조)** — exported `ControllerError`를 `instanceof`로 신뢰해 handoff가
+  `new ControllerError("result_accepted")`로 성공 marker를 심을 수 있었다 → 모듈 사설 `ISSUED_HERE`
+  WeakSet만 provenance이고 경계는 **예외 없이** 접는다. 호출자 콜백 전수 차단(handoff · provider ·
+  **`opts.nowMs` 시계** · **`opts.kernel` 전 메서드** · kernel 반환값의 throwing getter).
+  kernel native 코드는 **닫힌 집합 `KERNEL_MARKERS`(23종)** 만 입양하고 나머지는 `kernel_rejected`.
+  `consumeExactlyOneTerminal`은 클래스 대신 **factory**를 받는다.
+  ⓒ **A3 (비원자 완료)** — 산출물마다 durable commit 뒤 별도 `submitResult`라서 뒤쪽 실패 시 **앞선
+  artifact·event·revision만 남았다** → kernel 원자 트랜잭션 **`completeTaskWithArtifacts`** 하나로 합쳤다
+  (검증 전부 선행 · 개수 상한 16 · 경로 중복 `artifact_path_duplicate` · 포인터는 트랜잭션이 채운다).
+  집행 불변식은 `registerArtifact`와 **같은 헬퍼** 공유.
+- **리뷰 B 2건도 유예하지 않고 닫았다**: **`B-14`**(종료를 처음 본 자리에서 회계 → 늦은 이벤트·중복 종료·
+  종료 뒤 throw 경로에서도 usage가 예산에서 빠진다) · **`B-15`**(`ReviewSubject` 한 줄·정규형·bounded·
+  정규 16진 hash closed 검증 + frozen 스냅샷). 리뷰 C 1건은 **`C-32`**로 등록 후 닫았다(inbox 단일 읽기).
+  **신규 open C**: `C-33`(`KERNEL_MARKERS`가 수동 목록 — M5c marker 분기 시) · `C-34`(`codeOf`가 대부분
+  경로에서 중복 방어 — mutation 실측). **`C-31` 축소 재기술** · **`C-30` 범위 축소**.
+- **테스트(worker 자기보고 — 독립 실측 아님)**: `stableController` **52/52** · `orchestrationKernel`
+  **74/74** · `codexCliProvider` **58/58** · `reviewer` **21/21** · `npm run test:exec` **322/322** ·
+  authority/atomicity/timing subset **3회 직렬 205/205** · `tsc --noEmit` clean · `build` PASS(dist parity) ·
+  `git diff --check` clean. **mutation**: A1/A2/A3 게이트 kill·원복 확인, **살아남은 1건**(`codeOf` 느슨화)은
+  실제 도달 경로 회귀를 추가해 죽이고 남은 중복성을 `C-34`로 등록했다.
+  **`npm test` 전체·acceptance·stress·live 미실행**(최종 M5d handoff에서 supervisor 직렬 1회).
+
+## 이전 (2026-07-28 — **V3 M5b 2차 리비전: 독립 Codex 재리뷰(REVISE, A=5) 대응**)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 커밋: `1a94261` · `42777d9` · `6bc390d`(1차 리비전) · `ac827bf` ·
