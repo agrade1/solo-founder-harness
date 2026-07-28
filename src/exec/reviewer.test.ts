@@ -260,6 +260,62 @@ test("[M5b] A5: 대상 신원을 주지 않은 호출은 리뷰 자체가 시작
   }
 });
 
+// ── 3차 독립 리뷰 B: subject는 closed 검증 + 봉인 스냅샷이다 ─────────────────
+
+test("[M5b] B: subject는 한 줄·정규형·정규 hash여야 한다(closed 검증)", async () => {
+  const provider = reviewerWith(reviewBody());
+  const bad: Array<[string, unknown]> = [
+    ["여러 줄 revision", { revision: `${SUBJECT.revision}\n다른 줄`, hash: SUBJECT.hash }],
+    ["CR이 섞인 revision", { revision: `${SUBJECT.revision}\r`, hash: SUBJECT.hash }],
+    ["앞뒤 여백", { revision: ` ${SUBJECT.revision} `, hash: SUBJECT.hash }],
+    ["상한 초과 revision", { revision: "x".repeat(201), hash: SUBJECT.hash }],
+    ["hash가 16진이 아니다", { revision: SUBJECT.revision, hash: "not-a-hash!!" }],
+    ["hash가 너무 짧다", { revision: SUBJECT.revision, hash: "abc" }],
+    ["hash가 너무 길다", { revision: SUBJECT.revision, hash: "c".repeat(65) }],
+    ["hash에 개행", { revision: SUBJECT.revision, hash: `${SUBJECT.hash}\n` }],
+    ["subject가 객체가 아니다", "그냥 문자열"],
+  ];
+  for (const [label, subject] of bad) {
+    const code = await gateCode(() => reviewDiff({ ...baseInput, provider, subject: subject as typeof SUBJECT }));
+    assert.equal(code, "reviewer_subject_invalid", label);
+  }
+  // 단축 커밋 hash는 정규형이다(7자 이상 16진).
+  const short = { revision: "m5b", hash: "a1b2c3d" };
+  const ok = await reviewDiff({
+    ...baseInput,
+    subject: short,
+    provider: reviewerWith(
+      reviewBody({ subject: `- revision: ${short.revision}\n- hash: ${short.hash}` }).replace(SUBJECT.hash, short.hash),
+    ),
+  });
+  assert.deepEqual(ok.subject, short);
+});
+
+test("[M5b] B: subject는 봉인 스냅샷이다 — 호출 도중·이후 변조가 판정을 바꾸지 못한다", async () => {
+  // 리뷰어 turn이 끝난 **뒤** 호출자 객체를 바꿔도 본문 대조와 반환값은 원래 값에 묶여 있어야 한다.
+  const mutable = { revision: SUBJECT.revision, hash: SUBJECT.hash };
+  const inner = reviewerWith(reviewBody());
+  let started = false;
+  const provider: ExecutionProvider = {
+    id: "mut",
+    start: (spec, prompt) => {
+      // provider await 창 = 호출자가 값을 갈아끼울 수 있는 바로 그 창이다.
+      mutable.revision = "탈취된-revision";
+      mutable.hash = "d".repeat(40);
+      started = true;
+      return inner.start(spec, prompt);
+    },
+    send: (h, m) => inner.send(h, m),
+    events: (h) => inner.events(h),
+    stop: (h) => inner.stop(h),
+  };
+  const v = await reviewDiff({ ...baseInput, provider, subject: mutable });
+  assert.equal(started, true);
+  assert.deepEqual(v.subject, SUBJECT, "봉인 전 값이 아니라 변조된 값으로 판정했다");
+  assert.equal(Object.isFrozen(v.subject), true, "반환된 subject가 얼어 있지 않다");
+  assert.notEqual(v.subject, mutable, "호출자 객체를 그대로 돌려줬다(alias)");
+});
+
 // ── 2차 리비전 A5a: 대상 라벨 · 펜스 · findings 줄은 전부 closed다 ─────────────
 
 test("[M5b] A5a: 대상 라벨은 정확·유일·한 줄이어야 한다(포함·뒤바뀜·접두접미 거부)", async () => {

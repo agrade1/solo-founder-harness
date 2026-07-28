@@ -615,6 +615,173 @@ test("[M5b] artifact 등록: 승인된 writableRoots 밖은 거부다", () => {
   assert.equal(k.getState().artifacts.length, 0);
 });
 
+// ── M5b A3: 산출물 등록 + result 수락 + 완료는 **한 커밋**이다 ────────────────
+
+/** `docs/`·`src/root/` 아래에 파일을 쓰고 workspace-relative 경로를 돌려준다. */
+function put(ws: string, rel: string, content: string): string {
+  mkdirSync(dirname(join(ws, rel)), { recursive: true });
+  writeFileSync(join(ws, rel), content);
+  return rel;
+}
+
+/** 완료 트랜잭션 입력(포인터는 kernel이 채우므로 envelope.artifactRefs는 비어 있다). */
+function completeInput(outputs: Array<{ path: string; role: string }>, over: Record<string, unknown> = {}) {
+  return {
+    envelope: envelope("result", "root", "tech-lead", { messageId: "r-atomic", ...over }),
+    body: body("result"),
+    summary: "원자적 완료",
+    outputs: outputs as Array<{ path: string; role: "output" }>,
+    ...(over.bodyOverride ? { body: over.bodyOverride as string } : {}),
+  };
+}
+
+test("[M5b] A3: 성공 multi-output — 등록 순서·포인터·단일 완료가 정확하다", () => {
+  const { ws, k } = bootRoot();
+  const paths = [put(ws, "docs/a.md", "a\n"), put(ws, "src/root/b.md", "b\n"), put(ws, "docs/c.md", "c\n")];
+  const before = k.getState().revision;
+  const done = k.completeTaskWithArtifacts(completeInput(paths.map((p) => ({ path: p, role: "output" }))));
+
+  assert.deepEqual(done.artifacts.map((a) => `${a.path}@${a.revision}`), paths.map((p) => `${p}@1`), "등록 순서가 다르다");
+  assert.deepEqual(done.task.artifactRefs.map((r) => r.path), paths);
+  assert.equal(done.task.state, "completed");
+  assert.equal(k.getTask("root")!.state, "completed");
+  assert.equal(k.getState().revision, before + 1, "한 커밋이어야 한다(산출물마다 커밋하지 않는다)");
+  assert.equal(k.getState().artifacts.length, 3);
+  // 완료는 정확히 1건이다 — 같은 task를 다시 완료할 수 없다.
+  assert.equal(
+    codeOf(() => k.completeTaskWithArtifacts(completeInput([], { messageId: "r-again" }))),
+    "invalid_transition",
+  );
+});
+
+test("[M5b] A3: 어느 단계가 실패해도 artifacts·events·messages·revision·task 상태가 진입 전과 같다", () => {
+  const cases: Array<[string, string, (ws: string) => ReturnType<typeof completeInput>]> = [
+    [
+      "두 번째 산출물이 없다",
+      "artifact_missing",
+      (ws) =>
+        completeInput([
+          { path: put(ws, "docs/a.md", "a\n"), role: "output" },
+          { path: "docs/gone.md", role: "output" },
+        ]),
+    ],
+    [
+      "두 번째 산출물이 소유 밖이다",
+      "artifact_not_owned",
+      (ws) =>
+        completeInput([
+          { path: put(ws, "docs/a.md", "a\n"), role: "output" },
+          { path: put(ws, "src/other/x.md", "x\n"), role: "output" },
+        ]),
+    ],
+    [
+      "경로 중복",
+      "artifact_path_duplicate",
+      (ws) => {
+        const p = put(ws, "docs/a.md", "a\n");
+        return completeInput([
+          { path: p, role: "output" },
+          { path: p, role: "evidence" },
+        ]);
+      },
+    ],
+    [
+      "role이 계약 밖이다",
+      "invalid_artifact_ref",
+      (ws) =>
+        completeInput([
+          { path: put(ws, "docs/a.md", "a\n"), role: "output" },
+          { path: put(ws, "docs/b.md", "b\n"), role: "made-up" },
+        ]),
+    ],
+    [
+      `산출물 ${LIMITS.maxArtifactRefs + 1}건(상한 초과)`,
+      "artifact_refs_too_many",
+      (ws) =>
+        completeInput(
+          Array.from({ length: LIMITS.maxArtifactRefs + 1 }, (_, i) => ({
+            path: put(ws, `docs/n${i}.md`, `${i}\n`),
+            role: "output",
+          })),
+        ),
+    ],
+    [
+      "envelope가 포인터를 미리 주장한다",
+      "artifact_ref_unexpected",
+      (ws) =>
+        completeInput([{ path: put(ws, "docs/a.md", "a\n"), role: "output" }], {
+          artifactRefs: [{ path: "docs/a.md", sha256: "0".repeat(64), revision: 1, producerTaskId: "root", role: "output" }],
+        }),
+    ],
+    [
+      "envelope 타입이 result가 아니다",
+      "message_type_mismatch",
+      (ws) => ({ ...completeInput([{ path: put(ws, "docs/a.md", "a\n"), role: "output" }]), envelope: envelope("blocker", "root", "tech-lead") }),
+    ],
+    [
+      "body가 §5.2 heading을 못 채운다",
+      "body_unknown_heading",
+      (ws) => ({ ...completeInput([{ path: put(ws, "docs/a.md", "a\n"), role: "output" }]), body: "## 아무 제목\n\n본문\n" }),
+    ],
+    [
+      "summary가 상한을 넘는다",
+      "text_too_long",
+      (ws) => ({ ...completeInput([{ path: put(ws, "docs/a.md", "a\n"), role: "output" }]), summary: "x".repeat(LIMITS.maxSummaryLength + 1) }),
+    ],
+  ];
+
+  for (const [label, want, build] of cases) {
+    const { ws, k } = bootRoot();
+    const input = build(ws);
+    const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
+    const before = { fp: dirFingerprint(runDir), rev: k.getState().revision, state: k.getTask("root")!.state };
+    assert.equal(codeOf(() => k.completeTaskWithArtifacts(input)), want, label);
+    assert.equal(dirFingerprint(runDir), before.fp, `${label}: durable 파일이 바뀌었다(부분 적용)`);
+    assert.equal(k.getState().revision, before.rev, `${label}: revision이 올랐다`);
+    assert.equal(k.getTask("root")!.state, before.state, `${label}: task 상태가 바뀌었다`);
+    assert.deepEqual(k.getState().artifacts, [], `${label}: 앞선 artifact가 durable에 남았다`);
+    assert.equal(k.getMessage("r-atomic"), null, `${label}: result 메시지가 남았다`);
+  }
+});
+
+test("[M5b] A3: 실패 후 재시도는 revision 찌꺼기를 만들지 않는다", () => {
+  const { ws, k } = bootRoot();
+  const good = put(ws, "docs/a.md", "a\n");
+  const attempt = () =>
+    k.completeTaskWithArtifacts(
+      completeInput([
+        { path: good, role: "output" },
+        { path: "docs/gone.md", role: "output" },
+      ]),
+    );
+  // 세 번 실패해도 `docs/a.md`는 한 번도 등록되지 않는다(이전 판은 매 시도마다 revision을 올렸다).
+  for (let i = 0; i < 3; i++) assert.equal(codeOf(attempt), "artifact_missing");
+  assert.deepEqual(k.getState().artifacts, []);
+
+  // 원인을 고치고 다시 하면 **revision 1**로 등록된다.
+  put(ws, "docs/gone.md", "이제 있다\n");
+  const done = k.completeTaskWithArtifacts(
+    completeInput([
+      { path: good, role: "output" },
+      { path: "docs/gone.md", role: "output" },
+    ]),
+  );
+  assert.deepEqual(done.artifacts.map((a) => a.revision), [1, 1], "실패한 시도가 revision을 태웠다");
+});
+
+test("[M5b] A3: 커밋 단계 실패(stale_writer)도 전이 0이다", () => {
+  const { ws, k } = bootRoot();
+  const p = put(ws, "docs/a.md", "a\n");
+  // 같은 run을 두 번째 kernel로 열어 **먼저** 커밋한다 → 이쪽 base가 낡는다.
+  const other = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  other.registerArtifact({ taskId: "root", path: p, role: "output" });
+  const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
+  const fp = dirFingerprint(runDir);
+  assert.equal(codeOf(() => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))), "stale_writer");
+  assert.equal(dirFingerprint(runDir), fp, "거부된 커밋이 파일을 바꿨다");
+  assert.equal(other.getTask("root")!.state, "running", "남의 결과가 덮였다");
+});
+
 test("[M4a] 상위 디렉터리 symlink로 workspace를 벗어나는 artifact 거부", () => {
   const { ws, k } = bootRoot();
   const outside = mkdtempSync(join(tmpdir(), "m4a-outside-"));
@@ -780,6 +947,7 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
   const actual = Object.getOwnPropertyNames(OrchestrationKernel.prototype).sort();
   assert.deepEqual(actual, [
     "acknowledgeDelivery",
+    "completeTaskWithArtifacts",
     "constructor",
     "createDependentTask",
     "createRootTask",

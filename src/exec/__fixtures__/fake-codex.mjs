@@ -38,6 +38,9 @@ prior.calls.push({
   cwd,
   stdin,
   envKeys: Object.keys(process.env).sort(),
+  // 격리 홈 경로 — 여러 세션이 같은 cwd를 공유할 때 호출을 세션에 되짚는 유일한 표면이다
+  // (자식이 자기 env에서 읽는 값일 뿐 새 seam이 아니다).
+  codexHome: process.env.CODEX_HOME,
 });
 writeFileSync(invocationPath, JSON.stringify(prior, null, 2));
 

@@ -10,12 +10,10 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { EventEmitter } from "node:events";
-import { PassThrough } from "node:stream";
-import type { ChildProcess } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { runProcess } from "./runProcess.js";
 import { OrchestrationKernel, createOrchestrationRun } from "./orchestrationKernel.js";
 import { LIMITS, OrchestrationError, REQUIRED_BODY_HEADINGS } from "./orchestrationTypes.js";
@@ -30,7 +28,7 @@ import {
   type ControllerHandoff,
   type HandoffContext,
 } from "./stableController.js";
-import { CodexCliProvider, type SpawnFn } from "./codexCliProvider.js";
+import { CodexCliProvider, attestReadOnlyCodexProvider, type SpawnFn } from "./codexCliProvider.js";
 import { consumeExactlyOneTerminal } from "./types.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec, SessionUsage } from "./types.js";
 
@@ -144,20 +142,42 @@ function armedClock(effect: () => void, fireFrom: number): { clock: () => number
   };
 }
 
-// ── 실제 CodexCliProvider + 주입 spawn seam ────────────────────────────────
+// ── 실제 CodexCliProvider(production 생성 경로) + 실제 자식 프로세스 ─────────────
 //
-// **2026-07-28 2차 리뷰 A2 이후**: controller는 "brand를 스스로 단 아무 객체"가 아니라 **실제로 생성된
-// read-only Codex provider**만 받는다. 그래서 이 파일의 provider는 더 이상 흉내가 아니라 **진짜
-// `CodexCliProvider`** 이고, 결정론은 그 provider가 이미 가진 **주입 spawn seam**으로 만든다
-// (live Codex/Claude·네트워크·인증 0 — 자식 프로세스도 뜨지 않는다: `FakeChild`는 in-process다).
+// **2026-07-28 3차 리뷰 A1 이후**: `opts.spawn`으로 임의 executor를 주입한 인스턴스는 **증명을 받지
+// 못한다**(그것이 A1의 요점이다). 그래서 controller 테스트는 그 seam을 쓰지 않고 **production 생성
+// 경로 그대로**(spawn 미지정 → 진짜 `node:child_process.spawn`) provider를 만들고, 결정론은
+// **결정론적 fake codex 실행 파일**로 만든다: 실제 OS 자식 프로세스가 뜨지만 codex 추론·네트워크·
+// 인증은 전혀 없다(자식은 `__fixtures__/fake-codex.mjs`가 시나리오 파일대로 JSONL을 흘리는 것뿐이다).
+//
+// 관측은 **자식이 실제로 받은 것**(argv·cwd·stdin·env)으로만 한다 — provider를 감싸거나 내부 필드를
+// 갈아끼우면 A1/A2 증명을 통과하지 못하고, 그것이 요점이다.
 
-/** 신뢰 조건을 만족하는 실행 파일(현재 node). codex를 실제로 띄우지 않으므로 내용은 무관하다. */
-const TRUSTED_BIN = realpathSync(process.execPath);
+const FAKE_CODEX = fileURLToPath(new URL("./__fixtures__/fake-codex.mjs", import.meta.url));
+
+/**
+ * 신뢰 조건(정규 · 비symlink · 일반 파일 · 실행 비트 · group/other 쓰기 없음)을 만족하는 fake codex
+ * 실행 파일. 자식 env는 **`CODEX_HOME` 하나뿐**이라 `#!/usr/bin/env node`는 PATH가 없어 실패한다 →
+ * **절대 `process.execPath` shebang**을 쓴다. 본문은 기존 fixture를 그대로 import한다(복제 금지).
+ */
+function fakeCodexBin(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-bin-")));
+  cleanups.push(dir);
+  const bin = join(dir, "codex.mjs");
+  writeFileSync(bin, `#!${process.execPath}\nimport ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};\n`);
+  chmodSync(bin, 0o700);
+  return bin;
+}
+const FAKE_CODEX_BIN = fakeCodexBin();
+
 /** 결정론적 codex thread id — 파서가 정규 UUID를 요구한다. */
 const CODEX_TID = "0199a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
 
 /** `CODEX_HOME` → harness 세션 id. 자식 env가 유일한 상관 관계 표면이다(provider를 감싸지 않는다). */
 const HOME_TO_SESSION = new Map<string, string>();
+
+/** 시나리오에 미리 적어 두는 turn 수(초과 호출은 fixture가 마지막 run을 반복한다). */
+const SCRIPTED_TURNS = 6;
 
 interface TurnRecord {
   kind: "start" | "send";
@@ -166,6 +186,8 @@ interface TurnRecord {
   cwd: string;
   /** 자식이 실제로 받은 argv — provider가 **봉인 spec**으로 컴파일한 결과다. */
   args: string[];
+  /** 자식이 상속한 env key 전부. `["CODEX_HOME"]` 하나여야 한다. */
+  envKeys: string[];
 }
 
 /** 한 invocation이 낼 codex JSONL + stderr + 프로세스 exit code. */
@@ -176,86 +198,75 @@ interface TurnOutput {
 }
 type TurnScript = (turn: number) => TurnOutput;
 
-/** codexCliProvider 테스트와 같은 in-process 자식. 실제 프로세스는 뜨지 않는다. */
-class FakeChild extends EventEmitter {
-  stdout = new PassThrough();
-  stderr = new PassThrough();
-  stdin = new PassThrough();
-  private done = false;
-  kill(signal: string): boolean {
-    setImmediate(() => this.close(null, signal));
-    return true;
-  }
-  close(code: number | null, signal: string | null = null): void {
-    if (this.done) return;
-    this.done = true;
-    this.emit("close", code, signal);
-  }
-  finish(lines: string[], code: number | null, stderr = ""): void {
-    for (const l of lines) this.stdout.write(`${l}\n`);
-    if (stderr) this.stderr.write(stderr);
-    setImmediate(() => this.close(code, null));
-  }
+interface RecordedCall {
+  argv: string[];
+  cwd: string;
+  stdin: string;
+  envKeys: string[];
+  codexHome?: string;
 }
 
 /**
- * provider가 세션을 닫으면 내부 세션 map에서 **지운다** — 정리 사유는 밖으로 나오지 않으므로
- * 그 삭제가 "세션을 닫았는가"의 유일한 관측 표면이다. provider **객체**는 건드리지 않는다
- * (감싸거나 메서드를 바꾸면 A2 증명을 통과하지 못한다 — 그것이 요점이다).
- */
-class ObservedSessions<K, V> extends Map<K, V> {
-  readonly closed: K[] = [];
-  override delete(key: K): boolean {
-    const had = super.delete(key);
-    if (had) this.closed.push(key);
-    return had;
-  }
-}
-
-/**
- * 진짜 `CodexCliProvider` + 스크립트된 spawn. 관측은 **자식이 받은 것**(argv·cwd·env·stdin)으로만 한다 —
- * provider를 wrapper·subclass·override로 감싸면 A2 증명을 통과하지 못하고, 그것이 요점이다.
+ * **production 생성 경로 그대로의** `CodexCliProvider`(spawn 미지정 = 진짜 `nodeSpawn`) +
+ * cwd에 놓인 결정론적 시나리오. 세션 종료 관측은 내부 map 교체가 아니라 **공개 API 프로브**로 한다
+ * (`sessionClosed`) — 증명된 인스턴스의 내부를 테스트가 만지지 않는다.
  */
 class CodexHarness {
-  readonly turns: TurnRecord[] = [];
   readonly codex: CodexCliProvider;
-  private turnNo = 0;
 
   constructor(
-    private readonly script: TurnScript,
-    opts: { manifest: unknown; controllerRepoRoot: string },
+    script: TurnScript,
+    private readonly opts: { manifest: unknown; controllerRepoRoot: string; cwd: string; executablePath?: string },
   ) {
-    const spawn: SpawnFn = (_command, args, options) => {
-      const rec: TurnRecord = {
-        // resume subcommand가 붙은 invocation만 후속 `send`다(fresh는 `--ephemeral` 또는 그냥 `exec`).
-        kind: args.includes("resume") ? "send" : "start",
-        sessionId: HOME_TO_SESSION.get(options.env.CODEX_HOME ?? "") ?? "(미상 세션)",
-        text: "",
-        cwd: options.cwd,
-        args,
-      };
-      this.turns.push(rec);
-      const child = new FakeChild();
-      child.stdin.on("data", (d: Buffer | string) => (rec.text += String(d)));
-      const out = this.script(this.turnNo++);
-      setImmediate(() => child.finish(out.lines, out.exit ?? 0, out.stderr ?? ""));
-      return child as unknown as ChildProcess;
-    };
+    writeFileSync(
+      join(opts.cwd, ".fake-codex-scenario.json"),
+      JSON.stringify({
+        runs: Array.from({ length: SCRIPTED_TURNS }, (_, i) => {
+          const out = script(i);
+          return { lines: out.lines, exitCode: out.exit ?? 0, stderr: out.stderr ?? "" };
+        }),
+      }),
+    );
     this.codex = new CodexCliProvider({
       manifest: opts.manifest,
       controllerRepoRoot: opts.controllerRepoRoot,
-      executablePath: TRUSTED_BIN,
+      executablePath: opts.executablePath ?? FAKE_CODEX_BIN,
       gitExecutablePath: TRUSTED_GIT,
-      spawn,
+      // **spawn을 주지 않는다** — 증명은 production executor일 때만 발급된다(3차 리뷰 A1).
     });
-    (this.codex as unknown as { sessions: Map<string, unknown> }).sessions = this.sessions;
   }
 
-  private readonly sessions = new ObservedSessions<string, unknown>();
+  /** 자식이 실제로 받은 invocation 기록(프로세스가 뜨지 않았으면 빈 배열). */
+  get turns(): TurnRecord[] {
+    let calls: RecordedCall[];
+    try {
+      calls = JSON.parse(readFileSync(join(this.opts.cwd, ".fake-codex-invocation.json"), "utf8")).calls;
+    } catch {
+      return [];
+    }
+    return calls.map((c) => ({
+      // resume subcommand가 붙은 invocation만 후속 `send`다(fresh는 `--ephemeral` 또는 그냥 `exec`).
+      kind: c.argv.includes("resume") ? "send" : "start",
+      sessionId: HOME_TO_SESSION.get(c.codexHome ?? "") ?? "(미상 세션)",
+      text: c.stdin,
+      cwd: c.cwd,
+      args: c.argv,
+      envKeys: c.envKeys,
+    }));
+  }
+}
 
-  /** provider가 닫은(= 세션 map에서 지운) harness 세션 id. */
-  get stops(): string[] {
-    return this.sessions.closed;
+/**
+ * **공개 API만으로** "provider가 그 세션을 닫았는가"를 본다(3차 리뷰 A1 — 증명된 인스턴스의 내부
+ * 상태를 테스트가 갈아끼우지 않는다). 세션이 살아 있으면 같은 id의 `start`는 `codex_session_exists`이고,
+ * 닫혔으면 프롬프트 계약 검사까지 내려가 `codex_prompt_invalid`가 된다. 어느 쪽도 프로세스를 띄우지 않는다.
+ */
+async function sessionClosed(codex: CodexCliProvider, sessionId: string, cwd: string): Promise<boolean> {
+  try {
+    await codex.start(readOnlySpec(sessionId, "probe", cwd), "");
+    return false; // 빈 프롬프트는 항상 거부다 — 여기 오면 계약이 깨진 것이다
+  } catch (e) {
+    return e instanceof OrchestrationError && e.code === "codex_prompt_invalid";
   }
 }
 
@@ -291,10 +302,17 @@ function failedTurnWithUsage(usage: SessionUsage = USAGE): TurnOutput {
  * 자식 invocation을 harness 세션 id에 되짚는다. `ephemeral: false`여야 전달 turn(resume)이 가능하다.
  */
 function readOnlySpec(sessionId: string, role: string, cwd: string, over: Partial<SessionSpec> = {}): SessionSpec {
+  const home = freshHome();
+  HOME_TO_SESSION.set(home, sessionId);
+  if (over.codex?.codexHome) HOME_TO_SESSION.set(over.codex.codexHome, sessionId);
+  return { sessionId, role, cwd, permissionMode: "plan", codex: { codexHome: home, ephemeral: false }, ...over };
+}
+
+/** provider가 첫 invocation에서 요구하는 **비어 있는 0700 격리 홈**. */
+function freshHome(): string {
   const home = realpathSync(mkdtempSync(join(tmpdir(), "m5b-home-")));
   cleanups.push(home);
-  HOME_TO_SESSION.set(home, sessionId);
-  return { sessionId, role, cwd, permissionMode: "plan", codex: { codexHome: home, ephemeral: false }, ...over };
+  return home;
 }
 
 // ── 픽스처: root task 2개(자원 class 공유) + 의존 reviewer ────────────────────
@@ -316,8 +334,26 @@ interface FixtureOpts {
   taskIds?: string[];
   /** 두 root task가 같은 배타 자원 class를 요구하는가. */
   shareResource?: boolean;
-  /** spawn seam을 갈아끼워 provider `start` 실패를 주입할 때만 쓴다. */
-  spawn?: SpawnFn;
+  /**
+   * codex 실행 파일을 **신뢰 조건 밖으로** 만들어 provider `start` 실패를 만든다(실행 비트 제거).
+   * 임의 executor 주입 seam은 증명을 받지 못하므로(A1) 실패 주입도 production 경로로 한다.
+   */
+  breakExecutable?: boolean;
+  /** kernel 자리에 끼울 대리자 — caller-supplied kernel seam 회귀용(A2). */
+  wrapKernel?: (kernel: OrchestrationKernel) => OrchestrationKernel;
+}
+
+/**
+ * 신뢰 조건을 깨뜨린 codex 실행 파일 사본. provider는 spawn 직전 신원 검사에서 거부한다
+ * (`codex_executable_invalid`) → controller는 그것을 자기 taxonomy로 접는다.
+ */
+function brokenCodexBin(): string {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-badbin-")));
+  cleanups.push(dir);
+  const bin = join(dir, "codex.mjs");
+  writeFileSync(bin, "#!/bin/false\n");
+  chmodSync(bin, 0o600); // 실행 비트 없음
+  return bin;
 }
 
 async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
@@ -337,11 +373,15 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
   for (const id of taskIds) {
     kernel.createRootTask(seed(id, "dev-lead", opts.shareResource ? { resourceClasses: ["global-tmp"] } : {}));
   }
-  const provider = new CodexHarness(opts.script ?? (() => okTurn()), { manifest, controllerRepoRoot: repo.root });
-  if (opts.spawn) (provider.codex as unknown as { spawnFn: SpawnFn }).spawnFn = opts.spawn;
+  const provider = new CodexHarness(opts.script ?? (() => okTurn()), {
+    manifest,
+    controllerRepoRoot: repo.root,
+    cwd: repo.root,
+    executablePath: opts.breakExecutable ? brokenCodexBin() : undefined,
+  });
   const handoffs: HandoffContext[] = [];
   const controller = new StableController({
-    kernel,
+    kernel: opts.wrapKernel ? opts.wrapKernel(kernel) : kernel,
     provider: provider.codex,
     controllerRepoRoot: repo.root,
     gitExecutablePath: TRUSTED_GIT,
@@ -389,7 +429,9 @@ test("[M5b] advanceOnce: kernel batch 순서대로 provider handoff → result �
   assert.deepEqual(f.provider.turns.map((t) => t.kind), ["start", "start"]);
   assert.equal(f.kernel.getTask("task-a")!.state, "completed");
   assert.equal(f.kernel.getTask("task-b")!.state, "completed");
-  assert.equal(f.provider.stops.length, 2, "세션을 닫지 않았다");
+  for (const id of ["sess-task-a", "sess-task-b"]) {
+    assert.equal(await sessionClosed(f.provider.codex, id, f.repo.root), true, `${id} 세션을 닫지 않았다`);
+  }
   assert.equal(f.controller.usedTokens(), 10, "bounded usage 카운터(2 turn × 5)");
   // 다음 advance는 할 일이 없다(두 번째 배치를 임의로 만들지 않는다).
   assert.deepEqual(await f.controller.advanceOnce(), { blocked: null, started: [], tasks: [] });
@@ -426,7 +468,7 @@ test("[M5b] C-25: 다중 turn(전달 소비)에서 turn마다 events()를 다시
   // 진짜 provider는 invocation마다 큐를 **교체**한다: 예전 iterable을 재사용하면 두 번째 turn의 스트림은
   // 이미 닫힌 큐라 종료 결과가 0건이 되고(`provider_no_result`) 아래 두 단정이 함께 깨진다.
   assert.equal(worker.usage.inputTokens, 6, "두 turn의 usage가 합산되지 않았다");
-  assert.deepEqual(g.provider.stops, ["sess-worker"], "세션을 닫지 않았다");
+  assert.equal(await sessionClosed(g.provider.codex, "sess-worker", g.repo.root), true, "세션을 닫지 않았다");
 });
 
 /** producer(완료) → worker(의존) 배치: worker inbox에 중앙 경유 전달 1건이 대기한다. */
@@ -491,10 +533,12 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
   const provider = new CodexHarness(over.script ?? ((t) => okTurn(t === 0 ? "첫 turn" : "두 번째 turn")), {
     manifest: deliveryManifest,
     controllerRepoRoot: repo.root,
+    cwd: repo.root,
+    executablePath: over.breakExecutable ? brokenCodexBin() : undefined,
   });
   const handoffs: HandoffContext[] = [];
   const controller = new StableController({
-    kernel,
+    kernel: over.wrapKernel ? over.wrapKernel(kernel) : kernel,
     provider: provider.codex,
     controllerRepoRoot: repo.root,
     gitExecutablePath: TRUSTED_GIT,
@@ -733,16 +777,12 @@ test("[M5b] provider 오류·결과 없음은 완료를 만들지 않는다", as
   assert.equal((await noResult.controller.advanceOnce()).tasks[0].marker, "provider_result_error");
   assert.equal(noResult.kernel.getTask("task-a")!.state, "running");
 
-  // spawn 실패: seam이 동기로 던지면 provider는 `codex_spawn_failed`를 올리고 controller는 그것을
-  // **자기 taxonomy**로 접는다(A5b — provider가 결과 코드를 고르지 못한다).
-  const thrown = await fixture({
-    taskIds: ["task-a"],
-    spawn: () => {
-      throw new Error("spawn 실패");
-    },
-  });
+  // 실행 파일이 신뢰 조건 밖이면 provider는 **spawn 0으로** `codex_executable_invalid`를 올리고,
+  // controller는 그 native 코드를 **자기 taxonomy**로 접는다(A5b·A2 — provider 코드가 marker가 되지 않는다).
+  const thrown = await fixture({ taskIds: ["task-a"], breakExecutable: true });
   assert.equal((await thrown.controller.advanceOnce()).tasks[0].marker, "provider_start_failed");
   assert.equal(thrown.kernel.getTask("task-a")!.state, "running");
+  assert.equal(thrown.provider.turns.length, 0, "거부인데 자식 프로세스가 떴다");
 });
 
 // ── 8. durable 순수성 ──────────────────────────────────────────────────────
@@ -846,6 +886,7 @@ test("[M5b] A1: kernel·provider·handoff **객체 교체**는 드리프트다(�
   m.opts.provider = new CodexHarness(() => okTurn(), {
     manifest: manifestFor(f.repo.head, ["task-a"]),
     controllerRepoRoot: f.repo.root,
+    cwd: f.repo.root,
   }).codex;
   assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift", "같은 id의 다른 provider를 받아들였다");
   m.opts.provider = origProvider;
@@ -898,15 +939,15 @@ test("[M5b] A1: 생성 뒤 메서드 monkey-patch는 실행되지 않고 드리�
         }),
     ],
     [
-      "kernel.submitResult",
+      "kernel.completeTaskWithArtifacts",
       (o) => {
         const k = o.kernel as Record<string, unknown>;
-        const orig = k.submitResult;
-        k.submitResult = () => {
+        const orig = k.completeTaskWithArtifacts;
+        k.completeTaskWithArtifacts = () => {
           throw new Error("이 패치는 실행되면 안 된다");
         };
         return () => {
-          k.submitResult = orig;
+          k.completeTaskWithArtifacts = orig;
         };
       },
     ],
@@ -1152,18 +1193,71 @@ async function controllerGateCode(provider: unknown): Promise<string> {
   }
 }
 
-/** 실제 생성 경로를 지난 provider(주입 spawn seam — live 프로세스·네트워크 0). */
+/**
+ * **production 생성 경로 그대로의** provider — `spawn`을 주지 않으므로 executor는 진짜
+ * `node:child_process.spawn`이고 증명을 받는다. 아래 테스트들은 이 인스턴스를 **세션을 열지 않고**
+ * controller 생성자에만 넣는다.
+ */
 function genuineCodex(repoRoot = "/"): CodexCliProvider {
   return new CodexCliProvider({
     manifest: {},
     controllerRepoRoot: repoRoot,
-    executablePath: TRUSTED_BIN,
+    executablePath: FAKE_CODEX_BIN,
+    gitExecutablePath: TRUSTED_GIT,
+  });
+}
+
+/** 임의 executor를 주입한 provider — 생성자를 지나지만 **증명 대상이 아니다**(3차 리뷰 A1). */
+function customSpawnCodex(): CodexCliProvider {
+  return new CodexCliProvider({
+    manifest: {},
+    controllerRepoRoot: "/",
+    executablePath: FAKE_CODEX_BIN,
     gitExecutablePath: TRUSTED_GIT,
     spawn: (() => {
-      throw new Error("이 provider는 세션을 열지 않는다");
+      throw new Error("이 provider는 증명을 받지 못한다");
     }) as unknown as SpawnFn,
   });
 }
+
+test("[M5b] A1: 임의 executor를 주입한 인스턴스는 증명을 받지 못한다(사후 필드 덮어쓰기도 무효)", async () => {
+  // ⓐ `opts.spawn`을 준 인스턴스는 생성자를 지나도 read-only bridge에 들어오지 못한다.
+  //    (이전 판은 `opts.spawn ?? nodeSpawn`을 포착한 **모든** 인스턴스를 증명 등록부에 넣었으므로,
+  //     argv·env를 무시하고 임의 쓰기·명령·네트워크를 하는 callback이 그대로 통과했다.)
+  assert.equal(attestReadOnlyCodexProvider(customSpawnCodex()), null, "custom spawn 인스턴스가 증명됐다");
+  assert.equal(await controllerGateCode(customSpawnCodex()), "controller_provider_not_read_only");
+
+  // ⓑ production 인스턴스는 증명을 받고 controller 생성도 통과한다(음성 대조군이 아니라 **양성** 대조군).
+  assert.notEqual(attestReadOnlyCodexProvider(genuineCodex()), null, "production 인스턴스가 증명을 못 받았다");
+  assert.equal(await controllerGateCode(genuineCodex()), "(생성됨)");
+
+  // ⓒ 생성 뒤 executor 필드를 덮어써도 **무효**다: `#private`이라 밖에서 보이지도 바뀌지도 않는다.
+  const patched = genuineCodex();
+  (patched as unknown as Record<string, unknown>).spawnFn = () => {
+    throw new Error("실행되면 안 된다");
+  };
+  Object.defineProperty(patched, "spawn", { value: () => undefined, configurable: true });
+  assert.notEqual(attestReadOnlyCodexProvider(patched), null, "무해한 덮어쓰기가 증명을 깨뜨렸다");
+  assert.equal(await controllerGateCode(patched), "(생성됨)");
+  assert.deepEqual(
+    Object.getOwnPropertyNames(genuineCodex()).filter((k) => /spawn|session/i.test(k)),
+    [],
+    "executor·세션 상태가 public own field로 노출됐다(대입·defineProperty 통로)",
+  );
+
+  // ⓓ 함수가 아닌 spawn은 생성 자체가 거부다.
+  assert.throws(
+    () =>
+      new CodexCliProvider({
+        manifest: {},
+        controllerRepoRoot: "/",
+        executablePath: FAKE_CODEX_BIN,
+        gitExecutablePath: TRUSTED_GIT,
+        spawn: 1 as unknown as SpawnFn,
+      }),
+    /codex_config_invalid/,
+  );
+});
 
 test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자체가 거부된다(위조 표면 전수)", async () => {
   const genuine = genuineCodex();
@@ -1199,29 +1293,15 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
       return { sessionId: spec.sessionId, spec };
     }
   }
-  const sub = new EvilSubclass({
-    manifest: {},
-    controllerRepoRoot: "/",
-    executablePath: TRUSTED_BIN,
-    gitExecutablePath: TRUSTED_GIT,
-    spawn: (() => {
-      throw new Error("불가");
-    }) as unknown as SpawnFn,
-  });
+  // **production 인자 그대로**(spawn 주입 없음)여도 거부여야 한다 — 거부 근거는 executor가 아니라 subclass다.
+  const subOpts = { manifest: {}, controllerRepoRoot: "/", executablePath: FAKE_CODEX_BIN, gitExecutablePath: TRUSTED_GIT };
+  const sub = new EvilSubclass(subOpts);
   assert.equal(await controllerGateCode(sub), "controller_provider_not_read_only", "subclass가 통과했다");
 
   // ⓓ' 아무것도 override하지 않은 subclass도 거부다 — 증명 대상은 "이 구현"이지 "이 구현의 자손"이 아니다
   //     (자손은 다른 메서드·getter·필드로 계약을 얼마든지 바꿀 수 있고, 그 표면을 여기서 추적하지 않는다).
   class PlainSubclass extends CodexCliProvider {}
-  const plain = new PlainSubclass({
-    manifest: {},
-    controllerRepoRoot: "/",
-    executablePath: TRUSTED_BIN,
-    gitExecutablePath: TRUSTED_GIT,
-    spawn: (() => {
-      throw new Error("불가");
-    }) as unknown as SpawnFn,
-  });
+  const plain = new PlainSubclass(subOpts);
   assert.equal(await controllerGateCode(plain), "controller_provider_not_read_only", "override 없는 subclass가 통과했다");
 
   // ⓔ 인스턴스 메서드 override. prototype이 얼어 있어 **평범한 대입은 아예 던지고**,
@@ -1246,16 +1326,25 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
   assert.equal((mod.attestReadOnlyCodexProvider as (p: unknown) => unknown)(scripted), null, "판정 함수가 임의 객체를 증명했다");
 });
 
-test("[M5b] A2: production 경로 — 실제 CodexCliProvider(주입 spawn)로 controller가 그대로 전진한다", async () => {
-  // live codex/claude·네트워크·인증 0. provider 생성·봉인·경계·argv·stdin 배선은 전부 진짜 경로다.
+test("[M5b] A2: production 경로 — 진짜 자식 프로세스로 controller가 그대로 전진한다", async () => {
+  // live codex/claude 추론·네트워크·인증 0. **실제 OS 자식 프로세스**가 뜨고, provider 생성·증명·봉인·
+  // 경계·argv·env·stdin·파서 배선이 전부 production 경로다(3차 리뷰 A1 — 주입 executor 없음).
   const f = await fixture({ taskIds: ["task-a"] });
-  assert.equal(f.provider.codex instanceof CodexCliProvider, true, "production provider가 아니다");
+  assert.notEqual(attestReadOnlyCodexProvider(f.provider.codex), null, "증명된 production provider가 아니다");
   const out = await f.controller.advanceOnce();
   assert.equal(out.tasks[0].status, "completed", out.tasks[0].marker);
   const turn = f.provider.turns[0];
   assert.equal(turn.args[0], "exec");
   assert.deepEqual([turn.args.includes("--sandbox"), turn.args[turn.args.indexOf("--sandbox") + 1]], [true, "read-only"]);
   assert.ok(turn.text.includes("task-a 제목"), "프롬프트가 stdin으로 가지 않았다");
+  // provider가 **넘기는** env가 정확히 `{CODEX_HOME}` 하나라는 것은 provider 테스트가 고정한다.
+  // 여기서 보는 것은 자식이 **실제로 본** env이고, OS/libc가 자기 키를 더할 수 있으므로
+  // (macOS의 `__CF_USER_TEXT_ENCODING`) 부재를 단정할 대상만 명시한다.
+  assert.ok(turn.envKeys.includes("CODEX_HOME"), "CODEX_HOME이 자식에게 가지 않았다");
+  for (const leaked of ["PATH", "HOME", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY"]) {
+    assert.ok(!turn.envKeys.includes(leaked), `${leaked}가 자식에게 상속됐다`);
+  }
+  assert.equal(turn.cwd, f.repo.root, "경계가 확인한 targetRoot가 아닌 cwd로 떴다");
 });
 
 test("[M5b] A2: read-only가 아닌 spec은 provider를 띄우지 않는다", async () => {
@@ -1325,6 +1414,97 @@ test("[M5b] A2: 산출물 경로 소유권은 kernel(권위)이 집행한다 —
   assert.equal(f.kernel.getState().artifacts.length, 0, "소유권 위반 artifact가 durable에 남았다");
   // 같은 batch의 task-b는 자기 계약대로 완료된다(게이트가 batch 전체를 죽이지 않는다).
   assert.equal(out.tasks.find((t) => t.taskId === "task-b")!.status, "completed");
+});
+
+// ── 11b. A3(3차): 산출물 등록과 완료는 kernel의 한 트랜잭션이다 ────────────────
+
+test("[M5b] A3: multi-output 성공 — 순서·포인터가 정확하고 완료 커밋은 하나다", async () => {
+  const outs = ["src/task-a/one.md", "src/task-a/two.md", "src/task-a/three.md"];
+  const f = await fixture({
+    taskIds: ["task-a"],
+    handoff: (ctx, root) => ({
+      spec: readOnlySpec("s", ctx.task.roleId, root),
+      prompt: "p",
+      outputs: outs.map((p) => ({ path: p, role: "output" as const })),
+    }),
+  });
+  for (const p of outs) writeArtifact(f.repo.root, p, `# ${p}\n`);
+  const before = f.kernel.getState().revision;
+  const a = (await f.controller.advanceOnce()).tasks[0];
+
+  assert.equal(a.status, "completed", a.marker);
+  assert.deepEqual(a.artifacts, outs.map((p) => `${p}@1`), "등록 순서가 handoff 순서와 다르다");
+  assert.deepEqual(f.kernel.getTask("task-a")!.artifactRefs.map((r) => r.path), outs);
+  // batch 시작 커밋 1 + 완료 트랜잭션 1 = 2. 산출물마다 커밋하면 이 수가 커진다.
+  assert.equal(f.kernel.getState().revision, before + 2, "완료가 한 커밋이 아니다");
+});
+
+test("[M5b] A3: 뒤쪽 산출물이 실패하면 앞쪽 artifact도 durable에 남지 않는다", async () => {
+  const cases: Array<[string, Array<{ path: string; role: "output" }>, string]> = [
+    [
+      "두 번째가 없다",
+      [
+        { path: "src/task-a/ok.md", role: "output" },
+        { path: "src/task-a/gone.md", role: "output" },
+      ],
+      "artifact_missing",
+    ],
+    [
+      "두 번째가 남의 소유다",
+      [
+        { path: "src/task-a/ok.md", role: "output" },
+        { path: "src/task-b/steal.md", role: "output" },
+      ],
+      "artifact_not_owned",
+    ],
+    [
+      "경로 중복",
+      [
+        { path: "src/task-a/ok.md", role: "output" },
+        { path: "src/task-a/ok.md", role: "output" },
+      ],
+      "artifact_path_duplicate",
+    ],
+  ];
+  for (const [label, outputs, want] of cases) {
+    const f = await fixture({
+      taskIds: ["task-a", "task-b"],
+      handoff: (ctx, root) => ({
+        spec: readOnlySpec(`sess-${ctx.task.taskId}`, ctx.task.roleId, root),
+        prompt: "p",
+        outputs: ctx.task.taskId === "task-a" ? outputs : [],
+      }),
+    });
+    writeArtifact(f.repo.root, "src/task-a/ok.md", "앞쪽 산출물\n");
+    writeArtifact(f.repo.root, "src/task-b/steal.md", "남의 것\n");
+    const out = await f.controller.advanceOnce();
+    const a = out.tasks.find((t) => t.taskId === "task-a")!;
+    assert.deepEqual([a.status, a.marker], ["failed", want], label);
+    assert.deepEqual(a.artifacts, [], `${label}: 실패인데 artifact를 보고했다`);
+    assert.equal(f.kernel.getTask("task-a")!.state, "running", `${label}: 실패인데 완료로 만들었다`);
+    assert.equal(f.kernel.getMessage("res.task-a"), null, `${label}: 실패인데 result가 남았다`);
+    assert.deepEqual(
+      f.kernel.getState().artifacts.filter((x) => x.producerTaskId === "task-a"),
+      [],
+      `${label}: 앞쪽 artifact가 durable에 남았다(부분 적용)`,
+    );
+  }
+});
+
+test("[M5b] A3: 산출물 상한을 넘는 handoff는 등록 0 · 완료 0이다", async () => {
+  const many = Array.from({ length: LIMITS.maxArtifactRefs + 1 }, (_, i) => ({
+    path: `src/task-a/n${i}.md`,
+    role: "output" as const,
+  }));
+  const f = await fixture({
+    taskIds: ["task-a"],
+    handoff: (ctx, root) => ({ spec: readOnlySpec("s", ctx.task.roleId, root), prompt: "p", outputs: many }),
+  });
+  for (const o of many) writeArtifact(f.repo.root, o.path, "x\n");
+  const a = (await f.controller.advanceOnce()).tasks[0];
+  assert.deepEqual([a.status, a.marker], ["failed", "artifact_refs_too_many"]);
+  assert.deepEqual(f.kernel.getState().artifacts, []);
+  assert.equal(f.kernel.getTask("task-a")!.state, "running");
 });
 
 // ── 12. A3: 예산은 provider 호출마다 다시 본다 ───────────────────────────────
@@ -1407,20 +1587,18 @@ test("[M5b] A4: start 창 — 경계 await 도중 입력이 변조되면 provide
 
 test("[M5b] A4: send 창 — 경계 await 도중 전달 포인터가 변조되면 send·ack 0", async () => {
   let root = "";
+  // handoff에서 arm → 이후 clock ①=start 경계 진입 ②=start 동기 게이트 ③=start revalidate
+  // ④=start turn의 applyTurn ⑤=**전달 경계 진입**(여기서 변조) → git 비동기 조회 → 동기 게이트의
+  // 포인터 재검증이 잡아야 한다. 전달 직전의 1차 `verifyPointers`는 ⑤ **전에** 원본 hash로 통과한다.
   const seam = armedClock(() => {
     if (root) writeArtifact(root, "src/producer/out.md", "# send 창에서 바뀐 산출물\n");
-  }, 3);
+  }, 5);
   const g = await fixtureWithDelivery({
     nowMs: seam.clock,
     handoff: (ctx, r) => {
       root = r;
+      seam.arm();
       return { spec: readOnlySpec(`sess-${ctx.task.taskId}`, ctx.task.roleId, r), prompt: "p" };
-    },
-    script: (t) => {
-      // start turn이 재생되는 시점에 arm → 이후 clock ①=applyTurn ②=전달 경계 진입
-      // → git 비동기 조회 → ③=동기 게이트(여기서 변조) → 포인터 재검증이 잡아야 한다.
-      if (t === 0) seam.arm();
-      return okTurn();
     },
   });
   const out = await g.controller.advanceOnce();
@@ -1446,7 +1624,13 @@ async function consumeAsController(events: SessionEvent[], onTerminal?: (r: unkn
     for (const e of events) yield e;
   })();
   try {
-    await consumeExactlyOneTerminal(stream, CONTROLLER_TERMINAL_CODES, MAX_TURN_EVENTS, ControllerError, onTerminal as never);
+    await consumeExactlyOneTerminal(
+      stream,
+      CONTROLLER_TERMINAL_CODES,
+      MAX_TURN_EVENTS,
+      (code, message) => new ControllerError(code, message),
+      onTerminal as never,
+    );
     return "(수락됨)";
   } catch (e) {
     assert.ok(e instanceof OrchestrationError, `OrchestrationError가 아니다: ${String(e)}`);
@@ -1491,6 +1675,58 @@ test("[M5b] A5: controller 계약 — 종료는 정확히 1건이고 마지막 �
   assert.equal(await consumeAsController(flood), "provider_stream_unbounded");
 });
 
+test("[M5b] B: 종료 뒤 실패로 닫혀도 **첫 종료의 usage는 회계된다**", async () => {
+  // 3차 독립 리뷰 B: 이전 판은 종료 결과를 본 뒤 스트림이 끝날 때까지 회계를 미뤘으므로,
+  // 늦은 이벤트·두 번째 종료·iterator throw로 닫히는 경로에서 **이미 태운 토큰이 예산에서 빠지지 않았다**.
+  // (현재 genuine Codex 파서는 이 스트림을 만들지 않는다 — 두 번째 provider·retry 배선 전 방어다.)
+  const late: SessionEvent = { kind: "assistant", sessionId: "s", text: "늦음", toolUses: [], stopReason: null, raw: RESULT_RAW };
+  const cases: Array<[string, SessionEvent[], string]> = [
+    ["종료 뒤 늦은 이벤트", [resultEvent(false, "완료"), late], "provider_duplicate_terminal"],
+    ["두 번째 종료", [resultEvent(false, "완료"), resultEvent(false, "또")], "provider_duplicate_terminal"],
+    ["실패 종료", [resultEvent(true, "")], "provider_result_error"],
+  ];
+  for (const [label, events, want] of cases) {
+    const accounted: number[] = [];
+    const code = await consumeAsController(events, (r) => accounted.push((r as { usage: SessionUsage }).usage.inputTokens));
+    assert.equal(code, want, label);
+    assert.deepEqual(accounted, [USAGE.inputTokens], `${label}: 첫 종료의 usage가 회계되지 않았다`);
+  }
+
+  // iterator가 종료 **뒤에** 던지는 경우도 같다.
+  const accounted: number[] = [];
+  const throwing = (async function* (): AsyncGenerator<SessionEvent> {
+    yield resultEvent(false, "완료");
+    throw new Error("종료 뒤 폭발");
+  })();
+  await assert.rejects(
+    consumeExactlyOneTerminal(
+      throwing,
+      CONTROLLER_TERMINAL_CODES,
+      MAX_TURN_EVENTS,
+      (code, message) => new ControllerError(code, message),
+      (r) => accounted.push(r.usage.inputTokens),
+    ),
+    /provider_stream_failed/,
+  );
+  assert.deepEqual(accounted, [USAGE.inputTokens], "종료 뒤 iterator throw에서 usage가 사라졌다");
+
+  // 회계 콜백이 던지면(예산 소진) **그 오류가 그대로** 올라온다 — streamFailed로 접히지 않는다.
+  await assert.rejects(
+    consumeExactlyOneTerminal(
+      (async function* (): AsyncGenerator<SessionEvent> {
+        yield resultEvent(false, "완료");
+      })(),
+      CONTROLLER_TERMINAL_CODES,
+      MAX_TURN_EVENTS,
+      (code, message) => new ControllerError(code, message),
+      () => {
+        throw new ControllerError("budget_tokens_exhausted", "예산 소진");
+      },
+    ),
+    /budget_tokens_exhausted/,
+  );
+});
+
 test("[M5b] A5: codex 파서가 중복·모순 종료를 완료로 만들지 않는다(실제 provider 경로)", async () => {
   // 실패 종료 뒤 성공 종료를 **JSONL로** 흘려도 task는 완료되지 않는다.
   const f = await fixture({
@@ -1529,59 +1765,182 @@ async function consumeThrowing(err: unknown): Promise<string> {
     throw err;
   })();
   try {
-    await consumeExactlyOneTerminal(stream, CONTROLLER_TERMINAL_CODES, MAX_TURN_EVENTS, ControllerError);
+    await consumeExactlyOneTerminal(
+      stream,
+      CONTROLLER_TERMINAL_CODES,
+      MAX_TURN_EVENTS,
+      (code, message) => new ControllerError(code, message),
+    );
     return "(수락됨)";
   } catch (e) {
     return e instanceof OrchestrationError ? e.code : `(${String(e)})`;
   }
 }
 
+/**
+ * 진짜 kernel에 위임하되 지정 메서드만 갈아끼운 **호출자 소유 kernel**. controller는 `opts.kernel`을
+ * 증명하지 않으므로(권위는 맞지만 객체는 호출자 것이다) 이것이 A2가 말하는 "인접 kernel seam"이다.
+ */
+function delegateKernel(k: OrchestrationKernel, over: Partial<Record<string, unknown>>): OrchestrationKernel {
+  return Object.assign(Object.create(Object.getPrototypeOf(k) as object), k, {
+    paths: k.paths,
+    getState: () => k.getState(),
+    getManifest: () => k.getManifest(),
+    getTask: (id: string) => k.getTask(id),
+    scheduleReady: () => k.scheduleReady(),
+    startScheduledBatch: () => k.startScheduledBatch(),
+    listPendingInbox: (id: string) => k.listPendingInbox(id),
+    acknowledgeDelivery: (i: { taskId: string; messageId: string }) => k.acknowledgeDelivery(i),
+    completeTaskWithArtifacts: (i: Parameters<OrchestrationKernel["completeTaskWithArtifacts"]>[0]) =>
+      k.completeTaskWithArtifacts(i),
+    ...over,
+  }) as OrchestrationKernel;
+}
+
+/** 경계 밖이 던질 수 있는 값 전수 — 진짜 클래스·코드 있는 객체·원시값·null까지. */
+const HOSTILE_THROWS: unknown[] = [
+  new OrchestrationError("result_accepted", "탈취"),
+  new ControllerError("result_accepted", "같은 타입을 흉내낸다"),
+  Object.assign(new Error("탈취"), { code: "result_accepted" }),
+  Object.assign(new Error("탈취"), { code: "budget_tokens_exhausted" }),
+  { code: "result_accepted" },
+  "result_accepted",
+  null,
+];
+
 test("[M5b] A5b: provider iterator가 임의 코드를 달아도 결과 코드가 되지 못한다", async () => {
   // 이전 판은 "문자열 `code`를 가진 Error"면 무엇이든 그대로 통과시켰다 →
   // provider가 `result_accepted`를 달고 던지면 **성공처럼 보이는 marker를 단 실패**가 만들어졌다.
-  for (const err of [
-    new OrchestrationError("result_accepted", "탈취"),
-    Object.assign(new Error("탈취"), { code: "result_accepted" }),
-    new ControllerError("result_accepted", "같은 타입을 흉내낸다"),
-    Object.assign(new Error("탈취"), { code: "budget_tokens_exhausted" }),
-    { code: "result_accepted" },
-    "result_accepted",
-  ]) {
-    assert.equal(await consumeThrowing(err), "provider_stream_failed", `${String((err as { code?: string }).code ?? err)}가 새어나갔다`);
+  for (const err of HOSTILE_THROWS) {
+    assert.equal(await consumeThrowing(err), "provider_stream_failed", `${String((err as { code?: string })?.code ?? err)}가 새어나갔다`);
   }
 });
 
-test("[M5b] A5b: handoff·start·send가 던진 임의 코드는 안정 실패 코드로 접힌다", async () => {
-  // ⓐ handoff factory가 성공처럼 보이는 코드로 던진다.
-  const h = await fixture({
-    taskIds: ["task-a"],
-    handoff: () => {
-      throw new OrchestrationError("result_accepted", "탈취");
-    },
-  });
-  const a = (await h.controller.advanceOnce()).tasks[0];
-  assert.deepEqual([a.status, a.marker], ["failed", "handoff_failed"]);
-  assert.equal(h.kernel.getTask("task-a")!.state, "running");
-  assert.equal(h.kernel.getMessage("res.task-a"), null);
+test("[M5b] A2: handoff가 던진 값은 실제 클래스와 무관하게 handoff_failed로 접힌다", async () => {
+  // **공개 `ControllerError`가 provenance가 아니다**(3차 리뷰 A2): 이전 판은 `instanceof ControllerError`를
+  // 내부 오류로 보존했으므로 handoff가 `new ControllerError("result_accepted", …)`를 던지는 것만으로
+  // `status:"failed"` + `marker:"result_accepted"`를 만들 수 있었다.
+  for (const err of HOSTILE_THROWS) {
+    const h = await fixture({
+      taskIds: ["task-a"],
+      handoff: () => {
+        throw err;
+      },
+    });
+    const a = (await h.controller.advanceOnce()).tasks[0];
+    assert.deepEqual([a.status, a.marker], ["failed", "handoff_failed"], String((err as { code?: string })?.code ?? err));
+    assert.equal(h.kernel.getTask("task-a")!.state, "running");
+    assert.equal(h.kernel.getMessage("res.task-a"), null);
+    assert.equal(h.provider.turns.length, 0, "거부인데 자식 프로세스가 떴다");
+  }
+});
 
-  // ⓑ provider `start` 경계가 던진 코드.
-  const s = await fixture({
+test("[M5b] A2: 호출자 시계가 던진 임의 코드도 marker가 되지 못한다", async () => {
+  // `opts.nowMs`는 호출자 콜백이다 — 이전 판은 그 오류가 `codeOf`를 그대로 지나 marker가 됐다.
+  for (const err of HOSTILE_THROWS) {
+    const base = msClock();
+    let n = 0;
+    const f = await fixture({
+      taskIds: ["task-a"],
+      nowMs: () => {
+        if (++n > 2) throw err; // 생성·preflight는 지나고 실행 게이트에서 던진다
+        return base();
+      },
+    });
+    const a = (await f.controller.advanceOnce()).tasks[0];
+    assert.deepEqual(
+      [a.status, a.marker],
+      ["failed", "controller_clock_unreadable"],
+      String((err as { code?: string })?.code ?? err),
+    );
+    assert.equal(f.provider.turns.length, 0, "시계가 던졌는데 자식 프로세스가 떴다");
+  }
+});
+
+test("[M5b] A2: 호출자 kernel(SoR)이 던진 임의 코드는 닫힌 taxonomy로만 나온다", async () => {
+  // kernel은 **호출자 객체**다(`opts.kernel`). native 코드에 진단 가치가 있지만 무조건 믿으면 위조 통로다.
+  // 닫힌 집합 밖(= 흉내낸 성공 marker 포함)은 전부 `kernel_rejected`로 접히고, 집합 안(`unknown_task`)만
+  // 그대로 올라온다.
+  const cases: Array<[unknown, string]> = [
+    ...HOSTILE_THROWS.map((e) => [e, "kernel_rejected"] as [unknown, string]),
+    [new OrchestrationError("unknown_task", "닫힌 집합 안"), "unknown_task"],
+    [new OrchestrationError("artifact_not_owned", "닫힌 집합 안"), "artifact_not_owned"],
+  ];
+  for (const [err, want] of cases) {
+    const f = await fixture({
+      taskIds: ["task-a"],
+      wrapKernel: (k) =>
+        delegateKernel(k, {
+          completeTaskWithArtifacts: () => {
+            throw err;
+          },
+        }),
+    });
+    const a = (await f.controller.advanceOnce()).tasks[0];
+    assert.deepEqual([a.status, a.marker], ["failed", want], String((err as { code?: string })?.code ?? err));
+    assert.equal(f.kernel.getTask("task-a")!.state, "running", "거부인데 완료로 만들었다");
+  }
+});
+
+test("[M5b] A2: kernel이 **돌려준 값**의 getter가 던져도 marker를 고르지 못한다", async () => {
+  // 접힘은 호출뿐 아니라 **반환값을 읽는 것**까지 덮어야 한다: `scheduleReady()`가 준 task의 `taskId`
+  // getter가 `result_accepted`를 던지면 이전 판의 `codeOf`는 그것을 그대로 blocked marker로 올렸다.
+  const f = await fixture({
     taskIds: ["task-a"],
-    spawn: () => {
-      throw new OrchestrationError("result_accepted", "탈취");
-    },
+    wrapKernel: (k) =>
+      delegateKernel(k, {
+        scheduleReady: () =>
+          k.scheduleReady().map((t) =>
+            Object.defineProperty({ ...t }, "taskId", {
+              get: () => {
+                throw new OrchestrationError("result_accepted", "탈취");
+              },
+              enumerable: true,
+            }),
+          ),
+      }),
   });
+  const out = await f.controller.advanceOnce();
+  assert.deepEqual(out, { blocked: "controller_internal_error", started: [], tasks: [] });
+  assert.equal(f.kernel.getTask("task-a")!.state, "ready", "차단인데 state가 바뀌었다");
+});
+
+test("[M5b] C: inbox 항목은 **한 번만 읽고** 그 사본으로 전달한다(교대 getter 무효)", async () => {
+  // 3차 독립 리뷰 C: 이전 판은 검증한 `refs`와 별개로 `deliveryPrompt(entry)`가 **원본 alias를 다시**
+  // 읽었다. 지금은 읽는 즉시 봉인 사본을 만들므로, 두 번째 읽기에 다른 값을 주는 getter는 소용이 없다.
+  const g = await fixtureWithDelivery({
+    wrapKernel: (k) =>
+      delegateKernel(k, {
+        listPendingInbox: (id: string) =>
+          k.listPendingInbox(id).map((entry) => {
+            let reads = 0;
+            return Object.defineProperty({ ...entry }, "summary", {
+              get: () => (++reads === 1 ? entry.summary : "탈취된 두 번째 읽기"),
+              enumerable: true,
+            }) as typeof entry;
+          }),
+      }),
+  });
+  await g.controller.advanceOnce();
+  const send = g.provider.turns.find((t) => t.kind === "send")!;
+  assert.ok(send.text.includes("producer 중간 산출물"), "봉인 사본이 아니라 두 번째 읽기가 전달됐다");
+  assert.ok(!send.text.includes("탈취된 두 번째 읽기"), "전달 프롬프트가 원본 alias를 다시 읽었다");
+});
+
+test("[M5b] A2: provider start·send의 native 코드도 controller taxonomy로 접힌다", async () => {
+  // 증명 규칙 때문에 controller에 "임의 코드를 던지는 provider"를 넣을 수는 없다(A1). 남는 것은
+  // **진짜 provider가 내는 native 코드**이고, 그것도 marker가 되지 못한다는 것을 고정한다.
+  const s = await fixture({ taskIds: ["task-a"], breakExecutable: true });
   const b = (await s.controller.advanceOnce()).tasks[0];
-  assert.deepEqual([b.status, b.marker], ["failed", "provider_start_failed"]);
+  assert.deepEqual([b.status, b.marker], ["failed", "provider_start_failed"], "provider native 코드가 새어나갔다");
 
-  // ⓒ provider `send` 경계가 던진 코드(전달 turn).
-  const g = await fixtureWithDelivery();
-  const inner = (g.provider.codex as unknown as { spawnFn: SpawnFn }).spawnFn;
-  let spawns = 0;
-  (g.provider.codex as unknown as { spawnFn: SpawnFn }).spawnFn = (cmd, args, o) => {
-    if (++spawns === 2) throw new OrchestrationError("result_accepted", "탈취");
-    return inner(cmd, args, o);
-  };
+  // `send` 경계: ephemeral 세션은 resume할 수 없다(`codex_resume_unavailable`) → 전달 turn이 그 자리에서 실패한다.
+  const g = await fixtureWithDelivery({
+    handoff: (ctx, root) => ({
+      spec: readOnlySpec(`sess-${ctx.task.taskId}`, ctx.task.roleId, root, { codex: { codexHome: freshHome(), ephemeral: true } }),
+      prompt: "p",
+    }),
+  });
   const worker = (await g.controller.advanceOnce()).tasks.find((t) => t.taskId === "worker")!;
   assert.deepEqual([worker.status, worker.marker], ["failed", "provider_send_failed"]);
   assert.deepEqual(worker.acknowledged, [], "실패한 전달을 수령했다");

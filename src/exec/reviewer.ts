@@ -34,6 +34,12 @@
  *   ⓗ verdict 위반 → `reviewer_verdict_invalid`: `pass|revise|block` 정확히 1개여야 하고, `pass`는
  *      **P0·P1이 0건일 때만** 성립한다(P2는 pass와 공존한다).
  *
+ * **대상 신원은 첫 await 전에 봉인한다(2026-07-28 3차 독립 리뷰 B).** 이전 판은 `subject`가 nonempty인지만
+ * 보고 호출자 객체를 그대로 들고 다니다 provider await **뒤에** 다시 읽었다 → 리뷰 도중 값을 바꾸면
+ * 본문 대조가 바뀐 기대값에 맞춰졌고 반환 verdict도 그 객체를 alias했다. 지금은 `revision`이
+ * **한 줄·정규형·bounded**, `hash`가 **정규 16진 7~64자**여야 하고(`reviewer_subject_invalid`),
+ * 통과하면 **frozen 스냅샷**만 프롬프트·대조·반환값에 쓴다.
+ *
  * 판정을 만들지 못하면 **호출자는 "결함 0건 = 통과"를 얻지 못한다** — 그것이 이 게이트의 요점이다.
  * 세션은 성공·실패 어느 경로에서도 `stop()`으로 닫는다(취소 promise까지 정착 — provider `C-27` 계약).
  */
@@ -46,11 +52,16 @@ const MAX_REVIEW_EVENTS = 10_000;
 
 /** 리뷰 대상의 **명시 신원**. 리뷰어 본문이 이 값을 담지 않으면 판정을 만들지 않는다. */
 export interface ReviewSubject {
-  /** 대상 revision 식별자(브랜치·태그·마일스톤 슬라이스 등 호출자가 정한 문자열). */
+  /** 대상 revision 식별자(브랜치·태그·마일스톤 슬라이스 등 호출자가 정한 문자열). **한 줄·정규형**이다. */
   revision: string;
-  /** 대상 commit hash(또는 diff hash). */
+  /** 대상 commit hash(또는 diff hash). **소문자 16진 7~64자**만 받는다. */
   hash: string;
 }
+
+/** `revision` 상한(문자). 브랜치·태그 이름을 담기에 넉넉하고 프롬프트를 부풀리지 않는 길이. */
+const MAX_SUBJECT_REVISION_CHARS = 200;
+/** 정규 hash: 소문자 16진 7~64자(단축 커밋 ~ sha256). */
+const SUBJECT_HASH_RE = /^[0-9a-f]{7,64}$/;
 
 export interface ReviewInput {
   provider: ExecutionProvider;
@@ -154,7 +165,10 @@ export function buildReviewPrompt(inp: ReviewInput): string {
  * **판정을 돌려주지 못하는 모든 경우는 던진다**(위 ⓐ~ⓗ). 조용한 통과 경로는 없다.
  */
 export async function reviewDiff(inp: ReviewInput): Promise<ReviewVerdict> {
-  assertSubject(inp.subject);
+  // **대상 신원은 await 하나도 지나기 전에 봉인한다**(3차 독립 리뷰 B). 이전 판은 nonempty만 보고
+  // 호출자 객체를 그대로 들고 다니다 provider await **뒤에** 다시 읽었으므로, 리뷰 도중에 값을 바꾸면
+  // 본문 대조가 바뀐 기대값에 맞춰졌고 반환 verdict도 그 객체를 alias했다.
+  const subject = sealSubject(inp.subject);
   const spec: SessionSpec = {
     sessionId: inp.sessionId,
     role: "L3 코드 리뷰어 (신선 컨텍스트, 읽기 전용)",
@@ -164,7 +178,7 @@ export async function reviewDiff(inp: ReviewInput): Promise<ReviewVerdict> {
   };
   let handle: SessionHandle;
   try {
-    handle = await inp.provider.start(spec, buildReviewPrompt(inp));
+    handle = await inp.provider.start(spec, buildReviewPrompt({ ...inp, subject }));
   } catch (err) {
     throw new ReviewGateError("reviewer_provider_failed", `리뷰어 세션을 시작하지 못했다: ${codeOrName(err)}`);
   }
@@ -188,7 +202,7 @@ export async function reviewDiff(inp: ReviewInput): Promise<ReviewVerdict> {
         duplicate: "reviewer_duplicate_terminal",
       },
       MAX_REVIEW_EVENTS,
-      ReviewGateError,
+      (code, message) => new ReviewGateError(code, message),
     );
   } finally {
     // 판정 여부와 무관하게 세션을 닫는다(실패한 리뷰가 세션을 붙잡은 채 남지 않는다).
@@ -202,15 +216,28 @@ export async function reviewDiff(inp: ReviewInput): Promise<ReviewVerdict> {
   if (typeof raw !== "string" || raw.trim().length === 0) {
     throw new ReviewGateError("reviewer_empty_output", "리뷰어 출력이 비어 있다(빈 출력은 통과가 아니다)");
   }
-  const parsed = parseReviewResult(raw, inp.subject);
-  return { ...parsed, subject: inp.subject, raw, usage: result.usage };
+  const parsed = parseReviewResult(raw, subject);
+  return { ...parsed, subject, raw, usage: result.usage };
 }
 
-function assertSubject(subject: unknown): void {
+/**
+ * 대상 신원 검증 + **불변 스냅샷**. 호출자 객체를 나중에 다시 읽지 않는다.
+ * `revision`은 **한 줄·정규형·bounded**, `hash`는 **정규 16진**이어야 한다 — 본문 대조는 정확 일치이므로
+ * 여백·개행이 섞인 기대값은 어떤 리뷰어도 만족시킬 수 없고, 여러 줄 값은 프롬프트 구조를 깨뜨린다.
+ */
+function sealSubject(subject: unknown): ReviewSubject {
   const s = subject as ReviewSubject | undefined;
-  if (!s || typeof s.revision !== "string" || s.revision.trim().length === 0 || typeof s.hash !== "string" || s.hash.trim().length === 0) {
-    throw new ReviewGateError("reviewer_subject_invalid", "reviewDiff에는 비어 있지 않은 subject.revision·subject.hash가 필요하다");
-  }
+  const bad = (why: string): never => {
+    throw new ReviewGateError("reviewer_subject_invalid", `subject가 계약을 어긴다: ${why}`);
+  };
+  if (!s || typeof s !== "object") bad("객체가 아니다");
+  const { revision, hash } = s as { revision: unknown; hash: unknown };
+  if (typeof revision !== "string" || revision.length === 0) bad("revision이 비어 있다");
+  if ((revision as string) !== (revision as string).trim()) bad("revision에 앞뒤 여백이 있다(정규형이어야 한다)");
+  if (/[\r\n]/.test(revision as string)) bad("revision은 한 줄이어야 한다");
+  if ((revision as string).length > MAX_SUBJECT_REVISION_CHARS) bad(`revision은 ${MAX_SUBJECT_REVISION_CHARS}자 이하여야 한다`);
+  if (typeof hash !== "string" || !SUBJECT_HASH_RE.test(hash)) bad("hash는 소문자 16진 7~64자여야 한다");
+  return Object.freeze({ revision: revision as string, hash: hash as string });
 }
 
 /**

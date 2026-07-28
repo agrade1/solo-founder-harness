@@ -117,6 +117,14 @@ export type SpawnFn = (
   options: { cwd: string; env: NodeJS.ProcessEnv; stdio: ["pipe", "pipe", "pipe"] },
 ) => ChildProcess;
 
+/**
+ * **production executor — 모듈 적재 시점에 한 번 포착한 진짜 `node:child_process.spawn` binding**
+ * (2026-07-28 3차 독립 리뷰 A1). 모듈 사설 `const`이므로 밖에서 재대입·`defineProperty`로 바꿀 수 없고,
+ * CJS builtin exports 객체를 나중에 변조해도 여기 값은 바뀌지 않는다. 증명된(attested) 인스턴스는
+ * **오직 이 값만** 실행한다.
+ */
+const PRODUCTION_SPAWN: SpawnFn = nodeSpawn as unknown as SpawnFn;
+
 export interface CodexCliProviderOpts {
   /** 승인 manifest(원본). 프로세스 시작 직전마다 다시 검증된다. */
   manifest: unknown;
@@ -133,9 +141,14 @@ export interface CodexCliProviderOpts {
    */
   gitExecutablePath: string;
   /**
-   * 테스트용 spawn seam. production 진입점은 지정하지 않는다(외부 주입 표면 없음).
-   * **생성자에서 한 번 포착**하고 이후 다시 읽지 않는다 — 나중에 이 필드를 바꿔도 실행에 영향이 없다
-   * (봉인 대상이 아닌 이유이며, 테스트가 그 무관함을 고정한다).
+   * **하위 계층 provider 단위 테스트 전용 in-process seam.** production 진입점은 지정하지 않는다.
+   *
+   * **이 필드를 준 인스턴스는 어떤 경우에도 read-only 증명을 받지 못한다**(2026-07-28 3차 독립 리뷰 A1).
+   * 이전 판은 `opts.spawn ?? nodeSpawn`을 포착한 **모든** 인스턴스를 증명 등록부에 넣었으므로,
+   * argv·env를 무시하고 임의 쓰기·명령·네트워크를 하는 callback을 주입한 provider가 read-only bridge를
+   * 그대로 지날 수 있었다(= 공개 API만으로 증명 위조). 지금 이 seam이 있는 인스턴스는 **untrusted**이며
+   * `attestReadOnlyCodexProvider`가 `null`을 돌려준다 → `StableController`가 생성 자체를 거부한다.
+   * 함수가 아닌 값은 `codex_config_invalid`다.
    */
   spawn?: SpawnFn;
   /**
@@ -565,13 +578,17 @@ function isBoundTo(handle: SessionHandle, state: CodexState): boolean {
 }
 
 /**
- * **read-only 실행 권위 등록부**(M5b 2차 리비전 A2). 이 `WeakSet`은 **이 모듈 밖으로 나가지 않고**,
- * 여기에 들어오는 유일한 경로는 아래 `CodexCliProvider` 생성자다. 발급기(issuer)·토큰·
- * "임의 provider를 증명해 주는 factory"는 **내보내지 않는다** — 밖으로 나가는 것은 판정 함수 하나뿐이다.
+ * **read-only 실행 권위 등록부**(M5b 2차 리비전 A2 · 3차 리비전 A1). 이 `WeakSet`은 **이 모듈 밖으로
+ * 나가지 않고**, 여기에 들어오는 유일한 경로는 아래 `CodexCliProvider` 생성자의 **`opts.spawn`이 없는
+ * 분기**다. 발급기(issuer)·토큰·"임의 provider를 증명해 주는 factory"는 **내보내지 않는다** —
+ * 밖으로 나가는 것은 판정 함수 하나뿐이다.
  *
  * 이전 판은 `types.ts`가 brand 심볼을 **공개 export** 했으므로 같은 프로세스의 아무 provider나
- * 그것을 import해 자기에게 달 수 있었다(= 공개 API만으로 위조 가능). 이제 위조하려면 이 모듈의
- * 내부 상태를 건드려야 한다.
+ * 그것을 import해 자기에게 달 수 있었다(= 공개 API만으로 위조 가능). 그 다음 판은 심볼을 없앴지만
+ * **`opts.spawn`으로 임의 executor를 주입한 인스턴스도 그대로 등록**했으므로 증명이 여전히 위조 가능했다:
+ * 증명을 통과한 callback이 argv·env를 무시하고 임의 쓰기·명령·네트워크를 할 수 있었다.
+ * 지금은 **executor가 `PRODUCTION_SPAWN`인 인스턴스만** 등록되고, 그 값은 `#private`이라
+ * 생성 이후 외부 대입·`defineProperty`로 바꿀 수 없다.
  */
 const ATTESTED_READ_ONLY = new WeakSet<object>();
 
@@ -585,7 +602,8 @@ export type AttestedMethod = (typeof ATTESTED_METHODS)[number];
  * 실행하므로 "검증한 함수"와 "실행하는 함수"가 갈릴 창이 없다(교대 getter·proxy 대응 — A1).
  *
  * 거부되는 것: 심볼·property 복사본, prototype 위조(`Object.setPrototypeOf`), subclass,
- * 인스턴스 메서드 override, 임의 scripted provider, 진짜 provider를 감싼 `Proxy`.
+ * 인스턴스 메서드 override, 임의 scripted provider, 진짜 provider를 감싼 `Proxy`,
+ * 그리고 **`opts.spawn`으로 임의 executor를 주입한 인스턴스**(3차 리뷰 A1 — 생성자를 지나도 증명 없음).
  *
  * **주장하는 범위**: 같은 프로세스에서 **공개 API만으로는** read-only bridge에 들어올 수 없다.
  * **주장하지 않는 범위**: OS 수준 샌드박스 격리가 아니다. 이 모듈의 내부를 직접 조작할 수 있는 코드
@@ -607,17 +625,35 @@ export function attestReadOnlyCodexProvider(provider: unknown): Readonly<Record<
 
 export class CodexCliProvider implements ExecutionProvider {
   readonly id = "codex-cli";
-  private readonly sessions = new Map<string, CodexState>();
-  private readonly spawnFn: SpawnFn;
+  /**
+   * 세션 상태. **ECMAScript `#private`** 이므로 밖에서 대입·`defineProperty`로 갈아끼울 수 없다
+   * (TS `private`은 emitted JS에서 그냥 public own field였고, 증명된 인스턴스의 내부 상태를 테스트가
+   * 교체하는 통로였다 — 3차 리뷰 A1의 같은 뿌리다).
+   */
+  readonly #sessions = new Map<string, CodexState>();
+  /**
+   * 이 인스턴스가 실행할 executor. `#private`이므로 **생성 이후 어떤 외부 코드도 바꿀 수 없다**
+   * (`provider.spawnFn = evil` · `Object.defineProperty(provider, …)` 전부 무효).
+   * 증명된 인스턴스에서는 항상 `PRODUCTION_SPAWN`이다.
+   */
+  readonly #spawn: SpawnFn;
   /** invocation generation 발급기 — 단조 증가하며 재사용되지 않는다. */
-  private nextGen = 1;
+  #nextGen = 1;
 
   constructor(private readonly opts: CodexCliProviderOpts) {
-    // spawn seam은 **여기서 한 번** 포착한다 — 이후 `opts.spawn`을 바꿔도 실행 대상은 바뀌지 않는다.
-    this.spawnFn = opts.spawn ?? (nodeSpawn as unknown as SpawnFn);
-    // **read-only 실행 권위는 여기서만 발급된다**(A2). 이 구현이 sandbox `read-only`(`codex_sandbox_forbidden`)와
-    // strict empty MCP를 격리 홈·`--strict-config`로 실제 집행하므로 bridge를 지날 자격이 있다.
-    ATTESTED_READ_ONLY.add(this);
+    const injected = opts.spawn; // ← 이 property를 읽는 유일한 지점
+    if (injected === undefined) {
+      this.#spawn = PRODUCTION_SPAWN;
+      // **read-only 실행 권위는 여기서만 발급된다**(A2 · 3차 리뷰 A1). 이 구현이 sandbox
+      // `read-only`(`codex_sandbox_forbidden`)와 strict empty MCP를 격리 홈·`--strict-config`로 실제
+      // 집행하고, **실행 대상이 진짜 `node:child_process.spawn`일 때만** bridge를 지날 자격이 있다.
+      ATTESTED_READ_ONLY.add(this);
+    } else if (typeof injected === "function") {
+      // 하위 계층 단위 테스트용 seam. **증명하지 않는다** — 임의 executor를 가진 인스턴스는 untrusted다.
+      this.#spawn = injected;
+    } else {
+      fail("codex_config_invalid", "opts.spawn은 함수여야 한다");
+    }
   }
 
   /**
@@ -641,7 +677,7 @@ export class CodexCliProvider implements ExecutionProvider {
     if (typeof spec?.sessionId !== "string" || spec.sessionId.length === 0) {
       fail("codex_config_invalid", "spec.sessionId가 필요하다");
     }
-    if (this.sessions.has(spec.sessionId)) fail("codex_session_exists", `harness 세션 id가 이미 있다: ${spec.sessionId}`);
+    if (this.#sessions.has(spec.sessionId)) fail("codex_session_exists", `harness 세션 id가 이미 있다: ${spec.sessionId}`);
     // 설정·승인 거부는 상태를 만들기 전에 일어난다. 통과하면 그 해석값이 이 세션의 **봉인 baseline**이다.
     const sealed = sealCodexSpec(spec, this.opts);
     const state: CodexState = {
@@ -660,13 +696,13 @@ export class CodexCliProvider implements ExecutionProvider {
       homeId: null,
       poisoned: "",
     };
-    this.sessions.set(state.sessionId, state);
+    this.#sessions.set(state.sessionId, state);
     try {
       await this.invoke(state, undefined, initialPrompt);
     } catch (err) {
       // 실패한 start는 상태를 남기지 않는다 — 단 **내 세션일 때만** 지운다.
       // stop 뒤에 같은 id로 만들어진 교체 세션을 낡은 invocation의 정리가 지우면 안 된다.
-      if (this.sessions.get(state.sessionId) === state) this.sessions.delete(state.sessionId);
+      if (this.#sessions.get(state.sessionId) === state) this.#sessions.delete(state.sessionId);
       throw err;
     }
     // 핸들은 **이 인스턴스에만** 유효하다. `providerBinding`을 들고 있는 쪽만 이 세션을 조종한다.
@@ -735,12 +771,12 @@ export class CodexCliProvider implements ExecutionProvider {
     state.status = "stopped";
     state.queue.close();
     // 그 사이 같은 id로 만들어진 **교체 세션은 지우지 않는다**(stop 멱등 + 교체 안전).
-    if (this.sessions.get(state.sessionId) === state) this.sessions.delete(state.sessionId);
+    if (this.#sessions.get(state.sessionId) === state) this.#sessions.delete(state.sessionId);
   }
 
   /** 핸들이 가리키는 id의 **현재** 세션(있으면). 신원 대조는 하지 않는다 — 그건 호출부의 몫이다. */
   private lookup(handle: SessionHandle): CodexState | undefined {
-    return handle && typeof handle.sessionId === "string" ? this.sessions.get(handle.sessionId) : undefined;
+    return handle && typeof handle.sessionId === "string" ? this.#sessions.get(handle.sessionId) : undefined;
   }
 
   /**
@@ -764,7 +800,7 @@ export class CodexCliProvider implements ExecutionProvider {
   private claim(state: CodexState): number {
     if (state.status !== "idle") fail("codex_send_overlap", "이 세션에는 이미 진행 중인 invocation이 있다");
     state.cancelled = false;
-    state.gen = this.nextGen++;
+    state.gen = this.#nextGen++;
     state.status = "starting";
     return state.gen;
   }
@@ -772,7 +808,7 @@ export class CodexCliProvider implements ExecutionProvider {
   /** 아직 이 invocation이 소유자인가: 세션 존재 · **같은 state 객체** · 같은 generation · 미취소 · 미중지. */
   private owns(state: CodexState, gen: number): boolean {
     return (
-      this.sessions.get(state.sessionId) === state && state.gen === gen && !state.cancelled && state.status !== "stopped"
+      this.#sessions.get(state.sessionId) === state && state.gen === gen && !state.cancelled && state.status !== "stopped"
     );
   }
 
@@ -884,7 +920,7 @@ export class CodexCliProvider implements ExecutionProvider {
       for (const e of parser.finish(exit)) queue.push(e);
       queue.close();
       // **내 generation일 때만** state를 건드린다 — 교체 세션·다음 invocation을 오염시키지 않는다.
-      if (this.sessions.get(state.sessionId) === state && state.gen === gen) {
+      if (this.#sessions.get(state.sessionId) === state && state.gen === gen) {
         state.child = null;
         // 대장 `C-21`: **비가역 프로토콜 실패로 끝난 turn 뒤에는 resume하지 않는다.** malformed·과대 줄·
         // 중복/모순 종료·상한 초과·신원 위반은 파서가 되돌릴 수 없는 실패로 기록하는데, 이전 판은
@@ -904,7 +940,7 @@ export class CodexCliProvider implements ExecutionProvider {
 
     let child: ChildProcess;
     try {
-      child = this.spawnFn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
+      child = this.#spawn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
     } catch (err) {
       // 동기 spawn 예외: 큐를 열어둔 채 두지 않고 종료 결과 1건으로 닫는다.
       settle({ code: null, signal: null, stderr: (err as Error)?.message ?? "", spawnError: true });

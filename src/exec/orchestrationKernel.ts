@@ -24,6 +24,11 @@
  * - `startTask()`도 같은 충돌 규칙을 적용하므로 scheduler를 우회할 수 없다.
  * queue·retry·priority·fairness·실제 동시 실행은 범위 밖이다.
  *
+ * M5b가 더한 것 — **원자적 완료 트랜잭션 1개**(`completeTaskWithArtifacts`):
+ * 산출물 전체 등록 + result 수락 + `completed` 전이를 **한 커밋**으로 처리한다. 부분 적용(앞 artifact만
+ * durable에 남고 task는 미완료)이 생기지 않는다. 기존 `registerArtifact`/`submitResult`는 호환을 위해
+ * 그대로 두고, 소유권·writableRoots·파일 신원 집행은 **같은 헬퍼 하나**(`addArtifact`)를 공유한다.
+ *
  * 불변식:
  * - 유효하지 않은 입력은 state revision을 올리지 않고 영속 파일도 건드리지 않는다(검증 → 커밋 순서).
  * - `listReady()`·`scheduleReady()`·snapshot은 taskId 정렬로 결정론적이다.
@@ -138,6 +143,28 @@ export interface RegisterArtifactInput {
   /** workspace-relative 경로. */
   path: string;
   role: ArtifactRole;
+}
+
+/** 이 트랜잭션이 등록할 산출물 1건. */
+export interface TaskOutput {
+  /** workspace-relative 경로. */
+  path: string;
+  role: ArtifactRole;
+}
+
+/**
+ * **산출물 등록 + result 수락 + 완료를 한 커밋으로** 처리하는 입력(V3 M5b 3차 독립 리뷰 A3).
+ * `envelope.artifactRefs`는 **비어 있어야 한다** — 포인터(revision·sha256)는 이 트랜잭션이 등록하며
+ * 만들고 envelope·task에 그 순서로 채운다. 호출자가 등록 전에 알 수 없는 값을 미리 주장하지 못한다.
+ */
+export interface CompleteTaskInput extends SubmitInput {
+  outputs?: ReadonlyArray<TaskOutput>;
+}
+
+/** `completeTaskWithArtifacts`의 결과 — 완료된 task와 등록 순서 그대로의 포인터. */
+export interface CompletedTask {
+  task: OrchestrationTask;
+  artifacts: ArtifactPointer[];
 }
 
 interface Mutation {
@@ -382,58 +409,57 @@ export class OrchestrationKernel {
   registerArtifact(input: RegisterArtifactInput): ArtifactPointer {
     let pointer: ArtifactPointer | null = null;
     this.#mutate((draft, now) => {
-      const task = requireTask(draft, assertSlug(input.taskId, "taskId"));
-      if (task.state !== "running") {
-        throw new OrchestrationError("invalid_transition", `artifact 등록은 running task만 가능하다 (현재 ${task.state})`);
-      }
-      if (!(ARTIFACT_ROLES as readonly string[]).includes(input.role)) {
-        throw new OrchestrationError("invalid_artifact_ref", `role은 ${ARTIFACT_ROLES.join("|")} 중 하나여야 한다`);
-      }
-      const path = normalizeWorkspacePath(input.path, "artifact path");
-      // workspace 탈출·symlink는 **가장 먼저** 걸린다(더 근본적인 위반이므로 코드도 그쪽이 이긴다).
-      const sha256 = verifyArtifactFile(this.paths.workspaceRoot, path, null);
-      // **소유권 집행은 여기가 유일한 지점이다**(V3 M5b 독립 리뷰 A2). 이전 판은 "running task + 파일 존재"만
-      // 봤으므로 task A가 task B의 소유 경로를 자기 산출물로 등록할 수 있었다(교차 task 오염). 등록은
-      // 모든 호출자(controller·CLI·테스트)가 지나는 좁은 API 하나이므로 불변식을 여기에 둔다.
-      if (!task.ownership.some((own) => pathWithin(path, own))) {
-        throw new OrchestrationError("artifact_not_owned", `artifact ${path}는 task ${task.taskId}의 소유 경로 밖이다`);
-      }
-      if (!draft.manifest.writableRoots.some((root) => pathWithin(path, root))) {
-        throw new OrchestrationError("artifact_outside_writable_root", `artifact ${path}는 승인된 writableRoots 밖이다`);
-      }
-
-      const prior = draft.artifacts.filter((a) => a.path === path).sort((a, b) => a.revision - b.revision).pop() ?? null;
-      const revision = prior === null ? 1 : prior.revision + 1;
-      const record: ArtifactRecord = {
-        artifactId: `${path}@${revision}`,
-        path,
-        sha256,
-        revision,
-        producerTaskId: task.taskId,
-        role: input.role,
-        registeredAt: now,
-        supersedes: prior === null ? null : prior.artifactId,
-      };
-      draft.artifacts.push(record);
-      pointer = { path, sha256, revision, producerTaskId: task.taskId, role: input.role };
-      return {
-        events: [
-          {
-            at: now,
-            type: "artifact_registered",
-            revision: draft.revision,
-            taskId: task.taskId,
-            messageId: null,
-            fromState: null,
-            toState: null,
-            reason: null,
-            artifactId: record.artifactId,
-          },
-        ],
-        bodies: [],
-      };
+      const mutation: Mutation = { events: [], bodies: [] };
+      const task = requireRunningTask(draft, input.taskId, "artifact 등록");
+      pointer = addArtifact(draft, now, mutation, this.paths, task, input, new Set());
+      return mutation;
     });
     return clone(pointer!);
+  }
+
+  /**
+   * **한 커밋 = 산출물 전체 등록 + result 수락 + task 완료**(V3 M5b 3차 독립 리뷰 A3).
+   *
+   * 이전 판의 controller는 `registerArtifact`를 산출물마다 **따로 durable commit**한 뒤 별도로
+   * `submitResult`를 불렀다 → 두 번째 이후 산출물이 없거나 무효거나, 경로가 겹치거나, envelope/body
+   * 검증이 실패하면 **앞선 artifact record·event·revision만 durable에 남고** task는 running/failed로
+   * 남았다. 재시도는 같은 경로의 revision을 계속 올려 찌꺼기를 쌓았다.
+   *
+   * 지금은 **검증 → 커밋 순서의 단일 트랜잭션**이다: envelope·summary·body·task 전이 가능 여부를 먼저
+   * 닫아서 보고, 산출물 전체를 (소유권 · writableRoots · 파일/hash/symlink · role · 개수 상한 ·
+   * 경로 중복) 검증하며 등록하고, 그 포인터로 envelope를 채워 `acceptMessage`가 다시 대조한 뒤,
+   * artifact record + event + result 메시지 + `completed` 전이를 **`#mutate` 하나**로 반영한다.
+   * 어디서든 실패하면 draft가 버려지므로 artifacts·events·messages·revision·task 상태가 **진입 전과
+   * 완전히 같다**(부분 적용 없음).
+   */
+  completeTaskWithArtifacts(input: CompleteTaskInput): CompletedTask {
+    let done: CompletedTask | null = null;
+    this.#mutate((draft, now) => {
+      const envelope = validateEnvelope(input.envelope);
+      if (envelope.type !== "result") {
+        throw new OrchestrationError("message_type_mismatch", "completeTaskWithArtifacts에는 result만 제출할 수 있다");
+      }
+      if (envelope.artifactRefs.length !== 0) {
+        throw new OrchestrationError(
+          "artifact_ref_unexpected",
+          "이 트랜잭션이 포인터를 등록하며 채운다 — envelope.artifactRefs는 비어 있어야 한다",
+        );
+      }
+      const summary = assertText(input.summary, "result summary", LIMITS.maxSummaryLength);
+      const task = requireRunningTask(draft, envelope.taskId, "result");
+
+      const mutation: Mutation = { events: [], bodies: [] };
+      const pointers = addArtifacts(draft, now, mutation, this.paths, task, input.outputs);
+      // 채워 넣은 포인터는 `acceptMessage`가 registry·디스크에 대고 **다시** 검증한다(같은 커밋 안).
+      acceptMessage(draft, now, mutation, this.paths, { ...envelope, artifactRefs: pointers }, input.body, summary);
+      task.artifactRefs = pointers.map(clone);
+      task.resultSummary = summary;
+      setState(draft, now, mutation, task, "completed", "result_accepted");
+      recompute(draft, now, mutation);
+      done = { task, artifacts: pointers };
+      return mutation;
+    });
+    return { task: clone(done!.task), artifacts: done!.artifacts.map(clone) };
   }
 
   /**
@@ -732,6 +758,98 @@ function requireTask(state: OrchestrationRunState, taskId: string): Orchestratio
   const t = state.tasks.find((x) => x.taskId === taskId);
   if (!t) throw new OrchestrationError("unknown_task", `미상 task: ${taskId}`);
   return t;
+}
+
+/** 산출물 등록·결과 제출이 가능한 running task. 두 진입점이 같은 전이 규칙을 쓴다. */
+function requireRunningTask(state: OrchestrationRunState, taskId: unknown, what: string): OrchestrationTask {
+  const task = requireTask(state, assertSlug(taskId, "taskId"));
+  if (task.state !== "running") {
+    throw new OrchestrationError("invalid_transition", `${what}는 running task만 가능하다 (현재 ${task.state})`);
+  }
+  return task;
+}
+
+/**
+ * 산출물 목록 전체를 **한 트랜잭션 안에서** 등록한다. 개수 상한과 경로 중복은 여기서만 판정한다
+ * (한 결과가 같은 경로를 두 번 등록하면 revision 두 개가 생겨 포인터가 서로 모순된다).
+ */
+function addArtifacts(
+  draft: OrchestrationRunState,
+  now: string,
+  mutation: Mutation,
+  paths: RunPaths,
+  task: OrchestrationTask,
+  outputs: ReadonlyArray<TaskOutput> | undefined,
+): ArtifactPointer[] {
+  if (outputs === undefined) return [];
+  if (!Array.isArray(outputs)) throw new OrchestrationError("invalid_artifact_ref", "outputs는 배열이어야 한다");
+  if (outputs.length > LIMITS.maxArtifactRefs) {
+    throw new OrchestrationError("artifact_refs_too_many", `한 결과의 산출물은 ${LIMITS.maxArtifactRefs}건까지다`);
+  }
+  const seen = new Set<string>();
+  return outputs.map((out) => addArtifact(draft, now, mutation, paths, task, out, seen));
+}
+
+/**
+ * artifact 1건 등록 — **소유권·writableRoots·파일 신원 집행의 유일한 지점**(V3 M5b 독립 리뷰 A2).
+ * 조용히 덮어쓰지 않고 revision을 올리며 직전 revision을 `supersedes`로 남긴다.
+ * symlink/missing/비일반 파일/workspace 탈출은 fail-closed다.
+ */
+function addArtifact(
+  draft: OrchestrationRunState,
+  now: string,
+  mutation: Mutation,
+  paths: RunPaths,
+  task: OrchestrationTask,
+  out: { path: unknown; role: unknown },
+  seen: Set<string>,
+): ArtifactPointer {
+  if (out === null || typeof out !== "object") throw new OrchestrationError("invalid_artifact_ref", "산출물은 {path, role} 객체여야 한다");
+  if (!(ARTIFACT_ROLES as readonly string[]).includes(out.role as string)) {
+    throw new OrchestrationError("invalid_artifact_ref", `role은 ${ARTIFACT_ROLES.join("|")} 중 하나여야 한다`);
+  }
+  const role = out.role as ArtifactRole;
+  const path = normalizeWorkspacePath(out.path, "artifact path");
+  if (seen.has(path)) {
+    throw new OrchestrationError("artifact_path_duplicate", `한 결과가 같은 경로를 두 번 등록할 수 없다: ${path}`);
+  }
+  seen.add(path);
+  // workspace 탈출·symlink는 **가장 먼저** 걸린다(더 근본적인 위반이므로 코드도 그쪽이 이긴다).
+  const sha256 = verifyArtifactFile(paths.workspaceRoot, path, null);
+  // 이전 판은 "running task + 파일 존재"만 봤으므로 task A가 task B의 소유 경로를 자기 산출물로
+  // 등록할 수 있었다(교차 task 오염). 등록 경로가 둘(단건·트랜잭션)이어도 불변식은 이 함수 하나다.
+  if (!task.ownership.some((own) => pathWithin(path, own))) {
+    throw new OrchestrationError("artifact_not_owned", `artifact ${path}는 task ${task.taskId}의 소유 경로 밖이다`);
+  }
+  if (!draft.manifest.writableRoots.some((root) => pathWithin(path, root))) {
+    throw new OrchestrationError("artifact_outside_writable_root", `artifact ${path}는 승인된 writableRoots 밖이다`);
+  }
+
+  const prior = draft.artifacts.filter((a) => a.path === path).sort((a, b) => a.revision - b.revision).pop() ?? null;
+  const revision = prior === null ? 1 : prior.revision + 1;
+  const record: ArtifactRecord = {
+    artifactId: `${path}@${revision}`,
+    path,
+    sha256,
+    revision,
+    producerTaskId: task.taskId,
+    role,
+    registeredAt: now,
+    supersedes: prior === null ? null : prior.artifactId,
+  };
+  draft.artifacts.push(record);
+  mutation.events.push({
+    at: now,
+    type: "artifact_registered",
+    revision: draft.revision,
+    taskId: task.taskId,
+    messageId: null,
+    fromState: null,
+    toState: null,
+    reason: null,
+    artifactId: record.artifactId,
+  });
+  return { path, sha256, revision, producerTaskId: task.taskId, role };
 }
 
 /** 승인 만료 확인. 타임스탬프는 고정 폭 UTC라 문자열 비교로 충분하다. */
