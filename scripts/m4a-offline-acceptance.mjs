@@ -3,7 +3,12 @@
  * V3 M4a — durable orchestration kernel offline acceptance.
  *
  * 네트워크·LLM·provider·TTY·git write 없이 임시 workspace 하나에서만 돈다.
- * `npm run build` 산출물(dist/exec/*)을 그대로 소비하며, 실패 시 exit 1이다.
+ * 실패 시 exit 1이다.
+ *
+ * **V3 M5c: 소비 대상이 `dist/exec/*` → `src/exec/*`로 바뀌었다.** state/manifest 계약이 v2로 올라간
+ * 동안 tracked `dist`는 M5b에 머물러 있으므로(그 갱신은 M5 handoff의 build 단계다) dist를 소비하면 이
+ * acceptance가 **낡은 계약을 검사하며 green**이 된다. 그래서 여기서는 소스를 직접 본다. 호출 방식은
+ * 그대로다(`node scripts/m4a-offline-acceptance.mjs`) — 로더 없이 들어오면 아래에서 tsx로 한 번 재실행한다.
  *
  * 시나리오(로드맵 M4 "완료" 항목의 M4a 부분):
  *   parent 생성/실행 → spawn_request로 child 생성 → dependent 추가 → 재시작 복원 →
@@ -16,7 +21,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = join(REPO_ROOT, "dist", "exec");
+const SRC = join(REPO_ROOT, "src", "exec");
+
+if (process.env.HARNESS_ACCEPTANCE_TSX !== "1") {
+  const { spawnSync } = await import("node:child_process");
+  const relaunch = spawnSync(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url)], {
+    stdio: "inherit",
+    env: { ...process.env, HARNESS_ACCEPTANCE_TSX: "1" },
+  });
+  process.exit(relaunch.status === null ? 1 : relaunch.status);
+}
 
 let pass = 0;
 let fail = 0;
@@ -75,6 +89,10 @@ function makeClock() {
 /**
  * M4c부터 run은 §8 승인 manifest에 bind된다(기본값 = 조용한 자동 승인이므로 필수 인자다).
  * M4a 시나리오가 만드는 root/dependent task만 명시 승인한다 — child는 parent 위임으로 검사된다.
+ *
+ * **M5c(v2)**: `executionAuthority.node`/`processObserver`와 `autopilotPolicy` ·
+ * `operationAuthorityByTask`가 **명시 필수**다(마이그레이션·기본값 0 — 없으면
+ * `manifest_pre_m5c_unsupported`). 여기서는 typed operation을 하나도 승인하지 않는다(빈 표 = hard deny).
  */
 const MANIFEST = {
   milestoneId: MILESTONE,
@@ -86,7 +104,20 @@ const MANIFEST = {
   executionAuthority: {
     codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
     git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+    node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+    processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
   },
+  autopilotPolicy: {
+    maxTaskAttempts: 2,
+    maxDeliveryAttempts: 2,
+    retryBackoffMs: 0,
+    deliveryDeadlineMs: 600_000,
+    maxNoProgressMs: 60_000,
+    maxAttemptElapsedMs: 600_000,
+    cleanupTermGraceMs: 500,
+    cleanupKillGraceMs: 500,
+  },
+  operationAuthorityByTask: {},
   allowedNetworkDomains: [],
   maxSessions: 4,
   maxTokens: null,
@@ -94,6 +125,42 @@ const MANIFEST = {
   localMergeAllowed: false,
   expiresAt: "2026-12-31T00:00:00.000Z",
 };
+
+/**
+ * **M5c 시작·완료 프로토콜 헬퍼**(dist 계약을 흉내내지 않고 진짜 경로를 지난다).
+ * 시작은 `planRunnableBatch` → `commitPreflightBatch`(원자적) → `startPreparedTask`뿐이고(대장 `B-11`),
+ * 완료·차단은 `recordTerminal` → `confirmCleanup`으로 **zero-survivor가 확인된 뒤에만** 수락된다(`B-13`).
+ */
+let seq = 0;
+const nextId = (prefix) => `${prefix}.${++seq}`;
+const nextLease = () => `lease.${(++seq).toString(16).padStart(32, "0")}`;
+const leaseOf = new Map();
+
+function startVia(kernel, taskId) {
+  const batch = kernel.planRunnableBatch();
+  kernel.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextId("act"),
+    decisions: batch.items.map((t) =>
+      t.taskId === taskId
+        ? { taskId: t.taskId, outcome: "prepared", attemptId: nextId("att") }
+        : { taskId: t.taskId, outcome: "deferred" },
+    ),
+  });
+  const leaseMarker = nextLease();
+  leaseOf.set(taskId, leaseMarker);
+  kernel.startPreparedTask({ taskId, actionId: nextId("act"), leaseMarker });
+}
+
+function cleanVia(kernel, taskId, marker = "turn_completed") {
+  kernel.recordTerminal({
+    taskId,
+    actionId: nextId("act"),
+    marker,
+    pendingResult: marker === "turn_completed" ? { summary: "ok", outputs: [] } : null,
+  });
+  kernel.confirmCleanup({ taskId, actionId: nextId("act"), leaseMarker: leaseOf.get(taskId) });
+}
 
 function envelope(type, taskId, roleId, over = {}) {
   const agentSent = type !== "task_assignment";
@@ -117,8 +184,8 @@ function envelope(type, taskId, roleId, over = {}) {
 
 let workspace = null;
 try {
-  const { createOrchestrationRun, openOrchestrationRun } = await import(join(DIST, "orchestrationKernel.js"));
-  const { runPaths } = await import(join(DIST, "orchestrationStore.js"));
+  const { createOrchestrationRun, openOrchestrationRun } = await import(join(SRC, "orchestrationKernel.ts"));
+  const { runPaths } = await import(join(SRC, "orchestrationStore.ts"));
 
   workspace = mkdtempSync(join(tmpdir(), "m4a-acceptance-"));
   const paths = runPaths(workspace, RUN_ID);
@@ -140,8 +207,19 @@ try {
     assignmentMessageId: "asg-parent",
     assignmentBody: body("task_assignment"),
   });
-  kernel.startTask("parent");
+  startVia(kernel, "parent");
   check("parent running", kernel.getTask("parent").state === "running", kernel.getTask("parent").state);
+  check(
+    "ready→running 직접 전이 없음(preflight_required)",
+    (() => {
+      try {
+        kernel.startTask("parent");
+        return false;
+      } catch (e) {
+        return e && e.code === "preflight_required";
+      }
+    })(),
+  );
 
   kernel.requestSpawn({
     envelope: envelope("spawn_request", "parent", "tech-lead", { messageId: "spawn-1" }),
@@ -189,7 +267,7 @@ try {
 
   console.log("");
   console.log("== M4a: 6~7) child 실행 → artifact 등록 → result(summary + 포인터) 제출 ==");
-  reopened.startTask("child");
+  startVia(reopened, "child");
   check("child running", reopened.getTask("child").state === "running", reopened.getTask("child").state);
 
   // M5b부터 `registerArtifact`가 **task 소유권을 집행**하므로 child는 자기 소유 경로(`src/exec/child`)에
@@ -201,6 +279,8 @@ try {
   check("artifact sha256 기록", /^[0-9a-f]{64}$/.test(pointer.sha256));
   check("artifact producer 기록", pointer.producerTaskId === "child");
 
+  // 완료는 확인된 zero-survivor 정리 뒤에만 수락된다(대장 `B-13`).
+  cleanVia(reopened, "child");
   reopened.submitResult({
     envelope: envelope("result", "child", "dev-lead", {
       messageId: "res-child",

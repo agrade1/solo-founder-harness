@@ -2,8 +2,11 @@
 /**
  * V3 M4b — exclusive resource class · deterministic scheduler · run writer lock offline acceptance.
  *
- * 네트워크·LLM·provider·TTY·git write 없이 임시 workspace 하나에서만 돈다.
- * `npm run build` 산출물(dist/exec/*)을 그대로 소비하며, 실패 시 exit 1이다.
+ * 네트워크·LLM·provider·TTY·git write 없이 임시 workspace 하나에서만 돈다. 실패 시 exit 1이다.
+ *
+ * **V3 M5c: 소비 대상이 `dist/exec/*` → `src/exec/*`로 바뀌었다**(tracked dist는 M5b 계약에 머물러 있고
+ * 그 갱신은 M5 handoff의 build 단계다 — dist를 소비하면 이 acceptance가 낡은 계약을 검사하며 green이
+ * 된다). 호출 방식은 그대로다(`node scripts/m4b-offline-acceptance.mjs`).
  *
  * 시나리오(로드맵 M4 "완료" 항목의 배타 자원 class/scheduler 부분 = 대장 `B-3`/`B-4`):
  *   같은 class를 요구하는 ready 두 개 + 자원 없는 ready 하나 → 결정론적 schedule은 하나만 시작 →
@@ -18,7 +21,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = join(REPO_ROOT, "dist", "exec");
+const SRC = join(REPO_ROOT, "src", "exec");
+
+// src/*.ts를 직접 소비하므로 tsx 로더가 필요하다 — 로더 없이 들어왔으면 tsx로 정확히 한 번 재실행한다.
+if (process.env.HARNESS_ACCEPTANCE_TSX !== "1") {
+  const { spawnSync } = await import("node:child_process");
+  const relaunch = spawnSync(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url)], {
+    stdio: "inherit",
+    env: { ...process.env, HARNESS_ACCEPTANCE_TSX: "1" },
+  });
+  process.exit(relaunch.status === null ? 1 : relaunch.status);
+}
 
 let pass = 0;
 let fail = 0;
@@ -79,10 +92,24 @@ const MANIFEST = {
   ),
   allowedCommands: ["npm test"],
   allowedDependencies: [],
+  // M5c(v2) — node·processObserver 필수 · autopilotPolicy·operationAuthorityByTask 명시 필수.
   executionAuthority: {
     codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
     git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+    node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+    processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
   },
+  autopilotPolicy: {
+    maxTaskAttempts: 2,
+    maxDeliveryAttempts: 2,
+    retryBackoffMs: 0,
+    deliveryDeadlineMs: 600_000,
+    maxNoProgressMs: 60_000,
+    maxAttemptElapsedMs: 600_000,
+    cleanupTermGraceMs: 500,
+    cleanupKillGraceMs: 500,
+  },
+  operationAuthorityByTask: {},
   allowedNetworkDomains: [],
   maxSessions: 4,
   maxTokens: null,
@@ -90,6 +117,44 @@ const MANIFEST = {
   localMergeAllowed: false,
   expiresAt: "2026-12-31T00:00:00.000Z",
 };
+
+/**
+ * **M5c 시작·완료 프로토콜 헬퍼**. 시작은 `planRunnableBatch` → `commitPreflightBatch`(원자적) →
+ * `startPreparedTask`뿐이고(대장 `B-11`), 완료는 확인된 zero-survivor 정리 뒤에만 수락된다(`B-13`).
+ * `wanted`에 여러 taskId를 주면 **한 preflight 커밋**으로 전부 prepared가 된 뒤 하나씩 시작한다.
+ */
+let seq = 0;
+const nextId = (prefix) => `${prefix}.${++seq}`;
+const nextLease = () => `lease.${(++seq).toString(16).padStart(32, "0")}`;
+const leaseOf = new Map();
+
+function startBatchVia(kernel, wanted) {
+  const batch = kernel.planRunnableBatch();
+  kernel.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextId("act"),
+    decisions: batch.items.map((t) =>
+      wanted.includes(t.taskId)
+        ? { taskId: t.taskId, outcome: "prepared", attemptId: nextId("att") }
+        : { taskId: t.taskId, outcome: "deferred" },
+    ),
+  });
+  for (const taskId of wanted) {
+    const leaseMarker = nextLease();
+    leaseOf.set(taskId, leaseMarker);
+    kernel.startPreparedTask({ taskId, actionId: nextId("act"), leaseMarker });
+  }
+}
+
+function cleanVia(kernel, taskId, marker = "turn_completed") {
+  kernel.recordTerminal({
+    taskId,
+    actionId: nextId("act"),
+    marker,
+    pendingResult: marker === "turn_completed" ? { summary: "ok", outputs: [] } : null,
+  });
+  kernel.confirmCleanup({ taskId, actionId: nextId("act"), leaseMarker: leaseOf.get(taskId) });
+}
 
 function seed(taskId, roleId, resourceClasses = []) {
   return {
@@ -131,8 +196,8 @@ const ids = (tasks) => tasks.map((t) => t.taskId);
 
 let workspace = null;
 try {
-  const { createOrchestrationRun, openOrchestrationRun } = await import(join(DIST, "orchestrationKernel.js"));
-  const { runPaths, acquireRunWriterLock, releaseRunWriterLock } = await import(join(DIST, "orchestrationStore.js"));
+  const { createOrchestrationRun, openOrchestrationRun } = await import(join(SRC, "orchestrationKernel.ts"));
+  const { runPaths, acquireRunWriterLock, releaseRunWriterLock } = await import(join(SRC, "orchestrationStore.ts"));
 
   workspace = mkdtempSync(join(tmpdir(), "m4b-acceptance-"));
   const paths = runPaths(workspace, RUN_ID);
@@ -167,15 +232,42 @@ try {
   check("schedule = [a-stress, c-docs]", JSON.stringify(planned) === JSON.stringify(["a-stress", "c-docs"]), String(planned));
   check("schedule 재호출도 동일(결정론)", JSON.stringify(ids(kernel.scheduleReady())) === JSON.stringify(planned));
 
+  // M5c에서 batch의 **원자적 단위는 preflight 커밋**이다: 고른 두 task가 한 커밋으로 prepared가 된 뒤
+  // 하나씩 running이 된다(어떤 실패도 남은 task를 running으로 흘리지 않는다 — 대장 `B-11`).
   const revBeforeBatch = kernel.getState().revision;
-  const started = ids(kernel.startScheduledBatch());
-  check("batch가 두 task를 시작", JSON.stringify(started) === JSON.stringify(["a-stress", "c-docs"]), String(started));
-  check("batch는 커밋 1회(revision +1)", kernel.getState().revision === revBeforeBatch + 1);
+  const preflight = kernel.planRunnableBatch();
+  kernel.commitPreflightBatch({
+    baseRevision: preflight.revision,
+    actionId: nextId("act"),
+    decisions: preflight.items.map((t) => ({ taskId: t.taskId, outcome: "prepared", attemptId: nextId("att") })),
+  });
+  const prepared = ids(kernel.getState().tasks.filter((t) => t.state === "prepared"));
+  check("preflight가 두 task를 prepared로", JSON.stringify(prepared) === JSON.stringify(["a-stress", "c-docs"]), String(prepared));
+  check("preflight batch는 커밋 1회(revision +1)", kernel.getState().revision === revBeforeBatch + 1);
+  check("prepared도 자원을 점유한다(b-live는 고를 수 없다)", JSON.stringify(ids(kernel.planRunnableBatch().items)) === JSON.stringify([]));
+  for (const taskId of prepared) {
+    const leaseMarker = nextLease();
+    leaseOf.set(taskId, leaseMarker);
+    kernel.startPreparedTask({ taskId, actionId: nextId("act"), leaseMarker });
+  }
   check("a-stress running", kernel.getTask("a-stress").state === "running");
   check("c-docs running(자원 없는 task는 병렬 가능)", kernel.getTask("c-docs").state === "running");
   check("b-live는 ready로 유예(동시 실행 0)", kernel.getTask("b-live").state === "ready", kernel.getTask("b-live").state);
   check("점유 중에는 더 고를 것이 없다", JSON.stringify(ids(kernel.scheduleReady())) === JSON.stringify([]));
-  check("직접 startTask도 같은 규칙(resource_conflict)", codeOf(() => kernel.startTask("b-live")) === "resource_conflict");
+  // 충돌 task는 scheduler가 고르지 않으므로 preflight 결정에 끼워 넣을 수도 없다(우회 진입점 0).
+  const conflictBatch = kernel.planRunnableBatch();
+  check(
+    "충돌 task는 preflight 결정 집합에 들어갈 수 없다(preflight_batch_mismatch)",
+    codeOf(() =>
+      kernel.commitPreflightBatch({
+        baseRevision: conflictBatch.revision,
+        actionId: nextId("act"),
+        decisions: [{ taskId: "b-live", outcome: "prepared", attemptId: nextId("att") }],
+      }),
+    ) === "preflight_batch_mismatch",
+  );
+  check("legacy 직접 startTask는 닫혀 있다(preflight_required)", codeOf(() => kernel.startTask("b-live")) === "preflight_required");
+  check("legacy batch 진입점도 닫혀 있다(preflight_required)", codeOf(() => kernel.startScheduledBatch()) === "preflight_required");
   check("거부 후에도 b-live ready", kernel.getTask("b-live").state === "ready");
 
   console.log("");
@@ -187,10 +279,16 @@ try {
   check("점유 유지(a-stress running)", reopened.getTask("a-stress").state === "running");
   check("class 선언 유지", JSON.stringify(reopened.getTask("a-stress").resourceClasses) === JSON.stringify([CLASS]));
   check("재시작 후 schedule 결정 동일(빈 목록)", JSON.stringify(ids(reopened.scheduleReady())) === JSON.stringify([]));
-  check("재시작 후에도 충돌 거부", codeOf(() => reopened.startTask("b-live")) === "resource_conflict");
+  check(
+    "재시작 후에도 충돌 task는 batch에 없다",
+    reopened.planRunnableBatch().items.every((t) => t.taskId !== "b-live"),
+  );
+  check("재시작 후에도 legacy start 거부", codeOf(() => reopened.startTask("b-live")) === "preflight_required");
 
   console.log("");
   console.log("== M4b: 5) holder 완료 → class 해제 → 대기 task가 schedulable ==");
+  // 완료는 확인된 zero-survivor 정리 뒤에만 수락된다(대장 `B-13`).
+  cleanVia(reopened, "a-stress");
   reopened.submitResult({
     envelope: {
       schemaVersion: "1",
@@ -212,7 +310,7 @@ try {
   });
   check("a-stress completed", reopened.getTask("a-stress").state === "completed");
   check("해제 후 b-live가 schedulable", JSON.stringify(ids(reopened.scheduleReady())) === JSON.stringify(["b-live"]));
-  check("b-live 시작 성공", ids(reopened.startScheduledBatch()).join(",") === "b-live");
+  startBatchVia(reopened, ["b-live"]);
   check("b-live running", reopened.getTask("b-live").state === "running");
 
   console.log("");

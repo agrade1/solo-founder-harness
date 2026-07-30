@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://solo-founder-harness/schemas/orchestration_run_state.schema.json",
   "title": "OrchestrationRunState",
-  "description": "V3 M4a/M4b/M4c — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4). M4c가 더한 것: ⓐ 필수 manifest(§8 승인 envelope — 없는 pre-M4c state는 state_pre_m4c_unsupported로 fail-closed, 자동 승인·마이그레이션 없음) ⓑ message.routeToTaskId/acknowledgedAt(중앙이 정한 durable route — envelope에는 없다) ⓒ messageType 10종 ⓓ task.roleId의 7 specialist registry 소속 요구 ⓔ 이벤트 delivery_acknowledged. 아래 M4b 서술도 그대로 유효하다. M4b가 task.resourceClasses(배타 자원 class 선언)를 **필수 필드로** 더했다: 같은 class를 요구하는 두 task는 동시에 running이 될 수 없고(런타임 검사 assertExclusiveResourceClaims), 점유는 running 동안만이며 waiting_children은 점유하지 않는다. 이 필드가 없는 M4a 상태 파일은 마이그레이션하지 않고 state_pre_m4b_unsupported로 거부한다. orchestration 실행 상태의 SoR이며, 기존 projects/<p>/outputs/run_state.json(workflow 실행 상태)과는 **별개 계약**이다(변경·마이그레이션 없음). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의의 핵심 동치(state/type/role enum · required · bounds)는 src/exec/orchestrationKernel.test.ts가 강제한다. events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript는 어떤 레벨에서도 담지 않는다(§3.2).",
+  "description": "V3 M4a/M4b/M4c/M5c — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4/§8.1). **schemaVersion은 \"2\"다**(M5c): v1 바이트는 마이그레이션·기본값 없이 state_pre_m5c_unsupported로 거부한다. message envelope 계약은 v1 그대로다(schemas/agent_message.schema.json). M5c가 더한 것: ⓐ 필수 accounting(run 단위 durable 토큰·경과 회계 — 재시작이 예산을 리셋하지 못한다, 대장 B-12) ⓑ 필수 task.execution(실행 lifecycle 메타데이터 — attempt·wall deadline·processLeaseMarker·terminalMarker·cleanupStatus·retry 예약·pendingResult·operation 영수증, 대장 B-11/B-13/C-18) ⓒ 필수 message.delivery(전달 재시도 메타데이터 — 실패는 수령하지 않고 재시도만 남긴다, 대장 C-12→B) ⓓ task 상태 11종(prepared/cleaning/retry_wait/paused/cancelled 추가; prepared|running|cleaning이 배타 자원·maxSessions를 점유한다) ⓔ 이벤트 종류·전이 사유 확장과 **닫힌 nullable 감사 필드**(actionId/attemptId/turnId/operationId/marker/tokenDelta/elapsedMs — 자유 형식 payload는 없다). M4c 서술도 그대로 유효하다: 필수 manifest(§8 승인 envelope — 없으면 state_pre_m4c_unsupported), message.routeToTaskId/acknowledgedAt(중앙이 정한 durable route — envelope에는 없다), messageType 10종, task.roleId의 7 specialist registry 소속 요구. M4b의 task.resourceClasses도 필수 필드다(같은 class를 요구하는 두 task는 동시에 자원을 점유하지 않는다; 없으면 state_pre_m4b_unsupported). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의의 핵심 동치(state/type/role/marker enum · required · bounds · 닫힌 key 집합)는 src/exec/orchestrationKernel.test.ts가 강제한다. events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript·PID/PGID/argv/env/provider session handle은 어떤 레벨에서도 담지 않는다(§3.2).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,6 +10,7 @@
     "runId",
     "milestoneId",
     "manifest",
+    "accounting",
     "revision",
     "lastEventId",
     "lastEventHash",
@@ -20,12 +21,16 @@
     "artifacts"
   ],
   "properties": {
-    "schemaVersion": { "const": "1" },
+    "schemaVersion": { "const": "2" },
     "runId": { "$ref": "#/definitions/slug" },
     "milestoneId": { "$ref": "#/definitions/slug" },
     "manifest": {
       "description": "M4c — 이 run에 bind된 §8 승인 envelope. 전체 계약은 schemas/milestone_approval_manifest.schema.json에 있고(런타임 validator는 src/exec/approvalManifest.ts), stateContentDigest에 포함되므로 승인 범위를 손으로 넓히면 state↔event binding에서 거부된다.",
       "$ref": "https://solo-founder-harness/schemas/milestone_approval_manifest.schema.json"
+    },
+    "accounting": {
+      "description": "M5c — run 하나의 **durable 예산 회계**(대장 B-12). 이전 판은 controller 메모리에만 있었으므로 재시작이 토큰·경과 예산을 리셋했다. 이 레코드가 예산의 진실이고 재시작은 이어 쓴다.",
+      "$ref": "#/definitions/accounting"
     },
     "revision": {
       "description": "성공한 kernel 변경 1회당 +1 (monotonic). 유효하지 않은 입력에서는 올라가지 않는다.",
@@ -89,8 +94,24 @@
       "maxLength": 1000
     },
     "taskState": {
-      "description": "M4a가 쓰는 task 상태 전부. 이 6개 외의 상태는 존재하지 않는다.",
-      "enum": ["pending", "ready", "running", "waiting_children", "completed", "blocked"]
+      "description": "task 상태 전부. **이 11개 외의 상태는 존재하지 않는다**(M5c가 prepared/cleaning/retry_wait/paused/cancelled 5종을 더했다).",
+      "enum": [
+        "pending",
+        "ready",
+        "prepared",
+        "running",
+        "cleaning",
+        "retry_wait",
+        "paused",
+        "waiting_children",
+        "completed",
+        "blocked",
+        "cancelled"
+      ]
+    },
+    "resourceHoldingState": {
+      "description": "M5c — **배타 자원과 승인 세션 예산을 점유하는 상태**(대장 B-11/B-13). prepared는 이미 attempt·권한을 배정받았고 cleaning은 자손 프로세스가 남아 있을 수 있으므로 둘 다 점유한다. 정본은 src/exec/orchestrationTypes.ts의 RESOURCE_HOLDING_STATES다.",
+      "const": ["prepared", "running", "cleaning"]
     },
     "messageType": {
       "enum": [
@@ -114,6 +135,261 @@
       "pattern": "^(research|pm|ux|design|tech-lead|dev-lead|qa-security)(\\.[a-z0-9][a-z0-9_-]{0,31})?$"
     },
     "artifactRole": { "enum": ["input", "contract", "output", "evidence", "diff", "test"] },
+    "autopilotMarker": {
+      "description": "M5c — autopilot **닫힌 결과 marker 집합**(대장 C-33). durable state(task.execution.terminalMarker)와 controller outcome이 같은 목록을 쓴다. turn_completed도 완료를 뜻하지 않는다 — 완료는 확인된 정리 뒤에 결정된다.",
+      "enum": [
+        "turn_completed",
+        "silent_session",
+        "no_progress_timeout",
+        "wall_deadline_exceeded",
+        "cancelled",
+        "worker_failed",
+        "plan_invalid",
+        "operation_denied",
+        "process_failed",
+        "cleanup_unconfirmed",
+        "stream_invalid",
+        "delivery_failed",
+        "review_invalid"
+      ]
+    },
+    "pauseReason": {
+      "description": "M5c — paused의 닫힌 사유 집합. approval_required는 **stdin을 기다리지 않고** 여기로 내려앉는다(비대화 모드).",
+      "enum": [
+        "approval_required",
+        "attempts_exhausted",
+        "delivery_deadline_exceeded",
+        "budget_tokens_exhausted",
+        "budget_elapsed_exhausted",
+        "manifest_expired",
+        "clock_invalid",
+        "interrupted",
+        "cleanup_unconfirmed",
+        "operator_requested"
+      ]
+    },
+    "deliveryMarker": {
+      "description": "M5c — 전달 시도 1건의 닫힌 결과 marker. delivered만 수령을 뜻한다.",
+      "enum": ["delivered", "send_failed", "turn_failed", "deadline_exceeded", "attempts_exhausted"]
+    },
+    "cleanupStatus": {
+      "description": "M5c — cleanup 진행 상태. **confirmed만** 다음 상태로 나갈 자격이다(대장 B-13).",
+      "enum": ["none", "required", "confirmed", "failed"]
+    },
+    "operationKind": {
+      "description": "M5c — typed operation 종류. 닫힌 union이며 shell 문자열·wildcard·런타임 실행 파일 선택은 표현할 수 없다(대장 B-10).",
+      "enum": ["write_file", "run_process"]
+    },
+    "operationReceiptMarker": {
+      "description": "M5c — 집행한 typed operation 1건의 닫힌 결과 marker.",
+      "enum": ["applied", "already_applied", "write_conflict", "denied", "failed"]
+    },
+    "eventMarker": {
+      "description": "M5c — event.marker의 **닫힌 합집합**(대장 C-33): autopilot 결과 · pause 사유 · 전달 결과 · operation 영수증 marker + 정리 결과 2종. 자유 문자열은 없고 새 코드가 자동 편입되지도 않는다. 정본은 src/exec/orchestrationStore.ts의 EVENT_MARKERS다.",
+      "enum": [
+        "turn_completed",
+        "silent_session",
+        "no_progress_timeout",
+        "wall_deadline_exceeded",
+        "cancelled",
+        "worker_failed",
+        "plan_invalid",
+        "operation_denied",
+        "process_failed",
+        "cleanup_unconfirmed",
+        "stream_invalid",
+        "delivery_failed",
+        "review_invalid",
+        "approval_required",
+        "attempts_exhausted",
+        "delivery_deadline_exceeded",
+        "budget_tokens_exhausted",
+        "budget_elapsed_exhausted",
+        "manifest_expired",
+        "clock_invalid",
+        "interrupted",
+        "operator_requested",
+        "delivered",
+        "send_failed",
+        "turn_failed",
+        "deadline_exceeded",
+        "applied",
+        "already_applied",
+        "write_conflict",
+        "denied",
+        "failed",
+        "cleanup_confirmed"
+      ]
+    },
+    "leaseMarker": {
+      "description": "M5c — 살아 있을 수 있는 supervisor를 찾는 **유일한** durable 단서. 비밀이 아닌 충돌 저항 난수이며 **PID·PGID·argv·env·session handle이 아니다**.",
+      "type": "string",
+      "pattern": "^lease\\.[0-9a-f]{32}$"
+    },
+    "accounting": {
+      "description": "M5c — run 단위 durable 예산 회계(대장 B-12). 이 승인에 묶여 있고(approvalDigest) monotonic이며 turn 과금은 멱등이다. stateContentDigest에 들어가므로 손편집은 state↔event binding에서 거부된다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["approvalDigest", "budgetStartedAt", "budgetDeadlineAt", "tokensUsed", "elapsedMsUsed", "chargedTurnIds"],
+      "properties": {
+        "approvalDigest": {
+          "description": "이 회계가 묶여 있는 승인의 canonical digest. 승인이 바뀌면 예산 이력을 이어 쓰지 않고 accounting_approval_mismatch로 거부한다.",
+          "$ref": "#/definitions/sha256"
+        },
+        "budgetStartedAt": { "$ref": "#/definitions/timestamp" },
+        "budgetDeadlineAt": {
+          "description": "min(budgetStartedAt + manifest.maxElapsedMs, manifest.expiresAt). 재시작해도 이 값이 정본이므로 예산 창을 새로 만들 수 없다. budgetStartedAt보다 뒤여야 한다.",
+          "$ref": "#/definitions/timestamp"
+        },
+        "tokensUsed": { "type": "integer", "minimum": 0, "maximum": 100000000 },
+        "elapsedMsUsed": {
+          "description": "monotonic(감소하지 않는다). 상한 24h.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 86400000
+        },
+        "chargedTurnIds": {
+          "description": "이미 과금한 turnId(오름차순·중복 없음, bounded). 같은 turn을 두 번 과금하지 않는 근거다.",
+          "type": "array",
+          "maxItems": 512,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/slug" }
+        }
+      }
+    },
+    "operationReceipt": {
+      "description": "M5c — 집행한 typed operation 1건의 영수증. **내용(파일 본문·stdout·argv)은 담지 않는다** — operation 신원 · 경로 · 결과 hash · 안정 marker만 durable하다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "kind", "authorityId", "path", "resultSha256", "exitCode", "marker", "at"],
+      "properties": {
+        "operationId": { "$ref": "#/definitions/slug" },
+        "kind": { "$ref": "#/definitions/operationKind" },
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "path": {
+          "description": "write_file이면 정규화된 workspace-relative 경로, run_process면 null.",
+          "oneOf": [{ "$ref": "#/definitions/workspacePath" }, { "type": "null" }]
+        },
+        "resultSha256": {
+          "description": "write_file이면 결과 내용 sha256, run_process면 null.",
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        },
+        "exitCode": {
+          "description": "run_process의 종료 코드(정상 종료만). 그 밖은 null.",
+          "oneOf": [{ "type": "integer", "minimum": -255, "maximum": 255 }, { "type": "null" }]
+        },
+        "marker": { "$ref": "#/definitions/operationReceiptMarker" },
+        "at": { "$ref": "#/definitions/timestamp" }
+      }
+    },
+    "pendingResult": {
+      "description": "M5c — 아직 durable 완료 커밋 전인 결과(cleanup 확인을 기다리는 동안 보관한다). 산출물은 아직 등록 전이므로 포인터가 아니다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "outputs"],
+      "properties": {
+        "summary": { "$ref": "#/definitions/boundedSummary" },
+        "outputs": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "role"],
+            "properties": {
+              "path": { "$ref": "#/definitions/workspacePath" },
+              "role": { "$ref": "#/definitions/artifactRole" }
+            }
+          }
+        }
+      }
+    },
+    "taskExecution": {
+      "description": "M5c — task 하나의 실행 lifecycle 메타데이터(전부 durable · 전부 필수). 재시작한 controller는 이 필드만 보고 '무엇이 떠 있었고 무엇을 정리해야 하는가'를 안다. **raw는 하나도 없다** — PID/PGID/argv/env/session handle/transcript 대신 processLeaseMarker만 남는다. 런타임 validator는 상태와의 정합성도 함께 본다: prepared/running은 attempt를 배정받았고, prepared는 preflightDigest가 있고, cleaning은 cleanupStatus가 none이 아니며, paused는 사유가, retry_wait은 예약 시각이 있어야 하고, **cleanupStatus가 required면 completed·cancelled가 될 수 없다**(대장 B-13).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "attemptNo",
+        "attemptId",
+        "turnId",
+        "preflightDigest",
+        "phaseStartedAt",
+        "wallDeadlineAt",
+        "lastProgressAt",
+        "progressCount",
+        "processLeaseMarker",
+        "terminalMarker",
+        "cleanupStatus",
+        "cleanupAttempts",
+        "cancelRequestedAt",
+        "pauseReason",
+        "retryAt",
+        "retryDeadlineAt",
+        "pendingResult",
+        "operationReceipts"
+      ],
+      "properties": {
+        "attemptNo": {
+          "description": "0 = 아직 시작 안 함. 상한은 task 총 attempt 수(4)다.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4
+        },
+        "attemptId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "turnId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "preflightDigest": {
+          "description": "preflight가 봉인한 결정의 digest. startPreparedTask가 시작 직전에 다시 계산해 대조한다(preflight_drift).",
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        },
+        "phaseStartedAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "wallDeadlineAt": {
+          "description": "min(start + autopilotPolicy.maxAttemptElapsedMs, accounting.budgetDeadlineAt, manifest.expiresAt) — kernel이 계산한다(호출자 값이 아니다).",
+          "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+        },
+        "lastProgressAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "progressCount": {
+          "description": "attempt 하나가 남기는 진행 이벤트 수의 상한(256).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "processLeaseMarker": { "oneOf": [{ "$ref": "#/definitions/leaseMarker" }, { "type": "null" }] },
+        "terminalMarker": { "oneOf": [{ "$ref": "#/definitions/autopilotMarker" }, { "type": "null" }] },
+        "cleanupStatus": { "$ref": "#/definitions/cleanupStatus" },
+        "cleanupAttempts": {
+          "description": "stable quarantine 전 cleanup 재시도 수(2).",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        },
+        "cancelRequestedAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "pauseReason": { "oneOf": [{ "$ref": "#/definitions/pauseReason" }, { "type": "null" }] },
+        "retryAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "retryDeadlineAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "pendingResult": { "oneOf": [{ "$ref": "#/definitions/pendingResult" }, { "type": "null" }] },
+        "operationReceipts": {
+          "description": "attempt 하나가 남기는 영수증 수의 상한(64). operationId는 유일하다.",
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/definitions/operationReceipt" }
+        }
+      }
+    },
+    "messageDelivery": {
+      "description": "M5c — 전달 시도 이력(bounded, 대장 C-12→B). acknowledgedAt은 완전하고 검증된 전달 turn이 성공한 뒤에만 채워진다 — 실패는 여기에 재시도 정보만 원자적으로 남기고 **수령하지 않는다**. 전달 대상이 없는 메시지는 전부 초기값이고 시도 기록을 가질 수 없다. 수령된 전달의 lastMarker는 반드시 delivered다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["attempts", "activeAttemptId", "firstAttemptAt", "lastAttemptAt", "nextAttemptAt", "deadlineAt", "lastMarker"],
+      "properties": {
+        "attempts": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "activeAttemptId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "firstAttemptAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "lastAttemptAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "nextAttemptAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "deadlineAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
+        "lastMarker": { "oneOf": [{ "$ref": "#/definitions/deliveryMarker" }, { "type": "null" }] }
+      }
+    },
     "artifactPointer": {
       "type": "object",
       "additionalProperties": false,
@@ -145,18 +421,19 @@
         "updatedAt",
         "resultSummary",
         "blockerSummary",
-        "artifactRefs"
+        "artifactRefs",
+        "execution"
       ],
       "properties": {
         "taskId": { "$ref": "#/definitions/slug" },
         "roleId": {
-          "description": "M4c — 7 specialist registry의 role 또는 그 하위 role(한 겹). 중앙만 task를 만들므로 agent가 role을 self-grant할 수 없다. 실제 동시 실행·프로세스 spawn은 여전히 범위 밖이다.",
+          "description": "M4c — 7 specialist registry의 role 또는 그 하위 role(한 겹). 중앙만 task를 만들므로 agent가 role을 self-grant할 수 없다.",
           "$ref": "#/definitions/specialistRoleId"
         },
         "title": { "$ref": "#/definitions/boundedText" },
         "scope": { "$ref": "#/definitions/boundedText" },
         "ownership": {
-          "description": "workspace-relative 정규화 경로(사전순·중복 없음). M4a에서는 기록·검증 메타데이터일 뿐 실제 파일 권한이나 provider 실행 권한이 아니다.",
+          "description": "workspace-relative 정규화 경로(사전순·중복 없음). 기록·검증 메타데이터이며 그 자체가 파일 권한은 아니다 — typed operation 집행은 manifest 권위와 함께 본다.",
           "type": "array",
           "minItems": 1,
           "maxItems": 16,
@@ -164,7 +441,7 @@
           "items": { "$ref": "#/definitions/workspacePath" }
         },
         "resourceClasses": {
-          "description": "M4b — 이 task가 요구하는 배타 자원 class(slug, 사전순·중복 없음). 빈 배열 = 자원 요구 없음 = 병렬 안전. 같은 class를 요구하는 두 task는 동시에 running이 되지 않는다(scheduler와 startTask가 같은 규칙을 적용하고, 커밋·load 양쪽이 불변식을 검사한다).",
+          "description": "M4b — 이 task가 요구하는 배타 자원 class(slug, 사전순·중복 없음). 빈 배열 = 자원 요구 없음 = 병렬 안전. 같은 class를 요구하는 두 task는 **동시에 자원 점유 상태(prepared/running/cleaning)가 되지 않는다**(scheduler·preflight 커밋·load가 같은 규칙 하나를 적용한다).",
           "type": "array",
           "maxItems": 4,
           "uniqueItems": true,
@@ -199,6 +476,10 @@
           "type": "array",
           "maxItems": 16,
           "items": { "$ref": "#/definitions/artifactPointer" }
+        },
+        "execution": {
+          "description": "M5c — 실행 lifecycle 메타데이터(필수). 이 필드가 없는 pre-M5c state는 마이그레이션하지 않고 state_pre_m5c_unsupported로 거부한다(기본값을 채우면 '정리할 프로세스가 없다'고 거짓 주장하게 된다).",
+          "$ref": "#/definitions/taskExecution"
         }
       }
     },
@@ -220,7 +501,8 @@
         "bodySha256",
         "summary",
         "routeToTaskId",
-        "acknowledgedAt"
+        "acknowledgedAt",
+        "delivery"
       ],
       "properties": {
         "messageId": { "$ref": "#/definitions/slug" },
@@ -247,8 +529,12 @@
           "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }]
         },
         "acknowledgedAt": {
-          "description": "수신 task가 수령한 시각. routeToTaskId가 null이면 반드시 null이다. 미수령 전달은 createdAt→messageId 순으로 결정론적 inbox를 이룬다.",
+          "description": "수신 task가 수령한 시각. routeToTaskId가 null이면 반드시 null이다. 미수령 전달은 createdAt→messageId 순으로 결정론적 inbox를 이룬다. M5c: 수령은 **durable 전달 시도가 있을 때만** 가능하다.",
           "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+        },
+        "delivery": {
+          "description": "M5c — 전달 재시도 메타데이터(필수). 이 필드가 없는 pre-M5c state는 state_pre_m5c_unsupported로 거부한다.",
+          "$ref": "#/definitions/messageDelivery"
         }
       }
     },
@@ -276,7 +562,7 @@
       }
     },
     "event": {
-      "description": "events.jsonl 한 줄의 계약. prevHash는 직전 줄 텍스트의 SHA-256이며 첫 줄은 64개의 '0'이다. state.lastEventId/lastEventHash와 어긋나면 load에서 fail-closed. stateDigest는 커밋의 마지막 이벤트에만 있는 state 내용 해시로, load가 재계산해 대조한다 — 문법적으로 유효한 run_state.json 편집만으로 kernel 상태 전이를 우회할 수 없게 하는 durable binding이다(키 없는 digest이므로 state와 events.jsonl을 모두 일관되게 재작성하는 위조는 감사 대상으로 남는다).",
+      "description": "events.jsonl 한 줄의 계약. prevHash는 직전 줄 텍스트의 SHA-256이며 첫 줄은 64개의 '0'이다. state.lastEventId/lastEventHash와 어긋나면 load에서 fail-closed. stateDigest는 커밋의 마지막 이벤트에만 있는 state 내용 해시로, load가 재계산해 대조한다 — 문법적으로 유효한 run_state.json 편집만으로 kernel 상태 전이를 우회할 수 없게 하는 durable binding이다(키 없는 digest이므로 state와 events.jsonl을 모두 일관되게 재작성하는 위조는 감사 대상으로 남는다). M5c가 더한 감사 필드는 **전부 닫힌 nullable 값**이며 자유 형식 payload가 없다: actionId(호출자가 준 멱등 action 신원 — 애매한 커밋 실패에서 '내 요청이 durable해졌는가'를 판정하는 근거, 대장 C-37) · attemptId · turnId · operationId · marker · tokenDelta · elapsedMs.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -291,7 +577,14 @@
         "fromState",
         "toState",
         "reason",
-        "artifactId"
+        "artifactId",
+        "actionId",
+        "attemptId",
+        "turnId",
+        "operationId",
+        "marker",
+        "tokenDelta",
+        "elapsedMs"
       ],
       "properties": {
         "eventId": { "type": "integer", "minimum": 1, "maximum": 1000000 },
@@ -308,7 +601,20 @@
             "message_accepted",
             "artifact_registered",
             "task_state_changed",
-            "delivery_acknowledged"
+            "delivery_acknowledged",
+            "preflight_committed",
+            "progress_recorded",
+            "usage_charged",
+            "delivery_attempted",
+            "delivery_failed",
+            "retry_scheduled",
+            "task_paused",
+            "task_resumed",
+            "cancel_requested",
+            "cleanup_started",
+            "cleanup_confirmed",
+            "cleanup_failed",
+            "operation_receipt"
           ]
         },
         "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
@@ -328,14 +634,60 @@
                 "children_completed",
                 "dependencies_completed",
                 "child_blocked",
-                "dependency_blocked"
+                "dependency_blocked",
+                "preflight_accepted",
+                "cleanup_required",
+                "cleanup_confirmed",
+                "retry_scheduled",
+                "retry_due",
+                "paused",
+                "resumed",
+                "cancel_requested",
+                "cancelled",
+                "attempts_exhausted",
+                "policy_blocked",
+                "deadline_exceeded"
               ]
             },
             { "type": "null" }
           ]
         },
-        "artifactId": { "oneOf": [{ "type": "string", "minLength": 3, "maxLength": 528 }, { "type": "null" }] }
+        "artifactId": { "oneOf": [{ "type": "string", "minLength": 3, "maxLength": 528 }, { "type": "null" }] },
+        "actionId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "attemptId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "turnId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "operationId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "marker": { "oneOf": [{ "$ref": "#/definitions/eventMarker" }, { "type": "null" }] },
+        "tokenDelta": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 100000000 }, { "type": "null" }] },
+        "elapsedMs": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 86400000 }, { "type": "null" }] }
       }
+    },
+    "safetyOnlyReasons": {
+      "description": "M5c — **만료·run deadline 이후에도 허용되는 safety-only reducer의 전이 사유**(DECISIONS 2026-07-30 · 로드맵 §8.1). 닫힌 목록이며 여기에 없는 사유의 전이는 만료 후 전부 거부된다. started·result_accepted·resumed·policy_blocked가 **없다** — safety-only reducer는 작업을 시작하지도, 완료하지도, 실패한 전달을 수령하지도, artifact를 발행하지도 않는다. 정본은 src/exec/orchestrationTypes.ts의 SAFETY_ONLY_REASONS다.",
+      "const": [
+        "cleanup_required",
+        "cleanup_confirmed",
+        "paused",
+        "cancel_requested",
+        "cancelled",
+        "retry_scheduled",
+        "deadline_exceeded",
+        "attempts_exhausted"
+      ]
+    },
+    "safetyOnlyEventTypes": {
+      "description": "M5c — safety-only reducer가 남길 수 있는 event 종류(전이 없는 회계·정리 이벤트 포함). artifact_registered·delivery_acknowledged·message_accepted는 **없다**. 정본은 src/exec/orchestrationTypes.ts의 SAFETY_ONLY_EVENT_TYPES다.",
+      "const": [
+        "task_state_changed",
+        "usage_charged",
+        "cancel_requested",
+        "cleanup_started",
+        "cleanup_confirmed",
+        "cleanup_failed",
+        "task_paused",
+        "retry_scheduled",
+        "operation_receipt"
+      ]
     }
   }
 }

@@ -22,10 +22,19 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_MESSAGE_TYPES,
+  APPROVED_OPERATION_KINDS,
   ARTIFACT_ROLES,
+  AUTOPILOT_MARKERS,
   CENTRAL_MESSAGE_TYPES,
+  CLEANUP_STATUSES,
+  DELIVERY_MARKERS,
   EVENT_TYPES,
   LIMITS,
+  PAUSE_REASONS,
+  RESOURCE_HOLDING_STATES,
+  RUN_STATE_SCHEMA_VERSION,
+  SAFETY_ONLY_EVENT_TYPES,
+  SAFETY_ONLY_REASONS,
   SUMMARY_REQUIRED,
   ORCHESTRATION_SCHEMA_VERSION,
   ORCHESTRATOR_ID,
@@ -37,13 +46,21 @@ import {
   TIMESTAMP_PATTERN,
   TRANSITION_REASONS,
   type AgentMessageType,
+  type AutopilotMarker,
+  type MessageIndexEntry,
+  type OrchestrationTask,
+  emptyMessageDelivery,
+  emptyTaskExecution,
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
 import { ARTIFACT_POINTER_KEYS, ENVELOPE_KEYS, validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import {
+  AUTOPILOT_POLICY_KEYS,
   COMMAND_PATTERN,
   COMMIT_PATTERN,
   DEPENDENCY_KEYS,
+  RUN_PROCESS_AUTHORITY_KEYS,
+  WRITE_FILE_AUTHORITY_KEYS,
   DEPENDENCY_NAME_PATTERN,
   DEPENDENCY_VERSION_PATTERN,
   DOMAIN_PATTERN,
@@ -59,12 +76,20 @@ import {
   EXECUTION_AUTHORITY_KEYS,
 } from "./approvalManifest.js";
 import {
+  ACCOUNTING_KEYS,
   ARTIFACT_RECORD_KEYS,
   COMMIT_STAGES,
   type CommitStage,
+  DELIVERY_KEYS,
   EVENT_KEYS,
+  EVENT_MARKERS,
   MESSAGE_KEYS,
+  manifestDigest,
+  OPERATION_RECEIPT_KEYS,
+  OPERATION_RECEIPT_MARKERS,
+  PENDING_RESULT_KEYS,
   STATE_KEYS,
+  TASK_EXECUTION_KEYS,
   TASK_KEYS,
   acquireRunWriterLock,
   assertExclusiveResourceClaims,
@@ -229,6 +254,73 @@ function codeOf(fn: () => unknown): string {
   throw new Error("거부될 것으로 기대했지만 통과했다");
 }
 
+// ── M5c lifecycle 프로토콜 헬퍼 ──────────────────────────────────────────────
+//
+// M5c부터 시작은 `planRunnableBatch` → `commitPreflightBatch`(원자적) → `startPreparedTask`뿐이고
+// 완료·차단은 `recordTerminal` → `confirmCleanup` 뒤에만 수락된다(대장 `B-11`/`B-13`).
+// 아래 헬퍼는 **그 진짜 경로를 그대로** 지난다 — 프로토콜을 우회하거나 흉내내지 않는다.
+
+let counter = 0;
+const nextAction = (): string => `act.${++counter}`;
+const nextAttempt = (): string => `att.${++counter}`;
+const nextLease = (): string => `lease.${(++counter).toString(16).padStart(32, "0")}`;
+
+/**
+ * taskId → 그 attempt의 lease marker. `startVia`가 기록하고 `cleanVia`가 읽는다 —
+ * 35개 호출부에 lease를 손으로 꿰지 않기 위한 테스트 국소 장부다(계약이 아니다).
+ */
+const leaseOf = new Map<string, string>();
+
+/**
+ * **진짜 시작 경로**: batch 전체에 결정을 주되 `taskId`만 `prepared`로 올리고(나머지는 `deferred` —
+ * 상태·attempt·자원을 건드리지 않는다) 곧바로 `startPreparedTask`로 `running`까지 간다.
+ * batch에 없는 task를 넣으면 `preflight_batch_mismatch`가 나므로 이 헬퍼도 scheduler를 우회하지 못한다.
+ */
+function startVia(k: OrchestrationKernel, taskId: string): OrchestrationTask {
+  startBatchVia(k, [taskId]);
+  return k.getTask(taskId)!;
+}
+
+/**
+ * batch 전체에 결정을 **한 커밋으로** 주고(`wanted`만 `prepared`, 나머지는 `deferred`) 그 다음
+ * `wanted`를 하나씩 `running`으로 올린다. M5b의 `startScheduledBatch()`가 하던 일을 M5c 계약으로 다시
+ * 쓴 것이다: **batch의 원자성은 preflight에 있고 실제 시작은 task 하나씩**이므로, 어떤 batch 실패도
+ * 남은 task를 running으로 흘리지 않는다(대장 `B-11`).
+ */
+function startBatchVia(k: OrchestrationKernel, wanted: string[]): void {
+  const batch = k.planRunnableBatch();
+  k.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextAction(),
+    decisions: batch.items.map((t) =>
+      wanted.includes(t.taskId)
+        ? { taskId: t.taskId, outcome: "prepared" as const, attemptId: nextAttempt() }
+        : { taskId: t.taskId, outcome: "deferred" as const },
+    ),
+  });
+  for (const taskId of wanted) {
+    const leaseMarker = nextLease();
+    leaseOf.set(taskId, leaseMarker);
+    k.startPreparedTask({ taskId, actionId: nextAction(), leaseMarker });
+  }
+}
+
+/**
+ * **완료·차단 수락 자격을 만드는 진짜 경로**: `running` → `cleaning`(종료 관측) → zero-survivor 확인.
+ * `marker`가 `turn_completed`면 미확정 결과를 봉인한다(성공 turn 계약).
+ */
+function cleanVia(k: OrchestrationKernel, taskId: string, marker: AutopilotMarker = "turn_completed"): void {
+  k.recordTerminal({
+    taskId,
+    actionId: nextAction(),
+    marker,
+    pendingResult: marker === "turn_completed" ? { summary: "ok", outputs: [] } : null,
+  });
+  const leaseMarker = leaseOf.get(taskId);
+  assert.ok(leaseMarker !== undefined, `startVia로 시작하지 않은 task다: ${taskId}`);
+  k.confirmCleanup({ taskId, actionId: nextAction(), leaseMarker });
+}
+
 /** root 하나를 running까지 올린 kernel. `extra`는 그 run이 추가로 만들 root/dependent task id다. */
 function bootRoot(extra: string[] = [], ws = makeWorkspace()): { ws: string; k: OrchestrationKernel } {
   const k = createOrchestrationRun({
@@ -241,8 +333,23 @@ function bootRoot(extra: string[] = [], ws = makeWorkspace()): { ws: string; k: 
   // `docs`도 소유한다 — 아래 artifact 테스트가 `docs/a.md`를 이 task의 산출물로 등록하고,
   // M5b부터 `registerArtifact`가 **소유권을 집행**하므로 픽스처가 정직해야 한다(`artifact_not_owned`).
   k.createRootTask(seed("root", "tech-lead", { ownership: ["docs", "src/root"] }));
-  k.startTask("root");
+  startVia(k, "root");
   return { ws, k };
+}
+
+/**
+ * root를 **결과 수락 자격**까지 올린 kernel. M5c부터 `completed`/`blocked`는 확인된 zero-survivor 정리
+ * 뒤에만 가능하므로(대장 `B-13`), 완료 트랜잭션을 검사하는 테스트는 여기서 시작한다.
+ */
+function ackVia(k: OrchestrationKernel, taskId: string, messageId: string): MessageIndexEntry {
+  k.beginDeliveryAttempt({ taskId, messageId, actionId: nextAction(), attemptId: nextAttempt() });
+  return k.acknowledgeDelivery({ taskId, messageId, actionId: nextAction() });
+}
+
+function bootCleanedRoot(extra: string[] = [], ws = makeWorkspace()): { ws: string; k: OrchestrationKernel } {
+  const booted = bootRoot(extra, ws);
+  cleanVia(booted.k, "root");
+  return booted;
 }
 
 // ── envelope / body 계약 ────────────────────────────────────────────────────
@@ -365,6 +472,8 @@ test("[M4a] dependency cycle 검사(반복 DFS)", () => {
     resultSummary: null,
     blockerSummary: null,
     artifactRefs: [],
+    // M5c(v2) — `task.execution`은 durable 계약이므로 손으로 만드는 fixture도 갖고 있어야 한다.
+    execution: emptyTaskExecution(),
   };
   const acyclic = [
     { ...base, taskId: "a", dependsOn: [] },
@@ -421,7 +530,7 @@ test("[M4a] nested child spawn과 최대 depth 3 상한", () => {
     assert.equal(k.getTask(child)!.depth, depth);
     assert.equal(k.getTask(parent)!.state, "waiting_children");
     assert.equal(k.getTask(child)!.state, "ready");
-    k.startTask(child);
+    startVia(k, child);
     parent = child;
     role = `dev-lead.d${depth}`;
   }
@@ -468,7 +577,8 @@ test("[M4a] result: child completed → parent ready · dependent ready", () => 
   assert.equal(k.getTask("dependent")!.state, "pending");
   assert.deepEqual(k.listReady().map((t) => t.taskId), ["child"]);
 
-  k.startTask("child");
+  startVia(k, "child");
+  cleanVia(k, "child");
   k.submitResult({
     envelope: envelope("result", "child", "dev-lead", { messageId: "res-child", parentTaskId: "root" }),
     body: body("result"),
@@ -488,14 +598,16 @@ test("[M4a] blocker: child blocked → parent blocked · dependent blocked (조�
     body: body("spawn_request"),
     child: seed("child", "dev-lead", { ownership: ["src/root"] }),
   });
-  k.startTask("child");
+  startVia(k, "child");
   k.requestSpawn({
     envelope: envelope("spawn_request", "child", "dev-lead", { messageId: "spawn-2", parentTaskId: "root" }),
     body: body("spawn_request"),
     child: seed("grandchild", "dev-lead.sub", { ownership: ["src/root"] }),
   });
   k.createDependentTask({ ...seed("dependent", "qa-security"), dependsOn: ["grandchild"] });
-  k.startTask("grandchild");
+  startVia(k, "grandchild");
+  // `blocked`도 자원을 놓는 종료 상태이므로 확인된 정리 뒤에만 수락된다(대장 `B-13`).
+  cleanVia(k, "grandchild", "worker_failed");
 
   k.submitBlocker({
     envelope: envelope("blocker", "grandchild", "dev-lead.sub", { messageId: "blk-1", parentTaskId: "child" }),
@@ -523,13 +635,15 @@ test("[M4a] 완료된 task는 blocked로 되돌아가지 않는다", () => {
     body: body("spawn_request"),
     child: seed("c2", "dev-lead", { ownership: ["src/root"] }),
   });
-  k.startTask("c1");
+  startVia(k, "c1");
+  cleanVia(k, "c1");
   k.submitResult({
     envelope: envelope("result", "c1", "dev-lead", { messageId: "res-c1", parentTaskId: "root" }),
     body: body("result"),
     summary: "c1 완료",
   });
-  k.startTask("c2");
+  startVia(k, "c2");
+  cleanVia(k, "c2", "worker_failed");
   k.submitBlocker({
     envelope: envelope("blocker", "c2", "dev-lead", { messageId: "blk-c2", parentTaskId: "root" }),
     body: body("blocker"),
@@ -551,10 +665,36 @@ test("[M4a] 잘못된 상태 전이 거부", () => {
   });
   k.createDependentTask({ ...seed("a", "pm"), dependsOn: [] });
   k.createDependentTask({ ...seed("b", "pm"), dependsOn: ["a"] });
-  assert.equal(codeOf(() => k.startTask("b")), "invalid_transition"); // pending
-  k.startTask("a");
-  assert.equal(codeOf(() => k.startTask("a")), "invalid_transition"); // running
-  assert.equal(codeOf(() => k.startTask("nope")), "unknown_task");
+  // ⓐ pending task는 scheduler가 고르지 않으므로 preflight 결정에 끼워 넣을 수도 없다
+  //   (M5c에서 "pending을 시작할 수 없다"는 이 경로로 증명된다 — 우회 진입점이 없다).
+  const pendingBatch = k.planRunnableBatch();
+  assert.deepEqual(pendingBatch.items.map((t) => t.taskId), ["a"], "pending b는 batch에 없다");
+  assert.equal(
+    codeOf(() =>
+      k.commitPreflightBatch({
+        baseRevision: pendingBatch.revision,
+        actionId: nextAction(),
+        decisions: [
+          { taskId: "a", outcome: "deferred" },
+          { taskId: "b", outcome: "prepared", attemptId: nextAttempt() },
+        ],
+      }),
+    ),
+    "preflight_batch_mismatch",
+  );
+  // ⓑ legacy ready→running 진입점 둘은 상태와 무관하게 닫혀 있다(대장 `B-11`).
+  assert.equal(codeOf(() => k.startTask("b")), "preflight_required");
+  assert.equal(codeOf(() => k.startScheduledBatch()), "preflight_required");
+  startVia(k, "a");
+  // ⓒ 이미 running인 task는 다시 시작되지 않는다.
+  assert.equal(
+    codeOf(() => k.startPreparedTask({ taskId: "a", actionId: nextAction(), leaseMarker: nextLease() })),
+    "preflight_required",
+  );
+  assert.equal(
+    codeOf(() => k.startPreparedTask({ taskId: "nope", actionId: nextAction(), leaseMarker: nextLease() })),
+    "unknown_task",
+  );
   assert.equal(
     codeOf(() =>
       k.submitResult({
@@ -568,7 +708,8 @@ test("[M4a] 잘못된 상태 전이 거부", () => {
 });
 
 test("[M4a] 메시지 타입·방향·run/milestone/parent 대조", () => {
-  const { k } = bootRoot();
+  // envelope↔state 대조는 결과 수락 경로에서 본다 → 확인된 정리 뒤 상태에서 시험한다(대장 `B-13`).
+  const { k } = bootCleanedRoot();
   const bad = (over: EnvOverrides, type: AgentMessageType = "result"): string =>
     codeOf(() =>
       k.submitResult({ envelope: envelope(type, "root", "tech-lead", over), body: body(type), summary: "요약" }),
@@ -619,7 +760,7 @@ test("[M4a] artifact 등록: revision/supersedes · 포인터 필드 · missing/
 test("[M5b] artifact 등록: 남의 소유 경로·승인 밖 경로는 거부다(교차 task 오염 차단)", () => {
   const { ws, k } = bootRoot(["other"]);
   k.createRootTask(seed("other", "qa-security")); // ownership = ["src/other"]
-  k.startTask("other");
+  startVia(k, "other");
   mkdirSync(join(ws, "src", "other"), { recursive: true });
   mkdirSync(join(ws, "src", "root"), { recursive: true });
   writeFileSync(join(ws, "src", "other", "x.md"), "남의 것\n");
@@ -647,7 +788,7 @@ test("[M5b] artifact 등록: 승인된 writableRoots 밖은 거부다", () => {
     clock: fixedClock(),
   });
   k.createRootTask(seed("root", "tech-lead", { ownership: ["src"] }));
-  k.startTask("root");
+  startVia(k, "root");
   mkdirSync(join(ws, "docs"), { recursive: true });
   writeFileSync(join(ws, "docs", "a.md"), "v1\n");
   // `docs/a.md`는 소유 경로(`src`) 밖이므로 소유권 게이트가 먼저 잡는다.
@@ -676,7 +817,7 @@ function completeInput(outputs: Array<{ path: string; role: string }>, over: Rec
 }
 
 test("[M5b] A3: 성공 multi-output — 등록 순서·포인터·단일 완료가 정확하다", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const paths = [put(ws, "docs/a.md", "a\n"), put(ws, "src/root/b.md", "b\n"), put(ws, "docs/c.md", "c\n")];
   const before = k.getState().revision;
   const done = k.completeTaskWithArtifacts(completeInput(paths.map((p) => ({ path: p, role: "output" }))));
@@ -771,7 +912,7 @@ test("[M5b] A3: 어느 단계가 실패해도 artifacts·events·messages·revis
   ];
 
   for (const [label, want, build] of cases) {
-    const { ws, k } = bootRoot();
+    const { ws, k } = bootCleanedRoot();
     const input = build(ws);
     const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
     const before = { fp: dirFingerprint(runDir), rev: k.getState().revision, state: k.getTask("root")!.state };
@@ -785,7 +926,7 @@ test("[M5b] A3: 어느 단계가 실패해도 artifacts·events·messages·revis
 });
 
 test("[M5b] A3: 실패 후 재시도는 revision 찌꺼기를 만들지 않는다", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const good = put(ws, "docs/a.md", "a\n");
   const attempt = () =>
     k.completeTaskWithArtifacts(
@@ -850,7 +991,7 @@ function withCommitFault(stage: CommitStage, fn: () => void): boolean {
 
 test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 상태 하나이고 전진이 가능하다", () => {
   for (const stage of COMMIT_STAGES) {
-    const { ws, k } = bootRoot(["second"]);
+    const { ws, k } = bootCleanedRoot(["second"]);
     const p = put(ws, "docs/a.md", "a\n");
     const paths = runPaths(ws, RUN_ID);
     const before = {
@@ -877,7 +1018,7 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
     }
 
     // reopen이 결정론적으로 복구한다(loadRun이 schema·event chain·binding·body·artifact hash를 다 본다).
-    const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+    const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
     assert.equal(existsSync(paths.journalFile), false, `${stage}: 복구 뒤에도 journal이 남았다`);
     if (STAGE_OUTCOME[stage] === "before") {
       // roll back은 state·event 바이트를 **둘 다** 기준으로 되돌린다(완전한 append도 포함).
@@ -890,8 +1031,9 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
       reopened.getState().messages.map((m) => m.bodyPath.replace("messages/", "")).sort(),
       `${stage}: 복구 뒤 messages/ 열거가 색인과 다르다`,
     );
+    // roll back이면 완료 커밋 진입 전 상태, 즉 **정리가 확인된 `cleaning`** 이 그대로 보인다(M5c `B-13`).
     const taskState = reopened.getTask("root")!.state;
-    assert.equal(taskState, STAGE_OUTCOME[stage] === "before" ? "running" : "completed", `${stage}: 관찰 상태가 규칙과 다르다`);
+    assert.equal(taskState, STAGE_OUTCOME[stage] === "before" ? "cleaning" : "completed", `${stage}: 관찰 상태가 규칙과 다르다`);
 
     // event·revision 중복 없음: 줄 수가 lastEventId와 같고 artifact revision은 1건뿐이다.
     const s = reopened.getState();
@@ -899,7 +1041,7 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
     assert.deepEqual(s.artifacts.map((a) => `${a.path}@${a.revision}`), taskState === "completed" ? [`${p}@1`] : [], `${stage}: artifact 중복`);
 
     // 전진 가능: 되돌려졌으면 같은 커밋을 그대로 재시도해 완료되고, 이미 완료됐으면 다음 커밋이 된다.
-    if (taskState === "running") {
+    if (taskState === "cleaning") {
       const done = reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]));
       assert.equal(done.task.state, "completed", `${stage}: 재시도가 실패했다`);
       assert.deepEqual(done.artifacts.map((a) => a.revision), [1], `${stage}: 실패한 시도가 revision을 태웠다`);
@@ -908,7 +1050,7 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
       assert.equal(reopened.getTask("second")!.state, "ready", `${stage}: 마무리 복구 뒤 다음 커밋이 막혔다`);
     }
     // 어느 경로든 다시 열린다(반쪽 상태가 남지 않았다).
-    assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }).getState().revision, reopened.getState().revision);
+    assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }).getState().revision, reopened.getState().revision);
   }
 });
 
@@ -930,7 +1072,7 @@ function pendingAt(
   base: { state: string; events: string; snapshot: string; messages: string[] };
   journal: string;
 } {
-  const { ws, k } = bootRoot(extra);
+  const { ws, k } = bootCleanedRoot(extra);
   const p = put(ws, "docs/a.md", "a\n");
   const paths = runPaths(ws, RUN_ID);
   const base = {
@@ -960,23 +1102,23 @@ test("[M5b] A3: 찢어진(부분 접두) event append는 기준 길이로 되돌
   const { ws, p, paths, base, journal } = pendingAt("events:append");
   appendJournalPrefix(paths, journal, 12);
 
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "찢어진 append가 state를 바꿨다");
   assert.equal(readFileSync(paths.eventsFile, "utf8"), base.events, "event tail이 기준 길이로 되돌려지지 않았다");
   assert.deepEqual(readdirSync(paths.messagesDir).sort(), base.messages, "roll back이 staged/최종 body를 남겼다");
-  assert.equal(reopened.getTask("root")!.state, "running");
+  assert.equal(reopened.getTask("root")!.state, "cleaning");
   assert.equal(reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }])).task.state, "completed");
 });
 
 test("[M5b] A3: 빈 tail(append 0바이트)도 roll back이고 재시도가 성공한다", () => {
   const { ws, p, paths, base } = pendingAt("events:append"); // 접두 중 가장 짧은 경우
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false);
   assert.equal(readFileSync(paths.stateFile, "utf8"), base.state);
   assert.equal(readFileSync(paths.eventsFile, "utf8"), base.events);
   assert.deepEqual(readdirSync(paths.messagesDir).sort(), base.messages, "roll back이 staged body를 남겼다");
-  assert.equal(reopened.getTask("root")!.state, "running");
+  assert.equal(reopened.getTask("root")!.state, "cleaning");
   assert.equal(reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }])).task.state, "completed");
 });
 
@@ -988,12 +1130,12 @@ test("[M5b] A3(6차): 기준 state + **완전한** append도 roll back이다 —
   assert.notEqual(fullEvents, base.events, "완전한 append가 남지 않아 이 규칙을 시험할 수 없다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "state가 이미 바뀌어 회귀가 공허하다");
 
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "복구가 target state를 발행했다");
   assert.equal(readFileSync(paths.eventsFile, "utf8"), base.events, "완전한 append를 기준 길이로 되돌리지 않았다");
   assert.deepEqual(readdirSync(paths.messagesDir).sort(), base.messages, "roll back이 staged/최종 body를 남겼다");
-  assert.equal(reopened.getTask("root")!.state, "running");
+  assert.equal(reopened.getTask("root")!.state, "cleaning");
   // 재시도는 그대로 성공한다(같은 커밋을 다시 올린다 — revision 찌꺼기 0).
   const done = reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]));
   assert.equal(done.task.state, "completed");
@@ -1005,7 +1147,7 @@ test("[M5b] A3(6차): 목표 state 바이트가 이미 쓰였으면 복구는 bo
   const fullEvents = readFileSync(paths.eventsFile, "utf8");
   const target = readFileSync(paths.stateFile, "utf8");
   assert.notEqual(target, base.state, "state가 아직 기준이라 마무리 규칙을 시험할 수 없다");
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false);
   assert.equal(readFileSync(paths.eventsFile, "utf8"), fullEvents, "마무리가 커밋된 event를 잘랐다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), target, "마무리가 state를 바꿨다");
@@ -1052,7 +1194,7 @@ test("[M5b] A3: 접두도 완전 append도 아닌 tail은 fail closed이고 바�
       messages: readdirSync(paths.messagesDir).sort(),
     };
 
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_foreign", label);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_foreign", label);
     assert.deepEqual(readFileSync(paths.eventsFile), after.events, `${label}: 남의 event 바이트를 지웠다`);
     assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, `${label}: state가 바뀌었다`);
     assert.equal(readFileSync(paths.snapshotFile, "utf8"), after.snapshot, `${label}: snapshot이 바뀌었다`);
@@ -1248,7 +1390,7 @@ test("[M5b] A3: 손댄 journal은 조용히 넘기지 않고 fail closed다", ()
     ],
   ];
   for (const [label, tamper, want] of cases) {
-    const { ws, k } = bootRoot();
+    const { ws, k } = bootCleanedRoot();
     const p = put(ws, "docs/a.md", "a\n");
     const paths = runPaths(ws, RUN_ID);
     assert.equal(
@@ -1266,7 +1408,7 @@ test("[M5b] A3: 손댄 journal은 조용히 넘기지 않고 fail closed다", ()
     assert.notEqual(tampered, valid, `${label}: 변조가 실제로 아무것도 바꾸지 않았다(회귀가 공허하다)`);
     writeFileSync(paths.journalFile, tampered);
 
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), want, label);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), want, label);
     // 커밋 경로도 같은 규칙이다(복구를 우회해 그 위에 쓰지 않는다).
     assert.equal(
       codeOf(() => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))),
@@ -1300,7 +1442,7 @@ test("[M5b] A3: staged body가 없거나 변조·교체되면 최종 body를 만
       writeFileSync(stagedFile, bytes);
     }
 
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing", how);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_missing", how);
     assert.equal(readFileSync(paths.stateFile, "utf8"), target, `${how}: state가 바뀌었다`);
     assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: journal이 사라졌다`);
     assert.equal(existsSync(join(paths.messagesDir, "r-atomic.md")), false, `${how}: 최종 body를 만들었다`);
@@ -1308,7 +1450,7 @@ test("[M5b] A3: staged body가 없거나 변조·교체되면 최종 body를 만
 });
 
 test("[M5b] A3: 최종 body는 journal이 durable해진 뒤에만 생긴다(같은/다른 id 재시도 · 열거)", () => {
-  const { ws, k } = bootRoot(["second"]);
+  const { ws, k } = bootCleanedRoot(["second"]);
   const p = put(ws, "docs/a.md", "a\n");
   const paths = runPaths(ws, RUN_ID);
   const listing = (): string[] => readdirSync(paths.messagesDir).sort();
@@ -1341,7 +1483,7 @@ test("[M5b] A3: 최종 body는 journal이 durable해진 뒤에만 생긴다(같�
   assert.equal(listing().filter((f) => f.startsWith(".staged-")).length, 0, "staged 파일이 남았다");
 
   // ⓓ reopen이 성공한다(색인된 body hash가 전부 맞다).
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(reopened.getTask("root")!.state, "completed");
   assert.equal(reopened.getMessage("r-atomic")!.bodyPath, "messages/r-atomic.md");
 });
@@ -1376,6 +1518,8 @@ function twoBodyCommit(
       summary: null,
       routeToTaskId: null,
       acknowledgedAt: null,
+      // M5c(v2) — 전달 재시도 메타데이터도 durable 계약이다(전달 대상이 없으면 초기값).
+      delivery: emptyMessageDelivery(),
     });
   }
   draft.messages.sort((a, b) => (a.messageId < b.messageId ? -1 : 1));
@@ -1389,6 +1533,14 @@ function twoBodyCommit(
     toState: null,
     reason: null,
     artifactId: null,
+    // M5c(v2) — 닫힌 감사 필드(자유 payload 없음). 이 이벤트는 전부 null이다.
+    actionId: null,
+    attemptId: null,
+    turnId: null,
+    operationId: null,
+    marker: null,
+    tokenDelta: null,
+    elapsedMs: null,
   }));
   return {
     input: {
@@ -1419,7 +1571,7 @@ test("[M5b] A3: 다중 body도 journal 전에는 staging뿐이고, 발행 뒤 �
   const baseline = readdirSync(paths.messagesDir).sort();
   assert.equal(withCommitFault("body:publish", () => void commitRun(paths, input)), true);
   assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 2, "staged body 2건이 아니다");
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
   assert.deepEqual(
     readdirSync(paths.messagesDir).sort(),
@@ -1439,7 +1591,7 @@ test("[M5b] A3: 다중 body도 journal 전에는 staging뿐이고, 발행 뒤 �
 
 test("[M5b] A3: roll back은 기존 body를 절대 지우지 않는다(자기 트랜잭션 파일만)", () => {
   // root를 먼저 완료해 `r-atomic.md`를 durable 색인 안에 남긴다.
-  const { ws, k } = bootRoot(["second"]);
+  const { ws, k } = bootCleanedRoot(["second"]);
   const p = put(ws, "docs/a.md", "a\n");
   assert.equal(k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }])).task.state, "completed");
   const paths = runPaths(ws, RUN_ID);
@@ -1453,7 +1605,7 @@ test("[M5b] A3: roll back은 기존 body를 절대 지우지 않는다(자기 �
   );
   truncateSync(paths.eventsFile, Buffer.byteLength(baseEvents, "utf8") + 6); // 부분 접두 → roll back
 
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false);
   assert.equal(readFileSync(join(paths.messagesDir, "r-atomic.md"), "utf8"), committedBody, "roll back이 기존 body를 건드렸다");
   assert.equal(reopened.getTask("second"), null, "roll back인데 task가 남았다");
@@ -1474,6 +1626,10 @@ function rebuildJournal(
 ): string {
   const state = JSON.parse(j.state as string) as any;
   if (opts.editState) opts.editState(state);
+  // durable 회계는 그 승인에 묶여 있다(`accounting.approvalDigest`). 위조자도 이 값을 맞출 수 있으므로
+  // 이 도구는 **내부적으로 완전히 일관된** journal을 만들기 위해 함께 다시 계산한다 — 그래야 아래의
+  // 거부가 자기 일관성 검사가 아니라 **전이 권위 묶기**에서 나온 것임이 증명된다(6차 리뷰 A3).
+  state.accounting.approvalDigest = manifestDigest(validateApprovalManifest(state.manifest));
   const contentDigest = stateContentDigest(validateRunState({ ...state, lastEventId: 0, lastEventHash: "0".repeat(64) }));
   let lines = (j.events as string).split("\n").filter((l) => l.length > 0);
   if (opts.editLines) lines = opts.editLines(lines);
@@ -1518,7 +1674,16 @@ test("[M5b] A3(6차): 해시를 전부 다시 계산한 위조 후속도 milesto
   // 위조자는 journal을 쓸 수 있고 events.jsonl에 자기 append도 남길 수 있다(같은 uid). 이전 판은
   // 이 상태를 **roll forward**해서 위조 state를 발행했다. 지금은 어떤 경우에도 발행하지 않는다.
   const cases: Array<[string, (s: any) => void, string]> = [
-    ["task state를 바꾼다(불변 권위는 그대로)", (st) => (st.tasks[0].state = "completed"), "rolled_back"],
+    [
+      // 위조는 **그 자체로는 유효한 v2 state**여야 한다(그래야 거부가 "전이 권위 묶기"에서 나온다):
+      // `completed`는 미확정 결과를 들고 있을 수 없으므로 봉인된 pendingResult도 함께 비운다.
+      "task state를 바꾼다(불변 권위는 그대로)",
+      (st) => {
+        st.tasks[0].state = "completed";
+        st.tasks[0].execution.pendingResult = null;
+      },
+      "rolled_back",
+    ],
     [
       // state와 manifest를 **함께** 바꿔 내부 정합성까지 맞춘 위조(그렇지 않으면 자기 일관성 검사에서 걸린다).
       "milestone을 바꾼다",
@@ -1539,7 +1704,7 @@ test("[M5b] A3(6차): 해시를 전부 다시 계산한 위조 후속도 milesto
     ["생성 신원(createdAt)을 바꾼다", (st) => (st.createdAt = "2020-01-01T00:00:00.000Z"), "rejected"],
   ];
   for (const [label, editState, want] of cases) {
-    const { ws, k } = bootRoot();
+    const { ws, k } = bootCleanedRoot();
     const p = put(ws, "docs/a.md", "a\n");
     const paths = runPaths(ws, RUN_ID);
     // 유효 journal 하나를 얻는다(발행 전 실패 → journal + staged body).
@@ -1554,22 +1719,22 @@ test("[M5b] A3(6차): 해시를 전부 다시 계산한 위조 후속도 milesto
     plantJournal(paths, forged, baseEvents);
 
     if (want === "rejected") {
-      assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_foreign", label);
+      assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_foreign", label);
       assert.equal(readFileSync(paths.journalFile, "utf8"), forged, `${label}: 무효 journal이 사라졌다`);
       assert.equal(readFileSync(paths.eventsFile, "utf8"), baseEvents + (JSON.parse(forged) as { events: string }).events, `${label}: 남의 바이트를 지웠다`);
     } else {
       // 완전히 일관된 위조라도 **되돌린다**(복구는 후속을 만들 권한이 없다).
-      const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+      const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
       assert.equal(existsSync(paths.journalFile), false, `${label}: journal이 남았다`);
       assert.equal(readFileSync(paths.eventsFile, "utf8"), baseEvents, `${label}: 위조 append가 남았다`);
-      assert.equal(reopened.getTask("root")!.state, "running", `${label}: 위조 state가 승격됐다`);
+      assert.equal(reopened.getTask("root")!.state, "cleaning", `${label}: 위조 state가 승격됐다`);
     }
     assert.equal(readFileSync(paths.stateFile, "utf8"), baseState, `${label}: state 바이트가 바뀌었다`);
   }
 });
 
 test("[M5b] A3(6차): key 순서를 바꾼 event 줄은 정규형이 아니다", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const p = put(ws, "docs/a.md", "a\n");
   const paths = runPaths(ws, RUN_ID);
   assert.equal(
@@ -1591,7 +1756,7 @@ test("[M5b] A3(6차): key 순서를 바꾼 event 줄은 정규형이 아니다",
   assert.notEqual(reordered, JSON.stringify(valid), "변조가 아무것도 바꾸지 않았다(회귀가 공허하다)");
   plantJournal(paths, reordered, baseEvents);
 
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_invalid");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_invalid");
   assert.equal(readFileSync(paths.stateFile, "utf8"), baseState, "state가 바뀌었다");
   assert.equal(readFileSync(paths.journalFile, "utf8"), reordered, "무효 journal이 사라졌다");
 });
@@ -1610,7 +1775,7 @@ test("[M5b] A3(6차): journal body 목록은 base→target 새 메시지 delta�
     ],
   ];
   for (const [label, editBodies] of cases) {
-    const { ws, k } = bootRoot();
+    const { ws, k } = bootCleanedRoot();
     const p = put(ws, "docs/a.md", "a\n");
     const paths = runPaths(ws, RUN_ID);
     assert.equal(
@@ -1623,7 +1788,7 @@ test("[M5b] A3(6차): journal body 목록은 base→target 새 메시지 delta�
     const tampered = rebuildJournal(valid, { bodies: editBodies(valid.bodies as any[], valid) });
     plantJournal(paths, tampered, baseEvents);
 
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_invalid", label);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_invalid", label);
     assert.equal(readFileSync(paths.stateFile, "utf8"), baseState, `${label}: state가 바뀌었다`);
     assert.equal(readFileSync(paths.journalFile, "utf8"), tampered, `${label}: 무효 journal이 사라졌다`);
   }
@@ -1639,7 +1804,7 @@ test("[M5b] A3(6차): 남의 최종 body는 digest가 같아도 채택·덮어�
     writeFileSync(finalFile, foreignText);
     const target = readFileSync(paths.stateFile, "utf8");
 
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign", how);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_foreign", how);
     assert.equal(readFileSync(finalFile, "utf8"), foreignText, `${how}: 남의 최종 body를 덮거나 지웠다`);
     assert.equal(readFileSync(paths.stateFile, "utf8"), target, `${how}: state가 바뀌었다`);
     assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: journal이 사라졌다`);
@@ -1659,7 +1824,7 @@ test("[M5b] A3(6차): 계획과 발행 사이에 최종 파일이 생기면 덮�
     writeFileSync(finalFile, "# 경합으로 끼어든 남의 body\n");
   });
   try {
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_foreign");
   } finally {
     setCommitFaultHook(null);
   }
@@ -1678,17 +1843,17 @@ test("[M5b] A3(6차): roll back은 같은 digest의 남의 최종 body도 지우
   const finalFile = join(paths.messagesDir, "r-atomic.md");
   writeFileSync(finalFile, sameDigest);
 
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
   assert.equal(readFileSync(finalFile, "utf8"), sameDigest, "roll back이 같은 digest의 남의 body를 지웠다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "roll back이 state를 바꿨다");
   assert.equal(readFileSync(paths.eventsFile, "utf8"), base.events, "roll back이 event를 되돌리지 않았다");
   assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 0, "자기 staging을 남겼다");
-  assert.equal(reopened.getTask("root")!.state, "running");
+  assert.equal(reopened.getTask("root")!.state, "cleaning");
 });
 
 test("[M5b] A3(6차): 다중 body 부분 발행·복구 I/O 실패는 재시도로 멱등하게 완결된다", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const { input, ids, paths } = twoBodyCommit(ws, k);
   const baseline = readdirSync(paths.messagesDir).sort();
   // state까지 durable하게 만든 뒤 body 발행 도중 실패시킨다(첫 body만 발행된다).
@@ -1702,7 +1867,7 @@ test("[M5b] A3(6차): 다중 body 부분 발행·복구 I/O 실패는 재시도�
     if (++calls === 2) throw new Error("주입 실패: 복구 중 body 발행");
   });
   try {
-    assert.throws(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+    assert.throws(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
   } finally {
     setCommitFaultHook(null);
   }
@@ -1713,7 +1878,7 @@ test("[M5b] A3(6차): 다중 body 부분 발행·복구 I/O 실패는 재시도�
   assert.equal(readFileSync(paths.stateFile, "utf8"), target, "복구 실패가 state를 바꿨다");
 
   // 재시도는 남은 body를 발행하고 정리까지 끝낸다(멱등).
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false, "재시도 뒤에도 journal이 남았다");
   assert.deepEqual(readdirSync(paths.messagesDir).sort(), [...baseline, ...ids.map((i) => `${i}.md`)].sort());
   for (const id of ids) assert.ok(reopened.getMessage(id), `${id}가 색인에 없다`);
@@ -1726,7 +1891,7 @@ test("[M5b] A3(6차): 목표 state 바이트인데 append가 불완전하면 마
   truncateSync(paths.eventsFile, events.length - 5); // 목표 state + 찢어진 append
   const after = readFileSync(paths.eventsFile);
 
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_unrecognized");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_unrecognized");
   assert.deepEqual(readFileSync(paths.eventsFile), after, "event 바이트를 바꿨다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), target, "state가 바뀌었다");
   assert.equal(readFileSync(paths.journalFile, "utf8"), journal, "journal이 사라졌다");
@@ -1767,7 +1932,7 @@ test("[M5b] A2(7차): 발행 hook이 staging을 갈아끼워도 link되지 않�
       writeFileSync(stagedFile, swapped);
     });
     try {
-      assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing", how);
+      assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_missing", how);
     } finally {
       hook.reset();
     }
@@ -1777,7 +1942,7 @@ test("[M5b] A2(7차): 발행 hook이 staging을 갈아끼워도 link되지 않�
     assert.equal(readFileSync(paths.stateFile, "utf8"), target, `${how}: state가 바뀌었다`);
     assert.deepEqual(readFileSync(stagedFile), swapped, `${how}: 남의 파일을 지우거나 덮었다`);
     // 재시도도 같은 판정이다(결정론적 · journal 보존 · 최종 body 0).
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing", how);
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_missing", how);
     assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: 재시도가 journal을 지웠다`);
   }
 });
@@ -1792,7 +1957,7 @@ test("[M5b] A2(7차): link 직후 증명이 경합으로 끼어든 최종 파일
   const foreign = "# 발행 직전에 끼어든 남의 body\n";
   const hook = withSideEffectAt("body:publish", () => writeFileSync(finalFile, foreign));
   try {
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_foreign");
   } finally {
     hook.reset();
   }
@@ -1832,7 +1997,7 @@ test("[M5b] A2(7차): 다중 body 부분 발행 중 앞선 staging·최종 body�
     assert.equal(existsSync(paths.journalFile), true, "복구 기록(journal)이 사라졌다");
     assert.deepEqual(readFileSync(swapped), swapTo, "남의 staging을 지우거나 덮었다");
     // reopen도 완료로 만들지 않는다(같은 판정 · journal 보존).
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing");
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_missing");
     assert.equal(existsSync(paths.journalFile), true, "reopen이 journal을 지웠다");
   }
 
@@ -1860,7 +2025,7 @@ test("[M5b] A2(7차): 다중 body 부분 발행 중 앞선 staging·최종 body�
     assert.deepEqual(readFileSync(firstFinal), mutated, "변경된 최종 body를 덮거나 지웠다");
     assert.equal(existsSync(join(paths.messagesDir, `${ids[1]}.md`)), true, "두 번째 body는 발행됐어야 한다");
     assert.equal(existsSync(paths.journalFile), true, "복구 기록(journal)이 사라졌다");
-    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_foreign");
     assert.equal(existsSync(paths.journalFile), true, "reopen이 journal을 지웠다");
   }
 });
@@ -1893,7 +2058,7 @@ test("[M5b] A2(7차): journal 삭제 직전 전수 재검증 — 같은 inode·�
     "발행 결과 디렉터리 엔트리가 계약과 다르다(staging 잔재·삭제)",
   );
   // reopen은 완료된 run으로 보고하지 않는다 — 같은 판정으로 fail closed이고 journal이 남는다.
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "journal_body_foreign");
   assert.equal(existsSync(paths.journalFile), true, "reopen이 journal을 지웠다");
 });
 
@@ -1908,7 +2073,7 @@ test("[M5b] A2(7차): 이미 발행된 최종 body는 재시도의 전수 재검
   const published = ids.map((i) => readFileSync(join(paths.messagesDir, `${i}.md`)));
   const target = readFileSync(paths.stateFile, "utf8");
 
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(existsSync(paths.journalFile), false, "재시도가 journal을 지우지 못했다");
   assert.equal(readFileSync(paths.stateFile, "utf8"), target, "재시도가 state를 바꿨다");
   assert.deepEqual(
@@ -1921,7 +2086,7 @@ test("[M5b] A2(7차): 이미 발행된 최종 body는 재시도의 전수 재검
     assert.ok(reopened.getMessage(ids[i]), `${ids[i]}가 색인에 없다`);
   }
   // 한 번 더 열어도 같다(멱등).
-  assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }).getState().revision, reopened.getState().revision);
+  assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }).getState().revision, reopened.getState().revision);
 });
 
 // ── M5b 4차 리뷰 A4: 호출자 소유 산출물은 한 번만 읽어 입양한다 ────────────────
@@ -1939,7 +2104,7 @@ function alternatingOutput(first: unknown, then: unknown, key: "role" | "path", 
 test("[M5b] A4: 교대 getter는 **첫 읽기 값**으로만 굳는다(두 번째 읽기 값은 durable에 못 들어간다)", () => {
   // 이전 판은 검증한 뒤 `out.role`을 **다시 읽어** 기록했으므로, 첫 읽기 `"output"` · 두 번째 읽기
   // 계약 밖 role인 교대 getter가 record와 result 포인터를 함께 오염시켰다(커밋 성공 · reopen 실패).
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const good = put(ws, "docs/a.md", "a\n");
   put(ws, "src/other/steal.md", "남의 것\n");
   const outputs = [
@@ -1965,7 +2130,7 @@ test("[M5b] A4: 교대 getter는 **첫 읽기 값**으로만 굳는다(두 번�
   );
   assert.deepEqual(k.getTask("root")!.artifactRefs.map((r) => r.role), ["output", "evidence"]);
   // durable state가 실제로 다시 열린다 — "커밋은 되고 reopen만 실패하는" 오염이 없다.
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(reopened.getTask("root")!.state, "completed");
   assert.deepEqual(reopened.getState().artifacts.map((a) => a.role), ["output", "evidence"]);
 });
@@ -2034,30 +2199,43 @@ test("[M5b] A4: throwing getter·proxy·미상 key·cyclic·깊은 payload는 du
     ["path가 숫자다", () => ({ path: 1, role: "output" }), "path_empty"],
   ];
 
+  // 두 등록 경로는 M5c에서 요구 상태가 다르다(완료 트랜잭션은 확인된 `cleaning`, 단건 등록은 `running`)
+  // → 경로마다 그 상태의 run에서 같은 적대적 입력을 시험한다. 어느 쪽도 완화하지 않는다.
   for (const [label, build, want] of cases) {
-    const { ws, k } = bootRoot();
-    const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
-    const before = { fp: dirFingerprint(runDir), rev: k.getState().revision };
-    const outputs = [build(ws)] as Array<{ path: string; role: "output" }>;
-    assert.equal(codeOf(() => k.completeTaskWithArtifacts(completeInput(outputs))), want, label);
+    {
+      const { ws, k } = bootCleanedRoot();
+      const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
+      const before = { fp: dirFingerprint(runDir), rev: k.getState().revision };
+      const outputs = [build(ws)] as Array<{ path: string; role: "output" }>;
+      assert.equal(codeOf(() => k.completeTaskWithArtifacts(completeInput(outputs))), want, label);
+      assert.equal(dirFingerprint(runDir), before.fp, `${label}: durable 파일이 바뀌었다`);
+      assert.equal(k.getState().revision, before.rev, `${label}: revision이 올랐다`);
+      assert.deepEqual(k.getState().artifacts, [], `${label}: artifact가 durable에 남았다`);
+      assert.equal(k.getTask("root")!.state, "cleaning", `${label}: task 상태가 바뀌었다`);
+    }
     // 단건 등록 경로도 같은 규칙이다(불변식이 함수 하나에 있다). 입력 객체 **그대로** 넘긴다 —
     // spread로 미리 평탄화하면 적대적 getter가 사라져 회귀가 공허해진다.
-    const single = build(ws) as Record<string, unknown>;
-    Object.defineProperty(single, "taskId", { value: "root", enumerable: true, configurable: true });
-    assert.equal(
-      codeOf(() => k.registerArtifact(single as unknown as { taskId: string; path: string; role: "output" })),
-      want,
-      `${label}(단건)`,
-    );
-    assert.equal(dirFingerprint(runDir), before.fp, `${label}: durable 파일이 바뀌었다`);
-    assert.equal(k.getState().revision, before.rev, `${label}: revision이 올랐다`);
-    assert.deepEqual(k.getState().artifacts, [], `${label}: artifact가 durable에 남았다`);
-    assert.equal(k.getTask("root")!.state, "running", `${label}: task 상태가 바뀌었다`);
+    {
+      const { ws, k } = bootRoot();
+      const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
+      const before = { fp: dirFingerprint(runDir), rev: k.getState().revision };
+      const single = build(ws) as Record<string, unknown>;
+      Object.defineProperty(single, "taskId", { value: "root", enumerable: true, configurable: true });
+      assert.equal(
+        codeOf(() => k.registerArtifact(single as unknown as { taskId: string; path: string; role: "output" })),
+        want,
+        `${label}(단건)`,
+      );
+      assert.equal(dirFingerprint(runDir), before.fp, `${label}(단건): durable 파일이 바뀌었다`);
+      assert.equal(k.getState().revision, before.rev, `${label}(단건): revision이 올랐다`);
+      assert.deepEqual(k.getState().artifacts, [], `${label}(단건): artifact가 durable에 남았다`);
+      assert.equal(k.getTask("root")!.state, "running", `${label}(단건): task 상태가 바뀌었다`);
+    }
   }
 });
 
 test("[M5b] A4: 이미 입양한 항목을 나중에 변조해도 등록값은 안 바뀐다", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const first: Record<string, unknown> = { path: put(ws, "docs/a.md", "a\n"), role: "output" };
   put(ws, "src/other/steal.md", "남의 것\n");
   // 두 번째 항목의 `role` getter가 **이미 입양된 첫 항목**을 오염시킨다(입양 이후 mutation).
@@ -2079,22 +2257,22 @@ test("[M5b] A4: 이미 입양한 항목을 나중에 변조해도 등록값은 �
     "입양 뒤 원본 변조가 등록값에 반영됐다",
   );
   assert.equal(first.role, "made-up", "이 회귀가 공허하다 — 변조 자체가 일어나지 않았다");
-  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(reopened.getTask("root")!.state, "completed");
   assert.deepEqual(reopened.getTask("root")!.artifactRefs.map((r) => r.role), ["output", "evidence"]);
 });
 
 test("[M5b] A3: 커밋 단계 실패(stale_writer)도 전이 0이다", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot(["second"]);
   const p = put(ws, "docs/a.md", "a\n");
   // 같은 run을 두 번째 kernel로 열어 **먼저** 커밋한다 → 이쪽 base가 낡는다.
-  const other = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
-  other.registerArtifact({ taskId: "root", path: p, role: "output" });
+  const other = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
+  other.createRootTask(seed("second", "tech-lead", { ownership: ["docs"] }));
   const runDir = dirname(runPaths(ws, RUN_ID).stateFile);
   const fp = dirFingerprint(runDir);
   assert.equal(codeOf(() => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))), "stale_writer");
   assert.equal(dirFingerprint(runDir), fp, "거부된 커밋이 파일을 바꿨다");
-  assert.equal(other.getTask("root")!.state, "running", "남의 결과가 덮였다");
+  assert.equal(other.getTask("root")!.state, "cleaning", "남의 결과가 덮였다");
 });
 
 test("[M4a] 상위 디렉터리 symlink로 workspace를 벗어나는 artifact 거부", () => {
@@ -2114,6 +2292,8 @@ test("[M4a] result 수락 직전 artifact 재검증: tamper/미등록/포인터 
   mkdirSync(join(ws, "docs"), { recursive: true });
   writeFileSync(join(ws, "docs", "a.md"), "v1\n");
   const p = k.registerArtifact({ taskId: "root", path: "docs/a.md", role: "output" });
+  // 등록은 running turn에서, 결과 수락은 확인된 정리 뒤에 일어난다(대장 `B-13`).
+  cleanVia(k, "root");
 
   // 미등록 포인터
   assert.equal(
@@ -2203,7 +2383,7 @@ test("[M4a] 재시작: 같은 run을 새 인스턴스로 열면 ready 목록·re
   k.createDependentTask({ ...seed("dependent", "qa-security"), dependsOn: ["child"] });
   mkdirSync(join(ws, "docs"), { recursive: true });
   writeFileSync(join(ws, "docs", "a.md"), "v1\n");
-  k.startTask("child");
+  startVia(k, "child");
   k.registerArtifact({ taskId: "child", path: "docs/a.md", role: "output" });
   const before = k.getState();
   const readyBefore = k.listReady().map((t) => t.taskId);
@@ -2224,6 +2404,7 @@ test("[M4a] snapshot은 state에서만 만들어지고 raw artifact 본문·tran
   mkdirSync(join(ws, "docs"), { recursive: true });
   writeFileSync(join(ws, "docs", "a.md"), `# 산출물\n${marker}\n`);
   const p = k.registerArtifact({ taskId: "root", path: "docs/a.md", role: "output" });
+  cleanVia(k, "root");
   k.submitResult({
     envelope: envelope("result", "root", "tech-lead", { messageId: "r1", artifactRefs: [p] }),
     body: body("result"),
@@ -2260,29 +2441,50 @@ test("[M4a] 읽기 API는 깊은 사본을 준다 — 반환값 수정으로 sta
 
 test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 바꿀 진입점이 없다", () => {
   const actual = Object.getOwnPropertyNames(OrchestrationKernel.prototype).sort();
+  // M5c가 더한 것은 **durable lifecycle reducer와 단일 scheduler 진입점**뿐이다. 각각 좁은 전이 하나만
+  // 하고, 남의 task 상태·의존성·완료를 직접 바꾸는 API는 여전히 없다(`startTask`/`startScheduledBatch`는
+  // `preflight_required` stub으로만 남아 있다 — 대장 `B-11`).
   assert.deepEqual(actual, [
     "acknowledgeDelivery",
+    "beginDeliveryAttempt",
+    "chargeTurnUsage",
+    "commitPreflightBatch",
     "completeTaskWithArtifacts",
+    "confirmCleanup",
     "constructor",
     "createDependentTask",
     "createRootTask",
+    "failCleanup",
+    "failDeliveryAttempt",
+    "getAccounting",
     "getArtifact",
     "getManifest",
     "getMessage",
     "getState",
     "getTask",
+    "hasCommittedAction",
     "listPendingInbox",
     "listReady",
     "nextPendingDelivery",
     // M5b 4차 리뷰 A2: `paths`는 own field가 아니라 **prototype getter**다(freeze된 값만 돌려준다).
     "paths",
+    "pauseTask",
+    "planRunnableBatch",
     "rebuildSnapshot",
     "recordDecision",
+    "recordOperationReceipt",
+    "recordProgress",
+    "recordTerminal",
     "registerArtifact",
+    "remainingBudget",
+    "requestCancel",
     "requestReview",
     "requestRevision",
     "requestSpawn",
+    "resumeTask",
     "scheduleReady",
+    "settleCleanedAttempt",
+    "startPreparedTask",
     "startScheduledBatch",
     "startTask",
     "submitBlocker",
@@ -2415,16 +2617,16 @@ test("[M4a] load fail-closed: 없는 run · 깨진 JSON · 미지 필드 · runI
   const original = readFileSync(paths.stateFile, "utf8");
 
   writeFileSync(paths.stateFile, "{ not json");
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID })), "state_unparsable");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID, clock: fixedClock() })), "state_unparsable");
 
   writeFileSync(paths.stateFile, JSON.stringify({ ...JSON.parse(original), sneaky: true }));
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID })), "invalid_state");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID, clock: fixedClock() })), "invalid_state");
 
   writeFileSync(paths.stateFile, JSON.stringify({ ...JSON.parse(original), runId: "other-run" }));
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID })), "run_id_mismatch");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID, clock: fixedClock() })), "run_id_mismatch");
 
   writeFileSync(paths.stateFile, original);
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws2, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4a] load fail-closed: event 개수·체인·미지 필드 변조", () => {
@@ -2434,24 +2636,24 @@ test("[M4a] load fail-closed: event 개수·체인·미지 필드 변조", () =>
   const lines = originalEvents.split("\n").filter((l) => l.length > 0);
 
   writeFileSync(paths.eventsFile, `${lines.slice(0, -1).join("\n")}\n`);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "event_count_mismatch");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "event_count_mismatch");
 
   const tampered = JSON.parse(lines[lines.length - 1]);
   tampered.reason = "created";
   writeFileSync(paths.eventsFile, `${[...lines.slice(0, -1), JSON.stringify(tampered)].join("\n")}\n`);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "event_chain_broken");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "event_chain_broken");
 
   const midTampered = JSON.parse(lines[0]);
   midTampered.at = "2030-01-01T00:00:00.000Z";
   writeFileSync(paths.eventsFile, `${[JSON.stringify(midTampered), ...lines.slice(1)].join("\n")}\n`);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "event_chain_broken");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "event_chain_broken");
 
   writeFileSync(paths.eventsFile, `${lines.join("\n")}\nnot-json\n`);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "event_count_mismatch");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "event_count_mismatch");
 
   writeFileSync(paths.eventsFile, originalEvents);
   appendFileSync(paths.eventsFile, "");
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4a] load fail-closed: message body 변조·삭제·symlink", () => {
@@ -2461,19 +2663,19 @@ test("[M4a] load fail-closed: message body 변조·삭제·symlink", () => {
   const originalBody = readFileSync(bodyFile, "utf8");
 
   writeFileSync(bodyFile, `${originalBody}\n`);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "message_body_hash_mismatch");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "message_body_hash_mismatch");
 
   rmSync(bodyFile);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "message_body_missing");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "message_body_missing");
 
   const decoy = join(paths.dir, "decoy.md");
   writeFileSync(decoy, originalBody);
   symlinkSync(decoy, bodyFile);
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "message_body_not_regular_file");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "message_body_not_regular_file");
 
   rmSync(bodyFile);
   writeFileSync(bodyFile, originalBody);
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4a] load fail-closed: 등록된 artifact가 사라지거나 변조되면 열리지 않는다", () => {
@@ -2481,37 +2683,42 @@ test("[M4a] load fail-closed: 등록된 artifact가 사라지거나 변조되면
   mkdirSync(join(ws, "docs"), { recursive: true });
   writeFileSync(join(ws, "docs", "a.md"), "v1\n");
   k.registerArtifact({ taskId: "root", path: "docs/a.md", role: "output" });
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 
   writeFileSync(join(ws, "docs", "a.md"), "tampered\n");
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "artifact_hash_mismatch");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "artifact_hash_mismatch");
 
   rmSync(join(ws, "docs", "a.md"));
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "artifact_missing");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "artifact_missing");
 
   writeFileSync(join(ws, "docs", "a.md"), "v1\n");
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4a][P0-1] 문법적으로 유효한 state 편집은 kernel 우회에 실패한다(state↔event binding)", () => {
-  const { ws, k } = bootRoot();
+  const { ws, k } = bootCleanedRoot();
   const paths = runPaths(ws, RUN_ID);
   const original = readFileSync(paths.stateFile, "utf8");
-  assert.equal(k.getTask("root")!.state, "running");
+  assert.equal(k.getTask("root")!.state, "cleaning");
 
-  // Codex 재현 시나리오: run_state.json만 고쳐 완료를 위조한다.
+  // Codex 재현 시나리오: run_state.json만 고쳐 완료를 위조한다. 위조는 **그 자체로는 유효한 v2**여야
+  // 한다(완료된 task는 미확정 결과를 들고 있을 수 없다) → 남는 위반이 "전이 권위" 하나뿐이 된다.
   const forged = JSON.parse(original);
   forged.tasks[0].state = "completed";
+  forged.tasks[0].execution.pendingResult = null;
   forged.tasks[0].resultSummary = "forged";
   writeFileSync(paths.stateFile, JSON.stringify(forged, null, 2));
   assert.equal(
-    codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })),
+    codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })),
     "state_event_binding_mismatch",
   );
 
   // 개별 허용 필드 하나만 건드려도 동일하게 거부된다.
   for (const mutate of [
-    (s: any) => (s.tasks[0].state = "completed"),
+    (s: any) => {
+      s.tasks[0].state = "completed";
+      s.tasks[0].execution.pendingResult = null;
+    },
     (s: any) => (s.tasks[0].resultSummary = "forged"),
     (s: any) => (s.tasks[0].ownership = ["src/hijacked"]),
     (s: any) => (s.revision += 1),
@@ -2528,16 +2735,18 @@ test("[M4a][P0-1] 문법적으로 유효한 state 편집은 kernel 우회에 실
     const s = JSON.parse(original);
     mutate[1](s);
     writeFileSync(paths.stateFile, JSON.stringify(s, null, 2));
-    const code = codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+    const code = codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
     assert.ok(
-      // 전부 fail-closed 거부다. milestone·승인 범위 위조는 binding보다 **먼저** manifest 검사에 걸린다.
-      // 전부 거부 코드다. task_assignment에 summary를 끼워 넣는 위조는 M4c의 summary 계약(invalid_state)에,
-      // milestone·승인 범위 위조는 manifest 검사에 **binding보다 먼저** 걸린다.
+      // 전부 fail-closed 거부다. task_assignment에 summary를 끼워 넣는 위조는 M4c의 summary 계약
+      // (invalid_state)에, milestone·승인 범위 위조는 manifest 검사와 **M5c의 회계↔승인 묶기**
+      // (accounting_approval_mismatch — 승인이 바뀌면 예산 이력을 이어 쓰지 않는다)에 binding보다
+      // **먼저** 걸린다.
       [
         "state_event_binding_mismatch",
         "run_id_mismatch",
         "manifest_milestone_mismatch",
         "ownership_outside_writable_root",
+        "accounting_approval_mismatch",
         "invalid_state",
       ].includes(code),
       `허용 필드 변조 #${mutate[0]}가 통과했다 (code=${code})`,
@@ -2552,8 +2761,8 @@ test("[M4a][P0-1] 문법적으로 유효한 state 편집은 kernel 우회에 실
   assert.equal(JSON.parse(lines[0]).stateDigest !== null, true, "run_created도 커밋 마지막 이벤트다");
 
   // 원상 복구하면 다시 열린다.
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
-  assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }).getTask("root")!.state, "running");
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
+  assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }).getTask("root")!.state, "cleaning");
 });
 
 test("[M4a][P0-1] stateDigest는 chain 필드를 제외해 순환하지 않고 커밋 마지막 이벤트에만 붙는다", () => {
@@ -2574,7 +2783,8 @@ test("[M4a][P0-1] stateDigest는 chain 필드를 제외해 순환하지 않고 �
   // createRootTask 커밋은 이벤트 여러 건이고, 그중 마지막만 digest를 든다.
   const withDigest = events.filter((e) => e.stateDigest !== null).length;
   assert.ok(withDigest < events.length, "모든 이벤트가 digest를 들고 있다 — 커밋 경계가 사라졌다");
-  assert.equal(withDigest, 3, "커밋 3건(run_created/createRootTask/startTask)만 digest를 남겨야 한다");
+  // M5c 시작 경로는 커밋 두 개다(preflight → startPreparedTask) → run_created/createRootTask와 함께 4건.
+  assert.equal(withDigest, 4, "커밋 4건(run_created/createRootTask/preflight/startPreparedTask)만 digest를 남겨야 한다");
 });
 
 test("[M4a][P0-1] 이벤트 없는 커밋은 거부한다(binding을 남길 곳이 없다)", () => {
@@ -2667,6 +2877,9 @@ test("[M4a] orchestration_run_state.schema.json이 runtime 계약과 동치다",
   assert.deepEqual(s.required, [...STATE_KEYS]);
   assert.deepEqual(Object.keys(s.properties).sort(), [...STATE_KEYS].sort());
   assert.equal(s.additionalProperties, false);
+  // M5c — state 계약 버전은 envelope와 분리되어 **"2"** 다(v1 바이트는 마이그레이션 없이 거부된다).
+  assert.equal(s.properties.schemaVersion.const, RUN_STATE_SCHEMA_VERSION);
+  assert.equal(s.properties.schemaVersion.const, "2");
 
   const d = s.definitions;
   assert.deepEqual(d.taskState.enum, [...TASK_STATES]);
@@ -2698,6 +2911,85 @@ test("[M4a] orchestration_run_state.schema.json이 runtime 계약과 동치다",
   assert.equal(d.slug.pattern, SLUG_PATTERN);
   assert.equal(d.timestamp.pattern, TIMESTAMP_PATTERN);
   assert.equal(d.sha256.pattern, SHA256_PATTERN);
+
+  // ── M5c v2: 새 닫힌 key 집합 · enum · required · bounds가 **정확히** 같아야 한다 ──
+
+  // ⓐ durable 회계(대장 B-12)
+  assert.deepEqual(d.accounting.required, [...ACCOUNTING_KEYS]);
+  assert.deepEqual(Object.keys(d.accounting.properties).sort(), [...ACCOUNTING_KEYS].sort());
+  assert.equal(d.accounting.additionalProperties, false);
+  assert.equal(d.accounting.properties.approvalDigest.$ref, "#/definitions/sha256");
+  assert.equal(d.accounting.properties.tokensUsed.maximum, LIMITS.maxAccountedTokens);
+  assert.equal(d.accounting.properties.tokensUsed.minimum, 0);
+  assert.equal(d.accounting.properties.elapsedMsUsed.maximum, LIMITS.maxAccountedElapsedMs);
+  assert.equal(d.accounting.properties.elapsedMsUsed.minimum, 0);
+  assert.equal(d.accounting.properties.chargedTurnIds.maxItems, LIMITS.maxChargedTurnIds);
+  assert.equal(d.accounting.properties.chargedTurnIds.uniqueItems, true);
+  assert.equal(s.properties.accounting.$ref, "#/definitions/accounting");
+
+  // ⓑ task 실행 lifecycle(대장 B-11/B-13/C-18)
+  assert.deepEqual(d.taskExecution.required, [...TASK_EXECUTION_KEYS]);
+  assert.deepEqual(Object.keys(d.taskExecution.properties).sort(), [...TASK_EXECUTION_KEYS].sort());
+  assert.equal(d.taskExecution.additionalProperties, false);
+  assert.equal(d.task.properties.execution.$ref, "#/definitions/taskExecution");
+  const te = d.taskExecution.properties;
+  assert.equal(te.attemptNo.maximum, LIMITS.maxTaskAttempts);
+  assert.equal(te.attemptNo.minimum, 0);
+  assert.equal(te.progressCount.maximum, LIMITS.maxProgressEvents);
+  assert.equal(te.cleanupAttempts.maximum, LIMITS.maxCleanupAttempts);
+  assert.equal(te.operationReceipts.maxItems, LIMITS.maxOperationReceipts);
+  assert.equal(te.cleanupStatus.$ref, "#/definitions/cleanupStatus");
+  assert.equal(te.terminalMarker.oneOf[0].$ref, "#/definitions/autopilotMarker");
+  assert.equal(te.pauseReason.oneOf[0].$ref, "#/definitions/pauseReason");
+  assert.equal(te.processLeaseMarker.oneOf[0].$ref, "#/definitions/leaseMarker");
+  assert.equal(te.preflightDigest.oneOf[0].$ref, "#/definitions/sha256");
+  // lease marker는 PID·argv가 아니라 `lease.<32 hex>` 하나뿐이다(runtime과 같은 형태).
+  assert.equal(d.leaseMarker.pattern, "^lease\\.[0-9a-f]{32}$");
+  assert.equal(new RegExp(d.leaseMarker.pattern).test("lease.0123456789abcdef0123456789abcdef"), true);
+  assert.equal(new RegExp(d.leaseMarker.pattern).test("12345"), false);
+
+  // ⓒ 미확정 결과 · operation 영수증
+  assert.deepEqual(d.pendingResult.required, [...PENDING_RESULT_KEYS]);
+  assert.equal(d.pendingResult.additionalProperties, false);
+  assert.equal(d.pendingResult.properties.outputs.maxItems, LIMITS.maxArtifactRefs);
+  assert.deepEqual(d.operationReceipt.required, [...OPERATION_RECEIPT_KEYS]);
+  assert.deepEqual(Object.keys(d.operationReceipt.properties).sort(), [...OPERATION_RECEIPT_KEYS].sort());
+  assert.equal(d.operationReceipt.additionalProperties, false);
+  assert.deepEqual(d.operationReceiptMarker.enum, [...OPERATION_RECEIPT_MARKERS]);
+  assert.deepEqual(d.operationKind.enum, [...APPROVED_OPERATION_KINDS]);
+  assert.equal(d.operationReceipt.properties.exitCode.oneOf[0].minimum, -255);
+  assert.equal(d.operationReceipt.properties.exitCode.oneOf[0].maximum, 255);
+
+  // ⓓ 전달 재시도(대장 C-12→B)
+  assert.deepEqual(d.messageDelivery.required, [...DELIVERY_KEYS]);
+  assert.deepEqual(Object.keys(d.messageDelivery.properties).sort(), [...DELIVERY_KEYS].sort());
+  assert.equal(d.messageDelivery.additionalProperties, false);
+  assert.equal(d.messageDelivery.properties.attempts.maximum, LIMITS.maxDeliveryAttempts);
+  assert.deepEqual(d.deliveryMarker.enum, [...DELIVERY_MARKERS]);
+  assert.equal(d.message.properties.delivery.$ref, "#/definitions/messageDelivery");
+
+  // ⓔ 닫힌 enum 전수
+  assert.deepEqual(d.autopilotMarker.enum, [...AUTOPILOT_MARKERS]);
+  assert.deepEqual(d.pauseReason.enum, [...PAUSE_REASONS]);
+  assert.deepEqual(d.cleanupStatus.enum, [...CLEANUP_STATUSES]);
+  assert.deepEqual(d.resourceHoldingState.const, [...RESOURCE_HOLDING_STATES]);
+  assert.deepEqual(d.safetyOnlyReasons.const, [...SAFETY_ONLY_REASONS]);
+  assert.deepEqual(d.safetyOnlyEventTypes.const, [...SAFETY_ONLY_EVENT_TYPES]);
+  // event marker는 여러 목록의 합집합이므로 **집합**으로 비교하고 schema 쪽 중복은 금지한다.
+  assert.deepEqual(
+    [...d.eventMarker.enum].sort(),
+    [...new Set(EVENT_MARKERS as readonly string[])].sort(),
+    "event marker 합집합이 runtime과 다르다",
+  );
+  assert.equal(new Set(d.eventMarker.enum).size, d.eventMarker.enum.length, "schema event marker에 중복이 있다");
+  assert.equal(d.event.properties.marker.oneOf[0].$ref, "#/definitions/eventMarker");
+  assert.equal(d.event.properties.tokenDelta.oneOf[0].maximum, LIMITS.maxAccountedTokens);
+  assert.equal(d.event.properties.elapsedMs.oneOf[0].maximum, LIMITS.maxAccountedElapsedMs);
+
+  // ⓕ 새 정의도 전부 미상 key를 거부한다(닫힌 계약).
+  for (const def of ["accounting", "taskExecution", "operationReceipt", "pendingResult", "messageDelivery"]) {
+    assert.equal(d[def].additionalProperties, false, def);
+  }
 });
 
 test("[M4a] 실제로 생성된 state가 schema의 required/enum 범위 안에 있다", () => {
@@ -2705,6 +2997,7 @@ test("[M4a] 실제로 생성된 state가 schema의 required/enum 범위 안에 �
   mkdirSync(join(ws, "docs"), { recursive: true });
   writeFileSync(join(ws, "docs", "a.md"), "v1\n");
   const p = k.registerArtifact({ taskId: "root", path: "docs/a.md", role: "evidence" });
+  cleanVia(k, "root");
   k.submitResult({
     envelope: envelope("result", "root", "tech-lead", { messageId: "r1", artifactRefs: [p] }),
     body: body("result"),
@@ -2790,52 +3083,86 @@ test("[M4b] scheduler: 같은 class 두 ready 중 하나만 · 자원 없는 tas
   assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["a-stress", "c-docs"]);
   assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["a-stress", "c-docs"], "scheduleReady가 결정론적이지 않다");
 
-  assert.deepEqual(k.startScheduledBatch().map((t) => t.taskId), ["a-stress", "c-docs"]);
+  startBatchVia(k, ["a-stress", "c-docs"]);
   assert.equal(k.getTask("a-stress")!.state, "running");
   assert.equal(k.getTask("c-docs")!.state, "running");
   assert.equal(k.getTask("b-live")!.state, "ready", "같은 class 두 task가 동시에 running이 됐다");
   // class가 점유된 동안에는 더 고를 것이 없다.
   assert.deepEqual(k.scheduleReady(), []);
-  assert.deepEqual(k.startScheduledBatch(), []);
+  assert.deepEqual(k.planRunnableBatch().items, []);
+  // batch를 바로 running으로 올리는 legacy 진입점은 닫혀 있다(대장 `B-11`).
+  assert.equal(codeOf(() => k.startScheduledBatch()), "preflight_required");
 });
 
 test("[M4b] batch는 커밋 1회다 · limit 검증 · limit는 앞에서부터 자른다", () => {
   const { k } = bootResourceRun();
   const before = k.getState().revision;
-  assert.equal(k.startScheduledBatch().length, 2);
-  assert.equal(k.getState().revision, before + 1, "batch가 커밋을 여러 번 했다");
+  // M5c에서 batch의 **원자적 단위는 preflight 커밋**이다: 두 task가 한 커밋으로 prepared가 된다.
+  const batch = k.planRunnableBatch();
+  assert.equal(batch.items.length, 2);
+  k.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextAction(),
+    decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: nextAttempt() })),
+  });
+  assert.equal(k.getState().revision, before + 1, "batch preflight가 커밋을 여러 번 했다");
+  assert.deepEqual(
+    k.getState().tasks.filter((t) => t.state === "prepared").map((t) => t.taskId),
+    ["a-stress", "c-docs"],
+  );
 
   assert.equal(codeOf(() => k.scheduleReady(0)), "invalid_batch_limit");
   assert.equal(codeOf(() => k.scheduleReady(LIMITS.maxScheduleBatch + 1)), "invalid_batch_limit");
   assert.equal(codeOf(() => k.scheduleReady(1.5)), "invalid_batch_limit");
-  assert.equal(codeOf(() => k.startScheduledBatch(0)), "invalid_batch_limit");
+  assert.equal(codeOf(() => k.planRunnableBatch(0)), "invalid_batch_limit");
+  // legacy batch 진입점은 limit가 무엇이든 닫혀 있다(우회 경로 0).
+  assert.equal(codeOf(() => k.startScheduledBatch(0)), "preflight_required");
 
   const { k: k2 } = bootResourceRun();
   assert.deepEqual(k2.scheduleReady(1).map((t) => t.taskId), ["a-stress"]);
-  assert.deepEqual(k2.startScheduledBatch(1).map((t) => t.taskId), ["a-stress"]);
+  startBatchVia(k2, ["a-stress"]);
+  assert.equal(k2.getTask("a-stress")!.state, "running");
   assert.deepEqual(k2.scheduleReady().map((t) => t.taskId), ["c-docs"]);
 });
 
-test("[M4b] 직접 startTask도 같은 충돌 규칙을 받는다 — scheduler 우회 불가, 전이 0", () => {
+test("[M4b] scheduler를 우회하는 시작 경로가 없다 — 충돌 task는 결정 자체를 받지 못하고 전이 0", () => {
   const { ws, k } = bootResourceRun();
   const paths = runPaths(ws, RUN_ID);
-  k.startTask("a-stress");
+  startBatchVia(k, ["a-stress"]);
 
   const revBefore = k.getState().revision;
   const filesBefore = dirFingerprint(paths.dir);
-  assert.equal(codeOf(() => k.startTask("b-live")), "resource_conflict");
+  // ⓐ 점유된 class를 요구하는 b-live는 scheduler가 아예 고르지 않는다.
+  const batch = k.planRunnableBatch();
+  assert.deepEqual(batch.items.map((t) => t.taskId), ["c-docs"], "점유된 class의 task를 골랐다");
+  // ⓑ 그래서 b-live를 prepared로 만드는 결정은 batch와 어긋난다 → 커밋 자체가 거부된다.
+  assert.equal(
+    codeOf(() =>
+      k.commitPreflightBatch({
+        baseRevision: batch.revision,
+        actionId: nextAction(),
+        decisions: [
+          { taskId: "c-docs", outcome: "deferred" },
+          { taskId: "b-live", outcome: "prepared", attemptId: nextAttempt() },
+        ],
+      }),
+    ),
+    "preflight_batch_mismatch",
+  );
+  // ⓒ legacy 직접 진입점도 닫혀 있다.
+  assert.equal(codeOf(() => k.startTask("b-live")), "preflight_required");
   assert.equal(k.getState().revision, revBefore, "거부된 start가 revision을 올렸다");
   assert.equal(dirFingerprint(paths.dir), filesBefore, "거부된 start가 파일을 바꿨다");
   assert.equal(k.getTask("b-live")!.state, "ready");
 
   // 자원을 요구하지 않는 task는 영향받지 않는다.
-  k.startTask("c-docs");
+  startBatchVia(k, ["c-docs"]);
   assert.equal(k.getTask("c-docs")!.state, "running");
 });
 
 test("[M4b] 점유는 running 동안만 — waiting_children은 자원을 들고 있지 않는다", () => {
   const { k } = bootResourceRun();
-  k.startTask("a-stress");
+  startBatchVia(k, ["a-stress"]);
   k.requestSpawn({
     envelope: envelope("spawn_request", "a-stress", "qa-security", { messageId: "spawn-1" }),
     body: body("spawn_request"),
@@ -2844,15 +3171,16 @@ test("[M4b] 점유는 running 동안만 — waiting_children은 자원을 들고
   assert.equal(k.getTask("a-stress")!.state, "waiting_children");
   // 중단된 parent는 점유하지 않으므로 같은 class의 b-live를 고를 수 있다.
   assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["b-live", "c-docs", "child"]);
-  k.startTask("b-live");
+  startBatchVia(k, ["b-live"]);
   assert.equal(k.getTask("b-live")!.state, "running");
 });
 
 test("[M4b] holder가 완료되면 class가 풀리고 대기 task가 schedulable해진다", () => {
   const { k } = bootResourceRun();
-  k.startScheduledBatch(1); // a-stress만 시작
+  startBatchVia(k, ["a-stress"]); // a-stress만 시작
   assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["c-docs"]);
 
+  cleanVia(k, "a-stress");
   k.submitResult({
     envelope: envelope("result", "a-stress", "qa-security", { messageId: "res-a" }),
     body: body("result"),
@@ -2860,34 +3188,40 @@ test("[M4b] holder가 완료되면 class가 풀리고 대기 task가 schedulable
   });
   assert.equal(k.getTask("a-stress")!.state, "completed");
   assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["b-live", "c-docs"]);
-  assert.deepEqual(k.startScheduledBatch().map((t) => t.taskId), ["b-live", "c-docs"]);
+  startBatchVia(k, ["b-live", "c-docs"]);
+  assert.deepEqual(
+    k.getState().tasks.filter((t) => t.state === "running").map((t) => t.taskId),
+    ["b-live", "c-docs"],
+  );
 });
 
 test("[M4b] 재시작: durable state만으로 같은 점유·같은 schedule 결정", () => {
   const { ws, k } = bootResourceRun();
-  k.startTask("a-stress");
+  startBatchVia(k, ["a-stress"]);
   const scheduleBefore = k.scheduleReady().map((t) => t.taskId);
 
   const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() });
   assert.equal(reopened.getTask("a-stress")!.state, "running");
   assert.deepEqual(reopened.getTask("a-stress")!.resourceClasses, ["suite-lock"]);
   assert.deepEqual(reopened.scheduleReady().map((t) => t.taskId), scheduleBefore);
-  assert.equal(codeOf(() => reopened.startTask("b-live")), "resource_conflict");
+  // 재시작 뒤에도 점유된 class의 task는 batch에 없다(그래서 시작할 결정이 존재하지 않는다).
+  assert.equal(reopened.planRunnableBatch().items.some((t) => t.taskId === "b-live"), false);
+  assert.equal(codeOf(() => reopened.startTask("b-live")), "preflight_required");
 });
 
 test("[M4b] state 위조: resourceClasses 편집은 state↔event binding으로 거부된다", () => {
   const { ws, k } = bootResourceRun();
   const paths = runPaths(ws, RUN_ID);
-  k.startTask("a-stress");
+  startBatchVia(k, ["a-stress"]);
   const original = readFileSync(paths.stateFile, "utf8");
 
   const forged = JSON.parse(original);
   forged.tasks.find((t: { taskId: string }) => t.taskId === "b-live").resourceClasses = [];
   writeFileSync(paths.stateFile, JSON.stringify(forged, null, 2));
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "state_event_binding_mismatch");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "state_event_binding_mismatch");
 
   writeFileSync(paths.stateFile, original);
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4b] M4a state(resourceClasses 없음)는 마이그레이션 없이 거부한다", () => {
@@ -2897,17 +3231,22 @@ test("[M4b] M4a state(resourceClasses 없음)는 마이그레이션 없이 거�
   const pre = JSON.parse(original);
   for (const t of pre.tasks) delete t.resourceClasses;
   writeFileSync(paths.stateFile, JSON.stringify(pre, null, 2));
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "state_pre_m4b_unsupported");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "state_pre_m4b_unsupported");
 
   writeFileSync(paths.stateFile, original);
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4b] running 둘이 같은 class를 든 state는 커밋·load 양쪽에서 거부된다", () => {
   const { ws, k } = bootResourceRun();
-  k.startTask("a-stress");
+  startBatchVia(k, ["a-stress"]);
   const onDisk = JSON.parse(readFileSync(runPaths(ws, RUN_ID).stateFile, "utf8"));
-  onDisk.tasks.find((t: { taskId: string }) => t.taskId === "b-live").state = "running";
+  const forgedRunning = onDisk.tasks.find((t: { taskId: string }) => t.taskId === "b-live");
+  forgedRunning.state = "running";
+  // 위조를 **그 자체로는 유효한 v2**로 만든다(running은 attempt를 배정받은 상태다) → 남는 위반이
+  // "같은 배타 자원 class를 둘이 점유한다" 하나뿐이 된다.
+  forgedRunning.execution.attemptNo = 1;
+  forgedRunning.execution.attemptId = "att.forged";
   assert.equal(codeOf(() => validateRunState(onDisk)), "resource_conflict");
 
   const valid = validateRunState(JSON.parse(readFileSync(runPaths(ws, RUN_ID).stateFile, "utf8")));
@@ -2989,7 +3328,7 @@ function bootRouting(): { ws: string; k: OrchestrationKernel } {
   });
   k.createRootTask(seed("parent", "tech-lead", { ownership: ["src"] }));
   k.createRootTask(seed("lonely", "research"));
-  k.startTask("parent");
+  startVia(k, "parent");
   for (const kid of ["kid-a", "kid-b"]) {
     k.requestSpawn({
       envelope: envelope("spawn_request", "parent", "tech-lead", { messageId: `spawn-${kid}` }),
@@ -2999,8 +3338,8 @@ function bootRouting(): { ws: string; k: OrchestrationKernel } {
   }
   k.createDependentTask({ ...seed("reviewer", "qa-security"), dependsOn: ["kid-a"] });
   k.createDependentTask({ ...seed("fixer", "dev-lead.fix"), dependsOn: ["kid-a"] });
-  k.startTask("kid-a");
-  k.startTask("kid-b");
+  startVia(k, "kid-a");
+  startVia(k, "kid-b");
   return { ws, k };
 }
 
@@ -3009,8 +3348,9 @@ function kidEnvelope(type: AgentMessageType, taskId: string, roleId: string, ove
   return envelope(type, taskId, roleId, { parentTaskId: "parent", ...over });
 }
 
-/** kid-a를 완료시켜 reviewer/fixer를 ready로 만든다. */
+/** kid-a를 완료시켜 reviewer/fixer를 ready로 만든다(확인된 정리 뒤에만 수락된다 — 대장 `B-13`). */
 function completeKidA(k: OrchestrationKernel): void {
+  cleanVia(k, "kid-a");
   k.submitResult({
     envelope: kidEnvelope("result", "kid-a", "dev-lead", { messageId: "res-kid-a" }),
     body: body("result"),
@@ -3197,10 +3537,10 @@ test("[M4c] pre-M4c state(manifest 없음)는 자동 승인하지 않고 거부�
   const pre = JSON.parse(original);
   delete pre.manifest;
   writeFileSync(paths.stateFile, JSON.stringify(pre, null, 2));
-  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "state_pre_m4c_unsupported");
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "state_pre_m4c_unsupported");
 
   writeFileSync(paths.stateFile, original);
-  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
 });
 
 test("[M4c] ownership 게이트: 미승인 root · writableRoots 밖 · child 권한 확대는 전이 0으로 거부", () => {
@@ -3230,7 +3570,7 @@ test("[M4c] ownership 게이트: 미승인 root · writableRoots 밖 · child �
   assert.equal(dirFingerprint(paths.dir), filesBefore, "거부가 파일을 바꿨다");
 
   // child는 parent 범위의 **부분집합**만 위임받는다.
-  k.startTask("approved");
+  startVia(k, "approved");
   assert.doesNotThrow(() =>
     k.requestSpawn({
       envelope: envelope("spawn_request", "approved", "tech-lead", { messageId: "spawn-ok" }),
@@ -3265,18 +3605,35 @@ test("[M4c] maxSessions: 승인된 동시 세션을 넘는 시작은 거부되�
   k.createRootTask(seed("s2", "dev-lead"));
   assert.deepEqual(k.scheduleReady().map((t) => t.taskId), ["s1"], "scheduler가 승인 세션 예산을 넘었다");
 
-  k.startTask("s1");
+  startBatchVia(k, ["s1"]);
   const revBefore = k.getState().revision;
   const filesBefore = dirFingerprint(paths.dir);
-  assert.equal(codeOf(() => k.startTask("s2")), "max_sessions_exceeded");
+  // 승인 세션 예산이 다 찼으므로 scheduler는 s2를 고르지 않고, s2를 prepared로 만드는 결정은
+  // batch와 어긋난다 → 커밋 거부(전이 0). 예산 초과 상태 자체를 만들 진입점이 없다.
+  const batch = k.planRunnableBatch();
+  assert.deepEqual(batch.items.map((t) => t.taskId), []);
+  assert.equal(
+    codeOf(() =>
+      k.commitPreflightBatch({
+        baseRevision: batch.revision,
+        actionId: nextAction(),
+        decisions: [{ taskId: "s2", outcome: "prepared", attemptId: nextAttempt() }],
+      }),
+    ),
+    "preflight_batch_mismatch",
+  );
+  assert.equal(codeOf(() => k.startTask("s2")), "preflight_required");
   assert.equal(k.getState().revision, revBefore);
   assert.equal(dirFingerprint(paths.dir), filesBefore);
   assert.deepEqual(k.scheduleReady(), []);
-  assert.deepEqual(k.startScheduledBatch(), []);
 
   // 손으로 running 둘을 만든 state도 load에서 거부된다(같은 불변식).
   const forged = JSON.parse(readFileSync(paths.stateFile, "utf8"));
-  forged.tasks.find((t: { taskId: string }) => t.taskId === "s2").state = "running";
+  const forgedRunning = forged.tasks.find((t: { taskId: string }) => t.taskId === "s2");
+  forgedRunning.state = "running";
+  // 위조를 그 자체로는 유효한 v2로 만든다 → 남는 위반이 승인 세션 예산 초과 하나뿐이다.
+  forgedRunning.execution.attemptNo = 1;
+  forgedRunning.execution.attemptId = "att.forged";
   assert.equal(codeOf(() => validateRunState(forged)), "max_sessions_exceeded");
 });
 
@@ -3296,7 +3653,19 @@ test("[M4c] 만료된 manifest는 모든 변경을 전이 0으로 거부한다(�
   const revBefore = k.getState().revision;
   const filesBefore = dirFingerprint(paths.dir);
   assert.equal(codeOf(() => k.createRootTask(seed("later", "pm"))), "manifest_expired");
-  assert.equal(codeOf(() => k.startTask("root")), "manifest_expired");
+  // 전진 작업은 전부 닫힌다: 단일 시작 경로의 preflight 커밋도 만료에서 거부된다(DECISIONS 2026-07-30).
+  const batch = k.planRunnableBatch();
+  assert.equal(
+    codeOf(() =>
+      k.commitPreflightBatch({
+        baseRevision: batch.revision,
+        actionId: nextAction(),
+        decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: nextAttempt() })),
+      }),
+    ),
+    "manifest_expired",
+  );
+  assert.equal(codeOf(() => k.startTask("root")), "preflight_required");
   assert.equal(k.getState().revision, revBefore);
   assert.equal(dirFingerprint(paths.dir), filesBefore);
   // 읽기는 계속 된다.
@@ -3422,7 +3791,7 @@ test("[M5b] C-16: taskId ↔ roleId 교차 namespace는 taskId를 조용히 고�
   });
   k.createRootTask(seed("parent", "tech-lead", { ownership: ["src"] }));
   k.createRootTask(seed("helper", "pm")); // roleId = "pm"
-  k.startTask("parent");
+  startVia(k, "parent");
   for (const kid of ["kid-a", "pm", "pm-x"]) {
     k.requestSpawn({
       envelope: envelope("spawn_request", "parent", "tech-lead", { messageId: `spawn-${kid}` }),
@@ -3430,7 +3799,7 @@ test("[M5b] C-16: taskId ↔ roleId 교차 namespace는 taskId를 조용히 고�
       child: seed(kid, "dev-lead", { ownership: [`src/${kid}`] }), // taskId = "pm"
     });
   }
-  k.startTask("kid-a");
+  startVia(k, "kid-a");
   const paths = runPaths(ws, RUN_ID);
   const revBefore = k.getState().revision;
   const filesBefore = dirFingerprint(paths.dir);
@@ -3495,7 +3864,7 @@ test("[M4c] pending inbox는 결정론적이고 재시작 후 같은 다음 전�
   assert.equal(reopened.nextPendingDelivery()!.messageId, order[0], "재시작 후 다음 전달이 다르다");
 
   // ack: 수령한 것만 목록에서 빠지고 durable event가 남는다.
-  const acked = reopened.acknowledgeDelivery({ taskId: "kid-b", messageId: order[0] });
+  const acked = ackVia(reopened, "kid-b", order[0]);
   assert.equal(acked.acknowledgedAt !== null, true);
   assert.deepEqual(reopened.listPendingInbox("kid-b").map((m) => m.messageId), order.slice(1));
   const events = readFileSync(runPaths(ws, RUN_ID).eventsFile, "utf8")
@@ -3534,8 +3903,9 @@ test("[M4c] reviewer 왕복: review_request → review_result → revision_reque
   assert.equal(req.routeToTaskId, "reviewer");
   assert.deepEqual(k.listPendingInbox("reviewer").map((m) => m.messageId), ["rev-req"]);
 
-  k.acknowledgeDelivery({ taskId: "reviewer", messageId: "rev-req" });
-  k.startTask("reviewer");
+  // 전달 시도·수령은 **running turn 안에서** 일어난다(M5c 전달 계약).
+  startVia(k, "reviewer");
+  ackVia(k, "reviewer", "rev-req");
   const res = k.submitReviewResult({
     envelope: envelope("review_result", "reviewer", "qa-security", { messageId: "rev-res" }),
     body: body("review_result"),
@@ -3573,6 +3943,7 @@ test("[M4c] reviewer 게이트: fresh 아님 · 무관 · 미완료 대상 · �
   assert.equal(review({}, "kid-a"), "subject_not_completed");
   completeKidA(k);
   // 의존 관계가 없는 대상에는 지시하지 않는다(kid-b도 완료시켜 "미완료" 사유를 배제한 뒤 확인).
+  cleanVia(k, "kid-b");
   k.submitResult({
     envelope: kidEnvelope("result", "kid-b", "dev-lead", { messageId: "res-kid-b" }),
     body: body("result"),
@@ -3583,7 +3954,7 @@ test("[M4c] reviewer 게이트: fresh 아님 · 무관 · 미완료 대상 · �
   assert.equal(review({ messageId: "rr4" }, "ghost"), "unknown_task");
 
   // review_request 없이 review_result를 낼 수 없다.
-  k.startTask("reviewer");
+  startVia(k, "reviewer");
   assert.equal(
     codeOf(() =>
       k.submitReviewResult({
@@ -3744,6 +4115,28 @@ test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치�
   assert.deepEqual(s.properties.executionAuthority.required, [...EXECUTION_AUTHORITY_KEYS]);
   assert.equal(s.properties.executionAuthority.additionalProperties, false);
   assert.deepEqual(Object.keys(s.properties.executionAuthority.properties).sort(), [...EXECUTION_AUTHORITY_KEYS].sort());
+  // M5c — `codex`만 nullable이고 git·node·processObserver는 승인된 실행 파일이어야 한다(양쪽 동치).
+  assert.deepEqual(
+    s.properties.executionAuthority.properties.codex.oneOf.map((x: any) => x.$ref ?? x.type),
+    ["#/definitions/approvedExecutable", "null"],
+  );
+  for (const key of ["git", "node", "processObserver"]) {
+    assert.equal(s.properties.executionAuthority.properties[key].$ref, "#/definitions/approvedExecutable", key);
+  }
+  assert.equal(
+    validateApprovalManifest(manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, codex: null } })).executionAuthority.codex,
+    null,
+    "offline manifest는 codex를 null로 승인할 수 있어야 한다",
+  );
+  for (const key of ["git", "node", "processObserver"] as const) {
+    assert.equal(
+      codeOf(() =>
+        validateApprovalManifest(manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, [key]: null } })),
+      ),
+      "invalid_manifest",
+      `${key}는 null이 될 수 없다`,
+    );
+  }
   assert.deepEqual(s.definitions.approvedExecutable.required, [...APPROVED_EXECUTABLE_KEYS]);
   assert.equal(s.definitions.approvedExecutable.additionalProperties, false);
   assert.equal(s.definitions.approvedExecutable.properties.sha256.pattern, SHA256_PATTERN);
@@ -3792,6 +4185,91 @@ test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치�
   assert.equal(s.definitions.slug.pattern, SLUG_PATTERN);
   assert.equal(s.definitions.timestamp.pattern, TIMESTAMP_PATTERN);
   assert.deepEqual(s.definitions.specialistRegistry.const, SPECIALIST_ROLES.map((r) => r.roleId));
+
+  // ── M5c v2: autopilot 정책과 typed operation 권위도 **정확히** 같아야 한다 ──
+
+  const ap2 = s.properties.autopilotPolicy;
+  assert.deepEqual(ap2.required, [...AUTOPILOT_POLICY_KEYS]);
+  assert.deepEqual(Object.keys(ap2.properties).sort(), [...AUTOPILOT_POLICY_KEYS].sort());
+  assert.equal(ap2.additionalProperties, false);
+  // 상한·하한은 runtime validator(validateAutopilotPolicy)와 같은 값이어야 한다.
+  const policyBounds: Record<string, [number, number]> = {
+    maxTaskAttempts: [1, LIMITS.maxTaskAttempts],
+    maxDeliveryAttempts: [1, LIMITS.maxDeliveryAttempts],
+    retryBackoffMs: [0, 60_000],
+    deliveryDeadlineMs: [1_000, 3_600_000],
+    maxNoProgressMs: [1_000, 900_000],
+    maxAttemptElapsedMs: [1_000, 3_600_000],
+    cleanupTermGraceMs: [100, 30_000],
+    cleanupKillGraceMs: [100, 30_000],
+  };
+  for (const [key, [min, max]] of Object.entries(policyBounds)) {
+    assert.equal(ap2.properties[key].minimum, min, `${key} 하한`);
+    assert.equal(ap2.properties[key].maximum, max, `${key} 상한`);
+    assert.equal(ap2.properties[key].type, "integer", `${key} 타입`);
+    // 경계 밖 값은 runtime도 거부한다(공허하지 않다는 증거).
+    for (const bad of [min - 1, max + 1]) {
+      assert.equal(
+        codeOf(() =>
+          validateApprovalManifest(manifestFor(["root"], { autopilotPolicy: { ...AUTOPILOT_POLICY, [key]: bad } })),
+        ),
+        "invalid_manifest",
+        `${key}=${bad}가 통과했다`,
+      );
+    }
+  }
+  // maxAttemptElapsedMs <= maxElapsedMs 교차 규칙(schema로는 표현하지 않고 runtime이 강제한다).
+  assert.equal(
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestFor(["root"], { maxElapsedMs: 60_000, autopilotPolicy: { ...AUTOPILOT_POLICY, maxAttemptElapsedMs: 600_000 } }),
+      ),
+    ),
+    "invalid_manifest",
+  );
+
+  const oa = s.properties.operationAuthorityByTask;
+  assert.equal(oa.maxProperties, LIMITS.maxTasksPerRun);
+  assert.equal(oa.additionalProperties.maxItems, LIMITS.maxOperationAuthorities);
+  assert.equal(oa.additionalProperties.items.$ref, "#/definitions/approvedOperation");
+  const [wf, rp] = s.definitions.approvedOperation.oneOf.map((x: any) => s.definitions[x.$ref.split("/").pop()]);
+  assert.deepEqual(wf.required, [...WRITE_FILE_AUTHORITY_KEYS]);
+  assert.deepEqual(Object.keys(wf.properties).sort(), [...WRITE_FILE_AUTHORITY_KEYS].sort());
+  assert.equal(wf.additionalProperties, false);
+  assert.equal(wf.properties.kind.const, "write_file");
+  assert.equal(wf.properties.maxBytes.maximum, LIMITS.maxWriteBytes);
+  assert.equal(wf.properties.maxBytes.minimum, 1);
+  assert.deepEqual(rp.required, [...RUN_PROCESS_AUTHORITY_KEYS]);
+  assert.deepEqual(Object.keys(rp.properties).sort(), [...RUN_PROCESS_AUTHORITY_KEYS].sort());
+  assert.equal(rp.additionalProperties, false);
+  assert.equal(rp.properties.kind.const, "run_process");
+  assert.equal(rp.properties.args.maxItems, LIMITS.maxOperationArgs);
+  assert.equal(rp.properties.args.items.maxLength, LIMITS.maxOperationArgLength);
+  assert.equal(rp.properties.timeoutMs.minimum, 100);
+  assert.equal(rp.properties.timeoutMs.maximum, 3_600_000);
+  // shell·network 같은 계약 밖 변종은 **표현할 타입이 없다**: 양쪽이 같은 자리에서 거부한다.
+  assert.deepEqual(s.definitions.approvedOperation.oneOf.length, 2, "typed operation union이 열렸다");
+  assert.equal(
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestFor(["root"], {
+          operationAuthorityByTask: { root: [{ authorityId: "x", kind: "network_fetch", url: "https://example.com" }] },
+        }),
+      ),
+    ),
+    "invalid_manifest",
+  );
+
+  // 미상 최상위 key는 계약 문서·runtime 둘 다 거부한다(닫힌 key 집합).
+  assert.equal(codeOf(() => validateApprovalManifest(manifestFor(["root"], { extraField: 1 }))), "invalid_manifest");
+  // v1 manifest는 마이그레이션·기본값 없이 안정 코드로 닫힌다.
+  const v1 = manifestFor(["root"]) as Record<string, unknown>;
+  delete v1.autopilotPolicy;
+  assert.equal(codeOf(() => validateApprovalManifest(v1)), "manifest_pre_m5c_unsupported");
+  const v1Authority = manifestFor(["root"], {
+    executionAuthority: { codex: EXECUTION_AUTHORITY.codex, git: EXECUTION_AUTHORITY.git },
+  });
+  assert.equal(codeOf(() => validateApprovalManifest(v1Authority)), "manifest_pre_m5c_unsupported");
 
   // run state schema도 M4c 계약과 맞물려 있어야 한다.
   const rs = readSchema("orchestration_run_state.schema.json");

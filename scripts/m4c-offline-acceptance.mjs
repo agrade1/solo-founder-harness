@@ -3,8 +3,11 @@
  * V3 M4c — sibling/reviewer 라우팅 · 메시지 10종 · milestone approval manifest ·
  * 7 specialist registry의 offline acceptance.
  *
- * 네트워크·LLM·provider·TTY·git write 없이 임시 workspace 하나에서만 돈다.
- * `npm run build` 산출물(dist/exec/*)을 그대로 소비하며, 실패 시 exit 1이다.
+ * 네트워크·LLM·provider·TTY·git write 없이 임시 workspace 하나에서만 돈다. 실패 시 exit 1이다.
+ *
+ * **V3 M5c: 소비 대상이 `dist/exec/*` → `src/exec/*`로 바뀌었다**(tracked dist는 M5b 계약에 머물러 있고
+ * 그 갱신은 M5 handoff의 build 단계다 — dist를 소비하면 이 acceptance가 낡은 계약을 검사하며 green이
+ * 된다). 호출 방식은 그대로다(`node scripts/m4c-offline-acceptance.mjs`).
  *
  * 시나리오:
  *   ① 닫힌 유효 manifest + registry가 durable하고 재시작 안정적 →
@@ -24,7 +27,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const DIST = join(REPO_ROOT, "dist", "exec");
+const SRC = join(REPO_ROOT, "src", "exec");
+
+// src/*.ts를 직접 소비하므로 tsx 로더가 필요하다 — 로더 없이 들어왔으면 tsx로 정확히 한 번 재실행한다.
+if (process.env.HARNESS_ACCEPTANCE_TSX !== "1") {
+  const { spawnSync } = await import("node:child_process");
+  const relaunch = spawnSync(process.execPath, ["--import", "tsx", fileURLToPath(import.meta.url)], {
+    stdio: "inherit",
+    env: { ...process.env, HARNESS_ACCEPTANCE_TSX: "1" },
+  });
+  process.exit(relaunch.status === null ? 1 : relaunch.status);
+}
 
 let pass = 0;
 let fail = 0;
@@ -60,10 +73,24 @@ function manifest(over = {}) {
     },
     allowedCommands: ["npm run build", "npm test"],
     allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
+    // M5c(v2) — node·processObserver 필수 · autopilotPolicy·operationAuthorityByTask 명시 필수.
     executionAuthority: {
       codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
       git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+      node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+      processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
     },
+    autopilotPolicy: {
+      maxTaskAttempts: 2,
+      maxDeliveryAttempts: 2,
+      retryBackoffMs: 0,
+      deliveryDeadlineMs: 600_000,
+      maxNoProgressMs: 60_000,
+      maxAttemptElapsedMs: 600_000,
+      cleanupTermGraceMs: 500,
+      cleanupKillGraceMs: 500,
+    },
+    operationAuthorityByTask: {},
     allowedNetworkDomains: ["registry.npmjs.org"],
     maxSessions: 4,
     maxTokens: 200000,
@@ -72,6 +99,47 @@ function manifest(over = {}) {
     expiresAt: "2026-12-31T00:00:00.000Z",
     ...over,
   };
+}
+
+/**
+ * **M5c 시작·완료·전달 프로토콜 헬퍼**. 시작은 `planRunnableBatch` → `commitPreflightBatch` →
+ * `startPreparedTask`뿐(대장 `B-11`), 완료는 확인된 zero-survivor 정리 뒤에만(`B-13`),
+ * 수령은 durable 전달 시도가 있어야만 가능하다(`C-12→B`).
+ */
+let seq = 0;
+const nextId = (prefix) => `${prefix}.${++seq}`;
+const nextLease = () => `lease.${(++seq).toString(16).padStart(32, "0")}`;
+const leaseOf = new Map();
+
+function startVia(kernel, taskId) {
+  const batch = kernel.planRunnableBatch();
+  kernel.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextId("act"),
+    decisions: batch.items.map((t) =>
+      t.taskId === taskId
+        ? { taskId: t.taskId, outcome: "prepared", attemptId: nextId("att") }
+        : { taskId: t.taskId, outcome: "deferred" },
+    ),
+  });
+  const leaseMarker = nextLease();
+  leaseOf.set(taskId, leaseMarker);
+  kernel.startPreparedTask({ taskId, actionId: nextId("act"), leaseMarker });
+}
+
+function cleanVia(kernel, taskId, marker = "turn_completed") {
+  kernel.recordTerminal({
+    taskId,
+    actionId: nextId("act"),
+    marker,
+    pendingResult: marker === "turn_completed" ? { summary: "ok", outputs: [] } : null,
+  });
+  kernel.confirmCleanup({ taskId, actionId: nextId("act"), leaseMarker: leaseOf.get(taskId) });
+}
+
+function ackVia(kernel, taskId, messageId) {
+  kernel.beginDeliveryAttempt({ taskId, messageId, actionId: nextId("act"), attemptId: nextId("att") });
+  return kernel.acknowledgeDelivery({ taskId, messageId, actionId: nextId("act") });
 }
 
 /** run 디렉터리 전체의 파일별 hash — "durable 전이 0" 단정용. */
@@ -101,13 +169,13 @@ const ids = (xs) => xs.map((x) => x.messageId ?? x.taskId);
 
 let workspace = null;
 try {
-  const { createOrchestrationRun, openOrchestrationRun } = await import(join(DIST, "orchestrationKernel.js"));
-  const { runPaths } = await import(join(DIST, "orchestrationStore.js"));
+  const { createOrchestrationRun, openOrchestrationRun } = await import(join(SRC, "orchestrationKernel.ts"));
+  const { runPaths } = await import(join(SRC, "orchestrationStore.ts"));
   const { AGENT_MESSAGE_TYPES, CENTRAL_MESSAGE_TYPES, EVENT_TYPES, REQUIRED_BODY_HEADINGS, SUMMARY_REQUIRED } = await import(
-    join(DIST, "orchestrationTypes.js")
+    join(SRC, "orchestrationTypes.ts")
   );
   const { SPECIALIST_ROLES, commandAllowed, dependencyAllowed, networkDomainAllowed, validateApprovalManifest } = await import(
-    join(DIST, "approvalManifest.js")
+    join(SRC, "approvalManifest.ts")
   );
 
   const body = (type) => REQUIRED_BODY_HEADINGS[type].map((h) => `## ${h}\n\n본문 한 줄.\n`).join("\n");
@@ -225,7 +293,19 @@ try {
     "만료된 manifest는 변경을 거부(manifest_expired)",
     codeOf(() => expiredRun.createRootTask(seed("later", "pm", ["src/later"]))) === "manifest_expired",
   );
-  check("만료 후 start도 거부", codeOf(() => expiredRun.startTask("planner")) === "manifest_expired");
+  // 만료 후에는 **전진 작업**이 닫힌다: 단일 시작 경로의 preflight 커밋도 거부된다(DECISIONS 2026-07-30).
+  const expiredBatch = expiredRun.planRunnableBatch();
+  check(
+    "만료 후 preflight 커밋도 거부(manifest_expired)",
+    codeOf(() =>
+      expiredRun.commitPreflightBatch({
+        baseRevision: expiredBatch.revision,
+        actionId: nextId("act"),
+        decisions: expiredBatch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared", attemptId: nextId("att") })),
+      }),
+    ) === "manifest_expired",
+  );
+  check("legacy start 진입점은 닫혀 있다", codeOf(() => expiredRun.startTask("planner")) === "preflight_required");
   check("만료 거부는 전이 0", expiredRun.getState().revision === expiryRev && fingerprint(expiryPaths.dir) === expiryFiles);
   check("만료 후에도 읽기는 가능", expiredRun.getTask("planner").state === "ready");
 
@@ -240,12 +320,32 @@ try {
   sessionRun.createRootTask(seed("s2", "dev-lead", ["src/s2"]));
   const sessionPaths = runPaths(workspace, "m4c-sessions");
   check("scheduler가 승인 세션 예산을 지킴", JSON.stringify(ids(sessionRun.scheduleReady())) === JSON.stringify(["s1"]));
-  sessionRun.startTask("s1");
+  startVia(sessionRun, "s1");
   const sessionRev = sessionRun.getState().revision;
   const sessionFiles = fingerprint(sessionPaths.dir);
+  // 예산이 다 찼으므로 s2는 batch에 없고, 그래서 s2를 prepared로 만드는 결정 자체가 거부된다.
+  const sessionBatch = sessionRun.planRunnableBatch();
+  check("승인 예산이 찬 뒤 batch는 비어 있다", JSON.stringify(ids(sessionBatch.items)) === JSON.stringify([]));
   check(
-    "maxSessions 초과 시작 거부(max_sessions_exceeded)",
-    codeOf(() => sessionRun.startTask("s2")) === "max_sessions_exceeded",
+    "maxSessions 초과 시작 경로 없음(preflight_batch_mismatch)",
+    codeOf(() =>
+      sessionRun.commitPreflightBatch({
+        baseRevision: sessionBatch.revision,
+        actionId: nextId("act"),
+        decisions: [{ taskId: "s2", outcome: "prepared", attemptId: nextId("att") }],
+      }),
+    ) === "preflight_batch_mismatch",
+  );
+  // durable 불변식 자체는 그대로다: 손으로 running 둘을 만든 state는 max_sessions_exceeded로 거부된다.
+  const { validateRunState } = await import(join(SRC, "orchestrationStore.ts"));
+  const forgedSessions = JSON.parse(readFileSync(sessionPaths.stateFile, "utf8"));
+  const forgedS2 = forgedSessions.tasks.find((t) => t.taskId === "s2");
+  forgedS2.state = "running";
+  forgedS2.execution.attemptNo = 1;
+  forgedS2.execution.attemptId = "att.forged";
+  check(
+    "점유 둘인 state는 load에서 거부(max_sessions_exceeded)",
+    codeOf(() => validateRunState(forgedSessions)) === "max_sessions_exceeded",
   );
   check(
     "세션 초과 거부는 전이 0",
@@ -255,7 +355,7 @@ try {
   console.log("");
   console.log("== M4c: 3) child → 중앙 → 정당한 sibling 전달 ==");
   kernel.createRootTask(seed("unrelated", "research", ["docs/unrelated"]));
-  kernel.startTask("planner");
+  startVia(kernel, "planner");
   for (const w of ["worker-a", "worker-b"]) {
     kernel.requestSpawn({
       envelope: envelope("spawn_request", "planner", "tech-lead", { messageId: `spawn-${w}` }),
@@ -265,8 +365,8 @@ try {
   }
   kernel.createDependentTask({ ...seed("reviewer", "qa-security", ["docs/review"]), dependsOn: ["worker-a"] });
   kernel.createDependentTask({ ...seed("fixer", "dev-lead.fix", ["src/worker-a"]), dependsOn: ["worker-a"] });
-  kernel.startTask("worker-a");
-  kernel.startTask("worker-b");
+  startVia(kernel, "worker-a");
+  startVia(kernel, "worker-b");
   check("sibling 둘이 running", kernel.getTask("worker-a").state === "running" && kernel.getTask("worker-b").state === "running");
 
   mkdirSync(join(workspace, "src", "worker-a"), { recursive: true });
@@ -321,6 +421,7 @@ try {
 
   console.log("");
   console.log("== M4c: 4) reviewer 왕복 — review_request → review_result → revision_request ==");
+  cleanVia(kernel, "worker-a"); // 완료는 확인된 zero-survivor 정리 뒤에만 수락된다(대장 `B-13`)
   kernel.submitResult({
     envelope: kid("result", "worker-a", "dev-lead", { messageId: "res-worker-a", artifactRefs: [pointer] }),
     body: body("result"),
@@ -349,8 +450,9 @@ try {
     ) === "route_not_related",
   );
 
-  kernel.acknowledgeDelivery({ taskId: "reviewer", messageId: "rev-req" });
-  kernel.startTask("reviewer");
+  // 전달 시도·수령은 **running turn 안에서** 일어난다(M5c 전달 계약 — 시도 없는 ack는 없다).
+  startVia(kernel, "reviewer");
+  ackVia(kernel, "reviewer", "rev-req");
   check(
     "이미 일을 시작한 reviewer에게는 새 검토 지시 없음(task_not_fresh)",
     codeOf(() =>
@@ -429,7 +531,7 @@ try {
   check("snapshot 바이트 동일", reopened.rebuildSnapshot() === snapshotBefore);
 
   const ackTarget = reopened.nextPendingDelivery().messageId;
-  reopened.acknowledgeDelivery({ taskId: reopened.nextPendingDelivery().routeToTaskId, messageId: ackTarget });
+  ackVia(reopened, reopened.nextPendingDelivery().routeToTaskId, ackTarget);
   check(
     "ack는 durable event를 남긴다(delivery_acknowledged)",
     readFileSync(paths.eventsFile, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l)).pop().type ===

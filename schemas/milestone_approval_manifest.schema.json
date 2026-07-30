@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://solo-founder-harness/schemas/milestone_approval_manifest.schema.json",
   "title": "MilestoneApprovalManifest",
-  "description": "V3 M4c — 로드맵 §8 milestone 승인 envelope. run 생성 시 반드시 bind되고 outputs/orchestration/<run-id>/run_state.json의 manifest 필드로 durable하게 저장된다(= stateContentDigest에 포함 → 손편집은 state_event_binding_mismatch로 거부). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/approvalManifest.ts의 validateApprovalManifest다(신규 검증 의존성 0). 두 정의의 동치는 src/exec/orchestrationKernel.test.ts가 강제한다. M4c가 **강제**하는 것은 state 관련 권한뿐이다: ownership 명시 승인 · writableRoots · child 위임(부모 부분집합) · maxSessions · expiresAt. allowedCommands/allowedDependencies/allowedNetworkDomains/maxTokens/maxElapsedMs/localMergeAllowed는 **기록·조회 전용**이며 M4c는 명령 실행·패키지 설치·네트워크 접근·git merge·provider 호출을 하지 않는다(M5 executor가 순수 술어 commandAllowed/dependencyAllowed/networkDomainAllowed로 조회만 한다, deny-by-default). 레포의 hard deny(production deploy · live billing · 원격 저장소 직접 쓰기 · PR merge 자동화 · MCP @latest)는 manifest 내용과 무관하게 항상 더 강하다.",
+  "description": "V3 M4c/M5c — 로드맵 §8 milestone 승인 envelope. **계약 버전은 2다**(M5c): v1 manifest(autopilotPolicy·operationAuthorityByTask 없음, 또는 executionAuthority가 codex+git뿐)는 마이그레이션·기본값 없이 manifest_pre_m5c_unsupported로 거부한다 — 없는 정책·권위를 채우면 그것이 곧 조용한 자동 승인이다. run 생성 시 반드시 bind되고 outputs/orchestration/<run-id>/run_state.json의 manifest 필드로 durable하게 저장된다(= stateContentDigest에 포함 → 손편집은 state_event_binding_mismatch로 거부). M5c가 더한 것: ⓐ executionAuthority에 node(managed process supervisor를 띄우는 승인된 Node)와 processObserver(자손 프로세스 관측 = zero-survivor 확인)가 필수로 추가되고 codex는 **null 허용**이다(offline manifest가 'live 추론이 가능한 척' 하지 않게 한다) ⓑ autopilotPolicy(deadline·재시도 정책 — 전부 필수이고 조용한 기본값이 없다) ⓒ operationAuthorityByTask(taskId → 그 task가 요청할 수 있는 typed operation 권위; **목록에 없는 task는 어떤 write·process도 할 수 없다** — 부재가 hard deny다, 대장 B-10). typed operation union은 닫혀 있고 shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없으므로 승인될 수도 없다**. run_process.executable은 승인된 node 경로와 정확히 같아야 한다(git을 typed operation으로 열면 승인된 argv 하나로 push/remote가 표현 가능해지고, 그것은 레포 hard deny를 승인 문서가 덮는 형태가 된다). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/approvalManifest.ts의 validateApprovalManifest다(신규 검증 의존성 0). 두 정의의 동치는 src/exec/orchestrationKernel.test.ts가 강제한다. M4c가 **강제**하는 것은 state 관련 권한뿐이다: ownership 명시 승인 · writableRoots · child 위임(부모 부분집합) · maxSessions · expiresAt. allowedCommands/allowedDependencies/allowedNetworkDomains/maxTokens/localMergeAllowed는 **기록·조회 전용**이며 kernel은 명령 실행·패키지 설치·네트워크 접근·git merge·provider 호출을 하지 않는다(순수 술어 commandAllowed/dependencyAllowed/networkDomainAllowed로 조회만 한다, deny-by-default). 레포의 hard deny(production deploy · live billing · 원격 저장소 직접 쓰기 · PR merge 자동화 · MCP @latest)는 manifest 내용과 무관하게 항상 더 강하다.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -14,6 +14,8 @@
     "allowedDependencies",
     "allowedNetworkDomains",
     "executionAuthority",
+    "autopilotPolicy",
+    "operationAuthorityByTask",
     "maxSessions",
     "maxTokens",
     "maxElapsedMs",
@@ -31,7 +33,7 @@
       "pattern": "^[0-9a-f]{40}$"
     },
     "writableRoots": {
-      "description": "쓰기가 허용된 workspace-relative root(정규화·사전순·중복 없음). 모든 task ownership은 이 안에 있어야 한다.",
+      "description": "쓰기가 허용된 workspace-relative root(정규화·사전순·중복 없음). 모든 task ownership과 모든 write_file 권위 경로는 이 안에 있어야 한다.",
       "type": "array",
       "minItems": 1,
       "maxItems": 8,
@@ -80,44 +82,159 @@
       "items": { "type": "string", "minLength": 3, "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" }
     },
     "executionAuthority": {
-      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. codex·git 각각의 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다(이전 판은 caller 입력이었고, provider·controller에 같은 임의 경로를 주면 관측이 일치해 통과했다).",
+      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. 각 항목은 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다. **M5c: node·processObserver가 필수로 추가됐고 codex는 null 허용이다**(M5c는 Codex를 인스턴스화하지 않는다). 네 key 집합은 닫혀 있고, node/processObserver가 없는 v1 manifest는 manifest_pre_m5c_unsupported다.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["codex", "git"],
+      "required": ["codex", "git", "node", "processObserver"],
       "properties": {
-        "codex": { "$ref": "#/definitions/approvedExecutable" },
-        "git": { "$ref": "#/definitions/approvedExecutable" }
+        "codex": {
+          "description": "offline manifest는 live 추론을 승인하지 않는다 → null이 유효하다.",
+          "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
+        },
+        "git": { "$ref": "#/definitions/approvedExecutable" },
+        "node": {
+          "description": "M5c — managed process supervisor를 띄우는 승인된 Node 실행 파일. typed run_process 권위의 executable은 **정확히 이 경로**여야 한다.",
+          "$ref": "#/definitions/approvedExecutable"
+        },
+        "processObserver": {
+          "description": "M5c — 자손 프로세스 관측(zero-survivor 확인)에 쓰는 승인된 실행 파일. 정리 관측 전용이며 typed operation이 아니다.",
+          "$ref": "#/definitions/approvedExecutable"
+        }
+      }
+    },
+    "autopilotPolicy": {
+      "description": "M5c — autopilot 실행 정책(전부 필수 · 전부 bounded · **조용한 기본값이 없다**). 사람이 승인하는 것은 '얼마나 오래 · 몇 번 · 얼마나 기다릴 수 있는가'이며 이 값들이 deadline·재시도의 정본이다. maxAttemptElapsedMs는 manifest.maxElapsedMs 이하여야 한다(런타임 교차 검사).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxTaskAttempts",
+        "maxDeliveryAttempts",
+        "retryBackoffMs",
+        "deliveryDeadlineMs",
+        "maxNoProgressMs",
+        "maxAttemptElapsedMs",
+        "cleanupTermGraceMs",
+        "cleanupKillGraceMs"
+      ],
+      "properties": {
+        "maxTaskAttempts": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "maxDeliveryAttempts": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "retryBackoffMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
+        "deliveryDeadlineMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 },
+        "maxNoProgressMs": {
+          "description": "인정되는 진행 신호 없이 지날 수 있는 최대 시간(heartbeat·미상 이벤트는 시계를 되돌리지 않는다).",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 900000
+        },
+        "maxAttemptElapsedMs": {
+          "description": "attempt 하나의 wall deadline 원천. manifest.maxElapsedMs 이하여야 한다.",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000
+        },
+        "cleanupTermGraceMs": {
+          "description": "TERM 후 KILL까지의 유예.",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        },
+        "cleanupKillGraceMs": {
+          "description": "KILL 후 zero-survivor 확인까지의 유예.",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        }
+      }
+    },
+    "operationAuthorityByTask": {
+      "description": "M5c — taskId → 그 task가 요청할 수 있는 typed operation 권위 목록(대장 B-10). **목록에 없는 task는 어떤 write·process도 할 수 없다** — 빈 목록이 기본이고 부재는 hard deny다. worker는 authorityId만 고를 수 있고 경로·바이트 상한·실행 파일·argv는 사람이 승인한 이 레코드에서 나온다. task 안에서 authorityId는 유일하며 사전순으로 저장된다(digest 결정성).",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/definitions/slug" },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 32,
+        "items": { "$ref": "#/definitions/approvedOperation" }
       }
     },
     "maxSessions": {
-      "description": "동시에 running일 수 있는 task 수의 상한. 커밋·load 공용 불변식(assertSessionLimit)이 강제한다.",
+      "description": "동시에 **자원을 점유**할 수 있는 task 수의 상한. 커밋·load 공용 불변식(assertSessionLimit)이 강제하며, M5c부터 점유 상태는 prepared·running·cleaning 세 가지다(대장 B-11/B-13).",
       "type": "integer",
       "minimum": 1,
       "maximum": 16
     },
     "maxTokens": {
-      "description": "선택 예산. 없으면 null이지만 키는 durable 계약이라 항상 존재한다. M4c는 기록만 한다.",
+      "description": "선택 예산. 없으면 null이지만 키는 durable 계약이라 항상 존재한다. M5c의 durable 회계(run_state.accounting.tokensUsed)가 이 값에 대해 남은 예산을 계산한다.",
       "oneOf": [{ "type": "integer", "minimum": 1, "maximum": 100000000 }, { "type": "null" }]
     },
-    "maxElapsedMs": { "type": "integer", "minimum": 1, "maximum": 86400000 },
+    "maxElapsedMs": {
+      "description": "승인된 경과 예산. run 생성 시 min(budgetStartedAt + maxElapsedMs, expiresAt)이 durable budgetDeadlineAt이 되고 **재시작이 그 창을 새로 만들지 못한다**(대장 B-12).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400000
+    },
     "localMergeAllowed": {
       "description": "기록·조회 전용. true여도 kernel은 어떤 git 조작도 하지 않는다.",
       "type": "boolean"
     },
     "expiresAt": {
-      "description": "만료 후에는 모든 변경이 manifest_expired로 거부된다(전이 0). 읽기는 계속 가능하다.",
+      "description": "만료 후에는 **전진 작업이** manifest_expired로 거부된다. 경계 포함이다(now >= expiresAt — 대장 C-17). M5c 예외(DECISIONS 2026-07-30 · 로드맵 §8.1): 이미 태운 자원의 회계 · 취소 요청 · 정리 · fail-closed pause만 만료 뒤에도 지나간다(safety-only reducer). 그 reducer들은 작업을 시작하지 않고, 완료하지 않고, 실패한 전달을 수령하지 않고, artifact를 발행하지 않는다. 읽기는 계속 가능하다.",
       "$ref": "#/definitions/timestamp"
     }
   },
   "definitions": {
     "approvedExecutable": {
-      "description": "승인된 실행 파일 1건: 정규 절대경로(NUL·`.`/`..` segment·중복/후행 `/` 금지) + 내용 SHA-256(64자 소문자 hex).",
+      "description": "승인된 실행 파일 1건: 정규 절대경로(NUL·`.`/`..` segment·중복/후행 `/` 금지) + 내용 SHA-256(64자 소문자 hex). maxLength는 draft-07 의미대로 **Unicode 코드 포인트** 수이며 런타임도 같은 의미로 센다(대장 C-40 — 이전 판의 UTF-16 `.length`는 astral 경로에서 schema와 판정이 갈렸다).",
       "type": "object",
       "additionalProperties": false,
       "required": ["path", "sha256"],
       "properties": {
         "path": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "approvedOperation": {
+      "description": "M5c — **승인된 typed operation 1건**(대장 B-10). kind별로 key 집합이 닫혀 있다: write_file은 {authorityId, kind, path, maxBytes}, run_process는 {authorityId, kind, executable, args, timeoutMs}뿐이다. shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없다**. 런타임은 여기에 더해 write_file.path가 writableRoots 안이고(operation_outside_writable_root) 그 task의 승인 ownership 안이며(operation_not_owned), run_process.executable이 executionAuthority.node.path와 정확히 같고(operation_executable_not_approved) timeoutMs가 autopilotPolicy.maxAttemptElapsedMs 이하임을 함께 본다.",
+      "oneOf": [{ "$ref": "#/definitions/writeFileAuthority" }, { "$ref": "#/definitions/runProcessAuthority" }]
+    },
+    "writeFileAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "path", "maxBytes"],
+      "properties": {
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "write_file" },
+        "path": { "$ref": "#/definitions/workspacePath" },
+        "maxBytes": {
+          "description": "typed write_file 본문 바이트 상한(최대 1 MiB).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      }
+    },
+    "runProcessAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "executable", "args", "timeoutMs"],
+      "properties": {
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "run_process" },
+        "executable": {
+          "description": "**승인된 executionAuthority.node.path와 정확히 같아야 한다**(git·codex·임의 경로는 typed operation이 아니다). 정규 절대경로 형태도 함께 만족한다.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$"
+        },
+        "args": {
+          "description": "정확한 인자 배열(wildcard·확장·shell 해석 없음). 항목은 NUL 없는 bounded 문자열이며 길이는 코드 포인트로 센다(최대 256).",
+          "type": "array",
+          "maxItems": 16,
+          "items": { "type": "string", "minLength": 1, "maxLength": 256, "not": { "pattern": "\\u0000" } }
+        },
+        "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 3600000 }
       }
     },
     "slug": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
