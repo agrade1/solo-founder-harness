@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/typed_execution_plan.schema.json",
+  "title": "TypedExecutionPlan",
+  "description": "V3 M5c — worker가 turn 하나에서 낼 수 있는 **전부**(계약 버전 1). worker가 고르는 것은 operation의 authorityId 하나뿐이고, 그 id가 무엇을 뜻하는지는 사람이 승인한 manifest.operationAuthorityByTask가 정한다(대장 B-10). shell 문자열 · argv · 실행 파일 · 환경 · cwd · 네트워크 · dependency · git · deploy · billing · PR merge 변종은 **표현할 필드가 없으므로** 계획에 담길 수 없다. runId/taskId/attemptId/turnId는 controller가 소유한 실행 신원과 정확히 같아야 한다. 이 파일은 계약 문서이고 실제 경계는 런타임 validator src/exec/typedExecution.ts의 validateTypedExecutionPlan이다(신규 검증 의존성 0). 두 정의의 동치는 src/exec/typedExecution.test.ts가 강제한다. **길이 의미 주의(대장 C-40)**: draft-07 maxLength는 **코드 포인트** 수다. path는 런타임도 코드 포인트로 세므로 정확히 같고, result.summary(런타임은 UTF-16 code unit)와 operations[].content(런타임은 UTF-8 바이트)는 상한 **값**이 같고 런타임이 더 엄격하다(fail closed 방향).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "runId", "taskId", "attemptId", "turnId", "operations", "result"],
+  "properties": {
+    "schemaVersion": {
+      "description": "typed 실행 계획 계약 버전. 다른 값은 plan_invalid다(마이그레이션 없음).",
+      "const": "1"
+    },
+    "runId": { "$ref": "#/definitions/slug" },
+    "taskId": { "$ref": "#/definitions/slug" },
+    "attemptId": { "$ref": "#/definitions/slug" },
+    "turnId": { "$ref": "#/definitions/slug" },
+    "operations": {
+      "description": "이 turn이 요청하는 typed operation. operationId는 계획 안에서 유일해야 한다.",
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "oneOf": [{ "$ref": "#/definitions/writeFileOperation" }, { "$ref": "#/definitions/runProcessOperation" }]
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["summary", "outputs"],
+      "properties": {
+        "summary": {
+          "description": "중앙 state로 옮기는 유일한 서술 필드(bounded). 런타임은 UTF-16 code unit으로 같은 상한을 본다.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "outputs": {
+          "type": "array",
+          "maxItems": 16,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "role"],
+            "properties": {
+              "path": { "$ref": "#/definitions/normalizedWorkspacePath" },
+              "role": { "$ref": "#/definitions/artifactRole" }
+            }
+          }
+        }
+      }
+    }
+  },
+  "definitions": {
+    "slug": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "artifactRole": { "enum": ["input", "contract", "output", "evidence", "diff", "test"] },
+    "normalizedWorkspacePath": {
+      "description": "**이미 정규화된** workspace-relative 경로. segment는 비어 있지 않고 '.'/'..'가 아니며 backslash·NUL을 포함하지 않는다(선행·후행·중복 '/' 없음). 런타임 판정은 normalizeWorkspacePath(v) === v다. maxLength는 draft-07 의미대로 **코드 포인트** 수이고 런타임도 codePointLength로 센다(대장 C-40).",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$",
+      "not": { "pattern": "^[A-Za-z]:" }
+    },
+    "writeFileOperation": {
+      "description": "승인된 경로에 정확히 이 내용을 쓴다. path는 승인 레코드의 경로와 **문자열 동치**여야 하고, 바이트 상한은 min(승인 maxBytes, 1 MiB)다. expectedBeforeSha256이 null이면 '그 자리에 파일이 없어야 한다'는 뜻이다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "kind", "authorityId", "path", "content", "expectedBeforeSha256"],
+      "properties": {
+        "operationId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "write_file" },
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "path": { "$ref": "#/definitions/normalizedWorkspacePath" },
+        "content": {
+          "description": "파일 본문. 런타임은 **UTF-8 바이트**로 같은 상한을 보고(코드 포인트보다 엄격) UTF-8 왕복이 깨지는 문자열(고립 surrogate)을 거부한다.",
+          "type": "string",
+          "maxLength": 1048576
+        },
+        "expectedBeforeSha256": {
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        }
+      }
+    },
+    "runProcessOperation": {
+      "description": "승인된 프로세스를 정확히 그대로 실행한다. worker가 주는 것은 authorityId 하나뿐이고 실행 파일·argv·timeout은 전부 승인 레코드에서 나온다 — 그래서 '모델이 만든 명령'이 성립하지 않는다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "kind", "authorityId"],
+      "properties": {
+        "operationId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "run_process" },
+        "authorityId": { "$ref": "#/definitions/slug" }
+      }
+    }
+  }
+}
