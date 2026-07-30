@@ -1,5 +1,78 @@
 # WORKLOG.md
 
+## 2026-07-30 (V3 **M5c 착수 — 기반 slice(state/manifest v2 · lifecycle · durable 회계)만 구현. M5c는 미완료이고 기존 테스트가 red다** · 이 블록이 가장 최신이다)
+
+worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작·기준 HEAD
+`81554cf`(M5b 8차 재리뷰 `APPROVE_TO_STACK` 시점). fresh Claude Opus 5 단일 세션(subagent·병렬 writer 0).
+원격 push/PR/merge · 네트워크 · `gh` · MCP · 패키지 설치 · 의존성/lockfile 변경 · live Codex/Claude 추론 ·
+secret · deploy · DB · production · live billing **없음**. `--dangerously-skip-permissions` 미사용.
+
+**정직한 판정: M5c는 구현되지 않았다.** 계획(`/private/tmp/m5c-planning-codex-output.txt`)의 9개 작업
+묶음 중 **2개(권위 결정 + kernel/state)만** 끝났고, 나머지(typed 실행 집행 · trusted Git · managed
+process supervisor · offline plan worker · 구조화 리뷰 검증 · controller 재작성 · autopilot CLI ·
+schema JSON · mutation 8종 · M4 acceptance fixture 갱신)는 **착수하지 않았다**.
+
+### 구현한 것 (focused 검증 완료)
+
+- **schema 버전 분리**: `AGENT_MESSAGE_SCHEMA_VERSION="1"`(무변경) / `RUN_STATE_SCHEMA_VERSION="2"` /
+  `APPROVAL_MANIFEST_SCHEMA_VERSION="2"` / typed plan · review result 상수. v1 state·manifest는
+  **마이그레이션·기본값 0으로 fail closed**(`state_pre_m5c_unsupported` · `manifest_pre_m5c_unsupported`).
+- **lifecycle 상태 5종 추가**: `prepared` · `cleaning` · `retry_wait` · `paused` · `cancelled`.
+  `RESOURCE_HOLDING_STATES = prepared|running|cleaning`이 배타 자원·`maxSessions` 점유의 **단일 정본**이며
+  커밋·load 공용 불변식이 그것을 강제한다(대장 `B-11`·`B-13` 방향).
+- **단일 scheduler**: `planRunnableBatch()` → `commitPreflightBatch()`(원자적) → `startPreparedTask()`.
+  `startTask()`/`startScheduledBatch()`는 **안정 코드 `preflight_required`로 닫힌 stub**이다(ready→running
+  직접 전이가 존재하지 않음을 테스트로 단정할 수 있게 남겼다 — 제거하면 `TypeError`라 taxonomy가 없다).
+  재시도(`retry_wait`)도 **같은 scheduler 하나**가 고른다(두 번째 scheduler 없음).
+  계획 §2의 네 결과에 **`deferred`를 더했다**(batch 일부만 시작할 때 남은 task 상태를 오염시키지 않기 위해 —
+  네 결과보다 엄격히 적게 한다).
+- **durable 토큰·경과 회계**(`state.accounting`): 재시작이 예산을 새로 만들지 않고, 같은 `turnId`는 정확히
+  한 번만 과금되며, 회계는 `stateContentDigest`에 들어가 손편집이 state↔event binding에서 거부된다.
+- **완료·차단은 확인된 zero-survivor 정리 뒤에만**: `requireCleanedTask`(= `cleaning` + `cleanupStatus
+  === "confirmed"`) 하나가 `completeTaskWithArtifacts`·`submitResult`·`submitBlocker` 전부를 지난다.
+  정리 실패는 `cleaning`에 남고 자원을 계속 붙잡는다.
+- **전달 재시도**(대장 `C-12→B`): `message.delivery` durable 메타데이터 + `beginDeliveryAttempt` /
+  `failDeliveryAttempt`. 실패는 **수령하지 않고** 재시도만 남긴다. 시도 기록 없는 ack는 거부다.
+- **만료 후 safety-only reducer 예외**: DECISIONS 2026-07-30 + 로드맵 **§8.1**에 먼저 기록한 뒤 구현했다.
+  전진은 `now >= expiresAt`·durable run deadline에서 닫히고(대장 `C-17` 경계 포함으로 닫음), 회계·취소·
+  정리·fail-closed pause만 통과한다. safety-only 커밋은 닫힌 event·사유 집합만 낼 수 있고
+  `completed`/`running` 전이와 본문 발행이 구조적으로 불가능하다.
+- **대장 `C-24`**: Codex stderr 버퍼 상한을 **정확한 남은 자리만큼** 자른다(이전 판은 큰 chunk 하나가 상한을
+  임의로 넘길 수 있었다).
+- **대장 `C-40`**: 승인·workspace 경로 길이를 **Unicode 코드 포인트**로 센다(`codePointLength`) →
+  draft-07 `maxLength`와 같은 의미. astral 경계 3케이스를 테스트로 고정했다.
+- typed operation 권위(`manifest.operationAuthorityByTask`)·`autopilotPolicy`·`executionAuthority.node`·
+  `processObserver` **계약면**을 닫았다(deny-by-default 조회 `approvedOperationFor`). `codex`는 null 허용이며
+  그 승인으로는 `verifyCodexExecutable`이 `codex_not_approved`로 provider 생성을 거부한다.
+  `run_process` 권위의 `executable`은 **승인된 node 경로와 정확히 같아야** 한다(계획보다 의도적으로 좁다 —
+  git을 typed operation으로 열면 승인 문서가 원격 쓰기 hard deny를 덮는 형태가 된다).
+
+### 검증 실측 (이 세션에서 실제로 실행한 것)
+
+- `npx tsc --noEmit` — **0 error**.
+- 파일 단독 `npx tsx --test src/exec/autopilotLifecycle.test.ts` — **27/27 pass**(신규 focused 파일).
+  덮은 것: v2 fail-closed 4종 · preflight 원자성/집합 일치/낡은 revision · `prepared` 점유 ·
+  `preflight_drift` · cleanup 뒤 완료 · lease 불일치 · settle 3분기 · 재시작 회계 · 회계 손편집 거부 ·
+  전달 재시도 · 만료 경계(C-17) · safety-only 통과/차단 · C-40 astral 3케이스 · operation 권위 deny.
+- `git diff --check` — clean. 소유 밖 파일 변경 0. `node_modules` stage 0.
+
+### 실행하지 않은 것 / red 상태 (정직한 기록)
+
+- **기존 focused 테스트가 red다**: `orchestrationKernel.test.ts` **14/103 pass (89 fail)** ·
+  `stableController.test.ts` **3/58 pass (55 fail)**. 원인은 결함이 아니라 **미완료 마이그레이션**이다:
+  ① 두 파일의 manifest fixture가 v2 필드(`autopilotPolicy`·`operationAuthorityByTask`·`node`·
+  `processObserver`)를 아직 담지 않았고 ② 약 48곳이 `startTask`(now `preflight_required`)를 부르며
+  ③ 약 49곳의 완료가 `recordTerminal`→`confirmCleanup` 단계를 지나지 않는다.
+  **테스트를 완화·삭제하지 않았다** — 마이그레이션이 남아 있을 뿐이다.
+- `StableController`는 아직 `startScheduledBatch()`를 부르므로 **autopilot 경로가 동작하지 않는다**
+  (`advanceOnce`가 `kernel_rejected`로 닫힌다). controller 재작성이 M5c의 남은 핵심이다.
+- `npm run test:exec` · `npm test` · `test:core` · acceptance(M4a/M4b/M4c) · stress · live · mutation 8종 ·
+  `npm run build`/dist 재생성 — **전부 미실행**. dist는 의도적으로 **M5b 상태 그대로** 두었다(반쯤
+  마이그레이션된 dist를 발행하는 것이 더 위험하다) → **현재 src↔dist는 drift 상태이며 이 커밋은
+  배포 가능 상태가 아니다**.
+- `B-7`·`B-9`는 손대지 않았고 여전히 **열린 live 하드 게이트**다. `C-22`는 의도적으로 open이다.
+  `C-36`·`C-39`는 store 발행 내부를 건드리지 않았으므로 open 그대로다.
+
 ## 2026-07-30 (V3 **M5b 7차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=2): git 내용이 spawn마다 재검증되지 않음 · body 발행이 검증 이후 교체본을 link하고 복구 journal을 삭제할 수 있음** · **독립 재리뷰 대기**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,

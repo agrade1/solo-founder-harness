@@ -3,7 +3,23 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-30 — V3 **M5b stable controller · 7차 리비전 완료** · **독립 8차 리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-30 — V3 **M5c 착수 · 기반 slice만 구현 · M5c 미완료 · red 테스트 있음** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · base `81554cf`
+  (M5b 8차 재리뷰 `APPROVE_TO_STACK` 시점). fresh Claude Opus 5 단일 세션.
+  원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · live provider 추론 · secret **0**.
+- **M5c는 승인 대상이 아니다.** 계획 9개 묶음 중 2개(권위 결정 · kernel/state)만 끝났다.
+  구현·미구현·검증 실측·red 카운트는 `docs/WORKLOG.md` 최상단 블록이 정본이다.
+- **리뷰어에게**: 이 커밋은 **마일스톤 판정 대상이 아니라 기반 slice**다. 지금 리뷰가 필요하면 범위는
+  `orchestrationTypes.ts` · `approvalManifest.ts` · `orchestrationStore.ts` 검증자 · `orchestrationKernel.ts`
+  lifecycle · `autopilotTypes.ts` · `autopilotLifecycle.test.ts`로 좁힌다. `stableController.ts`는
+  **아직 옛 scheduler API를 부르므로 동작하지 않는다**(의도된 미완료 상태).
+- **열린 하드 게이트**: `B-7`·`B-9`(첫 live 실행 전, 손대지 않음) · `B-10`/`B-12`(부분: 회계는 닫았고 typed
+  집행은 미구현) · `B-13`(부분: kernel 순서 계약은 닫았고 실제 프로세스 정리는 미구현) · `C-22`(의도적 open) ·
+  `C-36`·`C-39`(store 발행 내부 무변경 → open 유지).
+- **src↔dist drift 있음**: dist는 M5b 상태 그대로다(반쯤 마이그레이션된 dist를 발행하지 않았다).
+
+## 이전 상태 (2026-07-30 — V3 **M5b stable controller · 7차 리비전 완료** · **독립 8차 리뷰 대기 · M5 미완료** · 이 절이 가장 최신이다)
 
 - **M5b 7차 리비전** — 시작 HEAD `ff5e035` 위에 code/tests/dist/schema 커밋 + docs 커밋.
   worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller` · 승인 base = M5a

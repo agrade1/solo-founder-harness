@@ -1,5 +1,30 @@
 # DECISIONS.md
 
+## 2026-07-30 (V3 M5c — **만료 후에도 안전만은 계속 움직인다: 전진은 닫고 회수는 연다**)
+
+- **문제(권위 문서 충돌).** M4c 이후 kernel의 계약은 "만료된 승인으로는 **어떤 변경도** 하지 않는다"였다
+  (`#mutate` 진입에서 `assertNotExpired`). M5c는 실제 프로세스와 durable lifecycle을 도입하므로 그 문장이
+  **안전을 막는다**: 승인이 만료되는 순간 실행 중이던 task는 ⓐ 그 turn이 태운 토큰을 예산에 반영할 수 없고
+  ⓑ 취소를 요청할 수 없고 ⓒ 자손 프로세스 정리 결과(zero-survivor receipt)를 durable에 남길 수 없고
+  ⓓ fail-closed `paused`로 내려앉을 수도 없다. 그러면 만료가 곧 **회계 누락 + 프로세스 누수 + 자원 영구
+  점유**가 된다(만료 시각을 스스로 넘기는 것만으로 예산을 회피할 수 있다).
+- **결정.** `now >= expiresAt`(경계 포함 — 대장 `C-17`도 여기서 닫는다) 이후에는 **전진 작업을 전부 거부**하되
+  아래 **safety-only reducer 집합만** 계속 커밋할 수 있게 한다. 집합은 코드에서 **닫힌 목록**이다
+  (`SAFETY_ONLY_REASONS` / `#mutate({ safetyOnly: true })`):
+  1. **usage charge** — 이미 태운 토큰·경과를 durable accounting에 반영한다(증가만, 감소·리셋 없음).
+  2. **cancellation request** — `cancelRequestedAt`을 기록한다(취소는 전진이 아니다).
+  3. **cleanup** — `cleaning` 진입 / cleanup 시도 카운트 / zero-survivor 확인 / `cleanup_unconfirmed`.
+  4. **fail-closed pause·reconcile** — 중단·시계 역행·복구 후 `paused`로 내려앉히고 action을 정합화한다.
+- **이 reducer들이 절대 못 하는 것(같은 게이트에서 강제한다).** 작업 시작(`ready|prepared → running`) ·
+  실패한 전달의 수령(ack) · artifact 발행·등록 · `completed` 전이. 즉 **만료 후에 새로 생기는 산출물·권한·
+  성공은 0건**이고, 만들어지는 것은 "이미 일어난 일의 회계"와 "자원 회수"뿐이다.
+- **대가와 대안.** 대안 ①"만료 후 전부 거부 유지"는 위 4가지 누수를 그대로 남긴다. 대안 ②"만료 시 승인
+  자동 연장"은 **사람 승인을 자동으로 넓히는 것**이므로 hard deny 방향이다. ③이 결정은 예외 집합을 코드에
+  닫아 두고 그 밖은 전부 거부하므로, 감사 표면이 "reducer 4종"으로 bounded된다. 대가는 만료 뒤에도
+  event·revision이 몇 건 더 늘어난다는 것뿐이다(전부 `manifest_expired` 이후임이 event에 남는다).
+- **문서 정본 갱신.** 이 예외는 활성 로드맵 §8과 §10 M5c 절에 함께 적었다. 이전 판의 "만료 후 모든 변경
+  거부" 문장은 **M4c~M5b 시점 기록**으로 읽고, 현행 계약은 이 항목과 로드맵 M5c 절이다.
+
 ## 2026-07-30 (V3 M5b 7차 리비전 — **검증의 단위는 트랜잭션이 아니라 syscall이다 · 이름을 만든 뒤에도 확인한다 · 증거를 지우는 일이 가장 위험한 쓰기다 · 계약 문서와 런타임은 정본을 공유한다**)
 
 - **"한 번 증명했다"는 "그 프로세스 동안 증명됐다"가 아니다.** 6차까지는 경계 진입에서 git을 한 번 해싱하고

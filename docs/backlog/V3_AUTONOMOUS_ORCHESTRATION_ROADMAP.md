@@ -626,6 +626,23 @@ interface MilestoneApprovalManifest {
 - Codex auto-review를 쓸 수 있어도 sandbox/승인 경계를 확대하는 수단으로 해석하지 않는다.
 - production deploy, live billing, remote repository direct write, PR merge, MCP `@latest`는 계속 hard deny다.
 
+### 8.1 만료(`expiresAt`) 이후의 정확한 계약 — **safety-only reducer 예외** (2026-07-30 · V3 M5c 확정)
+
+**이 항목이 현행 정본이다.** M4c~M5b 본문·주석의 "만료 후에는 **모든** 변경을 거부한다"는 문장은
+그 시점 기록으로 읽는다. M5c가 실제 프로세스와 durable lifecycle을 도입하면서 그 문장이 안전을
+막는 것이 드러났기 때문이다(만료가 곧 회계 누락 + 자손 프로세스 누수 + 자원 영구 점유가 된다).
+
+- **전진 작업은 `now >= expiresAt`에서 전부 거부**한다(경계 **포함** — 대장 `C-17`을 이 규칙으로 닫는다).
+  durable run deadline(`accounting.budgetDeadlineAt`)도 같은 방식으로 전진을 닫는다.
+- **예외는 아래 safety-only reducer 4종뿐**이고 코드에서 **닫힌 목록**으로 강제한다:
+  ① usage charge(이미 태운 토큰·경과의 durable 반영 — 증가만) ② cancellation request
+  ③ cleanup(진입 · 시도 카운트 · zero-survivor 확인 · `cleanup_unconfirmed`)
+  ④ 중단·시계 역행·복구 후의 fail-closed `paused` 전이와 action reconcile.
+- **이 reducer들은 절대** 작업을 시작하지 않고(`ready|prepared → running` 금지), 실패한 전달을 수령하지
+  않고, artifact를 발행·등록하지 않고, `completed`로 전이하지 않는다. → 만료 뒤에 새로 생기는
+  산출물·권한·성공은 **0건**이며, 남는 것은 "이미 일어난 일의 회계"와 "자원 회수"뿐이다.
+- 근거·대안 비교는 `docs/DECISIONS.md` 2026-07-30 (V3 M5c) 항목에 있다.
+
 ## 9. 로드맵 자동 보완 규칙
 
 Codex는 더 나은 방향을 발견하면 `roadmap_change_proposal`을 만들 수 있다. 단 active roadmap을
@@ -1798,6 +1815,28 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
+
+##### M5c 기반 slice에서의 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신**)
+
+> **범위 경고**: 아래는 M5c의 **기반 slice(state/manifest v2 · lifecycle · durable 회계)** 만 반영한 것이며
+> **M5c 완료 선언이 아니다**. typed 실행 집행 · trusted Git · managed process supervisor · offline plan
+> worker · 구조화 리뷰 검증 · controller 재작성 · autopilot CLI는 **미구현**이다. 증거·미실행 목록은
+> `docs/WORKLOG.md` 최상단 블록이 정본이다. 이 세션은 **self-approve하지 않는다.**
+
+| id | 분류 | 항목 | 상태 | 근거·증거 |
+|---|---|---|---|---|
+| `C-17` | C (P3) | kernel 만료 판정이 `>` 라서 만료 밀리초에 전이 1건이 통과했다 | **fixed (2026-07-30)** | `orchestrationKernel.assertNotExpired`가 `>=`다. 실행 경계와 판정이 일치한다. 증거: `autopilotLifecycle.test.ts` "만료는 경계 포함이다(C-17)" — 만료 −1ms는 통과, 만료 정각은 `manifest_expired`. 만료 후 safety-only 예외는 DECISIONS 2026-07-30 + 로드맵 §8.1에 **먼저** 기록했다 |
+| `C-24` | C (P2) | Codex stderr 버퍼 상한이 chunk 단위라 큰 chunk 하나가 상한을 임의로 넘겼다 | **fixed (2026-07-30)** | `codexCliProvider.ts` stderr handler가 **남은 자리만큼만** 정확히 슬라이스한다. 전용 회귀는 **미작성**(provider 테스트 파일 미갱신) — 이 항목의 증거는 소스뿐이므로 리뷰어 확인 대상이다 |
+| `C-40` | C (P3) | 승인 경로 길이가 runtime은 UTF-16 unit, schema는 코드 포인트라 판정이 갈렸다 | **fixed (2026-07-30)** | `orchestrationTypes.codePointLength`가 정본이고 `normalizeWorkspacePath`·`validateApprovedExecutable`이 그것을 쓴다. 증거: `autopilotLifecycle.test.ts` C-40 케이스 — `/`+😀×256(코드 포인트 257 / UTF-16 513) **수락** · 정확히 512 **수락** · 513 **거부** |
+| `B-11` | B (P1) | batch 전체가 per-task preflight 전에 running이 됐다 | **부분 fixed — kernel 계약은 닫혔고 controller는 미배선** | `planRunnableBatch`→`commitPreflightBatch`(원자적)→`startPreparedTask`. `startTask`/`startScheduledBatch`는 `preflight_required` stub. `prepared`가 자원·`maxSessions`를 점유한다. **남은 일**: `StableController`가 아직 옛 API를 부른다 |
+| `B-12` | B (P1) | 재시작이 토큰·경과 회계를 리셋했다 | **fixed (kernel 층) — controller 배선은 미완** | `state.accounting`(v2) · turn 멱등 과금 · `stateContentDigest`에 포함(손편집 거부) · durable run deadline. 증거: `autopilotLifecycle.test.ts` 재시작·멱등·손편집 3케이스 |
+| `B-13` | B (P1) | durable 완료가 확인된 provider 정리보다 앞섰다 | **부분 fixed — 순서 계약만 닫혔다** | `requireCleanedTask`(= `cleaning` + `cleanupStatus==="confirmed"`)가 `completeTaskWithArtifacts`·`submitResult`·`submitBlocker` 전부를 지난다. 정리 실패는 `cleaning`에 남고 자원을 유지한다. **남은 일**: 실제 프로세스 감독자·자손 정리(`C-18`)는 **미구현** |
+| `C-12→B` | B (P1) | 실패한 inbox 전달을 자동 재시도할 수 없었다 | **부분 fixed — durable 재진입 데이터는 닫혔다** | `message.delivery` + `beginDeliveryAttempt`/`failDeliveryAttempt`. 실패는 ack하지 않고 재시도만 남기며, 시도 기록 없는 ack는 `delivery_attempt_missing`이다. **남은 일**: controller의 재진입 loop |
+| `B-10` | B (P1) | edit 가능 실행에 타입 있는 집행 계층이 없었다 | **open (계약면만 닫힘)** | `manifest.operationAuthorityByTask` 닫힌 union + deny-by-default `approvedOperationFor` + `run_process.executable`을 승인된 node로 한정(git·codex·임의 경로 거부). **집행기(`typedExecution.ts`)·worker는 미구현** → **여전히 열린 게이트**다 |
+| `C-18` `C-19` `C-26` `C-29` `C-30` `C-31` `C-33` `C-34` `C-35` `C-37` | C | M5c가 닫기로 한 나머지 | **open — 미착수** | 해당 slice(프로세스 감독자 · 리뷰 검증 · trusted Git · 중첩 handoff schema · 두 번째 backend · 정리 영수증 공개 · outcome 코드 단일 출처 · seam provenance · ReviewSubject 닫기 · action 정합화)가 구현되지 않았다. `C-33`은 event `marker`를 닫힌 합집합(`EVENT_MARKERS`)으로 모으는 **부분 진전**만 있다 |
+| `B-7` `B-9` | B (P1) | live 인증·secret redaction · live JSONL 검증 | **open — 손대지 않았다** | 첫 live 실행 전 하드 게이트 그대로. 이 세션은 live 실행 0 |
+| `C-22` | C (P2) | same-thread live Codex resume 소유권 | **open — 의도적** | M5c는 provider 세션을 재개하지 않고 fresh offline attempt를 쓰기로 했다(계획 §5) |
+| `C-36` `C-39` | C (P3) | store 발행 경로의 test-only hook · 정리 실패 억제 | **open — 트리거 미발화** | 이 세션은 `orchestrationStore` **발행 내부를 건드리지 않았다**(검증자만 변경) |
 
 ##### M5b 7차 리비전 신규·갱신 유예 (2026-07-30)
 

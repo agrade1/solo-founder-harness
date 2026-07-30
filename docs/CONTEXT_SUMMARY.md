@@ -2,7 +2,26 @@
 
 최종 갱신: 2026-07-30
 
-## 최신 (2026-07-30 — **V3 M5b 7차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=12) 대응 · 독립 8차 리뷰 대기** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-30 — **V3 M5c 착수: 기반 slice만 구현. M5c 미완료 · 기존 focused 테스트 red** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · base `81554cf`.
+- **끝난 것**: state/manifest **v2**(마이그레이션 없는 fail closed) · lifecycle 5상태 추가 ·
+  `prepared|running|cleaning`이 자원·세션 점유 · 단일 scheduler(`planRunnableBatch` →
+  `commitPreflightBatch` → `startPreparedTask`, ready→running 직접 전이 제거) · durable 토큰·경과 회계
+  (재시작 유지 · turn 멱등) · **확인된 zero-survivor 정리 뒤에만 완료/차단** · 전달 재시도(조기 ack 없음) ·
+  만료 후 safety-only reducer 예외(DECISIONS + 로드맵 §8.1에 먼저 기록) · 대장 `C-17`·`C-24`·`C-40` 닫음 ·
+  typed operation 권위 계약면(deny-by-default).
+- **안 끝난 것(M5c의 남은 핵심)**: typed 실행 집행(`typedExecution.ts`) · trusted Git · managed process
+  supervisor + 자손 정리 · offline plan worker · 구조화 리뷰 검증(`C-19`/`C-35`) · `StableController` 재작성 ·
+  `autopilot` CLI · legacy `exec`/`mission` 비활성화 · schema JSON 4종 · mutation 8종 · M4 acceptance fixture.
+- **검증**: `npx tsc --noEmit` 0 · 신규 `autopilotLifecycle.test.ts` **27/27**.
+  **red**: `orchestrationKernel.test.ts` 14/103 · `stableController.test.ts` 3/58 — 원인은 미완료
+  fixture/호출부 마이그레이션이며 테스트를 완화·삭제하지 않았다.
+- **dist는 M5b 상태 그대로**(src↔dist drift) → 이 커밋은 배포 가능 상태가 **아니다**.
+- 다음 세션의 첫 작업: controller 재작성 전에 **kernel 테스트·M4 acceptance fixture 마이그레이션**을 끝내
+  green을 회복한 뒤 나머지 slice로 간다.
+
+## 이전 (2026-07-30 — **V3 M5b 7차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=12) 대응 · 독립 8차 리뷰 대기** · 이 블록이 가장 최신이다)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `ff5e035` 위에 **7차 리비전 커밋** — code/tests/dist/schema
