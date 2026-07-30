@@ -1,6 +1,56 @@
 # WORKLOG.md
 
-## 2026-07-28 (V3 **M5b 5차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=4): 임의 executable/git 권위가 증명됨 · journal 전에 생긴 최종 body · 남의 event suffix 파괴 · 열린 journal schema** · **독립 재리뷰 대기**)
+## 2026-07-28 (V3 **M5b 6차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=2): caller가 고른 임의 Git/Codex 실행 파일이 권위 · journal이 base 승인·전이·body 소유권에 묶이지 않음** · **독립 재리뷰 대기**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
+시작 HEAD `6a5e418`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가
+미상속). amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · 패키지 설치 · 의존성/lockfile 변경 ·
+MCP · **live Codex/Claude provider 추론** · secret 사용 · deploy · DB · production · live billing **없음**.
+subagent·병렬 writer 없음(단일 세션 직렬). `node_modules`(supervisor symlink)는 **stage하지 않았고**
+세션 끝에 `unlink`로 제거했다. Ponytail(full) 적용.
+
+> **정정 — 5차 리비전 기록의 과장.** 5차 기록은 A1·A3(3건)·A4를 "넷 다 닫았다"고 적었지만 6차 독립 리뷰는
+> **A1을 OPEN** · **A3를 OPEN**으로 판정했다(A2만 CLOSED · A4는 PARTIAL). 공통 뿌리는 **"권위의 근거를 같은
+> caller 입력·자기 일관성에서 찾았다"** 이다: 실행 파일의 *기대값 자체가 caller 옵션*이라 provider·controller
+> 양쪽에 같은 임의 경로를 주면 대조가 성립했고(같은 inode 제자리 덮어쓰기도 통과) journal은 *자기 안에서만*
+> 일관됐으므로 해시를 전부 재계산한 위조 후속을 복구가 발행했다. 이전 절은 dated history로 보존한다.
+
+- **A1 — 실행 권위의 trust root를 kernel 소유 승인으로 옮겼다.** `MilestoneApprovalManifest`에 필수
+  **`executionAuthority`**(codex·git 각각 **정규 절대경로 + 내용 SHA-256**)를 추가하고, **실행 파일 경로를
+  고르는 호출자 옵션을 전부 삭제**했다(provider `executablePath`/`gitExecutablePath` · controller
+  `codexExecutablePath`/`gitExecutablePath` · 경계 `gitExecutablePath`). 새 `verifyApprovedExecutable()`이
+  경로를 **한 번만 열고**(`O_RDONLY|O_NOFOLLOW`) 같은 fd에서 정규·비symlink·일반 파일·실행 비트·타인 쓰기
+  없음·**pin된 dev+ino**·**승인 digest**(64KiB chunk, 512MiB 상한)를 판정하며 **provider 생성 · controller
+  생성 · 경계 진입 · spawn 직전**에 각각 다시 부른다 → 같은 inode 제자리 덮어쓰기가 fail closed다. controller는
+  kernel(SoR) 승인의 두 경로를 자기 손으로 열어 검증한 뒤 checkout·승인 digest·시각 권위와 대조하고,
+  불일치는 **git·codex spawn 이전에** `controller_provider_authority_mismatch`로 생성 거부다.
+  하위 호환은 **fail closed**(`executionAuthority` 없는 manifest·state는 `invalid_manifest`, 마이그레이션 없음).
+- **A3 — 복구가 후속 state를 만들 권한을 없앴다.** roll forward를 **폐기**해 규칙은 "기준 바이트면 roll back /
+  정확히 목표 바이트면 마무리 / 그 밖 fail closed" 둘뿐이다. 발행 순서를 **journal → append → snapshot →
+  state → 최종 body**로 바꿔 기준 상태 복구가 최종 body를 만들거나 지울 필요가 없게 했다. journal은 이제
+  기준 **불변 권위**(milestone·승인 digest·내용 digest·생성 시각·메시지 수) · **기준 event 접두 신원** ·
+  **`JSON.stringify(validateEvent(...))` 정본 바이트** · **base→target body delta** · **staging dev+ino/바이트
+  수/digest**에 묶인다. 최종 body는 **`link(2)` no-clobber CAS**로만 발행하고, 남의 same-digest 파일은
+  **채택도 삭제도 하지 않는다**(rollback은 자기 staging만 지운다).
+- **B 7건은 하나도 닫지 않았다**(`B-7`·`B-9`·`B-10`·`B-11`·`B-12`·`B-13`·`C-12`→B — 기한·트리거 원문 유지).
+  **C 10건**: 9건(`C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`·`C-38`) 상태 유지 + ID 없던
+  staging/tmp 정리 orphan을 **`C-39`** 로 등록. **`C-37`은 닫지 않았다** — 범위가 발행 경계 11개 중 2개
+  (`body:publish`·`journal:cleanup`)로 줄었을 뿐이고 그 사실을 증거와 함께 적었다. `C-36`도 그대로 open.
+- **테스트(worker 자기보고 — 독립 실측 아님)**: kernel **98/98**(89 → 98) · controller **58/58**(57 → 58) ·
+  provider **59/59** · boundary **17/17** · reviewer **21/21** · parser **28/28** · `tsc --noEmit` clean ·
+  `build` + `git diff --check` clean · **dist 런타임 프로브**(승인 digest·제자리 덮어쓰기 거부 · 권위 불일치 ·
+  foreign tail 보존 · 유효 journal + 완전 append → roll back · spawn 0) · 승인 schema·발행 프로토콜이 바뀌어
+  **kernel 계열 offline acceptance 3개 재실행**: `m4a` **31/31** · `m4b` **42/42** · `m4c` **77/77**.
+  **mutation 13종 전부 kill · 살아남은 0 · 바이트 동일 원복 · `MUTATION` 잔재 0.**
+- **재개 검증(최종 코드 기준 실측)**: authority/provenance/recovery subset(kernel·controller·provider)
+  **3회 직렬 215/215** · `npm run test:exec` **353/353**(343 → 353).
+  **정직한 기록**: 이 세션은 중간에 한 번 끊겼다. 첫 `test:exec` 353/353은 **마지막 store 리팩터(발행 전 body
+  전수 사전 검증) 직전** 수치였고, 위 두 줄이 **재개 후 최종 코드로 다시 돌린** 값이다. 재개 시점에
+  production 5파일은 레포 밖 backup과 `cmp` **바이트 동일**이고 `MUTATION` grep은 **0**이었다.
+- **미실행**: `npm test` 전체 · `test:core` · 전체 `acceptance.sh` · stress · live · MCP · 실제 추론.
+- **이 세션은 스스로를 승인하지 않는다** — 다음 fresh Codex xhigh read-only 리뷰가 게이트다.
+
+## 2026-07-28 (V3 **M5b 5차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=4): 임의 executable/git 권위가 증명됨 · journal 전에 생긴 최종 body · 남의 event suffix 파괴 · 열린 journal schema** · **독립 재리뷰 대기** · **위 6차 리뷰가 A1/A3를 다시 열었다**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
 시작 HEAD `35de547`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가

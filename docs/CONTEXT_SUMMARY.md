@@ -2,7 +2,53 @@
 
 최종 갱신: 2026-07-28
 
-## 최신 (2026-07-28 — **V3 M5b 5차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=4 · B=7 · C=9) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-28 — **V3 M5b 6차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=10) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `6a5e418` 위에 **6차 리비전 커밋** — code/tests/dist 1건 +
+  docs 1건. **fresh Claude Opus 5 세션**(이전 transcript·자기평가 미상속 · subagent·병렬 writer 0).
+  원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · **live provider 추론** · secret 0.
+  `node_modules`(supervisor symlink)는 stage 0이고 세션 끝에 `unlink`로 제거했다. Ponytail(full) 적용.
+- **⚠ 5차 리비전 기록의 과장 정정**: 6차 독립 리뷰(`409dee2..6a5e418`)는 **A1을 OPEN** · **A3를 OPEN**으로
+  판정했다(**A2 CLOSED · A4 PARTIAL**). ⓐ 실행 파일의 **기대값 자체가 caller 옵션**이라 provider와 controller
+  양쪽에 `/usr/bin/true`·사용자 소유 0700 sentinel을 주면 path/dev/ino가 같아 `authorityMatches: true`가 됐고,
+  **같은 inode 제자리 덮어쓰기**도 통과했다 ⓑ journal이 **자기 안에서만** 일관됐으므로 해시를 전부 재계산한
+  **위조 후속**(다른 milestone·다른 승인·다른 task state)을 복구가 발행했고, event 정규형 판정이 key 순서를
+  못 봤고, 남의 same-digest 최종 body를 **채택·덮어쓰기·삭제**할 수 있었다. **지금도 self-approved가 아니다.**
+- **6차 리비전이 닫은 것(A 2건)**:
+  ⓐ **A1** — 실행 권위 trust root를 **kernel 소유 승인 manifest**로 옮겼다: 필수 `executionAuthority`
+  (codex·git의 **정규 절대경로 + 내용 SHA-256**) 추가 · **호출자 경로 옵션 전부 삭제**(provider·controller·경계) ·
+  새 `verifyApprovedExecutable()`이 경로를 **한 번만 열어** 신원(dev+ino)·권한·**승인 digest**를 함께 판정하고
+  **생성·경계 진입·모든 spawn 직전**에 재검증 → 제자리 덮어쓰기 fail closed · controller는 그 두 경로를 자기
+  손으로 검증해 provider 발급 권위와 대조하고 불일치는 **git·codex spawn 이전에** 생성 거부 ·
+  하위 호환은 **fail closed**(`invalid_manifest`, 마이그레이션 없음).
+  ⓑ **A3** — **roll forward 폐기**(복구 규칙 = 기준이면 roll back / 목표 바이트면 마무리 / 그 밖 fail closed) ·
+  발행 순서를 **journal → append → snapshot → state → 최종 body**로 재배치 · journal을 **기준 불변 권위 ·
+  기준 event 접두 신원 · `validateEvent` 정본 바이트 · base→target body delta · staging dev+ino/바이트/digest**
+  에 묶고 · 최종 body는 **`link(2)` no-clobber CAS**로만 발행(남의 same-digest 파일 채택·삭제 금지) ·
+  rollback은 **자기 staging만** 제거.
+- **B 7건은 하나도 닫지 않았다**(리뷰 원문 그대로): `B-7`·`B-9`(첫 live 실행 전) · `B-10`(edit 가능 provider
+  활성화 전) · `B-11`(무인 autopilot 전) · `B-12`(첫 restart/resume 전) · `B-13`(live runner 또는 두 번째
+  process-backed provider 전) · `C-12`→B(M5c autopilot 전).
+  **C 10건**: `C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`·`C-38` 상태 유지 + **신규 `C-39`**
+  (transaction staging·atomic tmp 정리 실패 orphan). **`C-37`은 닫지 않았다** — 범위가 발행 경계 11개 중
+  2개(`body:publish`·`journal:cleanup`)로 줄었을 뿐이다. `C-36`도 그대로 open.
+- **테스트(worker 자기보고 — 독립 실측 아님)**: `orchestrationKernel` **98/98**(89 → 98) ·
+  `stableController` **58/58**(57 → 58) · `codexCliProvider` **59/59** · `executionBoundary` **17/17** ·
+  `reviewer` **21/21** · `codexStreamParser` **28/28** · authority/provenance/recovery subset
+  **3회 직렬 215/215** · `npm run test:exec` **353/353** · `tsc --noEmit --pretty false` clean ·
+  `build` PASS + **dist 런타임 프로브**(승인 digest 통과/불일치/**제자리 덮어쓰기** 거부 · 권위 불일치
+  `authorityMatches:false` · `executionAuthority` 없는 manifest `invalid_manifest` · foreign tail
+  `journal_foreign` + 바이트 보존 · **유효 journal + 완전 append → roll back** · spawn 0) ·
+  `git diff --check` clean · kernel 계열 offline acceptance 개별 재실행(`m4a` 31 · `m4b` 42 · `m4c` 77).
+  **mutation 13종 전부 kill · 살아남은 0 · 바이트 동일 원복 · `MUTATION` 잔재 0.**
+  **정직한 기록**: 세션이 중간에 한 번 끊겨 `test:exec`·subset 3회를 재개 후 다시 돌렸다(위 수치가 재개분이다).
+- **미실행**: `npm test` 전체 · `test:core` · 전체 `acceptance.sh` · stress · live · MCP · 실제 Codex/Claude 추론.
+  전체 suite 1회는 **최종 M5 handoff(M5d 이후) 직렬 1회**로 예약돼 있다.
+- **다음 게이트**: supervisor의 **fresh Codex `gpt-5.6-sol` xhigh read-only 독립 재리뷰**. 위 fixed 판정
+  **전부가 재확인 대상**이다 — 이 세션은 스스로를 승인하지 않는다.
+
+## 이전 (2026-07-28 — **V3 M5b 5차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=4 · B=7 · C=9) 대응** · dated history · **6차 리뷰가 A1/A3를 다시 열었다**)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `35de547` 위에 **5차 리비전 커밋** — code/tests/dist
