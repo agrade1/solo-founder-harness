@@ -111,9 +111,11 @@
  * - **완료는 kernel의 단일 원자 트랜잭션이다(3차 리뷰 A3).** 산출물 등록 · result 수락 · `completed`
  *   전이를 `completeTaskWithArtifacts` **한 커밋**으로 한다. 이전 판은 산출물마다 따로 커밋한 뒤
  *   `submitResult`를 불렀으므로 뒤쪽 산출물이 실패하면 앞선 artifact·event·revision만 durable에 남았다.
- *   **물리 발행의 실패**(디스크 I/O)는 store의 journal 프로토콜이 덮는다(4차 리뷰 A3): 관찰 결과는
- *   가시적 전이 0이거나, 다음 열기가 결정론적으로 roll forward한 완료 상태다 — 어느 쪽도 반쪽 상태가
- *   아니고 재시도·전진이 가능하다.
+ *   **물리 발행의 실패**(디스크 I/O)는 store의 journal 프로토콜이 덮는다(4·6차 리뷰 A3): 관찰 결과는
+ *   가시적 전이 0(state 바이트 발행 전 실패 — roll forward는 폐기됐다)이거나, 목표 state가 이미
+ *   durable해진 뒤라 다음 열기가 body 발행·정리만 마무리한 완료 상태다 — 어느 쪽도 반쪽 상태가
+ *   아니고 재시도·전진이 가능하다. 후자에서 **호출자가 본 실패와 durable 진실이 갈릴 수 있다**
+ *   (대장 `C-37` open — M5c outcome marker 처리 전).
  * - **실패한 turn의 usage도 회계된다(2차 리뷰 A3).** 종료 결과가 1건으로 확정되면 **성공/실패를 해석하기
  *   전에** bounded usage를 정확히 한 번 더한다 → 실패한 turn이 태운 토큰이 전역 예산에서 빠지고,
  *   소진된 뒤의 task는 provider 호출 0으로 닫힌다.

@@ -24,6 +24,10 @@
  *   `link(2)`로 최종 이름을 만든다(**no-clobber CAS** — 남의 파일을 덮는 것이 원자적으로 불가능하다).
  *   같은 내용(digest)의 남의 최종 파일도 **채택하지 않고** 거부하며, roll back은 **자기 staging만** 지운다
  *   (최종 body는 애초에 없으므로 지울 것이 없다). 남의 body는 어떤 경로에서도 지우거나 덮지 않는다.
+ *   **소유 판정은 열린 fd 하나로 하고 발행 1건마다 반복한다(7차 독립 리뷰 A2)**: link **직전** ·
+ *   link **직후** · **journal 삭제 직전 전수**에서 dev+ino·정확한 바이트 수·내용 SHA-256을 다시 본다 →
+ *   전수 preflight 이후 staging을 갈아끼워 교체본을 link하거나, 발행된 최종 body를 제자리에서 고친 뒤
+ *   복구 기록을 지우는 경로가 없다. 어긋나면 **journal을 남기고** fail closed다.
  * - **journal은 열린 기록이 아니다(5·6차 독립 리뷰 A3).** closed schema이고 경로 runId·milestone·승인
  *   manifest·**기준 state 원본 바이트와 불변 권위 신원**(milestone·manifest·내용 digest·생성 시각·메시지
  *   수)·기준 event 바이트·후속 revision·**`validateEvent` 출력 바이트와 동일한 정규 event record**·해시
@@ -46,11 +50,13 @@ import {
   closeSync,
   constants as fsConstants,
   existsSync,
+  fstatSync,
   linkSync,
   lstatSync,
   mkdirSync,
   openSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -808,8 +814,13 @@ export type CommitStage = (typeof COMMIT_STAGES)[number];
 /**
  * **store 안에만 있는 bounded fault 주입 seam**(V3 M5b 4차 독립 리뷰 A3). 발행 경계마다 실패를 넣어
  * 복구 규칙을 실제로 검증하기 위한 것이며, **kernel·provider 권위에는 연결되지 않는다**:
- * 이 hook은 상태를 만들지도 검증을 완화하지도 않고, 부를 수 있는 것은 위 열거된 발행 경계 앞에서
- * 던지는 일뿐이다(성공 경로에서는 `null`이라 아무 일도 하지 않는다).
+ * 이 hook은 상태를 만들지도 검증을 완화하지도 않는다(성공 경로에서는 `null`이라 아무 일도 하지 않는다).
+ *
+ * **정확히 적는다(7차 독립 리뷰 C-36 증거 갱신)**: 이 콜백이 할 수 있는 것은 "던지는 일뿐"이 **아니다** —
+ * 동기 콜백이므로 파일 시스템을 임의로 바꿀 수도 있다(테스트가 실제로 그렇게 쓴다). 그래서 발행 경로는
+ * hook **이후**에 소유·내용을 다시 증명하고(`publishOwnedBodies`) journal 삭제 **직전**에 전수 재검증한다
+ * (`finishJournal`) → hook이 만든 변경은 **fail closed로 잡히고 복구 기록이 남는다**.
+ * export된 가변 전역이라는 절충 자체는 그대로 대장 `C-36`(open)이다.
  */
 let commitFaultHook: ((stage: CommitStage) => void) | null = null;
 
@@ -1287,6 +1298,51 @@ function validateJournal(paths: RunPaths, raw: unknown): CommitJournal {
   };
 }
 
+/**
+ * **열린 fd 하나로 판정하는 소유 증명**(V3 M5b 7차 독립 리뷰 A2). journal이 고정한 dev+ino ·
+ * **정확한 바이트 수** · **내용 SHA-256** 을 같은 fd에서 전부 본다 → `lstat` 뒤 경로를 다시 읽는
+ * 사이의 교체·제자리 덮어쓰기 창이 없다. `O_NOFOLLOW`라 symlink는 열리지 않는다.
+ *
+ * - `absent` — 그 이름이 없다(발행 대상).
+ * - `ours` — 이 트랜잭션이 만든 그 바이트다.
+ * - `foreign` — 있지만 우리 것이 아니다(신원·크기·내용 중 하나라도 다르거나 판정 불가) → fail closed.
+ */
+function ownershipOf(file: string, b: JournalBody): "absent" | "ours" | "foreign" {
+  if (!O_NOFOLLOW_SUPPORTED) return "foreign";
+  let fd: number;
+  try {
+    fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+  } catch (e) {
+    // 부재만 "아직 없다"다. symlink(ELOOP)·권한·그 밖은 **남의 것**으로 접는다.
+    return (e as NodeJS.ErrnoException).code === "ENOENT" ? "absent" : "foreign";
+  }
+  try {
+    const st = fstatSync(fd);
+    // 크기를 **먼저** 대조한다 → 아래 버퍼는 journal이 승인한 크기(`LIMITS.maxBodyBytes` 이하)다.
+    if (!st.isFile() || st.dev !== b.dev || st.ino !== b.ino || st.size !== b.bytes) return "foreign";
+    const buf = Buffer.allocUnsafe(st.size);
+    for (let off = 0; off < st.size; ) {
+      const n = readSync(fd, buf, off, st.size - off, off);
+      if (n <= 0) return "foreign"; // 짧게 읽혔다 = 판정 불가
+      off += n;
+    }
+    return sha256Hex(buf) === b.sha256 ? "ours" : "foreign";
+  } catch {
+    return "foreign";
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      /* fd 정리 실패는 판정 결과를 가리지 않는다(대장 `C-39`와 같은 종류) */
+    }
+  }
+}
+
+/** 이 커밋이 발행할 **최종** body 경로(색인 규칙과 같은 한 자리에서만 만든다). */
+function finalBodyPath(paths: RunPaths, b: JournalBody): string {
+  return join(paths.dir, `messages/${b.messageId}.md`);
+}
+
 /** 최종 엔트리를 따라가지 않고 읽은 신원(없으면 null). symlink·비일반 파일은 **신원이 없다**. */
 function regularIdentity(file: string): { dev: number; ino: number; size: number } | null {
   let st: ReturnType<typeof lstatSync>;
@@ -1313,33 +1369,47 @@ function regularIdentity(file: string): { dev: number; ino: number; size: number
  *
  * 재시도 멱등: 이미 link된 body는 ⓐ에서 통과하고 남은 staging만 정리한다.
  *
+ * **판정은 발행 1건 단위다(7차 독립 리뷰 A2).** 이전 판은 ①에서 전수 판정한 뒤 발행 hook을 부르고
+ * **경로 이름 그대로** `linkSync`했다 → hook이나 같은 UID의 동시 writer가 ① 이후 staging을 갈아끼우면
+ * 그 교체본이 최종 body로 link되고, staging은 지워지고, journal까지 삭제돼 **복구 증거가 사라졌다**
+ * (같은 digest면 남의 inode 입양, 다른 digest면 "성공한 커밋 + 잘못된 body"). 지금은 link **직전**과
+ * link **직후**에 같은 fd로 다시 증명하고(`ownershipOf`), journal 삭제 전에 **전수 재검증**한다
+ * (`finishJournal`). 어긋나면 journal을 남기고 fail closed다.
+ *
  * ponytail: 이식성 한계 — `link(2)`는 같은 파일 시스템(여기서는 **같은 디렉터리**)에서만 성립하고
  * dev+ino는 POSIX 신원이다. Windows/네트워크 FS에서 hard link가 없으면 이 발행은 실패로 남는다
  * (fail closed). engines `>=18` · POSIX 대상 범위에서만 지원한다고 적는다.
+ * ponytail: `link(2)`는 **경로 이름**을 받으므로 "증명한 fd를 그대로 link"할 수는 없다(Linux
+ * `AT_EMPTY_PATH`는 Node API에 없다) → 증명과 link 사이 창을 0으로 만들지는 못한다. 대신 창을 syscall
+ * 몇 개로 줄이고 **link 직후 + journal 삭제 직전** 재검증으로 사후 탐지한다(대장 `C-5`와 같은 종류).
  */
 function publishOwnedBodies(paths: RunPaths, j: CommitJournal): void {
   // ① **어떤 이름도 만들기 전에** 전수 판정한다: 이미 우리 것이거나, staging이 정확히 우리 것이어야 한다.
   const pending: JournalBody[] = [];
   for (const b of j.bodies) {
-    const finalFile = join(paths.dir, `messages/${b.messageId}.md`);
-    if (finalIsOurs(finalFile, b)) continue;
+    if (finalIsOurs(finalBodyPath(paths, b), b)) continue;
     assertStagedOwned(stagedBodyPath(paths, j.txnId, b.messageId), b);
     pending.push(b);
   }
   // ② 발행 — `link(2)`는 대상이 있으면 EEXIST이므로 덮어쓰기가 원자적으로 불가능하다(CAS).
   for (const b of j.bodies) {
-    const finalFile = join(paths.dir, `messages/${b.messageId}.md`);
+    const finalFile = finalBodyPath(paths, b);
     const stagedFile = stagedBodyPath(paths, j.txnId, b.messageId);
     if (pending.includes(b)) {
       faultPoint("body:publish");
+      // **hook 이후·link 직전**에 같은 fd로 다시 증명한다(7차 리뷰 A2): ①과 여기 사이에 staging이
+      // 교체됐으면 그 바이트는 link되지 않는다(같은 digest의 다른 inode도 거부 — 입양 금지).
+      assertStagedOwned(stagedFile, b);
       try {
         linkSync(stagedFile, finalFile);
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-        // 경합: 판정 이후 최종 이름이 생겼다 — 우리 inode가 아니면 남의 것이므로 덮지 않는다.
-        if (!finalIsOurs(finalFile, b)) {
-          jfail("journal_body_foreign", `최종 body 이름이 이 트랜잭션 소유가 아니다: ${b.messageId}`);
-        }
+        // 경합: 판정 이후 최종 이름이 생겼다 — 아래 사후 증명이 우리 것인지 판정한다(덮지 않는다).
+      }
+      // **link 직후** 만들어진 최종 이름을 같은 fd로 증명한다: 교체본이 link됐거나 남의 파일이
+      // 먼저 생겼으면 여기서 fail closed다(지우지도 덮지도 않는다).
+      if (!finalIsOurs(finalFile, b)) {
+        jfail("journal_body_foreign", `발행된 최종 body가 이 트랜잭션 소유가 아니다: ${b.messageId}`);
       }
     }
     // ponytail: staging 정리 실패는 orphan을 남기지만 발행은 이미 확정이다(대장 `C-39`).
@@ -1352,26 +1422,41 @@ function publishOwnedBodies(paths: RunPaths, j: CommitJournal): void {
 }
 
 /**
- * 최종 경로가 **이 트랜잭션 소유**(journal이 기록한 dev+ino·크기)인가.
+ * **journal 삭제는 여기로만 지난다**(7차 독립 리뷰 A2) — 정상 커밋과 "이미 목표 state" 복구 둘 다.
+ * journal 삭제는 곧 **복구 증거 폐기**이므로, 그 전에 journal이 고정한 **모든** 최종 body를 같은 fd로
+ * 다시 증명한다(앞선 시도가 이미 발행한 것까지 전수 — 같은 inode·같은 크기의 제자리 내용 변경도 잡는다).
+ * `journal:cleanup` fault hook은 이 sweep **앞**에서 울린다 → hook이 만든 임의의 파일 변경도 증거가
+ * 남은 채로 탐지된다. 하나라도 어긋나면 journal을 남기고 fail closed이며, 다음 열기·커밋이 같은 판정을
+ * 그대로 반복한다(결정론적·멱등).
+ */
+function finishJournal(paths: RunPaths, j: CommitJournal): void {
+  faultPoint("journal:cleanup");
+  for (const b of j.bodies) {
+    if (!finalIsOurs(finalBodyPath(paths, b), b)) {
+      jfail("journal_body_missing", `발행이 끝나지 않은 최종 body가 있어 복구 기록을 지울 수 없다: ${b.messageId}`);
+    }
+  }
+  rmSync(paths.journalFile, { force: true });
+}
+
+/**
+ * 최종 경로가 **이 트랜잭션 소유**(journal이 기록한 dev+ino·크기·**내용 digest**)인가.
  * 파일이 없으면 false, 있는데 우리 것이 아니면 **digest가 같아도** fail closed다(채택 금지).
+ * 내용까지 보는 이유(7차 리뷰 A2): dev/ino/size만으로는 **같은 inode 제자리 덮어쓰기**를 잡지 못해
+ * 그 뒤 journal이 삭제될 수 있었다.
  */
 function finalIsOurs(finalFile: string, b: JournalBody): boolean {
-  const id = regularIdentity(finalFile);
-  if (id === null) return false;
-  if (id.dev !== b.dev || id.ino !== b.ino || id.size !== b.bytes) {
+  const owned = ownershipOf(finalFile, b);
+  if (owned === "foreign") {
     jfail("journal_body_foreign", `최종 body가 이 트랜잭션이 만든 파일이 아니다: ${b.messageId}`);
   }
-  return true;
+  return owned === "ours";
 }
 
 /** staging이 journal이 기록한 신원·크기·내용 그대로인가(하나라도 다르면 발행하지 않는다). */
 function assertStagedOwned(stagedFile: string, b: JournalBody): void {
-  const id = regularIdentity(stagedFile);
-  if (id === null || id.dev !== b.dev || id.ino !== b.ino || id.size !== b.bytes) {
-    jfail("journal_body_missing", `이 커밋의 staged body가 없거나 신원이 다르다: ${b.messageId}`);
-  }
-  if (sha256Hex(readFileSync(stagedFile)) !== b.sha256) {
-    jfail("journal_body_missing", `이 커밋의 staged body 내용이 journal과 다르다: ${b.messageId}`);
+  if (ownershipOf(stagedFile, b) !== "ours") {
+    jfail("journal_body_missing", `이 커밋의 staged body가 없거나 신원·내용이 journal과 다르다: ${b.messageId}`);
   }
 }
 
@@ -1461,7 +1546,8 @@ function assertBaseTransition(j: CommitJournal, diskText: string): void {
  * 소유권 · 디스크 현재 상태를 **모두** 검증한다. 규칙은 **결정론적이고 멱등**이다:
  *
  * 1. 디스크 state 바이트가 **정확히** journal이 발행할 state면 → 정상 커밋 경로가 이미 전이를 durable하게
- *    만든 것이다. 남은 것은 **소유 증명 + no-clobber body 발행**과 journal 삭제뿐이다.
+ *    만든 것이다. 남은 것은 **소유 증명 + no-clobber body 발행**과 `finishJournal`(발행 전수 재검증 →
+ *    journal 삭제)뿐이다 — 정상 커밋과 **같은 한 경로**다(7차 리뷰 A2).
  * 2. 디스크 state가 아직 **기준 원본 바이트**면 → **roll back**: 이 트랜잭션 소유 staging 제거 →
  *    `events.jsonl`을 기준 길이로 truncate → journal 삭제. **가시적 전이 0**이며 호출자가 받은 실패가
  *    그대로 진실이다(같은 커밋 재시도 가능). tail이 이 커밋 append의 **정확한 접두이거나 정확히 완전한
@@ -1473,7 +1559,13 @@ function assertBaseTransition(j: CommitJournal, diskText: string): void {
  * manifest·다른 task state)이 유효한 state를 덮어쓸 수 있었다. 복구는 이제 **후속을 만들 권한이 없다** —
  * 목표 state는 정상 커밋 경로만 쓰고, 복구는 되돌리거나 이미 쓰인 것을 마무리할 뿐이다.
  * 대가: append가 완전해도 state가 없으면 그 커밋은 **버려진다**(감사 tail은 우리 journal이 소유를 증명한
- * 바이트이므로 되돌린다). 그래서 호출자가 받은 실패와 durable 진실이 갈리지 않는다(대장 `C-37` 닫힘).
+ * 바이트이므로 되돌린다).
+ *
+ * **`C-37`은 닫히지 않았다(7차 독립 리뷰 · 앞선 "닫힘" 주석 정정).** roll forward 폐기로 갈림의 범위는
+ * 발행 경계 11개 중 **2개**(`body:publish` · `journal:cleanup` — 목표 state가 **이미 durable해진 뒤**)로
+ * 줄었을 뿐이다. 그 두 자리에서 실패하면 호출자는 실패를 받지만 다음 열기가 body 발행·정리를
+ * **마무리**하므로 caller가 본 결과와 durable 진실이 여전히 갈릴 수 있다 → 대장 `C-37`은 **open**이고
+ * 기한은 M5c outcome-marker 처리 전이다.
  */
 function recoverPendingCommit(paths: RunPaths): "none" | "completed" | "rolled_back" {
   const j = readJournal(paths);
@@ -1492,7 +1584,8 @@ function recoverPendingCommit(paths: RunPaths): "none" | "completed" | "rolled_b
       jfail("journal_unrecognized", "발행된 state인데 events.jsonl tail이 이 커밋의 append가 아니다");
     }
     publishOwnedBodies(paths, j);
-    rmSync(paths.journalFile, { force: true });
+    // journal 삭제는 정상 커밋과 **같은** 경로다(발행 전수 재검증 → 삭제).
+    finishJournal(paths, j);
     return "completed";
   }
 
@@ -1509,6 +1602,8 @@ function recoverPendingCommit(paths: RunPaths): "none" | "completed" | "rolled_b
   if (appendComplete || j.eventBytes.subarray(0, suffix.length).equals(suffix)) {
     removeOwnedStaging(paths, j);
     if (eventBytes.length !== j.baseEventBytes) truncateSync(paths.eventsFile, j.baseEventBytes);
+    // roll back은 `finishJournal`을 쓰지 않는다: 발행한 최종 body가 애초에 **없다**(body는 state 뒤에
+    // 생긴다). 여기서 최종 body 전수 검증을 요구하면 정상 roll back이 영구히 막힌다.
     rmSync(paths.journalFile, { force: true });
     return "rolled_back";
   }
@@ -1665,8 +1760,7 @@ export function commitRun(paths: RunPaths, input: CommitInput): OrchestrationRun
     writeAtomic(paths.stateFile, stateText, "state");
     // **state가 durable해진 뒤에만** 최종 body 이름이 생긴다(소유 증명 + no-clobber hard link).
     publishOwnedBodies(paths, selfChecked);
-    faultPoint("journal:cleanup");
-    rmSync(paths.journalFile, { force: true });
+    finishJournal(paths, selfChecked);
     return finalState;
   } catch (e) {
     // journal 발행 전 실패: 이 invocation의 staging만 지운다(최종 body·복구 대상 전이는 애초에 없다).

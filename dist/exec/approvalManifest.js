@@ -95,6 +95,17 @@ const DEPENDENCY_VERSION_RE = new RegExp(DEPENDENCY_VERSION_PATTERN);
 /** 소문자 도메인만. scheme·port·path·wildcard·trailing dot는 거부한다. */
 export const DOMAIN_PATTERN = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$";
 const DOMAIN_RE = new RegExp(DOMAIN_PATTERN);
+/**
+ * 승인된 실행 파일 경로의 **정규형**(V3 M5b 7차 독립 리뷰 C-40): NUL 없는 절대경로이며 segment가
+ * 비어 있지도(`/a//b`) `.`(`/a/./b`)도 `..`(`/a/../b`)도 아니고 후행 `/`가 없다. 각 segment는
+ * `/` 뒤에 비어 있지 않은 non-NUL 문자열이고, 앞의 negative lookahead가 `.`/`..` segment를 막는다.
+ *
+ * 이 **하나가** runtime validator와 `schemas/milestone_approval_manifest.schema.json`의 공통 정본이다 —
+ * 이전에는 runtime이 명령형으로 거부하고 schema regex는 `/a//b`·`/a/./b`·`/a/../b`를 통과시켰다.
+ * (길이 상한은 `LIMITS.maxPathLength`로 따로 본다.)
+ */
+export const APPROVED_PATH_PATTERN = "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$";
+const APPROVED_PATH_RE = new RegExp(APPROVED_PATH_PATTERN);
 function asObject(v, what) {
     if (typeof v !== "object" || v === null || Array.isArray(v)) {
         throw new OrchestrationError("invalid_manifest", `${what}는 객체여야 한다`);
@@ -154,18 +165,13 @@ export function pathWithin(child, root) {
  * 승인된 실행 파일 1건. **경로 계약과 digest 형태만** 본다 — 파일 시스템은 만지지 않는다
  * (내용·신원 검증은 실행 직전에 `executionBoundary.verifyApprovedExecutable`이 한다).
  * 경로는 NUL 없는 절대경로이고 `.`/`..` segment·중복 `/`·후행 `/`가 없어야 한다(정규형).
+ * 정규형 판정은 **schema와 공유하는** `APPROVED_PATH_PATTERN` 하나로 한다(7차 리뷰 C-40).
  */
 function validateApprovedExecutable(raw, what) {
     const o = asObject(raw, what);
     closedKeys(o, APPROVED_EXECUTABLE_KEYS, what);
     const path = o.path;
-    if (typeof path !== "string" ||
-        path.length === 0 ||
-        path.length > LIMITS.maxPathLength ||
-        path.includes("\0") ||
-        !path.startsWith("/") ||
-        path.endsWith("/") ||
-        path.split("/").slice(1).some((seg) => seg === "" || seg === "." || seg === "..")) {
+    if (typeof path !== "string" || path.length > LIMITS.maxPathLength || !APPROVED_PATH_RE.test(path)) {
         throw new OrchestrationError("invalid_manifest", `${what}.path는 정규 절대경로여야 한다`);
     }
     if (typeof o.sha256 !== "string" || !new RegExp(SHA256_PATTERN).test(o.sha256)) {

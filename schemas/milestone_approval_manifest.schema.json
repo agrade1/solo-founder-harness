@@ -116,7 +116,7 @@
       "additionalProperties": false,
       "required": ["path", "sha256"],
       "properties": {
-        "path": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^/[^\\0]*[^/\\0]$" },
+        "path": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$" },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },

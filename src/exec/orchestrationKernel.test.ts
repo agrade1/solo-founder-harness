@@ -55,6 +55,7 @@ import {
   networkDomainAllowed,
   validateApprovalManifest,
   APPROVED_EXECUTABLE_KEYS,
+  APPROVED_PATH_PATTERN,
   EXECUTION_AUTHORITY_KEYS,
 } from "./approvalManifest.js";
 import {
@@ -1713,6 +1714,197 @@ test("[M5b] A3(6차): 목표 state 바이트인데 append가 불완전하면 마
   assert.equal(readFileSync(paths.stateFile, "utf8"), target, "state가 바뀌었다");
   assert.equal(readFileSync(paths.journalFile, "utf8"), journal, "journal이 사라졌다");
   assert.equal(existsSync(join(paths.messagesDir, "r-atomic.md")), false, "최종 body를 만들었다");
+});
+
+// ── M5b 7차 리뷰 A2: 발행은 link 직전·직후·journal 삭제 직전에 다시 증명한다 ────
+
+/**
+ * 지정 stage에서 **던지지 않고** 정확히 한 번 부수효과를 내는 hook(발행 경합 재현 도구).
+ * `fired()`는 **부수효과가 실제로 실행된 횟수**다(stage 방문 횟수가 아니다 — 다중 body는 여러 번 방문한다).
+ */
+function withSideEffectAt(stage: CommitStage, effect: () => void): { fired: () => number; reset: () => void } {
+  let visits = 0;
+  let ran = 0;
+  setCommitFaultHook((s) => {
+    if (s !== stage || visits++ > 0) return;
+    ran += 1;
+    effect();
+  });
+  return { fired: () => ran, reset: () => setCommitFaultHook(null) };
+}
+
+test("[M5b] A2(7차): 발행 hook이 staging을 갈아끼워도 link되지 않고 복구 기록이 남는다", () => {
+  // 이전 판은 **전수 preflight → hook → 경로 이름 그대로 linkSync**였으므로, hook(또는 같은 UID의 동시
+  // writer)이 preflight 이후 staging을 교체하면 그 교체본이 최종 body로 link되고 journal까지 지워졌다.
+  for (const how of ["same-digest", "different-digest"] as const) {
+    const { ws, paths, journal } = pendingAt("body:publish");
+    const target = readFileSync(paths.stateFile, "utf8");
+    const staged = readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-"));
+    assert.equal(staged.length, 1, "staged body가 없다(회귀가 공허하다)");
+    const stagedFile = join(paths.messagesDir, staged[0]);
+    const finalFile = join(paths.messagesDir, "r-atomic.md");
+    // 내용은 같지만 **inode가 다른** 파일 / 아예 다른 내용 — 어느 쪽도 발행 대상이 아니다.
+    const swapped = how === "same-digest" ? readFileSync(stagedFile) : Buffer.from("# 갈아끼운 body\n");
+    const hook = withSideEffectAt("body:publish", () => {
+      rmSync(stagedFile);
+      writeFileSync(stagedFile, swapped);
+    });
+    try {
+      assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing", how);
+    } finally {
+      hook.reset();
+    }
+    assert.equal(hook.fired(), 1, `${how}: 발행 hook이 불리지 않았다(회귀가 공허하다)`);
+    assert.equal(existsSync(finalFile), false, `${how}: 교체본을 최종 body로 발행했다`);
+    assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: 복구 기록(journal)이 사라졌다`);
+    assert.equal(readFileSync(paths.stateFile, "utf8"), target, `${how}: state가 바뀌었다`);
+    assert.deepEqual(readFileSync(stagedFile), swapped, `${how}: 남의 파일을 지우거나 덮었다`);
+    // 재시도도 같은 판정이다(결정론적 · journal 보존 · 최종 body 0).
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing", how);
+    assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: 재시도가 journal을 지웠다`);
+  }
+});
+
+test("[M5b] A2(7차): link 직후 증명이 경합으로 끼어든 최종 파일을 잡고 복구 증거(staging)를 남긴다", () => {
+  // `link(2)`는 **경로 이름**을 받으므로 "증명한 fd를 그대로 link"할 수는 없다 → 증명과 link 사이 창은
+  // 0이 아니다. 대신 **link 직후** 재증명이 결과를 판정하므로, 경합으로 남의 최종 파일이 먼저 생기면
+  // EEXIST를 삼키고 staging을 지우는 대신 **그 자리에서** fail closed다(body 바이트의 유일한 사본 보존).
+  const { ws, paths, journal } = pendingAt("body:publish");
+  const finalFile = join(paths.messagesDir, "r-atomic.md");
+  const target = readFileSync(paths.stateFile, "utf8");
+  const foreign = "# 발행 직전에 끼어든 남의 body\n";
+  const hook = withSideEffectAt("body:publish", () => writeFileSync(finalFile, foreign));
+  try {
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+  } finally {
+    hook.reset();
+  }
+  assert.equal(hook.fired(), 1, "발행 hook이 불리지 않았다(회귀가 공허하다)");
+  assert.equal(readFileSync(finalFile, "utf8"), foreign, "남의 최종 파일을 덮거나 지웠다");
+  assert.equal(readFileSync(paths.journalFile, "utf8"), journal, "복구 기록(journal)이 사라졌다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), target, "state가 바뀌었다");
+  assert.equal(
+    readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length,
+    1,
+    "link 직후 증명 없이 EEXIST를 삼켜 복구 증거(staging)를 지웠다",
+  );
+});
+
+test("[M5b] A2(7차): 다중 body 부분 발행 중 앞선 staging·최종 body를 손대면 fail closed다", () => {
+  // ⓐ 첫 body 발행 hook에서 **두 번째** staging을 다른 inode로 교체한다 → 두 번째는 link되지 않는다.
+  {
+    const { ws, k } = bootRoot();
+    const { input, ids, paths } = twoBodyCommit(ws, k);
+    const swapTo = Buffer.from("# 두 번째 staging 교체\n");
+    let swapped = "";
+    const hook = withSideEffectAt("body:publish", () => {
+      const f = readdirSync(paths.messagesDir).filter((x) => x.startsWith(".staged-") && x.includes(ids[1]));
+      assert.equal(f.length, 1, "두 번째 staging을 찾지 못했다(회귀가 공허하다)");
+      swapped = join(paths.messagesDir, f[0]);
+      rmSync(swapped);
+      writeFileSync(swapped, swapTo);
+    });
+    try {
+      assert.equal(codeOf(() => commitRun(paths, input)), "journal_body_missing");
+    } finally {
+      hook.reset();
+    }
+    assert.equal(hook.fired(), 1, "발행 hook이 불리지 않았다(회귀가 공허하다)");
+    assert.equal(existsSync(join(paths.messagesDir, `${ids[0]}.md`)), true, "첫 body가 발행되지 않았다");
+    assert.equal(existsSync(join(paths.messagesDir, `${ids[1]}.md`)), false, "교체본을 최종 body로 발행했다");
+    assert.equal(existsSync(paths.journalFile), true, "복구 기록(journal)이 사라졌다");
+    assert.deepEqual(readFileSync(swapped), swapTo, "남의 staging을 지우거나 덮었다");
+    // reopen도 완료로 만들지 않는다(같은 판정 · journal 보존).
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing");
+    assert.equal(existsSync(paths.journalFile), true, "reopen이 journal을 지웠다");
+  }
+
+  // ⓑ 두 번째 body 발행 hook에서 **이미 link된 첫 최종 body**를 같은 inode·같은 크기로 제자리 변경한다
+  //    → 두 번째 link 자체는 성공하지만 journal 삭제 직전 전수 sweep이 잡는다.
+  {
+    const { ws, k } = bootRoot();
+    const { input, ids, paths } = twoBodyCommit(ws, k);
+    const firstFinal = join(paths.messagesDir, `${ids[0]}.md`);
+    let mutated = Buffer.alloc(0);
+    let calls = 0;
+    setCommitFaultHook((s) => {
+      if (s !== "body:publish" || ++calls !== 2) return;
+      const bytes = readFileSync(firstFinal);
+      bytes[0] = bytes[0] === 0x23 ? 0x2a : 0x23; // 크기는 그대로, 내용만 다르게
+      writeFileSync(firstFinal, bytes);
+      mutated = bytes;
+    });
+    try {
+      assert.equal(codeOf(() => commitRun(paths, input)), "journal_body_foreign");
+    } finally {
+      setCommitFaultHook(null);
+    }
+    assert.equal(calls, 2, "두 번째 발행 경계가 불리지 않았다(회귀가 공허하다)");
+    assert.deepEqual(readFileSync(firstFinal), mutated, "변경된 최종 body를 덮거나 지웠다");
+    assert.equal(existsSync(join(paths.messagesDir, `${ids[1]}.md`)), true, "두 번째 body는 발행됐어야 한다");
+    assert.equal(existsSync(paths.journalFile), true, "복구 기록(journal)이 사라졌다");
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+    assert.equal(existsSync(paths.journalFile), true, "reopen이 journal을 지웠다");
+  }
+});
+
+test("[M5b] A2(7차): journal 삭제 직전 전수 재검증 — 같은 inode·같은 크기 내용 변경도 막고 증거를 남긴다", () => {
+  // 이전 판은 최종 body 소유를 dev/ino/**size**로만 봤고 journal 삭제 전 재검증이 아예 없었다 →
+  // 발행된 body를 제자리에서 고친 뒤 `commit.journal`이 지워져 안전한 재시도 증거가 사라졌다.
+  const { ws, k } = bootRoot();
+  const { input, ids, paths } = twoBodyCommit(ws, k);
+  const finals = ids.map((i) => join(paths.messagesDir, `${i}.md`));
+  const before = readdirSync(paths.messagesDir).sort();
+  let mutated = Buffer.alloc(0);
+  const hook = withSideEffectAt("journal:cleanup", () => {
+    const bytes = readFileSync(finals[0]);
+    bytes[0] = bytes[0] === 0x23 ? 0x2a : 0x23;
+    writeFileSync(finals[0], bytes);
+    mutated = bytes;
+  });
+  try {
+    assert.equal(codeOf(() => commitRun(paths, input)), "journal_body_foreign");
+  } finally {
+    hook.reset();
+  }
+  assert.equal(hook.fired(), 1, "journal:cleanup hook이 불리지 않았다(회귀가 공허하다)");
+  assert.equal(existsSync(paths.journalFile), true, "복구 기록(journal)이 사라졌다");
+  assert.deepEqual(readFileSync(finals[0]), mutated, "변경된 최종 body를 덮거나 지웠다");
+  assert.deepEqual(
+    readdirSync(paths.messagesDir).sort(),
+    [...before, ...ids.map((i) => `${i}.md`)].sort(),
+    "발행 결과 디렉터리 엔트리가 계약과 다르다(staging 잔재·삭제)",
+  );
+  // reopen은 완료된 run으로 보고하지 않는다 — 같은 판정으로 fail closed이고 journal이 남는다.
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+  assert.equal(existsSync(paths.journalFile), true, "reopen이 journal을 지웠다");
+});
+
+test("[M5b] A2(7차): 이미 발행된 최종 body는 재시도의 전수 재검증을 통과하고 정리까지 멱등하게 끝난다", () => {
+  // 양성 대조군: `journal:cleanup`에서 **던지기만** 하면 두 body 모두 발행된 채 journal이 남고,
+  // 다음 열기가 (발행 0건 + 전수 재검증 통과 →) journal만 지우고 완결한다.
+  const { ws, k } = bootRoot();
+  const { input, ids, paths } = twoBodyCommit(ws, k);
+  const before = readdirSync(paths.messagesDir).sort();
+  assert.equal(withCommitFault("journal:cleanup", () => void commitRun(paths, input)), true);
+  assert.equal(existsSync(paths.journalFile), true, "정리 실패인데 journal이 사라졌다");
+  const published = ids.map((i) => readFileSync(join(paths.messagesDir, `${i}.md`)));
+  const target = readFileSync(paths.stateFile, "utf8");
+
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(existsSync(paths.journalFile), false, "재시도가 journal을 지우지 못했다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), target, "재시도가 state를 바꿨다");
+  assert.deepEqual(
+    readdirSync(paths.messagesDir).sort(),
+    [...before, ...ids.map((i) => `${i}.md`)].sort(),
+    "재시도 뒤 messages/ 열거가 색인과 다르다",
+  );
+  for (let i = 0; i < ids.length; i++) {
+    assert.deepEqual(readFileSync(join(paths.messagesDir, `${ids[i]}.md`)), published[i], `${ids[i]} 바이트가 바뀌었다`);
+    assert.ok(reopened.getMessage(ids[i]), `${ids[i]}가 색인에 없다`);
+  }
+  // 한 번 더 열어도 같다(멱등).
+  assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }).getState().revision, reopened.getState().revision);
 });
 
 // ── M5b 4차 리뷰 A4: 호출자 소유 산출물은 한 번만 읽어 입양한다 ────────────────
@@ -3539,6 +3731,39 @@ test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치�
   assert.equal(s.definitions.approvedExecutable.additionalProperties, false);
   assert.equal(s.definitions.approvedExecutable.properties.sha256.pattern, SHA256_PATTERN);
   assert.equal(s.definitions.approvedExecutable.properties.path.maxLength, LIMITS.maxPathLength);
+  // 7차 리뷰 C-40 — 경로 정규형은 **정본 하나**를 공유한다(이전 schema regex는 `/a//b`·`/a/./b`·
+  // `/a/../b`를 통과시켰다). 형태 동치를 pattern 항등 + **양/음성 표 전수**로 증명한다.
+  assert.equal(s.definitions.approvedExecutable.properties.path.pattern, APPROVED_PATH_PATTERN);
+  const pathRe = new RegExp(s.definitions.approvedExecutable.properties.path.pattern);
+  const manifestWithGitPath = (p: string) =>
+    manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, git: { path: p, sha256: "d".repeat(64) } } });
+  const NUL = String.fromCharCode(0);
+  const good = ["/usr/bin/git", "/opt/harness/codex", "/a", "/a/b/c", "/a.b/..c/d...", "/a b/c-d_e", "/.a/b"];
+  const bad = [
+    "", "/", "//", "///", "a", "a/b", "./a", "../a", "/a/", "/.", "/..", "/./", "/../",
+    "/a//b", "/a/./b", "/a/../b", "/a/b/", `/a${NUL}b`, NUL, "/a/b/..", "/a/b/.",
+  ];
+  for (const p of good) {
+    assert.equal(pathRe.test(p), true, `schema가 정규 경로를 거부한다: ${JSON.stringify(p)}`);
+    assert.equal(
+      validateApprovalManifest(manifestWithGitPath(p)).executionAuthority.git.path,
+      p,
+      `runtime이 정규 경로를 거부한다: ${JSON.stringify(p)}`,
+    );
+  }
+  for (const p of bad) {
+    assert.equal(pathRe.test(p), false, `schema가 비정규 경로를 통과시킨다: ${JSON.stringify(p)}`);
+    assert.equal(
+      codeOf(() => validateApprovalManifest(manifestWithGitPath(p))),
+      "invalid_manifest",
+      `runtime이 비정규 경로를 통과시킨다: ${JSON.stringify(p)}`,
+    );
+  }
+  // 길이 상한도 양쪽이 같은 자리에서 자른다(regex는 길이를 보지 않는다 — schema maxLength / runtime LIMITS).
+  const tooLong = `/${"a".repeat(LIMITS.maxPathLength)}`;
+  assert.equal(pathRe.test(tooLong), true, "길이 판정은 regex가 아니라 maxLength 몫이다");
+  assert.equal(tooLong.length > LIMITS.maxPathLength, true);
+  assert.equal(codeOf(() => validateApprovalManifest(manifestWithGitPath(tooLong))), "invalid_manifest");
   assert.equal(s.properties.allowedNetworkDomains.maxItems, LIMITS.maxAllowedNetworkDomains);
   assert.equal(s.properties.allowedNetworkDomains.items.pattern, DOMAIN_PATTERN);
   assert.equal(s.properties.allowedNetworkDomains.items.maxLength, LIMITS.maxDomainLength);

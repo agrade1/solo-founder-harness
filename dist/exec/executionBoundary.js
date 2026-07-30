@@ -20,9 +20,18 @@
  * 호출자 입력으로 받았고 신원이 path/dev/ino뿐이었다 → ⓐ provider와 controller에 **같은 임의 경로**를
  * 주면 양쪽이 같은 값을 관측해 "권위 일치"가 됐고 ⓑ 같은 inode를 **제자리에서 덮어쓰면** 검증을
  * 그대로 통과했다. 지금 git 경로·내용 digest는 **승인 manifest(`executionAuthority.git`)** 에서만
- * 오고(`ExecutionBoundaryInput`에 경로 필드가 없다) 내용 digest를 진입·spawn 직전 두 번 대조한다.
+ * 오고(`ExecutionBoundaryInput`에 경로 필드가 없다) **git 프로세스 하나하나가** 자기 spawn 직전에
+ * 내용 digest를 다시 대조한다.
  * provider 중립이라 `CodexCliProvider`와 이후 `ClaudeCliProvider`/controller가 같은 함수를 쓴다.
  * 승인 manifest 규칙을 약화하지 않는다: 검증은 기존 `validateApprovalManifest`를 그대로 통과해야 한다.
+ *
+ * **검증은 프로세스 1회가 아니라 spawn 1회 단위다(V3 M5b 7차 독립 리뷰 A1).** 이전 판은 경계 진입에서
+ * 한 번 해싱하고 `readCheckoutHead()`가 `--show-toplevel`·`rev-parse HEAD` **두 자식 프로세스**를 각각
+ * await했다 → 첫 프로세스를 기다리는 동안 owner-writable 승인 파일이 **같은 inode를 제자리에서
+ * 덮어쓰면** 두 번째 프로세스가 승인되지 않은 바이트를 실행했다(기대 HEAD를 출력하고 원 바이트를
+ * 되돌릴 수 있으므로 뒤 검사도 통과한다). `revalidateSync()`의 checkout 루프도 같았다. 지금은 **모든
+ * git spawn이 자기 `runProcess`/`spawnSync` 직전에** `gitGate()`(같은 fd 신원 + 승인 digest)를 지나고
+ * 그 사이에 **`await`가 없다** — 남는 창은 아래 TOCTOU 절의 syscall 몇 개짜리 fd→exec 창뿐이다.
  *
  * **경로 계약(2026-07-27 리뷰 반영)**: 입력 경로는 **이미 정규(canonical)** 여야 한다. symlink이거나
  * realpath와 다르면 해석해서 통과시키지 않고 **거부**한다 — 검사 대상과 실행 대상이 갈라지는 창을
@@ -30,10 +39,13 @@
  * `targetRoot`만** 쓴다(호출자가 준 원본 문자열을 다시 쓰지 않는다).
  *
  * **TOCTOU**: `revalidateSync()`가 spawn **직전 동기 게이트**에서 ⓐ 승인 만료(`now >= expiresAt`)
- * ⓑ git 실행 파일 신원 ⓒ 최종 엔트리 신원(dev+ino, 비-symlink 디렉터리) ⓓ HEAD를 동기로 다시 확인한다. 만료를 두 번 보는 이유는
+ * ⓑ 최종 엔트리 신원(dev+ino, 비-symlink 디렉터리) ⓒ git 실행 파일 신원·승인 digest ⓓ HEAD를 동기로 다시 확인한다. 만료를 두 번 보는 이유는
  * 첫 검사와 spawn 사이에 **비동기 git 조회**가 있어 그 사이에 승인이 만료될 수 있기 때문이다
  * (`nowMs`에 함수를 주면 clock으로 취급해 재검증에서 다시 읽는다). Node 18에는 열린 디렉터리 핸들 상대 실행이 없어 창을
  * **0으로 만들 수는 없다** — 창을 syscall 몇 개로 줄이고 어긋나면 fail closed다(활성 설계의 기존 한계 기록과 동일).
+ * 남는 창의 **정확한 크기**: 실행 파일을 해싱한 fd를 닫고 `spawn`/`spawnSync`를 부르기까지의 syscall
+ * 몇 개다(Node에 `fexecve`가 없어 "해싱한 fd를 그대로 exec"할 수 없다 — 대장 `C-5`와 같은 종류). 7차
+ * 리뷰 A1이 지적한 **자식 프로세스 하나의 수명만큼 넓은 창**은 spawn별 게이트로 제거했다.
  *
  * 오류 문자열에는 argv·환경변수·프롬프트·transcript를 담지 않는다(경로와 커밋만).
  */
@@ -229,7 +241,10 @@ function assertNotExpired(manifest, now, when) {
         throw new OrchestrationError("manifest_expired", `승인 manifest가 만료됐다(expiresAt ${manifest.expiresAt}, ${when})`);
     }
 }
-async function git(gitPath, cwd, args, what) {
+async function git(gate, cwd, args, what) {
+    // 이 spawn의 바이트를 이 spawn 직전에 증명한다(아래 `runProcess`까지 `await` 없음 — `runProcess`는
+    // Promise executor 안에서 동기로 `spawn`한다). 게이트 실패는 `boundary_git_failed`로 접지 않는다.
+    const gitPath = gate();
     let out;
     try {
         // 신뢰된 절대경로 + 상속 없는 최소 env. 저장소는 `-C cwd`만으로 결정된다.
@@ -244,8 +259,11 @@ async function git(gitPath, cwd, args, what) {
     }
     return out.stdout.trim();
 }
-/** 동기 HEAD 조회(재검증 전용). 신뢰된 git 경로 · 상속 없는 env · shell 미경유 인자 배열. */
-function headSync(gitPath, root, what) {
+/** 동기 HEAD 조회(재검증 전용). **spawn 직전 게이트** · 상속 없는 env · shell 미경유 인자 배열. */
+function headSync(gate, root, what) {
+    // checkout 루프의 **매 회차**가 자기 spawn 직전에 증명한다(7차 리뷰 A1) — 루프 앞 1회로는 앞 회차의
+    // 자식 프로세스가 도는 동안의 제자리 덮어쓰기를 막을 수 없다.
+    const gitPath = gate();
     const r = spawnSync(gitPath, ["-C", root, "rev-parse", "HEAD"], {
         encoding: "utf8",
         timeout: GIT_TIMEOUT_MS,
@@ -265,8 +283,8 @@ function headSync(gitPath, root, what) {
  * `--show-toplevel`을 대조해 ⓐ 하위 디렉터리를 루트로 넘긴 경우 ⓑ 다른 저장소를 가리킨 경우를 거부한다
  * (검사 대상과 실행 대상이 같은 디렉터리여야 한다).
  */
-async function readCheckoutHead(gitPath, root, what) {
-    const toplevel = await git(gitPath, root, ["rev-parse", "--show-toplevel"], what);
+async function readCheckoutHead(gate, root, what) {
+    const toplevel = await git(gate, root, ["rev-parse", "--show-toplevel"], what);
     let topReal;
     try {
         topReal = realpathSync(toplevel);
@@ -277,7 +295,8 @@ async function readCheckoutHead(gitPath, root, what) {
     if (topReal !== root) {
         throw new OrchestrationError("boundary_not_checkout_root", `${what}는 checkout 루트 자신이어야 한다(주어진 경로: ${root}, 실제 루트: ${topReal})`);
     }
-    const head = await git(gitPath, root, ["rev-parse", "HEAD"], what);
+    // 두 번째 프로세스도 **자기** 게이트를 지난다: 위 `await` 동안 승인 파일이 제자리에서 바뀔 수 있다.
+    const head = await git(gate, root, ["rev-parse", "HEAD"], what);
     if (!COMMIT_RE.test(head)) {
         throw new OrchestrationError("boundary_head_unreadable", `${what}의 HEAD가 40자 커밋이 아니다`);
     }
@@ -297,15 +316,17 @@ export async function verifyExecutionBoundary(input) {
     // (이름 조회·호출자 경로 없음 — 6차 리뷰 A1). 신원은 호출자가 더 이른 시점에 고정했다면 그 값과
     // 대조하고(교체 거부) 아니면 여기서 고정한다.
     const gitBin = verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", GIT_CODES, input.gitIdentity);
+    // **모든** git spawn이 자기 프로세스를 시작하기 직전에 이 게이트를 지난다(7차 리뷰 A1).
+    const gitGate = () => verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", GIT_CODES, gitBin.id).path;
     const controller = resolveCanonicalDir(input.controllerRepoRoot, "controllerRepoRoot");
     const target = resolveCanonicalDir(input.targetWorktree, "targetWorktree");
     const sameCheckout = controller.path === target.path;
-    const controllerHead = await readCheckoutHead(gitBin.path, controller.path, "controller checkout");
+    const controllerHead = await readCheckoutHead(gitGate, controller.path, "controller checkout");
     if (controllerHead !== manifest.approvedCommit) {
         throw new OrchestrationError("approved_commit_mismatch", `controller checkout HEAD(${controllerHead})가 승인된 커밋(${manifest.approvedCommit})이 아니다`);
     }
     if (!sameCheckout) {
-        const targetHead = await readCheckoutHead(gitBin.path, target.path, "실행 checkout");
+        const targetHead = await readCheckoutHead(gitGate, target.path, "실행 checkout");
         if (targetHead !== manifest.approvedCommit) {
             throw new OrchestrationError("approved_commit_mismatch", `실행 checkout HEAD(${targetHead})가 승인된 커밋(${manifest.approvedCommit})이 아니다`);
         }
@@ -314,9 +335,9 @@ export async function verifyExecutionBoundary(input) {
         // 승인 만료를 **여기서 다시** 본다: 위 만료 검사와 이 지점 사이에 비동기 git 조회가 있어
         // 그 사이에 승인이 만료될 수 있다. 만료된 승인으로는 프로세스를 띄우지 않는다.
         assertNotExpired(manifest, clock(), "spawn 직전 재확인");
-        // 증명 도구도 그 사이에 교체될 수 있다 — 신원 + **승인된 내용 digest**를 쓰기 직전에 다시 확인한다
-        // (같은 inode 제자리 덮어쓰기도 여기서 거부된다).
-        verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", GIT_CODES, gitBin.id);
+        // 증명 도구 검증은 **루프 앞 1회가 아니라** 아래 `headSync`의 spawn별 게이트가 한다(7차 리뷰 A1):
+        // 앞 회차의 `spawnSync`가 도는 동안에도 승인 파일이 제자리에서 바뀔 수 있으므로, 회차마다
+        // 자기 spawn 직전에 신원 + **승인된 내용 digest**를 다시 증명해야 한다.
         const roots = sameCheckout
             ? [[controller.path, controller.id, "실행 checkout"]]
             : [
@@ -328,7 +349,7 @@ export async function verifyExecutionBoundary(input) {
             if (!sameIdentity(now2, id)) {
                 throw new OrchestrationError("boundary_identity_changed", `${what}의 디렉터리 신원이 검증 이후 바뀌었다: ${path}`);
             }
-            const head = headSync(gitBin.path, path, what);
+            const head = headSync(gitGate, path, what);
             if (head !== manifest.approvedCommit) {
                 throw new OrchestrationError("approved_commit_mismatch", `${what} HEAD(${head})가 승인된 커밋(${manifest.approvedCommit})이 아니다(spawn 직전 재확인)`);
             }

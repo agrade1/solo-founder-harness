@@ -6,6 +6,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -565,5 +566,150 @@ test("[M5a] revalidateSync: 경로가 symlink로 교체되면 거부", async () 
     rmSync(repo.root, { recursive: true, force: true });
     rmSync(parked, { recursive: true, force: true });
     rmSync(other.root, { recursive: true, force: true });
+  }
+});
+
+// ── M5b 7차 리뷰 A1: 검증은 프로세스 1회가 아니라 **spawn 1회** 단위다 ──────────
+
+/**
+ * **자기 inode를 제자리에서 덮어쓰는 승인 wrapper**(7차 리뷰 A1 회귀 도구). `trigger`(POSIX `sh` 조건식)가
+ * 참인 invocation에서 자신을 sentinel payload로 갈아치우고, **그 호출 자체는** 진짜 git으로 exec한다 →
+ * "이 spawn은 승인된 바이트, 다음 spawn은 승인되지 않은 바이트"라는 경합을 결정론적으로 만든다.
+ *
+ * 본문을 `{ }`로 묶는 이유: `sh`는 compound command를 **끝까지 파싱한 뒤** 실행하므로, 자기 파일을
+ * 자르는 순간에도 남은 줄을 다시 읽지 않는다. 자식 env는 경계가 `PATH` 없이 주므로 script는 shell
+ * builtin(`printf`·`[`·`exec`)과 **절대경로**만 쓴다.
+ *
+ * `sentinelRan()`이 true면 **승인되지 않은 바이트가 실제로 실행됐다**는 뜻이다(회귀의 비공허성 증거 —
+ * 0이어야 한다). `spawns()`는 실제 git 프로세스 수다(정확한 개수로 게이트 위치를 고정한다).
+ * `trigger` 안의 `$MARKER`는 이 wrapper의 marker 경로로 치환된다(테스트가 교체 시점을 정한다).
+ */
+function selfRewritingGit(trigger: string): {
+  dir: string;
+  path: string;
+  sha256: string;
+  marker: string;
+  spawns: () => number;
+  sentinelRan: () => boolean;
+} {
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5b-a1-rewrite-")));
+  const self = join(dir, "git");
+  const count = join(dir, "spawns");
+  const sentinel = join(dir, "sentinel");
+  const marker = join(dir, "marker");
+  const payload = ["#!/bin/sh", `printf RAN >> "${sentinel}"`, `exec "${GIT}" "$@"`];
+  writeFileSync(
+    self,
+    [
+      "#!/bin/sh",
+      "{",
+      `printf x >> "${count}"`,
+      `if ${trigger.split("$MARKER").join(marker)}; then printf '%s\\n' ${payload.map((l) => `'${l}'`).join(" ")} > "${self}"; fi`,
+      `exec "${GIT}" "$@"`,
+      "}",
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  return {
+    dir,
+    path: self,
+    sha256: digestOf(self),
+    marker,
+    spawns: () => (existsSync(count) ? readFileSync(count).length : 0),
+    sentinelRan: () => existsSync(sentinel),
+  };
+}
+
+/** 이 wrapper를 승인 권위로 지정한 manifest. */
+function wrapperManifest(w: { path: string; sha256: string }, approvedCommit: string) {
+  return manifest({
+    approvedCommit,
+    executionAuthority: { codex: authority().codex, git: { path: w.path, sha256: w.sha256 } },
+  });
+}
+
+test("[M5b] A1(7차): readCheckoutHead의 두 spawn은 각자 승인 digest를 다시 본다(제자리 교체)", async () => {
+  const repo = await initRepo("m5b-a1-same-");
+  // ⓐ 양성 대조군: 덮어쓰지 않는 승인 wrapper는 통과하고 **spawn 수가 정확히** 2(진입) + 1(재검증)이다.
+  const ok = selfRewritingGit("false");
+  // ⓑ `--show-toplevel` invocation이 자기 inode를 sentinel로 갈아치운다 → 다음 `rev-parse HEAD`가 막힌다.
+  const bad = selfRewritingGit(`[ "$4" = --show-toplevel ]`);
+  try {
+    const v = await verify({
+      manifest: wrapperManifest(ok, repo.head),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+    });
+    assert.equal(ok.spawns(), 2, "같은 checkout 진입 조회가 2 프로세스가 아니다(회귀 기준이 어긋났다)");
+    v.revalidateSync();
+    assert.equal(ok.spawns(), 3, "재검증이 HEAD spawn 1건이 아니다");
+    assert.equal(ok.sentinelRan(), false);
+
+    assert.equal(
+      await code(() =>
+        verify({ manifest: wrapperManifest(bad, repo.head), controllerRepoRoot: repo.root, targetWorktree: repo.root }),
+      ),
+      "boundary_git_digest_mismatch",
+      "첫 조회 뒤 제자리 교체가 두 번째 spawn 직전에 거부되지 않았다",
+    );
+    assert.equal(bad.spawns(), 1, "승인되지 않은 바이트로 두 번째 git 프로세스가 떴다");
+    assert.equal(bad.sentinelRan(), false, "승인되지 않은 payload가 실행됐다");
+  } finally {
+    rmSync(ok.dir, { recursive: true, force: true });
+    rmSync(bad.dir, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5b] A1(7차): controller·target checkout이 다르면 뒤 checkout 조회도 자기 게이트를 지난다", async () => {
+  const repo = await initRepo("m5b-a1-two-");
+  const wt = join(repo.root, "..", `m5b-a1-wt-${process.pid}`);
+  // controller HEAD 조회(2번째 spawn)에서 갈아치운다 → target `--show-toplevel`(3번째)이 막혀야 한다.
+  const w = selfRewritingGit(`[ "$2" = "${repo.root}" ] && [ "$4" = HEAD ]`);
+  try {
+    await runProcess("git", ["-C", repo.root, "worktree", "add", "-q", "-b", "work/m5b-a1", wt]);
+    const wtReal = realpathSync(wt);
+    assert.equal(
+      await code(() =>
+        verify({ manifest: wrapperManifest(w, repo.head), controllerRepoRoot: repo.root, targetWorktree: wtReal }),
+      ),
+      "boundary_git_digest_mismatch",
+    );
+    assert.equal(w.spawns(), 2, "target checkout 조회가 승인되지 않은 바이트로 떴다");
+    assert.equal(w.sentinelRan(), false, "승인되지 않은 payload가 실행됐다");
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
+    rmSync(w.dir, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5b] A1(7차): revalidateSync의 checkout 루프도 회차마다 승인 digest를 다시 본다", async () => {
+  const repo = await initRepo("m5b-a1-loop-");
+  const wt = join(repo.root, "..", `m5b-a1-loopwt-${process.pid}`);
+  // marker가 있을 때만 갈아치운다 → 진입 검증(4 spawn)과 첫 재검증(2 spawn)은 승인 바이트로 통과하고,
+  // marker를 만든 뒤 재검증의 **첫 회차**가 갈아치우므로 **두 번째 회차**가 막혀야 한다.
+  const w = selfRewritingGit(`[ -f "$MARKER" ]`);
+  try {
+    await runProcess("git", ["-C", repo.root, "worktree", "add", "-q", "-b", "work/m5b-a1-loop", wt]);
+    const wtReal = realpathSync(wt);
+    const v = await verify({
+      manifest: wrapperManifest(w, repo.head),
+      controllerRepoRoot: repo.root,
+      targetWorktree: wtReal,
+    });
+    assert.equal(w.spawns(), 4, "다른 checkout 진입 조회가 4 프로세스가 아니다(회귀 기준이 어긋났다)");
+    v.revalidateSync(); // 양성 대조군: 루프 2회차 전부 통과
+    assert.equal(w.spawns(), 6, "재검증 루프가 root마다 1 spawn이 아니다");
+
+    writeFileSync(w.marker, "");
+    assert.equal(await code(() => v.revalidateSync()), "boundary_git_digest_mismatch");
+    assert.equal(w.spawns(), 7, "루프 두 번째 회차가 승인되지 않은 바이트로 떴다");
+    assert.equal(w.sentinelRan(), false, "승인되지 않은 payload가 실행됐다");
+  } finally {
+    rmSync(wt, { recursive: true, force: true });
+    rmSync(w.dir, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
   }
 });
