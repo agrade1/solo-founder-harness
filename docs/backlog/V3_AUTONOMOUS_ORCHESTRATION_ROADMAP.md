@@ -1816,7 +1816,26 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### M5c green-recovery slice 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+##### M5c task 3A(typed 계획·offline worker·권위 집행) 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+
+> **범위 경고**: 이 slice는 계획 §6의 3번 묶음 중 **typed 계획 validator · offline plan worker ·
+> 권위 해석/파일 쓰기 집행**만 닫았다. **M5c 완료 선언이 아니다.** managed process supervisor·자손 정리 ·
+> trusted Git · `StableController` 재작성/배선 · 구조화 리뷰 검증 · `autopilot` CLI · legacy 비활성화 ·
+> mutation 나머지 7종 · build/dist · M5d는 **미구현·미실행**이다. 아래 절들의 다른 상태 판정은 그대로
+> 유효하다. 증거·미실행 목록의 정본은 `docs/WORKLOG.md` 최상단 블록이다.
+> 이 세션은 **self-approve하지 않는다.**
+
+| id | 분류 | 항목 | 상태 | 근거·증거 |
+|---|---|---|---|---|
+| `B-10` | B (P1) | edit 가능 실행에 타입 있는 집행 계층이 없었다 | **부분 fixed — offline typed 경로의 집행기가 생겼다. 게이트는 여전히 열려 있다** | 신규 `src/exec/typedExecution.ts`: 닫힌 계획 validator + deny-by-default 권위 해석(`approvedOperationFor` 하나만) + dispatch 시점 경로·**durable child ownership**·`writableRoots` 재검사 + symlink 비추적 + 배타 temp → 재확인 → 원자적 rename + 크래시 창 `already_applied` + 충돌 시 무쓰기 + 내용 없는 닫힌 영수증. `run_process`는 **동결 데이터 명세까지만**이고 spawn 0. 증거: `typedExecution.test.ts` 23/23 + mutation(권위 대조 생략) 2건 실패 후 원복. **남은 일**: managed process launcher · controller 배선 · 그 둘의 독립 리뷰. **실제 Claude/Codex는 여전히 부재·비활성**이다 |
+| `C-38` | C (P3) | 호출자 getter가 거부 taxonomy를 고를 수 있다 | **이 seam에서 fixed — 다른 호출부는 open 유지** | `typedExecution`/`offlinePlanWorker`의 입양 경로는 getter/proxy가 던진 것을 **무엇이든**(호출자가 만든 `OrchestrationError` 포함) `plan_invalid`/`worker_input_invalid`로 접는다. 증거: `typedExecution.test.ts` "던지는 getter는 호출자가 고른 코드가 아니라 안정 코드로 접힌다" · `offlinePlanWorker.test.ts` 같은 케이스. `orchestrationKernel.readClosedOnce`의 원래 행 자체는 **바꾸지 않았으므로 open**이다(기한·담당 그대로) |
+| `C-30` | C (P3) | 두 번째 실행 backend가 없어 종료·이벤트 방어에 e2e 경로가 없었다 | **부분 진전 — offline backend의 이벤트 프로토콜 경로가 생겼다** | `offlinePlanWorker`가 `started → progress ≥1 → terminal 1건 → 정상 종료`를 내고 **최종 결과만 있는 스트림을 구조적으로 만들 수 없다**. 다만 **controller 소비 경로가 아직 없으므로**(배선 미완) 중복 종료·late event·상한 초과에 대한 controller 방어의 e2e는 **여전히 미도달**이다 → `open` 유지 |
+| `C-40` | C (P3) | 경로 길이 schema↔runtime 의미 불일치 | **fixed 유지 + 신규 schema에도 적용** | `typed_execution_plan.schema.json`의 경로 `maxLength`는 draft-07 코드 포인트이고 런타임은 `codePointLength`를 쓴다. pattern은 정본 하나(`NORMALIZED_WORKSPACE_PATH_PATTERN`)를 공유하고 `typedExecution.test.ts`가 양/음성 표(😀 512/513 포함) 전수로 두 판정이 갈리지 않음을 강제한다 |
+| `C-5` | C (P2) | 경로 이름 기반 TOCTOU 잔여 창 | **open 유지 — 이 slice가 창을 줄였고 그 사실을 소스에 적었다** | `rename(2)`는 pathname을 받으므로 증명과 발행 사이 창이 0이 아니다. 배타 `O_EXCL` temp · 같은 fd 재확인 · rename 직후 대상 inode 확인으로 줄였고 남은 한계를 `typedExecution.ts` ponytail 주석에 적었다. Node 20+ 디스크립터 상대 API 채택은 여전히 M10 |
+| `C-18` `C-19` `C-26` `C-29` `C-31` `C-33` `C-34` `C-35` `C-36` `C-37` `C-39` | C | 이 slice가 손대지 않은 나머지 | **open — 변화 없음** | 프로세스 감독자 · 리뷰 검증 · trusted Git · 중첩 handoff schema · 정리 영수증 공개 · outcome 단일 출처 · seam provenance · ReviewSubject · store 발행 내부는 이 slice의 소유 범위 밖이었다 |
+| `B-7` `B-9` `B-11` `B-12` `B-13` `C-12→B` | B (P1) | live 게이트와 lifecycle 잔여 | **open — 변화 없음** | 이 slice는 live 실행 0이고 controller·프로세스 계층을 건드리지 않았다. `stableController.test.ts`는 **여전히 3/58 red**(의도적 미실행) |
+
+##### M5c green-recovery slice 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신 · 그 시점 기록**)
 
 > **범위 경고**: 이 slice는 **직전 기반 slice가 red로 남긴 kernel + M4 offline 검증면을 green으로 되돌린 것**
 > 뿐이며 **M5c 완료 선언이 아니다**. 아래 아래 절("M5c 기반 slice에서의 대장 갱신")의 상태 판정은 그대로

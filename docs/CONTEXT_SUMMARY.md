@@ -2,7 +2,38 @@
 
 최종 갱신: 2026-07-30
 
-## 최신 (2026-07-30 — **V3 M5c green-recovery slice: v2 schema 정본화 + kernel/M4 검증면 green. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-30 — **V3 M5c task 3A: typed 계획 validator · offline plan worker · 권위 집행. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `0c0011a` ·
+  stack base `81554cf`. fresh Claude Opus 5 단일 세션 · Ponytail(full).
+- **끝난 것(신규 파일 5개 · 기존 파일 변경 0)**: ⓐ `typedExecution.ts` — 닫힌 `TypedExecutionPlan`
+  validator(모든 property 1회 입양 · 미상/누락 key · symbol · 이질 prototype · getter/proxy trap · 함수 ·
+  순환 · 중복 id · binding · 상한 · Unicode 경로 경계를 전부 `plan_invalid`로 접는다 · **호출자가 던진
+  오류 코드도 접는다** = `C-38` 이 seam에서 닫힘 · 결과는 깊이 동결) ⓑ controller 소유 권위 해석 +
+  실제 `write_file` 집행(deny-by-default · dispatch 시점 경로·**durable child ownership**·writableRoots
+  재검사 · symlink/비일반 파일 거부 · 배타 temp → 재확인 → 원자적 rename · **크래시 창 멱등
+  `already_applied`** · 충돌 시 무쓰기 · 내용 없는 닫힌 영수증) ⓒ `run_process`는 **spawn 0** — 승인
+  레코드에서만 나오는 동결 데이터 명세뿐(callback·env·cwd·shell·PATH·argv 확장 표현 불가)
+  ⓓ `offlinePlanWorker.ts` — 데이터 전용 backend(파일 시스템·프로세스·git·provider·네트워크·환경·
+  callback **import조차 0**) · bounded UTF-8 JSON 1회 파싱 → 같은 validator → 동결 → turn마다 새 스트림
+  (`started → progress ≥1 → terminal 1건 → 정상 종료`, `silent_session` 구조적 불가) · `claude`/`codex`
+  등 미상 backend hard reject ⓔ `schemas/typed_execution_plan.schema.json`(draft-07 · 전 계층 closed ·
+  런타임 동치 · 경로 길이 코드 포인트 정본 공유).
+- **안 끝난 것(M5c의 남은 핵심)**: managed process supervisor + 자손 정리(`B-13`/`C-18`) · trusted Git
+  (`C-26`) · **`StableController` 재작성·배선** · 구조화 리뷰 검증(`C-19`/`C-35`) · `autopilot` CLI ·
+  legacy `exec`/`mission` 비활성화 · review-result schema · mutation 나머지 7종 · build/dist · M5d.
+- **검증(직렬)**: `npx tsc --noEmit` 0 error · `typedExecution.test.ts` **23/23** ·
+  `offlinePlanWorker.test.ts` **8/8** · `autopilotLifecycle.test.ts` **27/27** ·
+  `orchestrationKernel.test.ts` **103/103** · `git diff --check` clean.
+  비공허성: 권위 대조 mutation 1건 → named guard 포함 2건 실패 확인 후 **정확히 원복**(sha256 일치).
+- **여전히 red**: `stableController.test.ts` **3/58**(이 slice는 controller를 건드리지 않아 의도적으로
+  **미실행**이며 직전 실측 그대로다). **미실행**: `npm test` · `test:exec` · `test:core` · 전체
+  acceptance · M4 acceptance 3종 · stress · live · 반복 · build/dist · M5d.
+- **`B-10`은 부분**이다(offline typed 경로 집행기만). 실제 Claude/Codex는 여전히 **부재·비활성**이고
+  dist는 M5b 상태 그대로다. 다음 세션의 첫 작업: **managed process supervisor + `StableController` 배선**.
+  **M5c는 self-approved가 아니다.**
+
+## 이전 (2026-07-30 — **V3 M5c green-recovery slice: v2 schema 정본화 + kernel/M4 검증면 green. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `23d663c` ·
   stack base `81554cf`. fresh Claude Opus 5 단일 세션 · Ponytail(full).

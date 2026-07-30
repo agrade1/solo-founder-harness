@@ -3,7 +3,43 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-30 — V3 **M5c green-recovery slice · v2 schema 정본화 + kernel/M4 검증면 green · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-30 — V3 **M5c task 3A · typed 계획/offline worker/권위 집행 · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `0c0011a` ·
+  stack base `81554cf`. fresh Claude Opus 5 단일 세션. 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 ·
+  live provider 추론 · secret **0**. amend/rebase/reset 0 · 테스트 완화·삭제·assertion 축소 **0**.
+- **M5c는 여전히 승인 대상이 아니고 self-approved도 아니다.** 이 slice가 닫은 것은 계획 §6의 3번 묶음
+  중 **typed 계획 validator · offline plan worker · 권위 해석/파일 쓰기 집행**뿐이다.
+- **이 slice의 변경 파일(신규 5개 · 기존 변경 0)**: `src/exec/typedExecution.ts` ·
+  `src/exec/typedExecution.test.ts` · `src/exec/offlinePlanWorker.ts` ·
+  `src/exec/offlinePlanWorker.test.ts` · `schemas/typed_execution_plan.schema.json`.
+  `autopilotTypes.ts`는 **정정이 필요 없어 손대지 않았다**. `stableController.ts` · kernel/store 발행 내부 ·
+  managed process · trusted Git · reviewer · CLI · legacy exec/mission · package/lock · tracked `dist`
+  **전부 무변경**.
+- **검증 실측(직렬)**: `npx tsc --noEmit` 0 error · `typedExecution.test.ts` **23/23** ·
+  `offlinePlanWorker.test.ts` **8/8** · `autopilotLifecycle.test.ts` **27/27** ·
+  `orchestrationKernel.test.ts` **103/103** · `git diff --check`/`--cached --check` clean.
+  mutation 1건(권위 대조 생략) → named guard 포함 **2건 실패** 확인 후 정확히 원복(sha256 일치 · 흔적 0).
+- **여전히 red**: `src/exec/stableController.test.ts` **3/58** — 이 slice는 controller 런타임을 건드리지
+  않았으므로 **의도적으로 미실행**이고 직전 실측 그대로다.
+- **미실행**: `npm test` · `npm run test:exec` · 전체 `test:core` · 전체 acceptance · M4 offline
+  acceptance 3종 · stress · live · 반복(3회) · mutation 나머지 7종 · `npm run build`/dist 재생성 · M5d.
+- **리뷰어에게 — 이 slice의 리뷰 범위**: 위 5개 파일과 `0c0011a..HEAD`. 특히 ⓐ 계획 입양이 **정말로
+  property를 한 번만 읽는지**(교대 getter·proxy·symbol·이질 prototype·순환·함수) ⓑ 호출자 오류가
+  거부 taxonomy를 고를 수 없는지 ⓒ 권위 해석이 `approvedOperationFor` **하나만** 보는지, dispatch 시점
+  경로·ownership·writableRoots 재검사가 실제로 있는지 ⓓ 쓰기 경로의 symlink 비추적 · 배타 temp · 원자적
+  rename · **크래시 창 `already_applied` 우선순위**(DECISIONS 2026-07-30 task 3A) · 충돌 시 무쓰기 ·
+  temp 잔재 0 ⓔ `run_process`가 **정말 spawn하지 않고** 명세가 승인 레코드에서만 나오는지 ⓕ worker가
+  데이터만 받는지(소스 import 정적 확인 포함) ⓖ schema↔런타임 동치와 코드 포인트 길이 의미를 본다.
+- **열린 하드 게이트**: `B-7`·`B-9`(첫 live 실행 전, 손대지 않음) · **`B-10` 부분**(offline typed 경로
+  집행기는 닫혔고 **managed process·controller 통합이 리뷰될 때까지 열린 게이트**) · `B-11`/`B-12`(kernel
+  계약만) · `B-13`/`C-18`(프로세스 정리 미구현) · `C-12→B`(부분) · `C-22`(의도적 open) ·
+  `C-26`·`C-19`·`C-35`·`C-29`·`C-30`·`C-31`·`C-33`·`C-37`(미착수) · `C-36`·`C-39`(store 발행 무변경).
+  `C-38`은 **이 seam에서 닫혔다**(계획 입양 경로) — 다른 호출부는 그대로 open이다.
+- **실제 Claude/Codex는 여전히 부재·비활성**이고 **src↔dist drift**는 그대로다(dist는 M5b 상태 →
+  배포 가능 상태가 아니다).
+
+## 이전 상태 (2026-07-30 — V3 **M5c green-recovery slice · v2 schema 정본화 + kernel/M4 검증면 green · M5c 여전히 미완료** · 이 절이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `23d663c` ·
   stack base `81554cf`(M5b 8차 재리뷰 `APPROVE_TO_STACK` 시점). fresh Claude Opus 5 단일 세션.

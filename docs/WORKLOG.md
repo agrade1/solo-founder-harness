@@ -1,5 +1,92 @@
 # WORKLOG.md
 
+## 2026-07-30 (V3 **M5c task 3A — typed 계획 validator · offline plan worker · 권위 집행. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`0c0011a`(아래 블록의 끝 지점) · stack base `81554cf`. **새 fresh Claude Opus 5 단일 세션**(이전 세션
+transcript·자기평가 미상속 · subagent·병렬 writer 0). Ponytail SKILL.md(level `full`) 적용 —
+`/Users/jihun/.claude/plugins/cache/ponytail/ponytail/4.8.4/skills/ponytail/SKILL.md`.
+amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · MCP · 패키지 설치 · 의존성/lockfile 변경 ·
+live Codex/Claude 추론 · secret · deploy · DB · production · live billing **없음**.
+`--dangerously-skip-permissions` 미사용. **테스트 완화·삭제·assertion 축소 0.**
+
+**정직한 판정: 이 slice도 M5c 완료가 아니다.** 계획 §6의 3번 묶음(typed authority) 중에서도
+**계획 validator · offline worker · 권위 해석/파일 쓰기 집행**만 닫았다. 실제 프로세스 실행(managed
+process supervisor·자손 정리) · trusted Git · `StableController` 재작성 · 구조화 리뷰 검증 ·
+`autopilot` CLI · legacy 비활성화는 **여전히 미구현**이고 `stableController.test.ts`는 **여전히 red**다.
+
+### 이 slice가 한 것 (신규 파일 5개 · 기존 파일 변경 0)
+
+- **`src/exec/typedExecution.ts` — 닫힌 typed 계획 validator(schema v1).**
+  모든 property를 **정확히 한 번** 읽고(교대 getter 무력화) 미상/누락 key · symbol key · 계약 밖
+  prototype · getter/proxy trap · 함수 · 순환 · 중복 `operationId` · binding 불일치 · 버전 · operation/
+  output/summary/본문 상한 · Unicode 경로 경계를 전부 **안정 코드 `plan_invalid`** 로 접는다.
+  **호출자가 던진 `OrchestrationError`도 접는다** — 거부 taxonomy를 호출자가 고르는 통로를 이 seam에서
+  없앴다(대장 `C-38`을 여기서 닫는다). 입양 결과는 **깊이 동결**된다.
+  `kind`는 **key 집합이 정한다**: write 갈래(6 key)와 process 갈래(3 key)를 key 집합으로 고른 뒤 읽은
+  `kind` 값이 그 집합과 어긋나면 거부한다(교대 getter가 다른 갈래로 새지 못한다).
+- **controller 소유 권위 해석 + 실제 `write_file` 집행**(같은 파일).
+  durable manifest의 `approvedOperationFor(taskId, authorityId)` **하나만** 본다(deny-by-default).
+  dispatch 시점에 ⓐ 승인 경로와의 **문자열 동치** ⓑ **durable task ownership**(manifest에 없는 child
+  위임도 존중) ⓒ `writableRoots`를 **다시** 본다. 쓰기는 `min(승인 maxBytes, LIMITS.maxWriteBytes)` ·
+  기존 경로 구성요소/대상 **symlink 거부**(따라가지 않는다) · 비일반 파일 거부 · `expectedBeforeSha256`
+  대조 · 같은 디렉터리 **배타(O_EXCL) temp** → 같은 fd로 바이트·digest 재확인 → **원자적 rename** →
+  rename 뒤 대상 inode가 우리 것인지 확인. **크래시 창 멱등**: 현재 내용 hash가 의도한 hash와 같으면
+  영수증이 durable하지 않았어도 `already_applied`이고 다시 쓰지 않는다. 그 밖의 preimage 불일치는
+  **한 바이트도 쓰지 않고** `write_conflict`. 정리는 **이 호출이 만든 temp만** 한다.
+  돌려주는 값은 닫힌 `OperationReceipt` 모양의 동결 값이고 **내용을 담지 않는다**(오류 메시지도 같다).
+- **`run_process`는 이 slice에서 아무것도 띄우지 않는다.** 승인 레코드에서만 나오는 **동결 데이터
+  명세**(승인된 node 경로 · 승인 digest · 정확한 argv · 정확한 timeout)만 만든다. callback · env · cwd ·
+  shell · PATH 조회 · 런타임 실행 파일 선택 · 인자 확장 · network/dependency/git/deploy/billing/remote/PR
+  변종은 **표현할 필드가 없다**. 실제 launcher는 managed process slice의 몫이다.
+- **`src/exec/offlinePlanWorker.ts` — M5c의 유일한 worker backend(데이터 어댑터).**
+  닫힌 데이터 입력(`backend`/`planJson`/`binding`)만 받는다: 파일 시스템·프로세스·git·provider·
+  네트워크·환경 객체·callback seam이 **없다**(테스트가 소스의 import 목록을 정적으로 확인한다 — 3줄).
+  bounded UTF-8(`TextDecoder{fatal:true}`) JSON을 **정확히 한 번** 파싱해 같은 validator로 검증·동결하고,
+  **turn마다 새** 이벤트 스트림을 낸다: `started → 인정되는 progress 1건 이상 → terminal 정확히 1건 →
+  정상 종료`. **최종 결과만 있는 스트림은 구조적으로 만들 수 없다**(`silent_session` 불가).
+  `claude`·`codex`를 포함한 미상 backend는 `worker_backend_unsupported`로 hard reject다.
+- **`schemas/typed_execution_plan.schema.json`** — draft-07 · **전 계층 closed**(테스트가 재귀로 확인) ·
+  런타임과 동치: schema 버전 `const "1"` · required/key 집합 · 닫힌 2갈래 union · slug/sha256/role/
+  경로 pattern · 상한. **draft-07 `maxLength`는 코드 포인트**이므로(대장 `C-40`) 경로는 정본 pattern·
+  길이를 공유하고 표 전수로 두 판정이 갈리지 않음을 증명한다. `result.summary`(런타임 UTF-16 code unit)와
+  `content`(런타임 UTF-8 바이트)는 **상한 값이 같고 런타임이 더 엄격**하며 그 방향이 fail closed다.
+- **기존 파일은 하나도 바꾸지 않았다** — `autopilotTypes.ts`의 이미 계획된 닫힌 계약이 정정 없이
+  그대로 성립했으므로 수정하지 않았다(`stableController.ts` · kernel/store 발행 · managed process ·
+  trusted Git · reviewer · CLI · legacy exec/mission · package/lock · tracked `dist`도 무변경).
+
+### 검증 실측 (직렬 · 실행한 명령 그대로 · 출력 필터로 exit code를 가리지 않았다)
+
+| 명령 | 결과 |
+|---|---|
+| `npx tsc --noEmit` | **0 error** |
+| `npx tsx --test src/exec/typedExecution.test.ts` | **23/23 pass** |
+| `npx tsx --test src/exec/offlinePlanWorker.test.ts` | **8/8 pass** |
+| `npx tsx --test src/exec/autopilotLifecycle.test.ts` | **27/27 pass** |
+| `npx tsx --test src/exec/orchestrationKernel.test.ts` | **103/103 pass** |
+| `git diff --check` / `git diff --cached --check` | clean |
+
+**비공허성(mutation 1건 · 이 slice 범위)**: 계획 §8의 mutation 1번 "operation-authority 대조 생략"을
+`resolveApprovedOperation`의 `null` 검사 자리에 넣었더니 **`[M5c] MUTATION-GUARD: 권위 대조를 건너뛰면
+거부가 사라진다`와 `[M5c] 승인이 없거나 task·kind가 다르면 거부한다(deny-by-default)` 2건이 실패**했다
+(21/23). 정확히 원복했고 **파일 sha256이 mutation 전과 같다**
+(`3c76c1d0305449e1b852764a01fa101f6173aff7a264ebbda3e69a705efbded1`) · mutation 흔적 grep 0
+(남은 것은 seam을 설명하는 주석뿐이다). 나머지 mutation 7종은 이 slice의 소유 범위 밖이라 **미실행**이다.
+
+### 이 slice가 하지 않은 것 (미실행·미구현 — 정직 기록)
+
+- **미실행 명령**: `npm test` · `npm run test:exec` · 전체 `test:core` · 전체 acceptance
+  (`scripts/acceptance.sh`) · M4 offline acceptance 3종 · stress · live · 반복(3회) · `npm run build`/
+  dist 재생성 · provider 추론 · 네트워크 · secret · M5d.
+- **`src/exec/stableController.test.ts`는 의도적으로 돌리지 않았다** — 직전 세션 실측 **3/58 red**가
+  그대로다(이 slice가 controller 런타임을 건드리지 않았으므로 수치가 바뀔 이유가 없다).
+- **미구현**: managed process supervisor·자손 정리(`B-13`/`C-18`) · trusted Git(`C-26`) ·
+  `StableController` 재작성과 배선 · 구조화 리뷰 검증(`C-19`/`C-35`) · `autopilot` CLI ·
+  legacy `exec`/`mission` 비활성화 · review-result schema · dist 갱신.
+- **`B-10`은 여전히 부분이다**: 이 slice는 **offline typed 경로의 집행기**를 닫았을 뿐이고,
+  managed process와 controller 통합이 리뷰될 때까지 게이트는 열려 있다. **실제 Claude/Codex는
+  여전히 부재·비활성**이다.
+
 ## 2026-07-30 (V3 **M5c green-recovery slice — v2 계약 schema 정본화 + kernel/M4 검증면 이관. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
