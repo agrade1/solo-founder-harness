@@ -1,6 +1,175 @@
 # WORKLOG.md
 
-## 2026-07-30 (V3 **M5c task 3A — typed 계획 validator · offline plan worker · 권위 집행. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-30 (V3 **M5c task 3A 리비전 — 독립 리뷰 A 4건 + 인접 filesystem B 닫음. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`5a35bce27569d672d6aea2803b42d064c175cd49` · stack base `81554cf`. **새 fresh Claude Opus 5 단일
+세션**(이전 작성자 transcript·자기평가 **미상속** · subagent·병렬 writer 0). Ponytail SKILL.md(level
+`full`) 적용 — `/Users/jihun/.claude/plugins/cache/ponytail/ponytail/4.8.4/skills/ponytail/SKILL.md`.
+amend/rebase/reset/stash · 원격 push/PR/merge · 네트워크 · `gh` · MCP · 패키지 설치 · 의존성/lockfile
+변경 · live Codex/Claude 추론 · secret · deploy · DB · production · live billing **없음**.
+`--dangerously-skip-permissions` 미사용. **테스트 완화·삭제 0** (변경한 assertion은 아래에 전수 기록).
+
+**입력 권위**: `/private/tmp/m5c-planning-codex-output.txt`(계획) ·
+`/private/tmp/m5c-typed-authority-claude-prompt.txt`(의도한 계약) ·
+`/private/tmp/m5c-task3a-codex-review-output.txt`(독립 fresh Codex 리뷰 — 판정 `REVISE · A=4 · B=2 · C=3`).
+
+**정직한 판정: 이 리비전도 M5c 완료가 아니다.** 닫은 것은 리뷰의 Category A 4건과 controller 배선의
+선행 조건인 인접 filesystem B 1건이다. managed process supervisor·자손 정리 · trusted Git ·
+`StableController` 재작성/배선 · 구조화 리뷰 검증 · `autopilot` CLI · legacy 비활성화 · build/dist ·
+M5d는 **여전히 미구현**이다.
+
+### 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `f132d87` | 코드·schema·테스트 (아래 A/B/C 전부) |
+| (이 문서 커밋) | 진행/handoff 문서 + 로드맵 §9.1 대장 |
+
+### 변경 파일 (신규 1 · 변경 10)
+
+- 신규 `src/exec/typedPlan.ts` — **순수** 계획 validator + 계약 상수(파일 시스템 권위 0).
+- `src/exec/typedExecution.ts` · `src/exec/typedExecution.test.ts`
+- `src/exec/offlinePlanWorker.ts` · `src/exec/offlinePlanWorker.test.ts`
+- `src/exec/orchestrationKernel.ts` · `src/exec/orchestrationKernel.test.ts`
+- `src/exec/orchestrationTypes.ts` · `src/exec/approvalManifest.ts` · `src/exec/autopilotLifecycle.test.ts`
+- `schemas/typed_execution_plan.schema.json`
+
+**손대지 않은 것**: `stableController.ts`(+테스트) · managed process · trusted Git · reviewer · CLI ·
+legacy `exec`/`mission` · `orchestrationStore` 발행 내부 · `executionBoundary` · package/lock · tracked
+`dist/**`. 두 번째 scheduler·대안 controller·신규 런타임 의존성 **0**(`node:util/types`는 Node 내장
+introspection이며 의존성이 아니다).
+
+### A 해소 (4/4 — 전부 이번에 닫았다)
+
+- **A1 — 적대적 `Uint8Array`·외부 입력 입양.** `instanceof` + `Uint8Array.prototype.slice.call()`을
+  제거하고 `%TypedArray%.prototype`의 **intrinsic getter**(`Symbol.toStringTag`·`byteLength`·
+  `byteOffset`·`buffer`)만 쓴다 → `Symbol.species`·iterator·constructor·호출자 property를 **하나도
+  읽지 않고**, 내부 슬롯이 없는 receiver(`Proxy` 포함)는 그 자리에서 거부된다. 4 MiB 상한은
+  **할당·복사보다 먼저** 본다. 모든 입양 실패는 `worker_input_invalid`로 접고, **크기를 안전하게 확정한
+  뒤의** 초과만 `worker_plan_too_large`다. `Buffer`(byteOffset ≠ 0인 pool view 포함) 수락 ·
+  `SharedArrayBuffer`는 **복사**하므로 이후 caller 변경이 채택 바이트를 바꿀 수 없고 alias도 남지 않는다 ·
+  detached buffer와 도중에 줄어든 resizable buffer는 안정 거부. 외부 request·binding은
+  `typedPlan.readOwnData`로 읽는다: **accessor는 성공해도 데이터 입력이 아니며 애초에 실행되지 않고**
+  (descriptor의 `value`만 읽는다) `Proxy`는 `node:util/types.isProxy`로 명시 거부한다.
+- **A2 — 위조 불가·현재 durable dispatch 권위.** 위조 가능했던 `OperationDispatchContext` export를
+  **삭제**했다. 집행은 kernel이 발급한 **봉인 permit**만 받는다(모듈 사설 `WeakMap` 등록부 —
+  기존 `attestOrchestrationKernel`과 같은 패턴이고 **임의 데이터를 권위로 만드는 토큰·factory·등록
+  함수는 하나도 export하지 않는다**). `issueOperationDispatchPermit()`은 binding(run/task/attempt/turn)을
+  **durable state에서 만들어** 계획을 kernel이 검증한다(state 변경 0 · revision·event 그대로).
+  `readDispatchAuthority()`는 **모든 효과·명세 발급 직전에** 현재 durable state를 다시 읽어
+  ⓐ permit 발급 진위 ⓑ operation이 그 permit에 묶인 계획의 **항목 그 자체**인지(신원 비교) ⓒ 시계 정상성
+  ⓓ `now < expiresAt`·`now < accounting.budgetDeadlineAt`(**등호는 거부**) ⓔ run/task 신원과 `running`
+  ⓕ durable attempt/turn 신원 ⓖ preflight digest **재계산** 일치 ⓗ manifest canonical digest 일치를
+  확인하고, 경로 판정은 **현재** durable ownership과 `writableRoots`로 한다. 단일 scheduler와 기존
+  lifecycle API는 그대로이고 ready→running 직접 경로는 여전히 없다(`preflight_required`).
+- **A3 — 발행 경쟁·경로 탈출 예방(탐지가 아니라 예방).** 부재 대상은 `link(2)`로 **덮어쓰지 않는**
+  원자적 발행이다(`EEXIST` = 경쟁자 바이트 보존 · Node 18+ 내장). 교체는 preimage **신원과 내용**을
+  발행 직전에 다시 확인한다. 부모 디렉터리 신원을 열린 fd로 고정하고 **발행 직전에 walk를 재실행**해
+  symlink 교체·workspace 탈출을 막는다. temp 확인 fd를 **발행까지 열어 두고**(`O_RDWR` 한 fd로 쓰고 읽는다)
+  temp 경로가 여전히 그 inode인지 직전에 확인한다. `O_NOFOLLOW`가 없으면 **fail closed**다(조용한 `0`
+  대입 제거). `rename(2)`의 좁은 pathname syscall 창은 **없앴다고 주장하지 않고** 대장 `C-5`에 남긴다
+  (Node 18에 `renameat2`·디스크립터 상대 발행이 없고 네이티브 의존성은 만들지 않는다).
+- **A4 — UTF-8 경로 신원.** `normalizeWorkspacePath`가 고립 UTF-16 surrogate를 `path_not_utf8`로
+  거부한다(공유 정본 `hasLoneSurrogate` = `\p{Surrogate}` + `u`). 승인 manifest 경로 · ownership ·
+  `writableRoots` · typed operation 경로 · 산출물 경로가 **전부 이 함수 하나를 지난다**(근본 지점 1개).
+  승인된 실행 파일 절대 경로와 `run_process` argv에도 같은 규칙을 적용했다. schema는
+  `normalizedWorkspacePath.not`을 `anyOf`(드라이브 접두사 + 고립 surrogate code-unit pattern)로 정렬했고,
+  **유효 astral과 리터럴 U+FFFD는 양쪽에서 통과**한다. JSON 파서가 `\uD800` escape를 어떻게 다루는지는
+  구현마다 다르므로 **최종 판정은 런타임**이라는 사실을 schema description에 적었다.
+
+### 인접 B 해소 (controller 배선 전 필수 — 이번에 닫았다)
+
+filesystem 오류 taxonomy·정리·durability: 모든 자원 정리를 **`finally` 하나**로 모아 어떤 단계가
+실패해도 fd·소유 temp 누수가 0이다. OS·seam 오류는 경로·내용 없이 **닫힌 안정 코드**로 접는다.
+발행 후 **디렉터리 fsync 성공까지 확인한 뒤에만** `applied` 영수증을 준다 — 실패는 신규
+`write_durability_unconfirmed`이고 바이트는 발행된 상태이므로 **재시도가 `already_applied`로 수렴**한다
+(crash/retry-safe 계약을 코드와 테스트에 명시).
+
+**정직한 잔여 한계 1건**: 정리도 **경로 이름**으로만 할 수 있어(Node 18에 `unlinkat` 없음) 발행 도중
+**부모 디렉터리 이름 자체가 적대적으로 교체된** 경우에는 우리 temp를 지우지 못하고 진짜 디렉터리에
+남는다. 남의 파일을 지우지 않는 쪽을 골랐고, 남는 파일은 `0600` · 미참조 · **발행되지 않은** 바이트다.
+테스트가 이 계약을 그대로 단정한다(대장 `C-5`/`C-39` 계열).
+
+### C 처리
+
+- **`C-38`(직접 validator binding taxonomy) — 이 seam에서 닫았다.** `validateTypedExecutionPlan`의
+  `binding`도 닫힌 데이터 읽기를 지나므로 hostile accessor/proxy가 거부 코드를 고를 수 없다.
+  `orchestrationKernel.readClosedOnce`의 원래 행은 **바꾸지 않았으므로 open 유지**다.
+- **worker least-authority 분리 — 했다.** 순수 validator/상수를 신규 `src/exec/typedPlan.ts`로 갈랐다.
+  worker의 **transitive** import 그래프가 `orchestrationTypes`·`autopilotTypes`·`typedPlan`·
+  `node:util/types`뿐임을 테스트가 그래프 전체를 훑어 강제한다(이전에는 `typedExecution`을 지나
+  `node:fs`와 store 모듈을 끌어왔다).
+- **schema/runtime 과대주장 정정 — 했다.** 중복 `operationId`(draft-07이 표현 불가) · `summary` NUL ·
+  `content`의 UTF-8 바이트 상한/왕복을 **런타임 전용 불변식**으로 schema description에 명시하고 테스트가
+  그 문장의 존재까지 확인한다.
+
+### B/C로 남긴 것 (기한·담당·증거는 로드맵 §9.1 신규 절에 전수 기록)
+
+- **`B-10`은 열린 하드 게이트다.** `run_process`는 이번에도 **spawn 0**이고 명세 데이터까지만 만든다
+  (명세에 run/task/attempt/turn 신원을 담아 다른 attempt 재사용을 막는 것만 강화했다). 첫 spawn/managed
+  launcher 전에 **digest 고정 controller entrypoint 또는 동등한 닫힌 action 계약**(UTF-8 왕복 argv 포함)이
+  필요하다 — token 화면은 수정이 아니다.
+- **신규 red 실측(이 세션이 처음 측정했다)**: `src/exec/executionBoundary.test.ts` **1/20**.
+  원인은 이번 변경이 **아니다** — 그 파일의 manifest fixture가 v1(`node`/`processObserver`/
+  `autopilotPolicy` 없음)이라 **직전 slice가 도입한** `manifest_pre_m5c_unsupported` fail-closed에 걸린다.
+  실측: 실패 메시지에 `manifest_pre_m5c_unsupported` 38회, 이번에 추가한 `path_not_utf8` **0회**.
+  `git show HEAD:src/exec/approvalManifest.ts | grep -c manifest_pre_m5c_unsupported` = 3(시작 HEAD에
+  이미 있었다), `git diff HEAD -- src/exec/executionBoundary*.ts` = 변경 0.
+  이 파일은 **이번 리비전의 소유 범위 밖**이므로 고치지 않고 대장에 등록했다.
+
+### 검증 실측 (직렬 · 실행한 명령 그대로 · 출력 필터로 exit code를 가리지 않았다)
+
+| 명령 | 결과 |
+|---|---|
+| `npx tsc --noEmit` | **0 error** |
+| `npx tsx --test src/exec/typedExecution.test.ts` | **36/36 pass** |
+| `npx tsx --test src/exec/offlinePlanWorker.test.ts` | **10/10 pass** |
+| `npx tsx --test src/exec/autopilotLifecycle.test.ts` | **28/28 pass** |
+| `npx tsx --test src/exec/orchestrationKernel.test.ts` | **103/103 pass** |
+| `npx tsx --test src/exec/executionBoundary.test.ts` | **1/20 pass — 시작 HEAD부터 red(위 참조)** |
+| `git diff --check` / `git diff --cached --check` | clean |
+
+**비공허성 mutation 2건(하나씩 · A 수정에 직접 대응)**
+
+1. `orchestrationKernel.readDispatchAuthority`의 만료·예산 deadline 재확인 2블록을 지웠다
+   (`MUTATION-A2-EXPIRY-RECHECK-REMOVED`) → `[M5c] 만료·예산 deadline은 경계 등호에서 거부한다(로드맵 §8.1)`
+   **실패**(35/36). `git checkout --`로 원복 → `git diff --stat` **빈 출력**(index와 바이트 동일) ·
+   `grep -rn MUTATION-A2 src/exec/` **0건**.
+2. `offlinePlanWorker.decodePlanJson`에 옛 `instanceof` + `Uint8Array.prototype.slice.call()` 경로를
+   되살렸다(`MUTATION-A1-UNSAFE-BYTE-ADOPTION`) → `[M5c] 적대적 바이트 입양: species·iterator·
+   constructor·proxy는 실행되지 않고 상한이 복사보다 먼저다` **실패**(9/10 · 실제 관측
+   `non-orchestration:TypeError` ≠ `worker_input_invalid`). 원복 → `git diff --stat` **빈 출력** ·
+   `grep -rn MUTATION-A1 src/exec/` **0건**.
+
+원복 뒤 4종 focused를 **전부 재실행**해 위 표의 카운트를 다시 확인했다.
+
+### 변경한 기존 assertion (완화가 아니라 **강화** — 전수)
+
+1. `typedExecution.test.ts` "교대 getter는 두 번째 값을 반영하지 못한다" → **"accessor는 성공해도
+   데이터가 아니다(실행조차 되지 않는다)"**. 이전: 성공하는 getter를 **수락**하고 첫 값만 쓰는지 봤다.
+   지금: **거부**(`plan_invalid`)하고 **호출 횟수 0**까지 단정한다(A1 요구사항).
+2. 같은 파일의 권위·쓰기 테스트 전부가 손으로 만든 `OperationDispatchContext` 대신 **진짜 kernel run**
+   (create → createRootTask → planRunnableBatch → commitPreflightBatch → startPreparedTask → permit)을
+   지난다. 위조 manifest로 증명했던 `operation_outside_writable_root`는 **승인 문서에 담길 수조차 없음**을
+   `validateApprovalManifest` 거부로 증명하도록 바꿨다(더 강한 주장).
+3. `offlinePlanWorker.test.ts` import 정적 확인이 **직접 import 3줄 세기**에서 **transitive 그래프 전체
+   순회 + 외부 모듈 허용 목록**으로 바뀌었다.
+4. `orchestrationKernel.test.ts` 공개 API 목록에 `issueOperationDispatchPermit` 1건 추가(목록 자체는
+   여전히 닫힌 전수 비교다).
+
+### 미실행 (정직하게 — 이 세션에서 돌리지 않았다)
+
+`npm test` · `npm run test:exec` · 전체 `test:core` · 전체 acceptance · M4 offline acceptance 3종 ·
+stress · live · 반복(3회) · `npm run build`/dist 재생성 · M5d · 계획 §8 mutation 나머지 6종 ·
+`src/exec/stableController.test.ts`(**직전 실측 3/58 red 그대로 · 의도적 미실행** — 이 리비전은 controller
+런타임을 건드리지 않았다) · `codexCliProvider.test.ts` · `reviewer.test.ts` · CLI 테스트.
+
+**실제 Claude/Codex provider 실행은 여전히 부재·비활성**이고 **src↔dist drift**도 그대로다(dist는 M5b
+상태 → 배포 가능 상태가 아니다). **M5c·M5d·`B-10`·`B-13`/`C-18`·controller 배선·trusted Git·
+managed process는 미완료이며 이 세션은 self-approve하지 않는다.**
+
+## 2026-07-30 (V3 **M5c task 3A — typed 계획 validator · offline plan worker · 권위 집행. M5c는 여전히 미완료다** · 이 블록은 그 시점 기록이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `0c0011a`(아래 블록의 끝 지점) · stack base `81554cf`. **새 fresh Claude Opus 5 단일 세션**(이전 세션

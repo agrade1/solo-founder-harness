@@ -3,7 +3,67 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-30 — V3 **M5c task 3A · typed 계획/offline worker/권위 집행 · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-30 — V3 **M5c task 3A 리비전 · 독립 리뷰 A 4건 + 인접 filesystem B 닫음 · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `5a35bce` ·
+  코드 커밋 **`f132d87`** · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·
+  자기평가 **미상속**). 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · live provider 추론 · secret
+  **0**. amend/rebase/reset/stash 0 · 테스트 완화·삭제 **0**(강화한 assertion은 WORKLOG에 전수 기록).
+- **M5c는 여전히 승인 대상이 아니고 self-approved도 아니다.** 이 리비전이 닫은 것은 독립 리뷰의
+  Category A **4/4**와 controller 배선의 선행 조건인 **인접 filesystem B 1건**이다.
+- **변경 파일(신규 1 · 변경 10)**: 신규 `src/exec/typedPlan.ts`(순수 계획 validator — 파일 시스템 권위 0) ·
+  `src/exec/typedExecution.ts`(+테스트) · `src/exec/offlinePlanWorker.ts`(+테스트) ·
+  `src/exec/orchestrationKernel.ts`(+테스트) · `src/exec/orchestrationTypes.ts` ·
+  `src/exec/approvalManifest.ts` · `src/exec/autopilotLifecycle.test.ts` ·
+  `schemas/typed_execution_plan.schema.json`.
+  `stableController.ts`(+테스트) · managed process · trusted Git · reviewer · CLI · legacy exec/mission ·
+  store 발행 내부 · `executionBoundary` · package/lock · tracked `dist` **전부 무변경**. 두 번째 scheduler·
+  대안 controller·신규 런타임 의존성 **0**.
+- **A 해소 요지**: ⓐ **A1** intrinsic `%TypedArray%` getter만으로 바이트 입양(`Symbol.species`·iterator·
+  constructor·caller property 읽기 0 · Proxy receiver 거부 · **상한이 할당·복사보다 먼저** · Buffer 수락 ·
+  SAB 복사로 alias 0 · detached/축소 resizable 안정 거부) + **accessor는 성공해도 거부이며 실행되지 않는다**
+  ⓑ **A2** 위조 가능한 `OperationDispatchContext` **삭제** → kernel 발급 **봉인 permit**
+  (`issueOperationDispatchPermit` — 모듈 사설 `WeakMap` · 발급 토큰/factory export 0 · state 변경 0) +
+  `readDispatchAuthority()`가 **효과·명세 발급 직전마다** 현재 durable state를 다시 읽어 신원·lifecycle·
+  preflight digest 재계산·manifest canonical digest·만료/예산 **등호 거부**·operation의 계획 소속(신원
+  비교)·현재 ownership/writableRoots를 확인 ⓒ **A3** 부재 대상 `link(2)` no-replace 발행 · 교체 시 preimage
+  신원·내용 발행 직전 재확인 · 부모 신원 fd 고정 + 발행 직전 walk 재실행 · temp 확인 fd 발행까지 유지 ·
+  `O_NOFOLLOW` 부재 시 fail closed ⓓ **A4** 고립 surrogate 경로를 공유 정규화 계약에서 `path_not_utf8`로
+  거부(승인 manifest·ownership·writableRoots·operation·산출물·승인 실행 파일·argv 전부) + schema
+  `not.anyOf` 정렬.
+- **검증 실측(직렬)**: `npx tsc --noEmit` 0 error · `typedExecution.test.ts` **36/36** ·
+  `offlinePlanWorker.test.ts` **10/10** · `autopilotLifecycle.test.ts` **28/28** ·
+  `orchestrationKernel.test.ts` **103/103** · `git diff --check`/`--cached --check` clean.
+  mutation **2건**(① kernel 만료·예산 재확인 제거 → 경계 등호 테스트 실패 ② 옛 unsafe 바이트 입양 복원 →
+  적대적 바이트 테스트 실패) 각각 확인 후 `git checkout --`로 **정확히 원복**(`git diff --stat` 빈 출력 ·
+  흔적 grep 0) 뒤 4종 focused 재확인.
+- **red 2건(정직)**: `src/exec/stableController.test.ts` **3/58** — controller 런타임 무변경이므로
+  **의도적 미실행**이고 직전 실측 그대로다. **신규 측정** `src/exec/executionBoundary.test.ts` **1/20** —
+  이번 변경이 원인이 **아니다**(실패 사유 `manifest_pre_m5c_unsupported` 38회 · 이번에 추가한
+  `path_not_utf8` **0회** · 시작 HEAD의 `approvalManifest.ts`에 그 게이트가 이미 있었고 그 테스트 파일은
+  변경 0). 그 파일 fixture가 v1 manifest라 **직전 slice의 v2 fail-closed**에 걸리는 것이며, 이번 리비전의
+  **소유 범위 밖**이라 고치지 않고 대장에 등록했다(기한: 최종 M5c 통합/전체 suite 주장 전).
+- **미실행**: `npm test` · `npm run test:exec` · 전체 `test:core` · 전체 acceptance · M4 offline
+  acceptance 3종 · stress · live · 반복(3회) · 계획 §8 mutation 나머지 6종 · `npm run build`/dist 재생성 ·
+  M5d · `codexCliProvider`/`reviewer`/CLI 테스트.
+- **리뷰어에게 — 이 리비전의 리뷰 범위**: `5a35bce..f132d87` + 문서 커밋. 특히 ⓐ permit이 정말 위조
+  불가한지(평범 객체·사본·`Object.create`·`Proxy`·다른 permit의 operation) ⓑ 효과·명세 발급 직전 재확인이
+  **정말 매번** 도는지, 그 판정이 **현재 durable state**에서 오는지 ⓒ 만료·예산 **등호** 거부 ⓓ 부재 대상
+  `link` no-replace와 교체 preimage 재확인이 실제로 경쟁자 바이트를 보존하는지 ⓔ 실패 경계마다 fd·temp
+  누수 0인지, `applied`가 디렉터리 fsync 뒤에만 나오는지 ⓕ 바이트 입양이 호출자 코드를 정말 실행하지
+  않는지 ⓖ worker transitive 그래프가 least-authority인지 ⓗ 고립 surrogate 판정이 schema와 런타임에서
+  같은 표를 내는지 ⓘ 남긴 잔여 한계 서술(부모 이름 교체 시 temp 정리 불가 · `rename` pathname 창)이
+  과대주장 없이 정확한지.
+- **열린 하드 게이트**: `B-7`·`B-9`(첫 live 실행 전 · 손대지 않음) · **`B-10` 열려 있음**(`run_process`는
+  이번에도 **spawn 0** · 첫 spawn/managed launcher 전에 digest 고정 controller entrypoint 또는 동등한 닫힌
+  action 계약 필요 — token 화면은 수정이 아니다) · `B-11`/`B-12`(kernel 계약만) · `B-13`/`C-18`(프로세스
+  정리 미구현) · `C-12→B`(부분) · `C-22`(의도적 open) · `C-5`(pathname 창 + temp 정리 잔여 한계) ·
+  `C-19`·`C-26`·`C-29`·`C-30`·`C-31`·`C-33`·`C-35`·`C-37`·`C-39`(미착수/무변경) ·
+  **신규** executionBoundary v1 fixture red.
+- **실제 Claude/Codex는 여전히 부재·비활성**이고 **src↔dist drift**도 그대로다(dist는 M5b 상태 →
+  배포 가능 상태가 아니다).
+
+## 이전 상태 (2026-07-30 — V3 **M5c task 3A · typed 계획/offline worker/권위 집행 · M5c 여전히 미완료** · 그 시점 기록이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `0c0011a` ·
   stack base `81554cf`. fresh Claude Opus 5 단일 세션. 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 ·

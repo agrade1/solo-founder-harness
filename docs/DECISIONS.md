@@ -1,5 +1,42 @@
 # DECISIONS.md
 
+## 2026-07-30 (V3 M5c task 3A **리비전** — **집행 권위는 kernel이 발급하는 봉인 permit 하나뿐이다**)
+
+- **결정 1 — 구조적 객체는 권위가 아니다.** 1차 판의 `OperationDispatchContext`(manifest·workspaceRoot·
+  ownership을 담은 평범한 객체)를 **삭제**했다. 집행기는 `orchestrationKernel`이 발급한 봉인 permit만
+  받고, 권위 값은 **그 permit이 아니라 발급 kernel이 다시 읽는 현재 durable state**에서 나온다.
+  대가: 집행 API가 kernel을 알아야 하고 dispatch마다 state 읽기가 한 번 더 든다(operation 64건 상한이라
+  비용은 bounded). 얻는 것: "위조한 승인 문서로 `../victim`을 쓴다"가 **표현 불가능**해진다 —
+  이전에는 객체 하나로 승인·소유·만료·lifecycle을 전부 자칭할 수 있었다.
+- **결정 2 — 권위는 발급 시점이 아니라 효과 직전에 판정한다.** permit은 "지금 집행해도 된다"는 증서가
+  아니라 "무엇을 요청했는지"의 봉인 기록이다. 실제 판정(`running` · attempt/turn 신원 · preflight digest
+  재계산 · 만료 · 예산 deadline · ownership)은 **모든 효과와 명세 발급 직전에** 다시 돈다. 대가: 같은
+  검사를 여러 번 한다. 이유: 발급과 효과 사이에 취소·정리·다음 attempt·만료가 실제로 끼어들 수 있고,
+  그 사이의 쓰기는 **승인되지 않은 쓰기**다.
+- **결정 3 — operation은 신원으로 묶는다.** 집행 가능한 operation은 permit에 실린 **kernel이 검증하고
+  동결한 계획 배열의 항목 그 자체**여야 한다(`===`). 구조가 같은 사본·합성 객체·다른 계획의 항목은 전부
+  거부다. 대가: 호출자는 자기 원본 계획이 아니라 `permit.plan.operations`를 순회해야 한다. 이유: 구조
+  비교로는 "검증된 계획"과 "검증 뒤에 만든 똑같이 생긴 것"을 구분할 수 없다.
+- **결정 4 — 부재 대상 발행은 `rename`이 아니라 `link`다.** `rename(2)`은 대상을 조용히 덮어쓰므로
+  경쟁적으로 생긴 파일을 삼킨다. `link(2)`는 대상이 있으면 `EEXIST`이므로 **덮어쓰지 않는 발행**이 된다
+  (Node 18 내장 · 네이티브 의존성 0). 교체 경로는 preimage 신원·내용을 발행 직전에 다시 확인한 뒤에만
+  `rename`한다. 남는 pathname syscall 창은 **없앴다고 주장하지 않는다**(대장 `C-5`).
+- **결정 5 — durability가 확인되지 않으면 `applied`가 아니다.** 디렉터리 fsync가 실패하면 바이트는
+  발행됐어도 `write_durability_unconfirmed`를 낸다. 대가: 호출자가 성공/실패 판정을 한 번 더 다뤄야 한다.
+  이유: controller가 `applied` 영수증을 durable 복구의 근거로 쓸 예정이므로, 디렉터리 항목이 살아남지
+  못할 수 있는 상태를 성공이라고 적으면 그 복구가 거짓 전제 위에 선다. 재시도는 현재 내용 hash가
+  의도와 같아 `already_applied`로 수렴하므로 자동 복구가 막히지 않는다.
+- **결정 6 — accessor는 성공해도 데이터가 아니다.** 입력 입양은 property descriptor의 `value`만 읽고
+  getter/setter가 있으면 **실행하지 않고** 거부하며, `Proxy` receiver도 거부한다. 대가: "getter로 값을
+  주는" 편의 호출 형태가 사라진다. 이유: "worker는 데이터만 낸다"가 코드로 성립해야 하고, **성공한
+  호출자 코드**도 그 문장을 깬다. 같은 이유로 바이트 입양은 intrinsic 슬롯 접근만 쓴다
+  (`Symbol.species`·iterator·constructor를 읽지 않는다).
+- **결정 7 — 왕복이 깨지는 경로 문자열은 신원이 없다.** 고립 UTF-16 surrogate가 든 경로는 파일 시스템
+  경계에서 U+FFFD로 바뀌므로 승인된 문자열과 실제 접근 경로가 갈린다 → `normalizeWorkspacePath`가
+  거부한다(공유 정본 1곳 = 승인·계획·산출물·ownership 전부 커버). 유효 astral과 리터럴 U+FFFD는 통과한다.
+  JSON Schema는 code-unit pattern으로 같은 판정을 표현하지만, `\uD800` escape의 파서별 처리 차이가 있으니
+  **최종 판정은 런타임**이라고 문서에 적었다.
+
 ## 2026-07-30 (V3 M5c task 3A — **크래시 창에서는 "이미 그 바이트다"가 preimage 계약보다 앞선다 · worker는 데이터 어댑터다**)
 
 - **결정 1 — `already_applied`가 `write_conflict`보다 먼저 판정된다.** typed `write_file` 집행은

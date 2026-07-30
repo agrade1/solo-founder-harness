@@ -2,7 +2,45 @@
 
 최종 갱신: 2026-07-30
 
-## 최신 (2026-07-30 — **V3 M5c task 3A: typed 계획 validator · offline plan worker · 권위 집행. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-30 — **V3 M5c task 3A 리비전: 독립 리뷰 A 4건 + 인접 filesystem B 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `5a35bce` ·
+  코드 커밋 `f132d87` · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript 미상속) ·
+  Ponytail(full). 입력: 독립 fresh Codex 리뷰 `REVISE · A=4 · B=2 · C=3`.
+- **닫은 것**: ⓐ **A1** 적대적 바이트 입양 — intrinsic `%TypedArray%` getter만 사용(`Symbol.species`·
+  iterator·constructor·caller property 읽기 0 · Proxy receiver 거부) · **상한을 할당·복사보다 먼저** ·
+  Buffer 수락 · SAB는 복사(alias 0) · detached/축소 resizable 안정 거부 · **accessor는 성공해도 거부이며
+  실행조차 되지 않는다**(descriptor `value`만 읽는다) ⓑ **A2** 위조 가능한 `OperationDispatchContext`
+  삭제 → kernel 발급 **봉인 permit**(모듈 사설 `WeakMap` · 발급 토큰/factory export 0)과 **효과 직전마다
+  현재 durable state 재확인**(run/task/attempt/turn · `running` · preflight digest 재계산 · manifest
+  canonical digest · `now < expiresAt`·`now < budgetDeadlineAt` **등호 거부** · operation의 계획 소속 신원
+  비교 · 현재 ownership/writableRoots) ⓒ **A3** 부재 대상은 `link(2)` **no-replace** 발행 · 교체는 preimage
+  신원·내용 발행 직전 재확인 · 부모 신원 fd 고정 + walk 재실행 · temp 확인 fd를 발행까지 유지 ·
+  `O_NOFOLLOW` 부재 시 fail closed ⓓ **A4** 고립 UTF-16 surrogate 경로를 공유 정규화 계약에서 거부
+  (`path_not_utf8`) + schema `not.anyOf` 정렬(astral·U+FFFD는 통과) ⓔ **인접 B** fd·temp 누수 0(`finally`
+  하나) · OS 오류 닫힌 코드로 접기 · **디렉터리 fsync 확인 뒤에만 `applied`**(실패 =
+  `write_durability_unconfirmed` → 재시도 `already_applied`로 수렴) ⓕ **C** 순수 validator를 신규
+  `src/exec/typedPlan.ts`로 분리해 worker **transitive** 그래프를 least-authority로 만들고, schema의
+  런타임 전용 불변식(중복 operationId · summary NUL)을 정직하게 문서화.
+- **안 끝난 것(M5c의 남은 핵심)**: managed process supervisor + 자손 정리(`B-13`/`C-18`) · trusted Git
+  (`C-26`) · **`StableController` 재작성·배선** · 구조화 리뷰 검증(`C-19`/`C-35`) · `autopilot` CLI ·
+  legacy `exec`/`mission` 비활성화 · review-result schema · mutation 나머지 6종 · build/dist · M5d.
+- **검증(직렬)**: `npx tsc --noEmit` 0 error · `typedExecution.test.ts` **36/36** ·
+  `offlinePlanWorker.test.ts` **10/10** · `autopilotLifecycle.test.ts` **28/28** ·
+  `orchestrationKernel.test.ts` **103/103** · `git diff --check`/`--cached --check` clean.
+  mutation 2건(A2 만료·예산 재확인 제거 / A1 unsafe 바이트 입양 복원) → 각 named 테스트 실패 확인 후
+  **정확히 원복**(`git diff --stat` 빈 출력 · 흔적 grep 0) 뒤 4종 focused 재확인.
+- **red 실측 2건**: `stableController.test.ts` **3/58**(의도적 미실행 · 직전 실측 그대로) ·
+  **신규 측정** `executionBoundary.test.ts` **1/20** — 원인은 이번 변경이 아니라 **직전 slice의 v2 manifest
+  fail-closed**(그 파일 fixture가 v1이라 `manifest_pre_m5c_unsupported` 38회 · `path_not_utf8` 0회)이며
+  **소유 범위 밖**이라 고치지 않고 대장에 등록했다.
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · M4 acceptance 3종 · stress ·
+  live · 반복 · build/dist · M5d.
+- **`B-10`은 여전히 열린 하드 게이트**다(`run_process` spawn 0 유지 · 첫 spawn 전 digest 고정 entrypoint
+  필요). 실제 Claude/Codex는 **부재·비활성**, dist는 M5b 상태. 다음 세션의 첫 작업: **managed process
+  supervisor + `StableController` 배선**. **M5c는 self-approved가 아니다.**
+
+## 이전 (2026-07-30 — **V3 M5c task 3A: typed 계획 validator · offline plan worker · 권위 집행. M5c는 여전히 미완료** · 그 시점 기록이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `0c0011a` ·
   stack base `81554cf`. fresh Claude Opus 5 단일 세션 · Ponytail(full).
