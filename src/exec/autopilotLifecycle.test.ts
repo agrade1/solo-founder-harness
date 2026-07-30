@@ -31,7 +31,9 @@ import {
   SAFETY_ONLY_REASONS,
   TASK_STATES,
   codePointLength,
+  hasLoneSurrogate,
   holdsResources,
+  normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
 import type { AgentMessageType } from "./orchestrationTypes.js";
 import { APPROVED_PATH_PATTERN, approvedOperationFor, validateApprovalManifest } from "./approvalManifest.js";
@@ -805,6 +807,77 @@ test("[M5c] C-40: 승인 경로 길이가 schema(draft-07 maxLength)와 같은 �
   // workspace 경로도 같은 의미다.
   assert.equal(codePointLength("a"), 1);
   assert.equal(codePointLength("😀"), 1);
+});
+
+// ── ⑦b 3A 리비전 A4: 승인·durable 경로는 UTF-8 왕복이 보존돼야 한다 ─────────
+
+test("[M5c] 공유 정규화 계약이 고립 UTF-16 surrogate 경로를 거부한다(astral·U+FFFD는 통과)", () => {
+  const HIGH = "\uD800";
+  const LOW = "\uDC00";
+
+  // ⓐ 공유 정규화 함수가 정본이다 — 승인·계획·산출물 경로가 전부 이 함수를 지난다.
+  for (const lone of [HIGH, LOW, `docs/${HIGH}.md`, `docs/${LOW}.md`, `docs/a${HIGH}b/c.md`, `${LOW}${HIGH}`, `docs/\uD83D${LOW}${LOW}.md`]) {
+    assert.equal(hasLoneSurrogate(lone), true, JSON.stringify(lone));
+    assert.equal(codeOf(() => normalizeWorkspacePath(lone, "경로")), "path_not_utf8", JSON.stringify(lone));
+  }
+  // ⓑ 유효한 astral pair와 **리터럴 U+FFFD**는 그대로 통과한다(왕복이 깨지지 않는다).
+  for (const ok of ["docs/😀.md", "docs/�.md", "😀", "docs/��/a.md"]) {
+    assert.equal(hasLoneSurrogate(ok), false, JSON.stringify(ok));
+    assert.equal(normalizeWorkspacePath(ok, "경로"), ok);
+    // 왕복 검증: JS 문자열 → UTF-8 → JS 문자열이 정확히 같다.
+    assert.equal(Buffer.from(ok, "utf8").toString("utf8"), ok);
+  }
+  // 반대로 고립 surrogate는 UTF-8 왕복에서 U+FFFD로 바뀐다 = 다른 경로가 된다(이 규칙의 이유).
+  assert.notEqual(Buffer.from(`docs/${HIGH}.md`, "utf8").toString("utf8"), `docs/${HIGH}.md`);
+
+  // ⓒ manifest의 모든 경로 자리(writableRoots · ownership · 승인 operation 경로)가 같은 규칙이다.
+  assert.equal(codeOf(() => validateApprovalManifest(manifestFor(["root"], { writableRoots: [`docs${HIGH}`, "src"] }))), "path_not_utf8");
+  assert.equal(
+    codeOf(() => validateApprovalManifest(manifestFor(["root"], { ownershipByTask: { root: [`src/${LOW}`] } }))),
+    "path_not_utf8",
+  );
+  assert.equal(
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestFor(["root"], {
+          operationAuthorityByTask: { root: [{ authorityId: "w", kind: "write_file", path: `src/${HIGH}.txt`, maxBytes: 8 }] },
+        }),
+      ),
+    ),
+    "path_not_utf8",
+  );
+  // ⓓ 승인된 실행 파일 절대 경로와 argv도 정확한 바이트여야 한다.
+  assert.equal(
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, node: { path: `/opt/${HIGH}/node`, sha256: "e".repeat(64) } } }),
+      ),
+    ),
+    "invalid_manifest",
+  );
+  assert.equal(
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestFor(["root"], {
+          operationAuthorityByTask: {
+            root: [{ authorityId: "p", kind: "run_process", executable: EXECUTION_AUTHORITY.node.path, args: [`--x=${LOW}`], timeoutMs: 1_000 }],
+          },
+        }),
+      ),
+    ),
+    "invalid_manifest",
+  );
+  // ⓔ durable task ownership(kernel 경유)도 같은 규칙이다 — 승인 표만이 아니라 state 진입점도 막는다.
+  const ws = makeWorkspace();
+  const k = OrchestrationKernel.create({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: manifestFor(["root"]),
+    clock: clockFrom(T0),
+  });
+  assert.equal(codeOf(() => k.createRootTask(seed("root", { ownership: [`docs/${HIGH}`] }))), "path_not_utf8");
+  assert.equal(k.getTask("root"), null, "거부된 task가 durable에 남았다");
 });
 
 // ── ⑧ typed operation 권위는 deny-by-default다 (B-10 계약면) ───────────────

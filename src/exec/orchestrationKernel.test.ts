@@ -2463,6 +2463,8 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "getState",
     "getTask",
     "hasCommittedAction",
+    // M5c 3A 리비전 A2: **봉인 dispatch permit 발급**(순수 판정 — state를 바꾸지 않는다).
+    "issueOperationDispatchPermit",
     "listPendingInbox",
     "listReady",
     "nextPendingDelivery",

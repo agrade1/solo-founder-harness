@@ -89,6 +89,8 @@ import {
 } from "./orchestrationTypes.js";
 import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import { assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
+import type { TypedExecutionPlan, TypedOperation } from "./autopilotTypes.js";
+import { validateTypedExecutionPlan } from "./typedPlan.js";
 import {
   OPERATION_RECEIPT_MARKERS,
   type RunPaths,
@@ -272,6 +274,166 @@ export function attestOrchestrationKernel(kernel: unknown, methods: readonly str
   const workspaceRoot = (kernel as OrchestrationKernel).paths.workspaceRoot;
   if (typeof workspaceRoot !== "string" || workspaceRoot.length === 0) return null;
   return Object.freeze({ workspaceRoot, methods: Object.freeze(captured) });
+}
+
+// ── typed operation dispatch 권위 (V3 M5c 3A 리비전 A2) ──────────────────────
+
+/**
+ * **kernel이 발급한 진짜 dispatch permit 등록부.** 위 `GENUINE_KERNELS`와 같은 패턴이며 이 `WeakMap`은
+ * 모듈 밖으로 나가지 않는다. 들어오는 유일한 경로는 `issueOperationDispatchPermit()`이고, 밖으로 나가는
+ * 것은 판정 함수 `readDispatchAuthority()`뿐이다 — **임의 데이터를 권위로 만들어 주는 토큰·factory·
+ * 등록 함수는 하나도 export하지 않는다.**
+ *
+ * 이것이 필요한 이유(3A 1차 판의 결함): 집행기가 `OperationDispatchContext`라는 **평범한 구조적 객체**를
+ * 받았으므로, 위조한 manifest·ownership·workspaceRoot를 담은 객체 하나로 `../victim` 쓰기와 프로세스
+ * 실행 명세를 얻을 수 있었고, 만료·예산 deadline·task lifecycle·attempt 신원은 아예 보지 않았다.
+ */
+const GENUINE_PERMITS = new WeakMap<object, PermitRecord>();
+
+interface PermitRecord {
+  /** **현재** durable state를 다시 읽는다(낡은 호출자 snapshot을 쓰지 않는다). */
+  readState: () => OrchestrationRunState;
+  /** kernel이 주입받은 clock — 호출자가 시각을 고를 수 없다. */
+  now: () => string;
+  workspaceRoot: string;
+  /** 이 permit에 **묶인** 검증·동결된 계획. operation은 이 배열의 항목 그 자체여야 한다. */
+  plan: TypedExecutionPlan;
+  /** 발급 시점의 봉인된 preflight digest. dispatch 직전에 현재 state로 다시 계산해 대조한다. */
+  preflightDigest: string;
+  attemptNo: number;
+}
+
+/**
+ * **봉인된 dispatch permit**. 여기 담긴 값은 **감사·집행 입력**이고 그 자체가 권위는 아니다 —
+ * 권위는 등록부 안의 kernel 연결에서만 나오므로 같은 필드를 가진 평범한 객체는 아무것도 얻지 못한다.
+ *
+ * `plan`은 **kernel이 durable 신원에 대고 검증하고 깊이 동결한** 계획이다. 집행기는 이 배열의 항목
+ * **그 자체**만 집행할 수 있으므로(신원 비교), 호출자가 들고 있던 원본 계획을 몰래 바꿔치기할 수 없다.
+ */
+export interface OperationDispatchPermit {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly turnId: string;
+  readonly plan: TypedExecutionPlan;
+}
+
+/**
+ * dispatch 직전에 **현재 durable 상태에서 새로 읽은** 집행 권위. 동결된 값이며 호출자가 만들 수 없다.
+ */
+export interface DispatchAuthority {
+  readonly workspaceRoot: string;
+  /** 현재 durable state의 승인 manifest 정본(호출자 사본이 아니다). */
+  readonly manifest: MilestoneApprovalManifest;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly turnId: string;
+  /** **현재** durable task ownership(manifest에 없는 child 위임도 여기서 나온다). */
+  readonly ownership: readonly string[];
+  /** kernel clock이 정한 집행 시각. */
+  readonly nowIso: string;
+}
+
+/** `readDispatchAuthority`가 낼 수 있는 **안정 거부 코드 전부**(닫힌 목록). */
+export const DISPATCH_AUTHORITY_CODES = [
+  /** permit이 이 kernel 모듈이 발급한 것이 아니다(평범한/위조 객체 · 재구성 · proxy). */
+  "dispatch_permit_invalid",
+  /** operation이 그 permit에 묶인 검증된 계획의 항목이 아니다(위조·변조·다른 계획). */
+  "dispatch_operation_unbound",
+  /** task가 지금 `running`이 아니다(prepared·cleaning·completed·cancelled·…). */
+  "dispatch_task_not_running",
+  /** durable attempt/turn 신원이 permit과 다르다(낡은 attempt · 다른 turn). */
+  "dispatch_identity_stale",
+  /** 승인·예산·ownership·자원·권위가 preflight 봉인 이후에 바뀌었다. */
+  "preflight_drift",
+  /** `now >= manifest.expiresAt`(경계 포함 — 로드맵 §8.1). */
+  "manifest_expired",
+  /** `now >= accounting.budgetDeadlineAt`(경계 포함). */
+  "budget_elapsed_exhausted",
+  /** 시계 역행 등 판정 자체가 불가능하다. */
+  "clock_invalid",
+] as const;
+export type DispatchAuthorityCode = (typeof DISPATCH_AUTHORITY_CODES)[number];
+
+function dispatchDenied(code: DispatchAuthorityCode, message: string): OrchestrationError {
+  return new OrchestrationError(code, message);
+}
+
+/**
+ * **이 operation을 지금 집행해도 되는가.** 통과하면 현재 durable 상태에서 새로 읽은 동결 권위를 돌려주고,
+ * 아니면 던진다(fail closed · 부수 효과 0). 집행기는 **모든 효과·명세 발급 직전에 이것을 다시 부른다.**
+ *
+ * 확인하는 것(전부 **현재** durable state에서):
+ * 1. permit이 이 모듈 발급인가(등록부 조회 — 구조적 위조 불가).
+ * 2. operation이 그 permit에 묶인 **검증된 계획의 항목 그 자체**인가(신원 비교 — 변조·합성 거부).
+ * 3. 시계가 정상이고 `now < expiresAt`이며 `now < accounting.budgetDeadlineAt`인가(**등호는 거부**).
+ * 4. run/task 신원이 맞고 task가 **지금 `running`** 인가.
+ * 5. durable attempt/turn 신원이 permit과 같은가(낡은 attempt·다른 turn 거부).
+ * 6. 봉인된 preflight digest가 **현재 state로 다시 계산해도** 같은가 → 승인 canonical digest · 예산
+ *    deadline · attempt 번호 · ownership · 배타 자원 · **승인된 operation 권위**가 그대로라는 뜻이다.
+ * 7. manifest canonical digest가 durable `accounting.approvalDigest`와 같은가.
+ */
+export function readDispatchAuthority(permit: unknown, op: TypedOperation): Readonly<DispatchAuthority> {
+  if (typeof permit !== "object" || permit === null) {
+    throw dispatchDenied("dispatch_permit_invalid", "dispatch permit이 kernel 발급 값이 아니다");
+  }
+  const record = GENUINE_PERMITS.get(permit);
+  if (record === undefined) {
+    throw dispatchDenied("dispatch_permit_invalid", "dispatch permit이 kernel 발급 값이 아니다");
+  }
+  const bound = permit as OperationDispatchPermit;
+  if (!record.plan.operations.some((candidate) => candidate === op)) {
+    throw dispatchDenied("dispatch_operation_unbound", "operation이 이 permit에 묶인 검증된 계획의 항목이 아니다");
+  }
+
+  const state = record.readState();
+  const now = record.now();
+  if (now < state.createdAt || now < state.accounting.budgetStartedAt) {
+    throw dispatchDenied("clock_invalid", "집행 시각이 run 시작보다 이르다");
+  }
+  // **경계 포함으로 닫는다**(로드맵 §8.1 — 전진 작업은 `now >= expiresAt`에서 전부 거부).
+  if (now >= state.manifest.expiresAt) {
+    throw dispatchDenied("manifest_expired", "승인 manifest가 만료됐다(전진 작업 금지)");
+  }
+  if (now >= state.accounting.budgetDeadlineAt) {
+    throw dispatchDenied("budget_elapsed_exhausted", "승인된 경과 예산 deadline을 넘었다");
+  }
+  if (state.runId !== bound.runId) {
+    throw dispatchDenied("dispatch_identity_stale", "permit의 run 신원이 현재 durable run과 다르다");
+  }
+  const task = state.tasks.find((t) => t.taskId === bound.taskId);
+  if (task === undefined) {
+    throw dispatchDenied("dispatch_identity_stale", "permit의 task가 현재 durable state에 없다");
+  }
+  if (task.state !== "running") {
+    throw dispatchDenied("dispatch_task_not_running", `typed operation은 running task만 집행할 수 있다 (현재 ${task.state})`);
+  }
+  if (task.execution.attemptId !== bound.attemptId || task.execution.attemptNo !== record.attemptNo) {
+    throw dispatchDenied("dispatch_identity_stale", "durable attempt 신원이 permit과 다르다");
+  }
+  // `turnId`는 usage 과금 시점에 durable해진다 — 아직 없으면(`null`) permit의 turn이 유일한 후보이고,
+  // 이미 있으면 **정확히 같아야** 한다(다른 turn의 계획을 이 attempt에 밀어 넣을 수 없다).
+  if (task.execution.turnId !== null && task.execution.turnId !== bound.turnId) {
+    throw dispatchDenied("dispatch_identity_stale", "durable turn 신원이 permit과 다르다");
+  }
+  if (task.execution.preflightDigest !== record.preflightDigest || preflightDigest(state, task) !== record.preflightDigest) {
+    throw dispatchDenied("preflight_drift", "승인·예산·ownership·자원·권위가 preflight 봉인 이후에 바뀌었다");
+  }
+  if (manifestDigest(state.manifest) !== state.accounting.approvalDigest) {
+    throw dispatchDenied("preflight_drift", "현재 manifest가 durable 승인 digest와 다르다");
+  }
+
+  return Object.freeze({
+    workspaceRoot: record.workspaceRoot,
+    manifest: state.manifest,
+    runId: state.runId,
+    taskId: task.taskId,
+    attemptId: bound.attemptId,
+    turnId: bound.turnId,
+    ownership: Object.freeze([...task.ownership]),
+    nowIso: now,
+  });
 }
 
 export class OrchestrationKernel {
@@ -1259,6 +1421,57 @@ export class OrchestrationKernel {
       { safetyOnly: true },
     );
     return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **봉인된 typed operation dispatch permit을 발급한다**(V3 M5c 3A 리비전 A2 · 대장 `B-10` 집행면).
+   *
+   * 계획을 **kernel이** 검증한다: binding(run/task/attempt/turn)은 호출자가 주는 값이 아니라 **현재
+   * durable state에서 나온다**. 그래서 통과한 permit은 "이 run의 이 running task의 이 attempt가 이 turn에
+   * 요청한, 완전히 검증된 계획"이라는 뜻이고, 그 밖의 어떤 조합도 permit이 되지 못한다.
+   *
+   * **state를 바꾸지 않는다**(커밋 0 · 이벤트 0 · revision 그대로) — 발급은 순수 판정이다. 실제 집행은
+   * `typedExecution.ts`가 하며 효과 직전에 `readDispatchAuthority()`로 **현재** 상태를 다시 본다.
+   *
+   * lifecycle은 그대로다: `prepared`가 아니면 `startPreparedTask()`를 지나야 하고, ready→running 직접
+   * 경로는 여전히 없다(`startTask()`는 `preflight_required`).
+   */
+  issueOperationDispatchPermit(input: { taskId: string; turnId: string; plan: unknown }): OperationDispatchPermit {
+    const taskId = assertSlug(input?.taskId, "taskId");
+    const turnId = assertSlug(input?.turnId, "turnId");
+    const state = this.#state;
+    const now = formatTimestamp(this.#clock());
+    // 전진 작업 게이트와 **정확히 같은** 판정을 쓴다(만료·예산 deadline 경계 포함 · 시계 역행).
+    assertForwardWorkAllowed(state, now);
+    const task = requireTask(state, taskId);
+    if (task.state !== "running") {
+      throw new OrchestrationError(
+        "dispatch_task_not_running",
+        `typed operation permit은 running task만 받을 수 있다 (현재 ${task.state})`,
+      );
+    }
+    const attemptId = task.execution.attemptId;
+    if (attemptId === null || task.execution.preflightDigest === null) {
+      throw new OrchestrationError("dispatch_identity_stale", `task ${taskId}에 durable attempt 신원이 없다`);
+    }
+    if (task.execution.turnId !== null && task.execution.turnId !== turnId) {
+      throw new OrchestrationError("dispatch_identity_stale", `task ${taskId}의 durable turn 신원과 다르다`);
+    }
+    if (task.execution.preflightDigest !== preflightDigest(state, task)) {
+      throw new OrchestrationError("preflight_drift", `task ${taskId}의 봉인된 preflight가 준비 이후에 바뀌었다`);
+    }
+    // binding은 **durable state에서 나온다** — 호출자가 신원을 고르는 통로가 없다.
+    const plan = validateTypedExecutionPlan(input?.plan, { runId: state.runId, taskId, attemptId, turnId });
+    const permit: OperationDispatchPermit = Object.freeze({ runId: state.runId, taskId, attemptId, turnId, plan });
+    GENUINE_PERMITS.set(permit, {
+      readState: () => this.getState(),
+      now: () => formatTimestamp(this.#clock()),
+      workspaceRoot: this.#paths.workspaceRoot,
+      plan,
+      preflightDigest: task.execution.preflightDigest,
+      attemptNo: task.execution.attemptNo,
+    });
+    return permit;
   }
 
   /** **집행한 typed operation 1건의 영수증**을 durable에 남긴다(내용은 담지 않는다). */

@@ -6,8 +6,12 @@
  * - 입력은 닫힌 key 집합의 순수 데이터 객체 하나뿐이다: backend 이름 · bounded UTF-8 JSON 바이트 ·
  *   controller가 소유한 실행 신원(binding). **파일 시스템 · 프로세스 · git · provider · 네트워크 ·
  *   환경 객체 · callback seam은 입력에 존재하지 않는다**(표현할 key가 없으므로 전달될 수도 없다).
- * - JSON은 **정확히 한 번** 파싱하고 `typedExecution.validateTypedExecutionPlan`(같은 닫힌 validator)로
- *   검증한 뒤 동결한다. 미상 key · getter/proxy · 함수 · symbol · 순환은 그 validator가 거부한다.
+ * - JSON은 **정확히 한 번** 파싱하고 `typedPlan.validateTypedExecutionPlan`(같은 닫힌 validator)로
+ *   검증한 뒤 동결한다. 미상 key · accessor/proxy · 함수 · symbol · 순환은 그 validator가 거부한다.
+ * - 바이트 입양은 **intrinsic 슬롯 접근만** 쓴다: `Symbol.species`·iterator·constructor·호출자 property를
+ *   하나도 읽지 않고, 상한은 **할당·복사보다 먼저** 본다(3A 리비전 A1).
+ * - import 그래프가 **least-authority**다: `orchestrationTypes`(순수) · `autopilotTypes`(순수) ·
+ *   `typedPlan`(순수) 뿐이다. 파일 시스템 권위를 가진 `typedExecution`은 더 이상 지나지 않는다.
  * - 출력은 turn마다 **새로 만드는** bounded 이벤트 스트림뿐이다:
  *   `started → 인정되는 progress 1건 이상 → terminal 정확히 1건 → 정상 종료`.
  *   **최종 결과만 있는 스트림은 만들 수 없다**(`silent_session`이 구조적으로 불가능하다).
@@ -18,7 +22,7 @@
  */
 import { LIMITS, OrchestrationError } from "./orchestrationTypes.js";
 import { type TypedExecutionPlan, type WorkerEvent, type WorkerStream } from "./autopilotTypes.js";
-import { validateTypedExecutionPlan, type PlanBinding } from "./typedExecution.js";
+import { readOwnData, validateTypedExecutionPlan } from "./typedPlan.js";
 
 /** M5c가 아는 **유일한** backend 이름. */
 export const OFFLINE_PLAN_BACKEND = "offline-plan";
@@ -52,24 +56,83 @@ function inputInvalid(what: string): OrchestrationError {
 }
 
 /**
- * 닫힌 key 집합을 **정확히 한 번** 읽는다. `typedExecution`의 같은 이름 helper와 같은 규칙이며
- * 코드만 worker 계약의 것을 쓴다(입력 거부 taxonomy를 호출자가 고르지 못하게 전부 접는다).
+ * 닫힌 key 집합의 **순수 데이터 객체**만 읽는다. 판정 자체는 `typedPlan.readOwnData` 하나를 공유하고
+ * (accessor·`Proxy`·symbol key·이질 prototype·배열 거부 — **getter가 실행되지도 않는다**) 여기서는
+ * worker 계약의 안정 코드로만 접는다(입력 거부 taxonomy를 호출자가 고르는 통로가 없다).
  */
 function closedRead(raw: unknown, allowed: readonly string[], what: string): Record<string, unknown> {
-  try {
-    if (typeof raw !== "object" || raw === null || Array.isArray(raw)) throw new Error();
-    const proto = Reflect.getPrototypeOf(raw as object);
-    if (proto !== Object.prototype && proto !== null) throw new Error();
-    const own = Reflect.ownKeys(raw as object);
-    if (own.length !== allowed.length) throw new Error();
-    for (const k of own) {
-      if (typeof k !== "string" || !allowed.includes(k)) throw new Error();
-    }
-    const read: Record<string, unknown> = Object.create(null);
-    for (const k of allowed) read[k] = (raw as Record<string, unknown>)[k]; // ← 읽는 유일한 지점
-    return read;
-  } catch {
+  const read = readOwnData(raw);
+  if (read === null) throw inputInvalid(`${what}는 닫힌 key 집합의 순수 데이터 객체여야 한다`);
+  const keys = Object.keys(read);
+  if (keys.length !== allowed.length || !keys.every((k) => allowed.includes(k))) {
     throw inputInvalid(`${what}는 닫힌 key 집합의 순수 데이터 객체여야 한다`);
+  }
+  return read;
+}
+
+/**
+ * `%TypedArray%.prototype`의 **intrinsic getter**들. 이것만 쓰는 이유(3A 리비전 A1):
+ *
+ * 1차 판은 `raw instanceof Uint8Array` 뒤에 `Uint8Array.prototype.slice.call(raw)`를 불렀다 →
+ * ⓐ `instanceof`가 subclass·proxy를 통과시키고 ⓑ `slice`가 `Symbol.species`를 **읽어 호출자 코드를
+ * 실행**하고 ⓒ 복사가 **바이트 상한 검사보다 먼저** 일어났다(oversized 입력이 그대로 복사됐다).
+ *
+ * intrinsic getter는 **내부 슬롯만** 본다: `Symbol.species`·iterator·constructor·호출자 property를
+ * 하나도 읽지 않고, 슬롯이 없는 receiver(`Proxy` 포함)에서는 `TypeError`를 낸다.
+ */
+const TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype) as object;
+const intrinsic = (key: string | symbol): ((this: unknown) => unknown) => {
+  const get = Object.getOwnPropertyDescriptor(TYPED_ARRAY_PROTO, key)?.get;
+  if (typeof get !== "function") {
+    throw new OrchestrationError("worker_input_invalid", "이 런타임에 typed array intrinsic getter가 없다");
+  }
+  return get as (this: unknown) => unknown;
+};
+const taTag = intrinsic(Symbol.toStringTag);
+const taByteLength = intrinsic("byteLength");
+const taByteOffset = intrinsic("byteOffset");
+const taBuffer = intrinsic("buffer");
+
+/**
+ * **바이트를 안전하게 입양한다.** 통과하면 이 호출이 소유한 새 `Uint8Array`이며 원본과 메모리를
+ * 공유하지 않는다(`SharedArrayBuffer` 위의 view도 **복사**하므로 이후 caller 변경이 채택된 바이트를
+ * 바꿀 수 없고 alias도 남지 않는다).
+ *
+ * 순서가 계약이다: ⓐ intrinsic 슬롯으로 종류·길이를 확정(Proxy·비 typed array·`Uint16Array` 등 거부)
+ * → ⓑ **할당·복사 전에** 4 MiB 상한 → ⓒ intrinsic 바이트 접근으로만 복사.
+ * 어떤 실패도 `worker_input_invalid`로 접는다. 단 **길이를 안전하게 확정한 뒤의 상한 초과만**
+ * `worker_plan_too_large`다(그때는 크기가 진짜로 확인된 값이기 때문이다).
+ *
+ * `Buffer`는 `Uint8Array` subclass이며 intrinsic tag가 `"Uint8Array"`이므로 **받는다**(byteOffset이
+ * 0이 아닌 pool view도 정확히 그 구간만 복사한다). detached buffer는 intrinsic 길이가 0이고 view 생성이
+ * `TypeError`이므로 `worker_input_invalid`다. resizable buffer가 그 사이에 줄면 `RangeError` → 같은 코드다.
+ */
+function adoptPlanBytes(raw: unknown): Uint8Array {
+  let byteLength: number;
+  let byteOffset: number;
+  let buffer: ArrayBufferLike;
+  try {
+    if (taTag.call(raw) !== "Uint8Array") throw new Error();
+    const n = taByteLength.call(raw);
+    const off = taByteOffset.call(raw);
+    if (typeof n !== "number" || !Number.isInteger(n) || n < 0) throw new Error();
+    if (typeof off !== "number" || !Number.isInteger(off) || off < 0) throw new Error();
+    byteLength = n;
+    byteOffset = off;
+    buffer = taBuffer.call(raw) as ArrayBufferLike;
+  } catch {
+    throw inputInvalid("planJson은 문자열 또는 Uint8Array(intrinsic)여야 한다");
+  }
+  // ← 크기가 **안전하게 확정된 뒤** 상한을 본다. 할당·복사는 이 뒤에만 일어난다.
+  if (byteLength > MAX_PLAN_JSON_BYTES) {
+    throw new OrchestrationError("worker_plan_too_large", `계획 JSON은 ${MAX_PLAN_JSON_BYTES} 바이트 이하여야 한다`);
+  }
+  try {
+    const copy = new Uint8Array(byteLength);
+    copy.set(new Uint8Array(buffer, byteOffset, byteLength));
+    return copy;
+  } catch {
+    throw inputInvalid("planJson 바이트를 안전하게 복사할 수 없다");
   }
 }
 
@@ -81,12 +144,7 @@ function decodePlanJson(raw: unknown): string {
     }
     return raw;
   }
-  if (!(raw instanceof Uint8Array)) throw inputInvalid("planJson은 문자열 또는 Uint8Array여야 한다");
-  // 길이를 한 번만 읽고 그 값으로 복사한다(입양 뒤 원본을 바꿔도 파싱 대상은 바뀌지 않는다).
-  const bytes = Uint8Array.prototype.slice.call(raw);
-  if (bytes.byteLength > MAX_PLAN_JSON_BYTES) {
-    throw new OrchestrationError("worker_plan_too_large", `계획 JSON은 ${MAX_PLAN_JSON_BYTES} 바이트 이하여야 한다`);
-  }
+  const bytes = adoptPlanBytes(raw);
   try {
     // `fatal: true` — 잘못된 UTF-8을 U+FFFD로 조용히 바꾸지 않는다(바이트와 문자열이 갈라지지 않게).
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(bytes);
@@ -105,13 +163,9 @@ function adoptPlan(rawInput: unknown): TypedExecutionPlan {
       `M5c의 backend는 "${OFFLINE_PLAN_BACKEND}" 하나뿐이다(live claude/codex 추론은 없다)`,
     );
   }
-  const b = closedRead(input.binding, WORKER_BINDING_KEYS, "worker 입력 binding");
-  const binding: PlanBinding = {
-    runId: b.runId as string,
-    taskId: b.taskId as string,
-    attemptId: b.attemptId as string,
-    turnId: b.turnId as string,
-  };
+  // binding도 같은 닫힌 읽기를 지난다. 값 검증은 계획 validator가 하고(같은 판정 지점 하나),
+  // **실제 신원 대조는 kernel의 permit 발급이** durable state에 대고 다시 한다.
+  const binding = closedRead(input.binding, WORKER_BINDING_KEYS, "worker 입력 binding");
 
   const text = decodePlanJson(input.planJson);
   let parsed: unknown;

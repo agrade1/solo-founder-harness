@@ -29,6 +29,7 @@ import {
   assertSlug,
   assertTimestamp,
   codePointLength,
+  hasLoneSurrogate,
   isSlug,
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
@@ -237,7 +238,14 @@ function validateApprovedExecutable(raw: unknown, what: string): ApprovedExecuta
   closedKeys(o, APPROVED_EXECUTABLE_KEYS, what);
   const path = o.path;
   // 길이는 **코드 포인트**로 센다 — schema `maxLength`와 같은 의미여야 한다(대장 `C-40`).
-  if (typeof path !== "string" || codePointLength(path) > LIMITS.maxPathLength || !APPROVED_PATH_RE.test(path)) {
+  // 고립 surrogate는 파일 시스템 경계에서 U+FFFD로 바뀌므로 **승인된 실행 파일 경로의 신원이 깨진다**
+  // (V3 M5c 3A 리비전 A4 — workspace 경로와 같은 규칙을 승인된 절대경로에도 적용한다).
+  if (
+    typeof path !== "string" ||
+    codePointLength(path) > LIMITS.maxPathLength ||
+    hasLoneSurrogate(path) ||
+    !APPROVED_PATH_RE.test(path)
+  ) {
     throw new OrchestrationError("invalid_manifest", `${what}.path는 정규 절대경로여야 한다`);
   }
   if (typeof o.sha256 !== "string" || !new RegExp(SHA256_PATTERN).test(o.sha256)) {
@@ -339,7 +347,15 @@ function validateApprovedOperation(
   }
   const args: string[] = [];
   for (const a of o.args) {
-    if (typeof a !== "string" || a.length === 0 || a.includes("\0") || codePointLength(a) > LIMITS.maxOperationArgLength) {
+    // argv도 **정확한 바이트**로 전달돼야 한다: 고립 surrogate는 spawn 경계에서 U+FFFD로 바뀌어
+    // "승인된 인자와 정확히 같은가"가 흉내가 된다(대장 `B-10`은 이것과 별개로 **여전히 열린 게이트**다).
+    if (
+      typeof a !== "string" ||
+      a.length === 0 ||
+      a.includes("\0") ||
+      hasLoneSurrogate(a) ||
+      codePointLength(a) > LIMITS.maxOperationArgLength
+    ) {
       throw new OrchestrationError("invalid_manifest", `${what}.args 항목은 NUL 없는 bounded 문자열이어야 한다`);
     }
     args.push(a);

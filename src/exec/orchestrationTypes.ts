@@ -387,6 +387,25 @@ export function codePointLength(s: string): number {
   return n;
 }
 
+/**
+ * **고립 UTF-16 surrogate 판정**(V3 M5c 3A 리비전 A4 — 승인된 경로 신원).
+ *
+ * JavaScript 문자열은 UTF-16 code unit 배열이므로 짝이 맞지 않는 surrogate 하나를 담을 수 있지만
+ * **UTF-8에는 그런 바이트열이 없다.** Node가 그 문자열을 파일 시스템 경계로 넘기면 U+FFFD로 바뀌므로
+ * 승인된 `docs/\uD800.md`가 실제로는 **다른 경로** `docs/�.md`를 가리킨다 → "승인된 경로와 정확히
+ * 같은가"를 문자열 동치로 판정하는 계약이 그 자리에서 무의미해진다(경로 aliasing).
+ *
+ * 그래서 승인·계획·산출물 경로는 **UTF-8 왕복이 정확히 보존되는 문자열만** 받는다.
+ * `\p{Surrogate}`(General_Category=Cs)는 `u` 모드에서 **짝이 맞지 않는 surrogate만** code point로
+ * 노출되므로(올바른 pair는 astral code point 하나가 된다) 이 한 줄이 정확한 판정이다.
+ * 유효한 astral 문자와 **리터럴 U+FFFD는 그대로 통과한다** — 왕복이 깨지지 않기 때문이다.
+ */
+const LONE_SURROGATE_RE = /\p{Surrogate}/u;
+
+export function hasLoneSurrogate(s: string): boolean {
+  return LONE_SURROGATE_RE.test(s);
+}
+
 /** slug 규칙: 소문자·숫자로 시작하고 `[a-z0-9._-]`만 허용, 1..64자. */
 export const SLUG_PATTERN = "^[a-z0-9][a-z0-9._-]{0,63}$";
 const SLUG_RE = new RegExp(SLUG_PATTERN);
@@ -961,6 +980,11 @@ export function normalizeWorkspacePath(raw: unknown, what: string): string {
   }
   if (raw.includes("\0")) {
     throw new OrchestrationError("path_nul", `${what}에 NUL 바이트가 있다`);
+  }
+  // **UTF-8 왕복이 깨지는 경로는 신원이 없다**(V3 M5c 3A 리비전 A4). 고립 surrogate는 파일 시스템
+  // 경계에서 U+FFFD로 바뀌므로 승인된 문자열과 실제로 접근되는 경로가 갈린다.
+  if (hasLoneSurrogate(raw)) {
+    throw new OrchestrationError("path_not_utf8", `${what}에 고립 UTF-16 surrogate가 있다(UTF-8 왕복 불가)`);
   }
   if (raw.includes("\\")) {
     throw new OrchestrationError("path_backslash", `${what}는 POSIX 구분자(/)만 쓴다`);

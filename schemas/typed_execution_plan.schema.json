@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://solo-founder-harness/schemas/typed_execution_plan.schema.json",
   "title": "TypedExecutionPlan",
-  "description": "V3 M5c — worker가 turn 하나에서 낼 수 있는 **전부**(계약 버전 1). worker가 고르는 것은 operation의 authorityId 하나뿐이고, 그 id가 무엇을 뜻하는지는 사람이 승인한 manifest.operationAuthorityByTask가 정한다(대장 B-10). shell 문자열 · argv · 실행 파일 · 환경 · cwd · 네트워크 · dependency · git · deploy · billing · PR merge 변종은 **표현할 필드가 없으므로** 계획에 담길 수 없다. runId/taskId/attemptId/turnId는 controller가 소유한 실행 신원과 정확히 같아야 한다. 이 파일은 계약 문서이고 실제 경계는 런타임 validator src/exec/typedExecution.ts의 validateTypedExecutionPlan이다(신규 검증 의존성 0). 두 정의의 동치는 src/exec/typedExecution.test.ts가 강제한다. **길이 의미 주의(대장 C-40)**: draft-07 maxLength는 **코드 포인트** 수다. path는 런타임도 코드 포인트로 세므로 정확히 같고, result.summary(런타임은 UTF-16 code unit)와 operations[].content(런타임은 UTF-8 바이트)는 상한 **값**이 같고 런타임이 더 엄격하다(fail closed 방향).",
+  "description": "V3 M5c — worker가 turn 하나에서 낼 수 있는 **전부**(계약 버전 1). worker가 고르는 것은 operation의 authorityId 하나뿐이고, 그 id가 무엇을 뜻하는지는 사람이 승인한 manifest.operationAuthorityByTask가 정한다(대장 B-10). shell 문자열 · argv · 실행 파일 · 환경 · cwd · 네트워크 · dependency · git · deploy · billing · PR merge 변종은 **표현할 필드가 없으므로** 계획에 담길 수 없다. runId/taskId/attemptId/turnId는 kernel이 durable state에서 준 실행 신원과 정확히 같아야 한다(집행은 봉인된 kernel permit으로만 일어난다 — src/exec/orchestrationKernel.ts의 issueOperationDispatchPermit/readDispatchAuthority). 이 파일은 계약 문서이고 실제 경계는 런타임 validator src/exec/typedPlan.ts의 validateTypedExecutionPlan이다(신규 검증 의존성 0). 두 정의의 동치는 src/exec/typedExecution.test.ts가 강제한다. **이 schema가 표현할 수 없어 런타임 전용인 불변식(정직하게 적는다)**: ⓐ operations[].operationId의 **계획 내 유일성** — draft-07은 배열 항목 사이의 유일성을 표현할 수 없다(uniqueItems는 항목 전체 동일성만 본다). ⓑ result.summary의 **NUL 금지** — draft-07 pattern으로 표현 가능한 형태가 아니어서 런타임(assertText)만 강제한다. ⓒ operations[].content의 **UTF-8 바이트 상한과 왕복 보존**. **길이 의미 주의(대장 C-40)**: draft-07 maxLength는 **코드 포인트** 수다. path는 런타임도 코드 포인트로 세므로 정확히 같고, result.summary(런타임은 UTF-16 code unit)와 operations[].content(런타임은 UTF-8 바이트)는 상한 **값**이 같고 런타임이 더 엄격하다(fail closed 방향).",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "runId", "taskId", "attemptId", "turnId", "operations", "result"],
@@ -16,7 +16,7 @@
     "attemptId": { "$ref": "#/definitions/slug" },
     "turnId": { "$ref": "#/definitions/slug" },
     "operations": {
-      "description": "이 turn이 요청하는 typed operation. operationId는 계획 안에서 유일해야 한다.",
+      "description": "이 turn이 요청하는 typed operation. operationId는 계획 안에서 유일해야 하지만 **draft-07은 그 불변식을 표현할 수 없다** — 유일성은 런타임 validator만 강제한다(schema 통과 ≠ 계획 유효).",
       "type": "array",
       "maxItems": 64,
       "items": {
@@ -60,12 +60,17 @@
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "artifactRole": { "enum": ["input", "contract", "output", "evidence", "diff", "test"] },
     "normalizedWorkspacePath": {
-      "description": "**이미 정규화된** workspace-relative 경로. segment는 비어 있지 않고 '.'/'..'가 아니며 backslash·NUL을 포함하지 않는다(선행·후행·중복 '/' 없음). 런타임 판정은 normalizeWorkspacePath(v) === v다. maxLength는 draft-07 의미대로 **코드 포인트** 수이고 런타임도 codePointLength로 센다(대장 C-40).",
+      "description": "**이미 정규화된** workspace-relative 경로. segment는 비어 있지 않고 '.'/'..'가 아니며 backslash·NUL을 포함하지 않는다(선행·후행·중복 '/' 없음). 런타임 판정은 normalizeWorkspacePath(v) === v다. maxLength는 draft-07 의미대로 **코드 포인트** 수이고 런타임도 codePointLength로 센다(대장 C-40). **고립 UTF-16 surrogate는 거부한다**(3A 리비전 A4): UTF-8에는 그 바이트열이 없어 파일 시스템 경계에서 U+FFFD로 바뀌므로 승인된 경로와 실제 접근 경로가 갈린다. not.anyOf의 두 번째 pattern이 그 판정이며(JSON Schema regex는 u flag가 없으므로 code unit 표현이다) 런타임 정본은 orchestrationTypes.hasLoneSurrogate(\\p{Surrogate} + u)다. 유효한 astral 문자와 **리터럴 U+FFFD는 양쪽에서 통과한다**. 다만 JSON 문서가 \\uD800 escape를 담으면 파서마다 U+FFFD로 바꾸거나 거부하므로, in-memory JS 문자열의 malformed 여부를 최종 판정하는 곳은 **런타임**이다.",
       "type": "string",
       "minLength": 1,
       "maxLength": 512,
       "pattern": "^(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+(?:/(?!\\.\\.?(?:/|$))[^/\\\\\\u0000]+)*$",
-      "not": { "pattern": "^[A-Za-z]:" }
+      "not": {
+        "anyOf": [
+          { "pattern": "^[A-Za-z]:" },
+          { "pattern": "[\\uD800-\\uDBFF](?![\\uDC00-\\uDFFF])|(^|[^\\uD800-\\uDBFF])[\\uDC00-\\uDFFF]" }
+        ]
+      }
     },
     "writeFileOperation": {
       "description": "승인된 경로에 정확히 이 내용을 쓴다. path는 승인 레코드의 경로와 **문자열 동치**여야 하고, 바이트 상한은 min(승인 maxBytes, 1 MiB)다. expectedBeforeSha256이 null이면 '그 자리에 파일이 없어야 한다'는 뜻이다.",

@@ -123,6 +123,10 @@ test("[M5c] 스트림은 turn마다·소비마다 새로 만들어진다(상태�
 
 test("[M5c] 입력에 callback·핸들·미상 key·symbol·이질 prototype을 밀반입할 수 없다", () => {
   const hostile: Array<[string, unknown]> = [
+    ["accessor가 성공해도 데이터가 아니다", { backend: OFFLINE_PLAN_BACKEND, binding: { ...BINDING }, get planJson() { return planJson(); } }],
+    ["binding accessor", input({ binding: { runId: "run-1", taskId: "root", attemptId: "att-1", get turnId() { return "turn-1"; } } })],
+    ["Proxy(성공하는 trap)", new Proxy(input(), {})],
+    ["binding이 Proxy", input({ binding: new Proxy({ ...BINDING }, {}) })],
     ["callback seam", input({ onEvent: () => undefined })],
     ["파일 시스템 객체", input({ fs: { writeFileSync: () => undefined } })],
     ["프로세스 spawn", input({ spawn: () => undefined })],
@@ -202,6 +206,90 @@ test("[M5c] 미상 backend와 live claude/codex 선택은 안정 hard reject다"
 
 // ── 3. 바이트·UTF-8·파싱 경계 ───────────────────────────────────────────────
 
+test("[M5c] 적대적 바이트 입양: species·iterator·constructor·proxy는 실행되지 않고 상한이 복사보다 먼저다", () => {
+  // ⓐ **Proxy로 감싼 Uint8Array**: intrinsic 슬롯이 없으므로 trap이 돌아가기 전에 거부다.
+  const proxied = new Proxy(Buffer.from(planJson(), "utf8"), {
+    get() {
+      throw new Error("trap이 돌았다");
+    },
+  });
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: proxied }))), "worker_input_invalid");
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: new Proxy(Buffer.from(planJson(), "utf8"), {}) }))), "worker_input_invalid");
+
+  // ⓑ **`Symbol.species`가 호출자 코드인 subclass**: 그 코드가 실행되지 않는다(예전 판은 `slice`가 읽었다).
+  let speciesReads = 0;
+  class HostileBytes extends Uint8Array {
+    static get [Symbol.species](): typeof Uint8Array {
+      speciesReads += 1;
+      throw new OrchestrationError("manifest_expired", "species-secret");
+    }
+  }
+  const bytes = Buffer.from(planJson(), "utf8");
+  const hostile = new HostileBytes(bytes.length);
+  hostile.set(bytes);
+  // subclass는 intrinsic tag가 `Uint8Array`이므로 **데이터로서는 유효하다** — 계획이 그대로 나온다.
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: hostile }))), "no-error");
+  assert.equal(speciesReads, 0, "Symbol.species 호출자 코드가 실행됐다");
+
+  // ⓒ **oversized는 할당·복사보다 먼저** 거부된다(원본 바이트를 만지지 않는다).
+  const over = new Uint8Array(MAX_PLAN_JSON_BYTES + 1);
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: over }))), "worker_plan_too_large");
+  class OversizedHostile extends Uint8Array {
+    static get [Symbol.species](): typeof Uint8Array {
+      speciesReads += 1;
+      throw new Error("species");
+    }
+  }
+  assert.equal(
+    codeOf(() => startOfflinePlanTurn(input({ planJson: new OversizedHostile(MAX_PLAN_JSON_BYTES + 1) }))),
+    "worker_plan_too_large",
+  );
+  assert.equal(speciesReads, 0);
+
+  // ⓓ **잘못된 원소 폭**(Uint16Array 등)과 typed array가 아닌 값은 데이터 입력이 아니다.
+  for (const bad of [new Uint16Array(4), new Int8Array(4), new DataView(new ArrayBuffer(4)), new ArrayBuffer(4), { byteLength: 4 }]) {
+    assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: bad }))), "worker_input_invalid", String(bad));
+  }
+
+  // ⓔ **detached buffer**: intrinsic 길이가 0이고 view 생성이 실패하므로 안정 거부다(바이트를 읽지 않는다).
+  const ab = new ArrayBuffer(8);
+  const detachedView = new Uint8Array(ab);
+  structuredClone(ab, { transfer: [ab] });
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: detachedView }))), "worker_input_invalid");
+
+  // ⓕ **resizable/growable buffer**(런타임이 지원할 때만): 길이를 확정한 뒤 줄어들면 안전하게 거부되고,
+  //    안 줄어들면 그 시점 바이트가 정확히 복사된다.
+  const resizable = new ArrayBuffer(bytes.length, { maxByteLength: bytes.length * 2 });
+  new Uint8Array(resizable).set(bytes);
+  const tracking = new Uint8Array(resizable);
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: tracking }))), "no-error");
+
+  // ⓖ **Buffer**(pool view — byteOffset이 0이 아닐 수 있다)도 정확히 그 구간만 읽는다.
+  const pooled = Buffer.from(planJson(), "utf8");
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: pooled }))), "no-error");
+  const padded = Buffer.concat([Buffer.from("XX"), pooled, Buffer.from("YY")]).subarray(2, 2 + pooled.length);
+  assert.equal(codeOf(() => startOfflinePlanTurn(input({ planJson: padded }))), "no-error");
+});
+
+test("[M5c] SharedArrayBuffer 입력은 복사되므로 이후 caller 변경이 채택된 바이트를 바꾸지 못한다", async () => {
+  const json = planJson();
+  const source = Buffer.from(json, "utf8");
+  const sab = new SharedArrayBuffer(source.length);
+  const shared = new Uint8Array(sab);
+  shared.set(source);
+
+  const stream = startOfflinePlanTurn(input({ planJson: shared }));
+  // 입양이 끝난 뒤 공유 메모리를 **전부 망가뜨린다**. alias를 들고 있었다면 여기서 계획이 깨진다.
+  shared.fill(0x41);
+  const events = await collect(stream);
+  const terminal = events[events.length - 1] as Extract<WorkerEvent, { kind: "terminal" }>;
+  assert.equal((terminal.plan as any).result.summary, "offline turn 결과");
+  assert.equal((terminal.plan as any).operations.length, 2);
+  // 스트림을 **다시** 소비해도 같다(원본을 다시 읽지 않는다 = alias 없음).
+  const again = await collect(stream);
+  assert.equal((again[again.length - 1] as any).plan.result.summary, "offline turn 결과");
+});
+
 test("[M5c] JSON 바이트 상한·UTF-8·파싱 실패는 안정 코드로 거부한다", () => {
   // 상한 초과(문자열·바이트 두 경로 모두).
   const huge = `${" ".repeat(MAX_PLAN_JSON_BYTES)}{}`;
@@ -236,29 +324,61 @@ test("[M5c] UTF-8 바이트 입력도 문자열 입력과 같은 계획을 낸�
 
 // ── 4. worker에는 실행 권위가 없다(정적 확인) ───────────────────────────────
 
-test("[M5c] worker 모듈은 파일 시스템·프로세스·네트워크·provider를 import하지 않는다", () => {
-  const source = readFileSync(join(HERE, "offlinePlanWorker.ts"), "utf8");
-  const importLines = source.split("\n").filter((l) => /^import\s|require\(/.test(l.trim()));
-  const forbidden = [
-    "node:fs",
-    "node:child_process",
-    "node:net",
-    "node:http",
-    "node:https",
-    "node:worker_threads",
-    "node:vm",
-    "node:os",
-    "node:path",
-    "claudeCliProvider",
-    "codexCliProvider",
-    "sessionRunner",
-    "parallelMission",
-    "runProcess",
-    "worktree",
-  ];
-  for (const f of forbidden) {
-    assert.equal(importLines.some((l) => l.includes(f)), false, `worker가 ${f}를 import한다`);
+/** 한 모듈의 `import ... from "..."` 지정자를 모은다(정적 소스 확인 — 실행하지 않는다). */
+function importSpecifiers(file: string): string[] {
+  const source = readFileSync(join(HERE, file), "utf8");
+  const out: string[] = [];
+  for (const m of source.matchAll(/^import[\s\S]*?from\s+"([^"]+)";$/gm)) out.push(m[1]);
+  assert.equal(/require\(/.test(source), false, `${file}이 require를 쓴다`);
+  return out;
+}
+
+const FORBIDDEN_IMPORTS = [
+  "node:fs",
+  "node:child_process",
+  "node:net",
+  "node:http",
+  "node:https",
+  "node:worker_threads",
+  "node:vm",
+  "node:os",
+  "node:path",
+  "claudeCliProvider",
+  "codexCliProvider",
+  "sessionRunner",
+  "parallelMission",
+  "runProcess",
+  "worktree",
+  "orchestrationStore",
+  "orchestrationKernel",
+  "typedExecution",
+];
+
+test("[M5c] worker의 **transitive** import 그래프에 파일 시스템·프로세스·네트워크·provider가 없다", () => {
+  // 이전 판은 `typedExecution`을 지나 `node:fs`와 store 모듈을 transitive하게 끌어왔다(리뷰 C 항목).
+  // 지금은 순수 validator 모듈(`typedPlan`)로 갈라졌으므로 **그래프 전체를 닫아서** 확인할 수 있다.
+  const seen = new Set<string>();
+  const queue = ["offlinePlanWorker.ts"];
+  const allowedExternal = new Set(["node:util/types"]);
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    for (const spec of importSpecifiers(file)) {
+      for (const f of FORBIDDEN_IMPORTS) {
+        assert.equal(spec.includes(f), false, `${file}이 ${f}를 import한다`);
+      }
+      if (spec.startsWith("./")) {
+        queue.push(spec.replace(/^\.\//, "").replace(/\.js$/, ".ts"));
+        continue;
+      }
+      // 외부 지정자는 **명시적 허용 목록**만 통과한다(introspection 전용).
+      assert.equal(allowedExternal.has(spec), true, `${file}이 허용되지 않은 외부 모듈을 import한다: ${spec}`);
+    }
   }
-  // 집행은 controller(typedExecution)와 계약 타입만 import한다.
-  assert.equal(importLines.length, 3, importLines.join(" | "));
+  assert.deepEqual(
+    [...seen].sort(),
+    ["autopilotTypes.ts", "offlinePlanWorker.ts", "orchestrationTypes.ts", "typedPlan.ts"],
+    "worker의 transitive 그래프가 바뀌었다",
+  );
 });
