@@ -1,8 +1,55 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-28
+최종 갱신: 2026-07-30
 
-## 최신 (2026-07-28 — **V3 M5b 6차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=10) 대응 · 독립 재리뷰 대기** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-30 — **V3 M5b 7차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=12) 대응 · 독립 8차 리뷰 대기** · 이 블록이 가장 최신이다)
+
+- **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
+  base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `ff5e035` 위에 **7차 리비전 커밋** — code/tests/dist/schema
+  1건 + docs 1건. **fresh Claude Opus 5 세션**(이전 transcript·자기평가 미상속 · subagent·병렬 writer 0 ·
+  공유 dirty 체크아웃이라 단일 writer). 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 ·
+  **live provider 추론** · secret 0. `node_modules`(supervisor symlink)는 stage 0이고 세션 끝에 `unlink`로
+  제거했다. Ponytail(full) 적용.
+- **⚠ 6차 리비전 기록의 부분성 정정**: 7차 독립 리뷰(`409dee2..ff5e035`)는 **6차 A1을 PARTIAL** ·
+  **6차 A3를 PARTIAL**로 판정했다(**초기 A2 CLOSED · 초기 A4 PARTIAL**). 공통 뿌리는 **"검증을 트랜잭션
+  1회 단위로 잡았다"**: ⓐ git을 **경계 진입에서 한 번** 해싱한 뒤 `readCheckoutHead()`가 `--show-toplevel`·
+  `rev-parse HEAD` **두 자식 프로세스**를 각각 await했으므로, 첫 프로세스가 도는 동안 owner-writable 승인
+  파일을 **같은 inode에 제자리 덮어쓰면** 두 번째가 승인되지 않은 바이트를 실행했다(`revalidateSync()` 루프도
+  동일) ⓑ body 발행이 **전수 preflight 1회** 뒤 staging **경로 이름 그대로** link했으므로, hook·동시 writer가
+  그 사이 staging을 갈아끼우면 교체본이 최종 body가 되고 staging도 journal도 삭제됐다(같은 digest면 남의
+  inode 입양, 다른 digest면 "성공한 커밋 + 잘못된 body"). **지금도 self-approved가 아니다.**
+- **7차 리비전이 닫은 것(A 2건)**:
+  ⓐ **A1** — `GitGate` 하나로 **모든 git spawn이 자기 `runProcess`/`spawnSync` 직전에** 같은 fd
+  (`O_RDONLY|O_NOFOLLOW`) 신원 + 승인 SHA-256을 다시 증명한다(게이트↔spawn 사이 **`await` 없음**).
+  `readCheckoutHead()`의 **두 호출 각각** · `revalidateSync()`의 **controller/target 회차 각각**이 지나고,
+  루프 앞 1회 검증은 제거했다. 남는 창은 **fd 해싱→exec syscall 몇 개**뿐(`fexecve` 없음 — `C-5` 종류)이며
+  호출자 경로·PATH·ambient env·대체 trust root·신규 의존성은 없다.
+  ⓑ **A2** — `ownershipOf()`가 **열린 fd 하나로** dev+ino·정확한 바이트 수·내용 SHA-256을 판정하고,
+  **link 직전** · **link 직후** · **`finishJournal()`의 journal 삭제 직전 전수**(앞선 시도가 발행한 것까지)에서
+  다시 증명한다. `journal:cleanup` hook은 전수 sweep **앞**에서 울린다. 어긋나면 **journal을 남기고**
+  fail closed이며, 남의 파일을 지우거나 덮거나 채택하지 않고 재시도는 결정론적·멱등이다. journal 삭제는
+  정상 커밋과 "이미 목표 state" 복구가 **같은 한 경로**로 지나고, roll back은 최종 body가 애초에 없으므로
+  자기 경로를 유지한다.
+- **낡은 주석 정정**: store의 "`C-37` 닫힘" · kernel/controller의 "roll forward" 서술 ·
+  `setCommitFaultHook`의 "던지는 일뿐" 서술(hook은 **동기 파일 변경도 한다**). **`C-37`·`C-36`은 open.**
+- **B/C**: **B 7건 그대로**(`B-7`·`B-9`·`B-10`·`B-11`·`B-12`·`B-13`·`C-12`→B — 하나도 닫지 않았다).
+  **C 12건** 중 11건(`C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`·`C-38`·`C-39`·`C-26`) 상태 유지 +
+  신규 **`C-40`**(승인 경로 schema regex가 runtime보다 느슨 — `/a//b`·`/a/./b`·`/a/../b`)을 등록하고
+  **이번에 정렬해 닫았다**: 정본 `APPROVED_PATH_PATTERN` 하나를 runtime·schema가 공유 · 양/음성 표 전수
+  동치 테스트 · 정렬 전 1021 케이스 실측 불일치 0 · 양방향 mutation kill.
+- **테스트(worker 자기보고 · 독립 실측 아님)**: kernel **103/103**(98 → 103) · controller **58/58** ·
+  provider **59/59** · boundary **20/20**(17 → 20) · reviewer **21/21** · parser **28/28** ·
+  `tsc --noEmit` clean · `build` + `git diff --check` clean · `node --check` emitted 5파일 ·
+  **dist 프로브 2종**(A1 제자리 교체 → digest 불일치·spawns=1·sentinel 0 · C-40 비정규 경로 거부 /
+  A2 `journal:cleanup` 제자리 변경 → `journal_body_foreign`·journal 보존·**reopen도 완료 아님**) ·
+  offline acceptance `m4a` **31/31** · `m4b` **42/42** · `m4c` **77/77** ·
+  race subset(경계+kernel) **3회 직렬 123/123** · `npm run test:exec` **361/361**(353 → 361, 1회) ·
+  **mutation 9종 전부 kill · 살아남은 0 · `shasum -c` 바이트 동일 원복 · `MUTATION` 잔재 0**.
+- **미실행**: `npm test` 전체 · `test:core` · 전체 `acceptance.sh` · stress · live · MCP · 실제 추론 · push.
+- **다음 세션이 할 일**: **fresh Codex `gpt-5.6-sol` xhigh read-only 8차 리뷰**(`409dee2..HEAD` 전 범위).
+  **A=0**일 때만 M5b가 M5c로 전진한다. 그 전에는 M5c 착수·전체 suite·live 금지.
+
+## 이전 (2026-07-28 — **V3 M5b 6차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=10) 대응** · dated history · **7차 리뷰가 A1/A3를 PARTIAL로 다시 열었다**)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `6a5e418` 위에 **6차 리비전 커밋** — code/tests/dist 1건 +

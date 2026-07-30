@@ -1,5 +1,55 @@
 # WORKLOG.md
 
+## 2026-07-30 (V3 **M5b 7차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=2): git 내용이 spawn마다 재검증되지 않음 · body 발행이 검증 이후 교체본을 link하고 복구 journal을 삭제할 수 있음** · **독립 재리뷰 대기**)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,
+시작 HEAD `ff5e035`(승인 base = M5a `409dee2`). **새 fresh Claude Opus 5 세션**(이전 세션 transcript·자기평가
+미상속). amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · 패키지 설치 · 의존성/lockfile 변경 ·
+MCP · **live Codex/Claude provider 추론** · secret 사용 · deploy · DB · production · live billing **없음**.
+subagent·병렬 writer 없음(단일 세션 직렬 — 공유 dirty 체크아웃). `node_modules`(supervisor symlink)는
+**stage하지 않았고** 세션 끝에 `unlink`로 제거했다. Ponytail(full) 적용.
+
+> **정정 — 6차 리비전 기록의 부분성.** 6차 기록은 A1·A3를 "둘 다 닫았다"고 적었지만 7차 독립 리뷰는
+> **둘 다 PARTIAL**로 판정했다(초기 A2 CLOSED · 초기 A4 PARTIAL). 공통 뿌리는 **"검증을 트랜잭션 1회 단위로
+> 잡았다"** 이다: 6차는 *무엇이 권위인가*는 바로잡았지만 *언제 다시 보는가*를 넓게 잡아서, git은 경계 진입
+> 1회만 해싱한 뒤 두 자식 프로세스를 await했고 body는 전수 preflight 1회 뒤 경로 이름 그대로 link했다.
+> 이전 절은 dated history로 보존한다.
+
+- **A1 — git 검증 단위를 프로세스 1회에서 spawn 1회로 좁혔다.** `GitGate` 하나를 두고 **모든 git spawn이
+  자기 `runProcess`/`spawnSync` 직전에** 같은 fd(`O_RDONLY|O_NOFOLLOW`) 신원 + 승인 SHA-256을 다시 증명한다.
+  게이트와 spawn 사이에 **`await`가 없다**. `readCheckoutHead()`의 두 호출 각각과 `revalidateSync()`의
+  controller/target 회차 각각이 자기 게이트를 지나며, 루프 앞 1회 검증은 제거했다(spawn별 게이트가 포함).
+  남는 창은 **fd 해싱→exec syscall 몇 개**뿐이고 그 한계는 그대로 적었다(`fexecve` 없음 — `C-5`와 같은 종류).
+  호출자 경로·PATH 조회·ambient env·대체 trust root·신규 의존성은 없고 manifest-only 실행 권위와
+  provider/controller attestation 계약은 그대로다.
+- **A2 — body 발행을 link 직전·직후·journal 삭제 직전에 다시 증명한다.** `ownershipOf()`가 **열린 fd
+  하나로** dev+ino·정확한 바이트 수·내용 SHA-256을 판정한다(`absent`/`ours`/`foreign`). ⓐ hook 이후·
+  `linkSync` 직전 staging 재증명(같은 digest의 다른 inode도 거부 — 입양 금지) ⓑ `linkSync` 직후 최종 이름
+  재증명(EEXIST 경합·교체본을 그 자리에서 접고 **staging 증거를 지우지 않는다**) ⓒ `finishJournal()` 하나가
+  journal 삭제의 **유일한 경로**이며(정상 커밋 + "이미 목표 state" 복구 공용) `journal:cleanup` hook을
+  **먼저** 울린 뒤 **모든** 최종 body를 전수 재증명한다. 어긋나면 **journal을 남기고** fail closed다.
+  roll back은 최종 body가 애초에 없으므로 자기 경로를 유지한다(이유를 주석에 남겼다).
+- **낡은 주석 정정.** store `recoverPendingCommit`의 "`C-37` 닫힘" · kernel `completeTaskWithArtifacts`와
+  `stableController` 모듈 doc의 "roll forward" 서술 · `setCommitFaultHook`의 "부를 수 있는 것은 던지는
+  일뿐" 서술(hook은 **동기 파일 변경도 한다** — `C-36` 증거 갱신)을 사실대로 고쳤다. **둘 다 닫지 않았다.**
+- **B 7건은 하나도 닫지 않았다**(`B-7`·`B-9`·`B-10`·`B-11`·`B-12`·`B-13`·`C-12`→B — 기한·트리거 원문 유지).
+  **C 12건**: 11건(`C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`·`C-38`·`C-39`·`C-26`) 상태 유지 +
+  ID 없던 **승인 경로 schema regex와 runtime의 갈림**을 **`C-40`** 으로 등록하고 **이번에 정렬해 닫았다**
+  (정본 pattern `APPROVED_PATH_PATTERN` 하나를 runtime·schema가 공유 · 양/음성 표 전수 동치 테스트 ·
+  사전 실측 1021 케이스 불일치 0 · 양방향 mutation kill).
+- **테스트(worker 자기보고 — 독립 실측 아님)**: kernel **103/103**(98 → 103) · controller **58/58** ·
+  provider **59/59** · boundary **20/20**(17 → 20) · reviewer **21/21** · parser **28/28** ·
+  `tsc --noEmit` clean · `build` + `git diff --check` clean · `node --check` emitted 5파일 ·
+  **dist 런타임 프로브 2종**(A1 제자리 교체 → digest 불일치·spawns=1·sentinel 미실행 · C-40 비정규 경로 거부 /
+  A2 `journal:cleanup` 제자리 변경 → `journal_body_foreign`·journal 보존·파일 미삭제·**reopen도 완료 아님**) ·
+  승인 schema·발행 경로가 바뀌어 **kernel 계열 offline acceptance 3개 재실행**: `m4a` **31/31** ·
+  `m4b` **42/42** · `m4c` **77/77** · race-sensitive subset(경계+kernel) **3회 직렬 123/123** ·
+  `npm run test:exec` **361/361**(353 → 361, 최종 원복 구현으로 1회).
+  **mutation 9종 전부 kill · 살아남은 0 · `shasum -c` 바이트 동일 원복 · `MUTATION` 잔재 0.**
+- **미실행**: `npm test` 전체 · `test:core` · 전체 `acceptance.sh` · stress · live · MCP · 실제 추론 · push.
+- **자기 승인 아님**: 다음 게이트는 fresh Codex `gpt-5.6-sol` xhigh read-only **8차** 리뷰(`409dee2..HEAD`
+  전 범위)이고, 위 fixed 판정 전부가 재확인 대상이다. **A=0**일 때만 M5b가 전진한다.
+
 ## 2026-07-28 (V3 **M5b 6차 리비전 — 독립 Codex 재리뷰 REVISE(A/P1=2): caller가 고른 임의 Git/Codex 실행 파일이 권위 · journal이 base 승인·전이·body 소유권에 묶이지 않음** · **독립 재리뷰 대기**)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`,

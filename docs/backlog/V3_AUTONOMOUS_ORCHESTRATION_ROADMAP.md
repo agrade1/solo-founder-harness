@@ -32,7 +32,23 @@
     **M5a 최종 로컬 HEAD `409dee2`는 다섯 번째 fresh 독립 Codex 리뷰에서 `APPROVE_TO_STACK` ·
     A finding 0으로 승인됐다.** 이 문서 아래쪽의 "5차 이후에도 M5a는 다음 fresh 독립 리뷰 전까지 승인된
     것이 아니다"류 표기는 **그 승인 이전 시점의 기록**이며 현행 판정이 아니다(원문은 이력으로 보존한다).
-  - **M5b — 6차 리비전 완료 · 독립 재리뷰 대기(현행 판정).** 2026-07-28 **6차 독립 fresh Codex
+  - **M5b — 7차 리비전 완료 · 독립 8차 재리뷰 대기(현행 판정).** 2026-07-30 **7차 독립 fresh Codex
+    `gpt-5.6-sol` xhigh read-only 리뷰가 `409dee2..ff5e035` 전체를 보고 다시 REVISE(A/P1 2건 · B 7 · C 12)**
+    했다. 6차 리비전 절의 "둘 다 닫았다"는 **부분적으로만 사실**이었다: 리뷰는 **6차 A1을 PARTIAL**
+    (승인 manifest가 trust root인 것·같은 fd digest 검증은 닫혔지만 **git 검증이 프로세스 1회**여서
+    `readCheckoutHead()`의 두 자식 프로세스 사이·`revalidateSync()` 루프 회차 사이에 **같은 inode 제자리
+    덮어쓰기**가 통과했다 — 자식 프로세스 수명만큼 넓은 창) · **6차 A3를 PARTIAL**(roll forward 폐기·
+    journal 묶기·no-clobber는 닫혔지만 **발행 preflight 이후 staging 교체본이 link되고 journal이 삭제**될 수
+    있었고, 이미 발행된 body의 소유를 dev/ino/size로만 봤다)로 판정했다.
+    **초기 A2는 CLOSED · 초기 A4는 PARTIAL**(잔여 `C-29`·`C-35`·`C-38`)이다.
+    **7차 리비전이 그 둘을 닫았다**: git 검증 단위를 **spawn 1회**로 좁혀(`GitGate` — 게이트↔spawn 사이
+    `await` 없음) `readCheckoutHead()`의 두 호출과 `revalidateSync()`의 각 checkout 회차가 자기 게이트를
+    지나게 하고 · body 발행 소유 판정을 **열린 fd 하나**(dev+ino·정확한 바이트 수·내용 SHA-256)로 바꿔
+    **link 직전 · link 직후 · journal 삭제 직전 전수**에서 다시 증명한다(`finishJournal` 하나가 삭제의
+    유일한 경로이고 `journal:cleanup` hook은 sweep **앞**에서 울린다). ID 없던 **승인 경로 schema regex
+    갈림**은 `C-40`으로 등록하고 정본 pattern 공유로 정렬했다. 상세·증거는 §10 M5 → **M5b 7차 리비전**.
+    **이 판정도 스스로 승인이 아니다** — 다음 fresh Codex 독립 read-only 8차 리뷰가 게이트다.
+  - **M5b 6차 리비전(dated history — 위 7차 판정이 현행이다).** 2026-07-28 **6차 독립 fresh Codex
     `gpt-5.6-sol` xhigh read-only 리뷰가 `409dee2..6a5e418` 전체를 보고 다시 REVISE(A/P1 2건 · B 7 · C 10)**
     했다. 5차 리비전 절의 "넷 다 닫았다"는 **부분적으로만 사실**이었다: 리뷰는 **A1을 OPEN**
     (경로/dev/ino 동치는 trust root가 아니다 — caller가 provider와 controller **양쪽에** `/usr/bin/true`나
@@ -48,8 +64,8 @@
     "기준이면 되돌린다 / 이미 목표 바이트면 마무리한다" 두 규칙만 남기고, journal을 **기준 불변 권위 ·
     정규 event 바이트(validator 출력) · base→target body delta · staging 소유 신원**에 묶고 최종 body는
     **state 뒤에 no-clobber hard link**로만 발행한다. 상세·증거는 §10 M5 → **M5b 6차 리비전**.
-    **이 판정도 스스로 승인이 아니다** — 다음 fresh Codex 독립 read-only 리뷰가 게이트다.
-  - **M5b 5차 리비전(dated history — 위 6차 판정이 현행이다).** 2026-07-28 **5차 독립 fresh Codex
+    **7차 리뷰가 이 두 판정을 PARTIAL로 다시 열었다**(위 7차 블록이 현행이다).
+  - **M5b 5차 리비전(dated history — 위 7차 판정이 현행이다).** 2026-07-28 **5차 독립 fresh Codex
     `gpt-5.6-sol` xhigh read-only 리뷰가 `409dee2..35de547` 전체를 보고 다시 REVISE(A/P1 4건 · B 7 · C 9)**
     했다. 4차 리비전 절의 "넷을 닫았다"는 **부분적으로만 사실**이었다: 리뷰는 **A1을 PARTIAL**
     (증명이 메서드 신원만 보므로 **임의 executable/git 권위**가 read-only provider로 증명됐다 —
@@ -126,18 +142,20 @@
   **M4c 최종 HEAD = `c963cb0832d66a58fefdaa2025a9213966c3cc27`.** 원본 checkout은 `bbb8b72`로 clean·무수정.
   이 문서 아래쪽의 "미커밋 working tree / 아직 commit·push·PR 없음" 표기는 **각 구현 세션 시점의 기록**이며
   현행 사실이 아니다(현행: 로컬 커밋 있음 · 원격 push/PR/merge 없음).
-- 현행 offline 테스트 범위 라벨(2026-07-28 **M5b 6차 리비전** 기준 — **worker 자기보고**이며 독립 리뷰
+- 현행 offline 테스트 범위 라벨(2026-07-30 **M5b 7차 리비전** 기준 — **worker 자기보고**이며 독립 리뷰
   실측이 아니다): **파일 단독** `src/exec/stableController.test.ts` **58/58**(19 → 36 → 51 → 52 → 54 → 57 → 58) ·
   `src/exec/reviewer.test.ts` **21/21**(14 → 19 → 21) ·
-  `src/exec/orchestrationKernel.test.ts` **98/98**(M4a 37 → M4b 50 → M4c 67 → M5b 68 → 70 → 74 → 82 → 89 → 98) ·
-  `src/exec/codexCliProvider.test.ts` **59/59**(58 → 59) · `src/exec/executionBoundary.test.ts` **17/17**,
-  **`npm run test:exec` 전체 suite 353/353**(125 → 142 → 240 → 268 → 295 → 322 → 333 → 343 → 353).
-  authority/provenance/recovery/atomicity subset(kernel·controller·provider 3파일) **3회 직렬 215/215**.
+  `src/exec/orchestrationKernel.test.ts` **103/103**(M4a 37 → M4b 50 → M4c 67 → M5b 68 → 70 → 74 → 82 → 89 → 98 → 103) ·
+  `src/exec/codexCliProvider.test.ts` **59/59**(58 → 59) · `src/exec/executionBoundary.test.ts` **20/20**(17 → 20),
+  **`npm run test:exec` 전체 suite 361/361**(125 → 142 → 240 → 268 → 295 → 322 → 333 → 343 → 353 → 361).
+  7차 리비전의 race-sensitive subset(실행 경계 + kernel 2파일) **3회 직렬 123/123**.
+  6차 리비전의 authority/provenance/recovery/atomicity subset(kernel·controller·provider 3파일) **3회 직렬 215/215**.
   **353/353을 "파일 단독 focused"로 적지 않는다.** core **374/374** · 전체 acceptance **92/92**는
   **M4c 시점의 마지막 실측**이며 M5a/M5b 세션에서는 돌리지 않았다(전체 suite 1회는 최종 M5 handoff 예약).
   단, M5b 리비전이 `registerArtifact` 불변식과 **4·5차 리비전에서 커밋 발행 프로토콜**을 건드렸으므로
   **kernel 계열 offline acceptance 3개는 개별로 재실행**했다: `m4a` **31/31** · `m4b` **42/42** ·
-  `m4c` **77/77**(6차 리비전에서 **승인 manifest schema와 발행 프로토콜이 바뀌었으므로 다시 실행** —
+  `m4c` **77/77**(6차 리비전에서 **승인 manifest schema와 발행 프로토콜이 바뀌었으므로 다시 실행**하고,
+  7차 리비전에서 **경로 pattern schema와 body 발행 경로가 다시 바뀌었으므로 또 실행** —
   전체 `acceptance.sh`·`npm test`·stress·live는 미실행).
   **6차 리비전 하위 호환(명시)**: 승인 manifest에 **필수 필드 `executionAuthority`가 추가**됐다.
   기존 manifest·기존 run state는 **조용한 기본값 없이** `invalid_manifest`로 거부된다(fail closed) —
@@ -1781,6 +1799,49 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5b 7차 리비전 신규·갱신 유예 (2026-07-30)
+
+> **6차 리비전도 A를 전부 닫지 못했다.** 7차 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰가
+> `409dee2..ff5e035`에 대해 **REVISE · A/P1 2건 · B 7 · C 12**를 냈다: **6차 A1 PARTIAL**(승인 manifest가
+> trust root가 된 것·같은 fd digest 검증은 닫혔지만 **git 검증이 프로세스 1회**여서 `readCheckoutHead()`의
+> 두 자식 프로세스 사이·`revalidateSync()` 루프 회차 사이에 제자리 덮어쓰기가 통과했다) ·
+> **6차 A3 PARTIAL**(roll forward 폐기·journal 묶기·no-clobber는 닫혔지만 **발행 preflight 이후 staging
+> 교체본이 link되고 journal이 삭제**될 수 있었다) · **초기 A2 CLOSED** · **초기 A4 PARTIAL**.
+> **둘 다 7차 리비전에서 닫았다**(§10 M5 → M5b 7차 리비전). 6차 절의 "둘 다 닫았다"는 **부분적으로만
+> 사실**이었고 dated history로 보존한다 — 현행 판정은 이 절이다. **여전히 self-approved가 아니다.**
+>
+> **B 7건은 7차 리뷰 원문 그대로 유지한다**(이번 A 작업과 겹쳐 실제로 닫힌 것은 **하나도 없다**):
+> `B-7`(live 인증·secret redaction — **첫 live 실행 전** · 사용자+M5c) · `B-9`(live JSONL 필드 확인 —
+> **첫 live 실행 전** · 사용자+M5c) · `B-10`(타입 있는 edit 실행 집행 — **Claude/edit 가능 provider 활성화
+> 전** · M5c+사용자) · `B-11`(per-task preflight 전에 batch 전체가 running — **무인 autopilot/advance 전** ·
+> M5c) · `B-12`(재시작·resume 후 토큰·경과 회계 — **첫 자동 restart/resume 전, 늦어도 M5c** · M5c) ·
+> `B-13`(provider 정리 확인 뒤 durable 완료 — **live runner 또는 두 번째 process-backed provider 전** · M5c) ·
+> `C-12`→B(미수령 전달의 재전송 불가 — **M5c autopilot 전** · M5c). 각 행의 심각도·확률·영향 반경·유예
+> 비용·공수·증거는 `B-7`/`B-9` 본표와 "M5b 1차 리비전" 표의 해당 행에 그대로 있다.
+>
+> **C 12건**: 기존 `C-35` · `C-5` · `C-17` · `C-29` · `C-19` · `C-36` · `C-37` · `C-30` · `C-38` ·
+> `C-39` · `C-26`은 **사실·기한 그대로 open 유지**하고(이번 리비전이 그 뿌리를 손대지 않았다 — fixed로
+> 주장하지 않는다), 리뷰가 "신규/기존 ID 없음"으로 낸 **승인 실행 파일 경로 schema regex와 runtime의
+> 갈림** 항목을 아래 **`C-40`** 으로 등록하고 **이번에 정렬해 닫았다**(아래 행의 상태·증거 참조).
+> **C만으로 추가 리비전 루프를 돌리지 않는다.**
+>
+> **`C-36` 증거 갱신(재분류 안 함).** 리뷰가 정확히 지적한 대로 `setCommitFaultHook` 콜백은 **던지는 일만
+> 하는 것이 아니다** — 동기 콜백이므로 파일 시스템을 임의로 바꿀 수 있고 기존 테스트가 실제로 그렇게 쓴다.
+> 그렇게 주장했던 source 주석을 정정했고, A2 수정이 그 변경들을 **fail closed로 잡도록**(hook 이후 재증명 ·
+> journal 삭제 직전 전수 sweep) 만들었다. **export된 가변 전역이라는 절충 자체는 그대로 open**이며
+> 기한(다음 store publication-path 변경 또는 M10)도 그대로다.
+>
+> **`C-37` 갱신(닫지 않음 · 낡은 "닫힘" 주석 정정).** 6차 리비전 source 주석은 roll forward 폐기를 근거로
+> "`C-37` 닫힘"이라고 적었으나 **사실이 아니었다**: 목표 state가 durable해진 뒤의 `body:publish`·
+> `journal:cleanup` 실패는 여전히 호출자에게 실패를 주고 다음 열기가 마무리한다. 이번 리비전은 그 주석
+> (`orchestrationStore.recoverPendingCommit` · `orchestrationKernel.completeTaskWithArtifacts` ·
+> `stableController` 모듈 doc)을 사실대로 고쳤고 **상태는 open**, 기한은 그대로 **M5c outcome marker
+> 처리 전**이다.
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-40` | C (P3) | **승인 실행 파일 경로의 schema regex가 runtime보다 느슨했다**(7차 리뷰 C-40 — 기존 ID 없음). `milestone_approval_manifest.schema.json`의 `approvedExecutable.path` regex `^/[^\0]*[^/\0]$`가 `/a//b`·`/a/./b`·`/a/../b`를 통과시키는데 runtime `validateApprovedExecutable`은 거부했다. **runtime이 fail closed이므로 A가 아니다** — 영향은 schema를 소비하는 도구의 검증 UX·호환성이고 권한 판정은 아니다. 기존 "동치" 테스트는 필수 key·digest regex·최대 길이만 봤다 | 중 — schema를 admission으로 쓰는 외부 도구가 있을 때 | manifest 검증 UX·문서 신뢰도(런타임 권한 판정 무관) | 낮음 | 소(정규형 pattern 하나를 양쪽이 공유) | **다음 manifest schema 변경 또는 외부 schema 검증을 admission으로 쓰기 전** | M5c/schema 유지 담당 | 7차 독립 리뷰 C-40 · `approvalManifest.ts` `APPROVED_PATH_PATTERN`(runtime·schema 공용 정본) · schema `definitions.approvedExecutable.properties.path.pattern` · focused "[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치다"의 **양/음성 경로 표 전수 + 길이 상한** · 사전 실측 1021 케이스 명령형 predicate ↔ regex 불일치 0 · mutation 2종(schema만/runtime만 옛 regex로) 전부 kill | **fixed (2026-07-30, 7차 리비전)** |
+
 ##### M5b 6차 리비전 신규·갱신 유예 (2026-07-28)
 
 > **5차 리비전도 A를 전부 닫지 못했다.** 6차 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 리뷰가
@@ -1966,10 +2027,10 @@ spawn까지 no-await)은 **그대로 유효**하고 이번에도 보존했다. �
 > 기록**이며 현행 판정이 아니다(이력으로 보존한다). 승인된 것은 **M5a slice뿐이고 M5 전체는 여전히
 > 미완료**다 — 전체 suite 1회와 live acceptance는 그대로 최종 M5 handoff에 남는다.
 
-#### M5b — stable controller bridge (offline) · **6차 리비전 완료 / 독립 재리뷰·승인 대기 / live 미검증**
+#### M5b — stable controller bridge (offline) · **7차 리비전 완료 / 독립 8차 재리뷰·승인 대기 / live 미검증**
 
-**상태(2026-07-28): M5b는 offline 구현 + 리비전 6회만 끝났다. 독립 재리뷰를 아직 받지 않았고 M5 전체도
-미완료다.** 승인된 M5a HEAD `409dee2` 위에서 격리 worktree `/private/tmp/solo-founder-harness-m5b` ·
+**상태(2026-07-30): M5b는 offline 구현 + 리비전 7회만 끝났다. 7차 리비전 이후 독립 재리뷰를 아직 받지
+않았고 M5 전체도 미완료다.** 승인된 M5a HEAD `409dee2` 위에서 격리 worktree `/private/tmp/solo-founder-harness-m5b` ·
 branch `work/m5b-stable-controller`로 작업했다. 로컬 커밋뿐이고 원격 push/PR/merge는 0이다.
 **아래 "범위·검증 실측" 문단은 `1a94261`+`42777d9` 시점의 dated 기록이며, 현행 판정은 이 절 아래의
 리비전 절들(1차 → 2차 → 3차 → 4차 → 5차 → **6차 = 현행**)이다.**
@@ -2162,7 +2223,74 @@ Claude/edit 가능 provider를 켜기 전** · `B-11` **M5c autopilot/무인 adv
 > **A=3**(공개 `spawn` seam으로 증명 위조 · exported class로 오류 provenance 위조 · 비원자적 완료)을 냈다.
 > 아래 절이 현행이다.
 
+#### M5b 7차 리비전 (2026-07-30, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰 `409dee2..ff5e035` → **REVISE, A/P1=2 · B=7 · C=12**)
+
+**공통 뿌리는 "검증을 트랜잭션 1회 단위로 잡았다"** 이다. 6차 리비전은 *무엇이 권위인가*(승인 manifest ·
+내용 digest · 묶인 journal)를 바로잡았지만 **언제 다시 보는가**를 넓게 잡았다: ⓐ git은 **경계 진입 1회**만
+해싱하고 그 뒤 `readCheckoutHead()`가 **두 자식 프로세스**를 await했으므로 첫 프로세스가 도는 동안 승인
+파일을 제자리에서 덮어쓰면 두 번째가 승인되지 않은 바이트를 실행했고 ⓑ body는 **전수 preflight 1회** 뒤
+경로 이름 그대로 link했으므로 그 사이 staging 교체본이 최종 body가 되고 journal까지 삭제됐다.
+이번 리비전은 검증 단위를 **spawn 1회 / 발행 1건 / 삭제 직전 전수**로 좁힌다.
+
+| # | 분류 | finding | 처리 |
+|---|---|---|---|
+| A1 | **A (P1)** | **git 내용이 spawn마다 재검증되지 않는다.** `verifyExecutionBoundary()`가 git을 한 번 해싱·pin한 뒤 `readCheckoutHead()`가 `--show-toplevel`과 `rev-parse HEAD`를 **각각 await**했다 → 첫 프로세스를 기다리는 동안 owner-writable 승인 실행 파일이 **같은 inode를 제자리에서** 덮어쓰면 두 번째 프로세스가 **SHA-256이 승인되지 않은 바이트**를 실행한다. 그 payload는 임의 작업을 하고 기대 HEAD를 출력하고 원 바이트를 되돌릴 수 있으므로 뒤 검사도 통과한다. `revalidateSync()`도 루프 **앞에서** 한 번 해싱하고 checkout마다 `spawnSync`했다. 문서화된 fd→exec syscall 창보다 **자식 프로세스 수명만큼 넓다** | **fixed** — ① `GitGate = () => string` 하나를 두고 **모든 git spawn이 자기 `runProcess`/`spawnSync` 직전에** 그것을 지난다: 같은 fd(`O_RDONLY\|O_NOFOLLOW`)에서 정규 경로·비symlink 일반 파일·실행 비트·타인 쓰기 없음·**pin된 dev+ino**·**승인된 내용 SHA-256**을 다시 판정하고 실행 경로를 돌려준다 ② 게이트 호출과 spawn 사이에 **`await`가 없다**(`runProcess`는 Promise executor 안에서 동기로 `spawn`한다). 게이트 실패는 `boundary_git_failed`로 접지 않고 `boundary_git_digest_mismatch`/`boundary_git_identity_changed`로 그대로 올린다 ③ `readCheckoutHead()`의 **두 호출 각각** · `revalidateSync()`의 **controller/target 회차 각각**이 자기 게이트를 지난다(루프 앞 1회 검증은 제거 — spawn별 게이트가 그것을 포함한다) ④ 남는 창은 **fd 해싱→exec syscall 몇 개**뿐이며 그 한계를 정직하게 문서화했다(Node에 `fexecve` 없음 — 대장 `C-5`와 같은 종류). 호출자 경로·PATH 조회·ambient env·대체 trust root·신규 의존성은 없고 manifest-only 실행 권위와 provider/controller attestation 계약은 그대로다 ⑤ 회귀: **자기 inode를 제자리에서 sentinel payload로 덮어쓰는 승인 wrapper**(`{ }` 묶음으로 `sh`가 전체를 먼저 파싱 → 자기 절단이 안전, 자식 env에 PATH가 없으므로 builtin·절대경로만)로 ⓐ 같은 checkout(첫 조회 뒤 두 번째 spawn 차단) ⓑ **controller/target 분리 checkout**(controller HEAD 뒤 target 조회 차단) ⓒ **`revalidateSync()` 다중 root 루프**(1회차 뒤 2회차 차단) — 전부 `boundary_git_digest_mismatch`이고 **sentinel 실행 0**, 각각 **양성 대조군 + 정확한 spawn 수**(2·3·4·6·7)까지 단정 |
+| A2 | **A (P1)** | **body 발행이 검증 이후 교체본을 link하고 복구 증거를 지울 수 있다.** `publishOwnedBodies()`가 **전수 preflight** 뒤 발행 hook을 부르고 **staging 경로 이름 그대로** `linkSync`했다 → hook이나 durable journal을 읽는 **같은 UID의 동시 writer**가 preflight 이후 staging을 갈아끼우면 그 교체본이 최종 body가 되고 staging은 지워지고 `commit.journal`까지 삭제된다. 다른 digest면 **"성공한 target state + 잘못된 body"**(reopen이 뒤늦게 탐지하지만 이미 복구 증거가 없다), 같은 digest면 **남의 inode 입양**이다. 게다가 이미 발행된 body의 소유를 dev/ino/**size**로만 봤으므로 **같은 inode·같은 크기 제자리 내용 변경** 뒤에도 journal이 삭제됐다 | **fixed** — ① `ownershipOf(file, journalBody)`가 **열린 fd 하나로** dev+ino · **정확한 바이트 수** · **내용 SHA-256**을 전부 판정한다(`absent`/`ours`/`foreign`, `O_NOFOLLOW`라 symlink는 열리지 않고 ENOENT만 "아직 없다"다) → `lstat` 뒤 경로를 다시 읽는 창이 없다 ② **hook 이후·`linkSync` 직전**에 staging을 다시 증명한다(같은 digest의 다른 inode도 거부 — 입양 금지) ③ **`linkSync` 직후** 만들어진 최종 이름을 다시 증명한다 → EEXIST 경합·교체본 link를 그 자리에서 `journal_body_foreign`으로 접고 **staging(= body 바이트의 유일한 사본)을 지우지 않는다** ④ `finishJournal()` 하나가 **journal 삭제의 유일한 경로**다(정상 커밋 + "이미 목표 state" 복구 둘 다): `journal:cleanup` hook을 **먼저** 울린 뒤 journal이 고정한 **모든** 최종 body를 전수 재증명하고(앞선 시도가 발행한 것까지) 하나라도 어긋나면 **journal을 남기고** fail closed다 ⑤ roll back은 `finishJournal`을 쓰지 않는다(발행 순서상 최종 body가 애초에 없다 — 이유를 주석에 남겼다). 초기 생성·기준 roll back 동작은 그대로다 ⑥ 어떤 경로도 남의 최종 body를 지우거나 덮거나 채택하지 않고, 실패를 조용히 성공으로 바꾸지 않으며, 재시도는 결정론적·멱등이다 ⑦ 정직한 한계: `link(2)`는 **경로 이름**을 받으므로 "증명한 fd를 그대로 link"할 수 없다(Node에 `AT_EMPTY_PATH` 없음) → 증명→link 창을 0으로 만들지 못하고 **link 직후 + 삭제 직전** 재증명으로 사후 탐지한다 ⑧ 회귀: 발행 hook의 **same/different-digest staging 교체** · **다중 body 부분 발행** 중 (뒤 staging 교체 / 이미 link된 앞 최종 body의 같은 크기 제자리 변경) · **`journal:cleanup`에서 같은 크기 다른 내용 변경**(→ 거부 · journal 보존 · reopen도 완료로 보고하지 않음) · **link 직후 증명이 EEXIST 경합을 잡고 staging 증거를 남김** · **이미 발행된 최종 body의 멱등 재시도 양성 대조군** — 전부 바이트·디렉터리 엔트리·journal 생존과 "남의 파일 미삭제·미덮어쓰기"를 단정한다 |
+
+**정직한 한계(주장하지 않는 것)**: ⓐ git은 **해싱한 fd를 그대로 exec하지 않는다** → 창이 0이라고
+주장하지 않는다(syscall 몇 개 · `C-5`와 같은 종류). ⓑ body 발행도 **증명한 fd를 link하지 않는다**(같은
+종류의 한계) → 사후 탐지로 보완한다. ⓒ `C-7`(키 없는 state↔event digest)·`C-37`(caller가 본 실패와
+durable 진실의 갈림)·`C-36`(export된 fault seam)은 **그대로 열려 있다**. ⓓ hard-link 발행의 POSIX·같은
+파일 시스템 전제도 그대로다.
+
+**B/C 처리(§9.1 "M5b 7차 리비전 신규·갱신 유예" 표)**: 리뷰의 **B 7건은 그대로 유지**한다
+(`B-7` · `B-9` · `B-10` · `B-11` · `B-12` · `B-13` · `C-12`→B) — 이번 A 작업과 겹쳐 실제로 닫힌 것은
+**하나도 없다.** 리뷰의 **C 12건** 중 11건(`C-35` · `C-5` · `C-17` · `C-29` · `C-19` · `C-36` · `C-37` ·
+`C-30` · `C-38` · `C-39` · `C-26`)은 **상태·기한 그대로 open 유지**하고, ID가 없던 **승인 경로 schema
+regex와 runtime의 갈림**을 신규 **`C-40`** 으로 등록한 뒤 **이번에 정렬해 닫았다**(정본 pattern 하나를
+runtime·schema가 공유 · 양/음성 표 전수 동치 테스트 · 사전 실측 1021 케이스 불일치 0 · 양방향 mutation kill).
+**`C-36`은 증거만 갱신했다**(hook은 던지기만 하지 않고 **동기 파일 변경도 한다** — 그렇게 주장한 source
+주석을 정정했고 A2가 그 변경을 fail closed로 잡는다. export된 가변 전역 절충은 open).
+**`C-37`은 닫지 않았다** — 6차 source 주석의 "`C-37` 닫힘"은 사실이 아니었으므로 store·kernel·controller
+주석을 사실대로 고쳤고, 목표 state durable 이후 실패는 여전히 caller-visible 결과와 갈릴 수 있다.
+
+**mutation 비공허성(실측 9종, 전부 kill · 전부 바이트 동일 원복 · `MUTATION` 잔재 0)**: ① 경계 —
+게이트를 경계당 1회로 memoize(옛 동작) → **4건 fail**(신규 3 + 6차 회귀 1) ② 경계 — `git()`의 spawn별
+게이트만 제거 → **2건** ③ 경계 — `headSync()` 회차별 게이트 제거 + 루프 앞 1회 검증 복원 → **1건**
+④ store — link **직전** 재증명 제거 → **2건** ⑤ store — link **직후** 재증명 제거 → **1건**
+⑥ store — journal 삭제 직전 전수 sweep 제거 → **2건** ⑦ store — `ownershipOf` 내용 digest 대조 제거
+→ **2건** ⑧ store — `journal:cleanup` hook을 전수 sweep **뒤**로 → **1건** ⑨ schema/runtime 경로 regex를
+**양방향으로** 갈라놓기(schema만 옛 regex / runtime만 옛 regex) → **각 1건**. **살아남은 mutation 0건.**
+원복은 레포 밖 사본과 `shasum -c`로 바이트 동일성을 확인했다(`MUTATION` grep 0).
+
+**이 리비전이 실행한 테스트(worker 자기보고 — 독립 리뷰 아님)**: 파일 단독 `orchestrationKernel.test.ts`
+**103/103**(98 → 103) · `stableController.test.ts` **58/58** · `codexCliProvider.test.ts` **59/59** ·
+`executionBoundary.test.ts` **20/20**(17 → 20) · `reviewer.test.ts` **21/21** ·
+`codexStreamParser.test.ts` **28/28** · `npx tsc --noEmit --pretty false` clean ·
+`npm run build` + `git diff --check` clean + `node --check` 5개 emitted 파일 ·
+**dist 런타임 프로브 2종**(ⓐ A1: 첫 조회 뒤 제자리 교체 → `boundary_git_digest_mismatch` · spawns=1 ·
+sentinel 미실행, C-40: `/a//b`·`/a/./b`·`/a/../b` → `invalid_manifest` ⓑ A2: `journal:cleanup`에서 발행된
+body를 같은 크기로 제자리 변경 → `journal_body_foreign` · **journal 보존** · 변경된 파일 미삭제·미덮어쓰기 ·
+**reopen도 완료된 run으로 보고하지 않음**) · **승인 schema와 발행 프로토콜이 바뀌었으므로 kernel 계열
+offline acceptance 3개 개별 재실행**: `m4a` **31/31** · `m4b` **42/42** · `m4c` **77/77** ·
+**race-sensitive subset(경계+kernel 2파일) 3회 직렬 123/123** ·
+**`npm run test:exec` 361/361**(353 → 361, **최종 원복 구현으로 1회**).
+**`npm test` 전체 suite·전체 `acceptance.sh`·stress·live는 실행하지 않았다**(최종 M5d handoff에서
+supervisor가 직렬 1회). live provider 추론·네트워크·secret·MCP·remote git 쓰기·push는 0이다.
+
+**이 리비전 이후에도 아닌 것**: **독립 재리뷰·승인**(다음 fresh Codex `gpt-5.6-sol` xhigh read-only
+**8차** 리뷰가 게이트이고 위 fixed 판정 전부가 재확인 대상이다 — 이 세션은 스스로를 승인하지 않는다) ·
+전체 suite 1회 · live · M5c · M5d. **M5 전체는 미완료다.**
+
 #### M5b 6차 리비전 (2026-07-28, 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰 `409dee2..6a5e418` → **REVISE, A/P1=2 · B=7 · C=10**)
+
+> **정정(2026-07-30, 7차 독립 리뷰) — 이 절의 "둘 다 6차 리비전에서 닫았다"는 부분적으로만 사실이었다.**
+> 7차 리뷰는 **A1을 PARTIAL**(승인 manifest가 trust root인 것·같은 fd digest·Codex 최종 spawn 무-await은
+> 닫혔지만 **git 검증이 프로세스 1회**여서 `readCheckoutHead()`의 두 프로세스 사이·`revalidateSync()`
+> 루프 회차 사이에 제자리 덮어쓰기가 통과했다) · **A3를 PARTIAL**(roll forward 폐기·journal 묶기·
+> no-clobber·남의 body 보존은 닫혔지만 **발행 preflight 이후 staging 교체본이 link되고 journal이 삭제**될
+> 수 있었다)로 판정했다. **초기 A2는 CLOSED · 초기 A4는 PARTIAL**이다.
+> 이 절은 dated history로 보존하고 현행 판정은 위 **7차 리비전** 절이다.
 
 **공통 뿌리는 "권위의 근거를 같은 caller 입력·자기 일관성에서 찾았다"** 이다. 5차 리비전은 *증명할 값*
 (실행 파일 신원·journal 필드)을 넓혔지만, ⓐ 실행 파일의 **기대값 자체가 caller 옵션**이었으므로 provider와
