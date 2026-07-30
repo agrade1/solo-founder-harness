@@ -1,6 +1,52 @@
 # DECISIONS.md
 
-## 2026-07-30 (V3 M5c task 3A **리비전** — **집행 권위는 kernel이 발급하는 봉인 permit 하나뿐이다**)
+## 2026-07-30 (V3 M5c task 3A **2차 리비전** — **권위는 durable claim + 일회용 grant이고, 예방할 수 없는 발행은 거부한다**)
+
+- **결정 1 — permit 발급은 순수 판정이 아니라 커밋이다.** 1차 판의 permit은 state를 바꾸지 않았다. 그래서
+  durable `turnId`가 `null`인 동안 **서로 다른 turn의 permit이 몇 개든 공존**했고, 크래시 뒤에는 "어떤
+  계획/turn이 그 효과를 승인했는가"에 대한 durable 기록이 아예 없었다. 지금 `issueOperationDispatchPermit()`은
+  `execution.dispatchTurnId` + `dispatchPlanDigest`를 **한 커밋으로 claim**한다. 대가: 발급마다 revision이
+  오르고 event가 하나 남는다. 얻는 것: **활성 turn과 활성 계획이 durable하게 정확히 하나**이고, 경쟁 turn·
+  경쟁 계획이 fail closed이며, 재시작이 그 사실을 읽을 수 있다. 같은 (turn, 계획) 재발급은 멱등이다 —
+  그렇지 않으면 재시작한 controller가 자기 미확정 operation을 정합화할 방법이 없다.
+- **결정 2 — turn을 닫는 지점은 과금이다.** `chargeTurnUsage()`가 claim을 해제하고 `chargedTurnIds`에
+  기록한다. 그래서 ⓐ 같은 attempt 안에서 turn이 자연스럽게 이어지고 ⓑ 닫힌 turn은 다시 열리지 않으며
+  ⓒ **미확정 operation이 남아 있으면 turn을 닫지 못한다**. 마지막 것이 핵심이다: "효과는 냈는데 결과 전이가
+  없다"를 조용히 넘기면 durable 회계가 곧 거짓이 된다. `execution.turnId`는 이제 **마지막으로 과금된 turn**
+  이고 활성 claim이 아니다(활성 판정은 `dispatchTurnId` 하나로 한다 — 그쪽이 더 강하다).
+- **결정 3 — 효과 이전에 durable pending, 효과 이후에 일회용 소비.** `beginOperation()`이 pending 레코드를
+  커밋하고 일회용 grant를 준다. 효과 게이트가 grant를 소진하고, 영수증 커밋이 grant를 소비하며 pending을
+  닫는다. 대가: controller가 operation마다 커밋을 두 번 한다(등록·영수증). 이유: **구조적 영수증은 권위가
+  아니다.** 이 순서가 아니면 "위조 영수증", "낡은 attempt 재생", "operation 치환", "같은 효과 두 번",
+  "효과만 있고 결과 없음"이 전부 표현 가능하다. 그리고 **성공 marker는 효과 게이트를 지난 grant에서만**
+  나온다 — 집행을 시도조차 하지 않은 grant는 `denied`/`failed`로만 pending을 닫을 수 있다.
+- **결정 4 — 예방할 수 없는 발행은 거부한다(`rename` 삭제).** Node 18 내장에는 디스크립터 상대
+  compare-and-publish가 없다. 그래서 **기존 경로 교체를 지원하지 않는다**: 대상이 이미 있고 내용이 의도와
+  다르면 **temp를 만들기도 전에** `write_replace_unsupported`다. 대가: `expectedBeforeSha256`을 준
+  덮어쓰기 계획이 더 이상 성공하지 않는다(부재 대상 발행과 versioned 산출물만 남는다). 이유: 1차 판은
+  "검사 후 `rename`"으로 사후 탐지를 했는데, 그 창에서 **경쟁자 바이트가 실제로 파괴되고 승인 부모 밖으로
+  발행될 수 있었다**. 네이티브 `*at` primitive는 승인 대상이므로 이 슬라이스에서 도입하지 않는다 —
+  그리고 창을 없앴다고 주장하지도 않는다. 창에 **도달하지 않는다**.
+- **결정 5 — "다시 보니 있더라"는 durability가 아니다.** `already_applied` 경로도 부모 fsync에 성공해야
+  반환한다. 대가: 멱등 재시도마다 fsync 한 번. 이유: 앞선 시도가 fsync에서 실패했다면 디렉터리 엔트리는
+  아직 durable하지 않고, 그 상태를 성공으로 적으면 controller의 복구가 거짓 전제 위에 선다.
+- **결정 6 — 정리 실패는 성공이 아니고, 지울 수 없는 temp는 비운다.** close·unlink 실패는
+  `write_cleanup_unconfirmed`다. 부모 **이름**이 적대적으로 교체돼 pathname으로 우리 temp를 지울 수 없으면
+  남의 파일을 지우는 대신 **우리 fd로 `ftruncate(0)`** 한다 → 남는 파일이 0바이트가 되어 승인 내용이
+  고아로 노출되지 않는다. temp 이름은 operation 신원 파생이라 sweep이 안전하게 귀속한다. **발행 뒤에는
+  truncate하지 않는다**(temp fd와 발행된 대상이 같은 inode다).
+- **결정 7 — `run_process`는 실행 대상을 고를 수 없다(`B-10` 폐쇄).** 승인 문서에서 `executable`·`args`를
+  **삭제**했다. 실행 대상은 `executionAuthority.node` + **digest 고정 `controllerEntrypoint`** 로 manifest
+  전체에 하나이고, 승인이 고르는 것은 닫힌 `action` enum과 **데이터 전용** `data`뿐이다. data는 `-`로
+  시작할 수 없다 — 그 형태 규칙 하나가 `--eval`/`--require`/`--input-type` 계열을 닫는다. argv는
+  `[entrypoint, action, ...data]`로 **파생**되며 만들 다른 통로가 없다. 대가: 승인 문서가 표현력을 잃는다
+  (임의 Node 실행이 불가능해진다). 이유: **token 화면은 집행이 아니라 흉내다.** 승인된 Node + 자유 argv는
+  그 자체로 임의 로컬 코드·파일 시스템·네트워크·hard-deny 표면 권위였다.
+- **결정 8 — 호출자가 오류 taxonomy를 고르는 통로를 전부 닫는다.** 발행 seam이 던진 것은 종류 불문
+  `write_failed`로, `readClosedOnce`가 읽다가 만난 예외는 종류 불문 `invalid_artifact_ref`로 접는다
+  (이전에는 `OrchestrationError`를 그대로 재던져 **던지는 getter가 production 코드를 고를 수 있었다**).
+
+## 2026-07-30 (V3 M5c task 3A **리비전** — **집행 권위는 kernel이 발급하는 봉인 permit 하나뿐이다** · 그 시점 기록)
 
 - **결정 1 — 구조적 객체는 권위가 아니다.** 1차 판의 `OperationDispatchContext`(manifest·workspaceRoot·
   ownership을 담은 평범한 객체)를 **삭제**했다. 집행기는 `orchestrationKernel`이 발급한 봉인 permit만

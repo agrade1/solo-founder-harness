@@ -1,6 +1,219 @@
 # WORKLOG.md
 
-## 2026-07-30 (V3 **M5c task 3A 리비전 — 독립 리뷰 A 4건 + 인접 filesystem B 닫음. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-30 (V3 **M5c task 3A 2차 리비전 — 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`16cdc87dc6e407357e1847459708d4825ba49f70` · 종료 HEAD **아래 커밋 표 참조**. **새 fresh Claude Opus 5
+단일 세션**(이전 작성자 transcript·자기평가 **미상속** · subagent·병렬 writer 0 · 재개 세션 아님).
+Ponytail SKILL.md **level `full`** 적용 —
+`/Users/jihun/.claude/plugins/cache/ponytail/ponytail/4.8.4/skills/ponytail/SKILL.md`
+(SessionStart hook이 전문을 주입했다: `PONYTAIL MODE ACTIVE — level: full`).
+amend/rebase/reset/checkout·stash 기반 실험 · 원격 push/PR/merge · 네트워크 · `gh` · MCP · 패키지 설치 ·
+의존성/lockfile 변경 · live Codex/Claude 추론 · secret · deploy · DB · production · live billing ·
+**프로세스 spawn 0**. 유일한 untracked 항목은 supervisor가 제공한 `node_modules` symlink이며 손대지 않았다.
+**테스트 완화·삭제 0**(변경한 assertion은 아래 §"변경한 assertion 전수"에 전부 기록했다).
+
+**입력 권위**: `/private/tmp/m5c-task3a-rereview-output.txt` — 독립 read-only 재리뷰,
+판정 **`REVISE — A=4, B=2, C=3`**. 이 파일이 이번 리비전의 결함 권위다.
+
+**정직한 판정: 이 리비전도 M5c 완료가 아니다.** 닫은 것은 재리뷰의 Category A 4건과 B 2건(`B1` 인접
+filesystem · `B2`=`B-10` `run_process` 코드 권위)이다. managed process supervisor·자손 정리 ·
+trusted Git · **`StableController` 재작성/배선** · 구조화 리뷰 검증 · `autopilot` CLI · legacy 비활성화 ·
+build/dist · M5d는 **여전히 미구현**이다. **self-approve하지 않는다.**
+
+### 직전 문서의 과대주장 정정 (A1~A4/B1)
+
+직전 블록(HEAD `16cdc87`)과 로드맵 §9.1의 "A1~A4 fixed · 인접 B fixed" 서술은 **그 시점의 A 목록에
+대해서만** 사실이었고, 독립 재리뷰가 낸 **다른 A 목록**(dispatch 권위 durability · 영수증 provenance ·
+최종 pathname 발행 · fsync 재시도)에 대해서는 **부정확했다**. 구체적으로:
+
+| 직전 주장 | 실제 | 이번 조치 |
+|---|---|---|
+| "A3 fixed — 발행 경쟁 예방" | **부정확**. 부재 대상은 예방됐지만 **교체 경로의 최종 `renameSync(temp,target)`** 는 사후 탐지뿐이었다(검사와 syscall 사이 창에서 경쟁자 바이트 파괴·승인 부모 밖 발행 가능). 대장은 이를 `C-5`로 축소 분류했다 | 교체를 **temp 생성 전에** `write_replace_unsupported`로 거부하고 `renameSync` 발행을 **삭제**했다 |
+| "인접 B fixed — durability/정리 계약 닫음" | **부분적으로만 사실**. ⓐ `already_applied` 재시도가 **fsync 없이** 성공을 돌려줬다(거짓 durability) ⓑ close·unlink 실패를 전부 삼켰다 ⓒ no-replace 분기가 정리 확인 전에 소유권을 비웠다 ⓓ 부모 이름 교체 시 **승인 내용이 담긴 plaintext temp**가 남는 것을 계약으로 인정했다 | 넷 다 닫았다(A4 + B1 — 아래) |
+| "A2 fixed — 위조 불가 dispatch 권위" | **부분적으로만 사실**. permit 위조는 막혔지만 ⓐ permit이 **state를 바꾸지 않아** durable turn이 `null`인 동안 서로 다른 turn의 permit이 공존했고 ⓑ `recordOperationReceipt()`가 **구조적 영수증**을 그대로 받았으며 ⓒ 진짜 permit이 **소비되지 않아** 재사용 가능했다 | turn/계획 durable claim + pending operation lifecycle + 일회용 grant로 닫았다(A1/A2 — 아래) |
+| permit 레코드가 "현재 durable state를 읽는다" | **읽는 통로가 공개 `getState()` 였다**. (이 레포에서는 `OrchestrationKernel.prototype`이 frozen이라 리뷰가 서술한 monkey-patch 자체는 그 시점에도 실패했다 — 그 점은 리뷰가 부정확하다. 다만 게이트가 공개 메서드 조회에 의존한다는 지적은 타당하다) | permit 레코드가 private `#state`를 **직접** 읽는다(반환 manifest는 사본). 두 freeze 사실과 함께 테스트로 고정했다 |
+| `B-10` "open — 게이트 유지" | **정확했다**(과대주장 아님) | 이번에 **닫았다**: digest 고정 controller entrypoint + 닫힌 action + 데이터 전용 인자 |
+
+### 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `cecc529` | 코드·schema·테스트 (A1~A4 · B1 · B-10 · `C-41` fixture) |
+| (이 문서 커밋) | 진행/handoff 문서 + 로드맵 §9.1 대장 |
+
+### 변경 파일 (신규 0 · 변경 14)
+
+- `src/exec/orchestrationKernel.ts`(+테스트) — turn/계획 durable claim · pending operation lifecycle ·
+  일회용 execution grant · 효과 게이트 3종 추가 · `readClosedOnce` taxonomy 폐쇄.
+- `src/exec/typedExecution.ts`(+테스트) — 교체 거부(A3) · 재시도 fsync(A4) · 정리 실패 전파(B1) ·
+  seam taxonomy 정규화(`C1`) · `ProcessLaunchSpec` 폐쇄 계약(B-10).
+- `src/exec/approvalManifest.ts` — `controllerEntrypoint` 필수 · `run_process` 권위에서
+  `executable`/`args` **삭제** → `action`/`data`.
+- `src/exec/orchestrationTypes.ts` · `src/exec/orchestrationStore.ts` — durable 필드·enum·validator.
+- `schemas/milestone_approval_manifest.schema.json` · `schemas/orchestration_run_state.schema.json`.
+- `src/exec/autopilotLifecycle.test.ts` · `src/exec/executionBoundary.test.ts` — fixture를 v2 계약으로.
+- `scripts/m4a|m4b|m4c-offline-acceptance.mjs` — manifest fixture에 `controllerEntrypoint` 추가(미실행).
+
+**손대지 않은 것**: `stableController.ts`(+테스트) · managed process · trusted Git · reviewer · CLI ·
+legacy `exec`/`mission` · `orchestrationStore` 발행 내부 · `executionBoundary.ts` 런타임 · `typedPlan.ts` ·
+`offlinePlanWorker.ts` · package/lock · tracked `dist/**`. 두 번째 scheduler·대안 controller·신규 런타임
+의존성 **0**.
+
+### A 해소 (4/4)
+
+- **A1 — dispatch 권위를 정확히 하나의 turn/계획에 durable하게 묶는다.**
+  `issueOperationDispatchPermit()`이 **커밋**이 되어 `execution.dispatchTurnId` +
+  `execution.dispatchPlanDigest`를 claim한다. durable turn이 `null`인 동안 두 turn이 각각 permit을 받아
+  둘 다 집행하던 경로가 사라졌다: 다른 turn은 `dispatch_identity_stale`, 같은 turn의 **다른 계획**은
+  `dispatch_plan_conflict`, 이미 과금된 turn 재개방은 `turn_already_charged`다. 같은 (turn, 계획) 재발급은
+  **멱등**이다(재시작한 controller의 정합화 경로). `chargeTurnUsage()`가 turn을 **닫는다**(claim 해제 +
+  `chargedTurnIds` 기록)므로 같은 attempt 안에서 turn이 이어진다. permit 레코드는 공개 `getState()`가
+  아니라 private `#state`를 직접 읽는다. 효과·명세 발급 직전마다 **토큰 등호**
+  (`budget_tokens_exhausted`) · **attempt wall 등호**(`attempt_wall_exhausted`) · **no-progress 등호**
+  (`no_progress_exhausted`)를 추가로 본다.
+  **정직한 한계**: `preflightDigest`에 토큰·경과 같은 **가변 사실은 넣지 않았다**. 넣으면 매 turn drift가
+  되어 seal의 의미가 사라진다 — 대신 명시 게이트 3종으로 닫았고 활성 turn은 별도 durable 필드다.
+- **A2 — 집행·영수증을 위조·재생·치환·중복 불가능하게 만들었다.** 신규 `beginOperation()`이 **집행 전에**
+  durable `pendingOperations` 레코드(operationId·kind·authorityId·attemptId·turnId·planDigest·beganAt)를
+  커밋하고 모듈 사설 `WeakMap` 등록부의 **일회용 execution grant**를 발급한다. 효과 게이트
+  (`consumeExecutionGrant`)가 grant를 정확히 한 번 소진하고, `recordOperationReceipt({grant,...})`가 정확히
+  한 번 소비한다. **성공 marker는 효과 게이트를 지난 grant에서만** 나온다(미시도 grant는 `denied`/`failed`로만
+  pending을 닫는다). 미확정 operation이 하나라도 있으면 **turn을 닫을 수도**(`chargeTurnUsage`) **task를
+  완료·차단할 수도** 없다(`operation_pending_unreconciled`) → "효과는 났는데 결과 전이가 없다"가 durable에
+  남고 조용히 덮이지 않는다. 재시작 정합화는 결정론적이다: 같은 operation을 다시 열면 pending을 중복
+  등록하지 않고 새 grant만 주며, 멱등 재집행(`already_applied`) 후 영수증이 하나로 수렴한다.
+  부수로 `RECEIPT_KEYS`에 `at`을 추가했다 — **집행기가 낸 영수증을 그대로 커밋하는 자연스러운 경로가
+  항상 `invalid_artifact_ref`로 막혀 있었다**(그 조합을 돌려 본 테스트가 없었다).
+- **A3 — 최종 pathname 교체를 손대기 전에 거부한다.** Node 18 내장에는 디스크립터 상대
+  compare-and-publish(`renameat2`/`RENAME_EXCHANGE`)가 없어 `rename(2)` 직전 창을 0으로 만들 수 없다.
+  그래서 사후 탐지를 포기하고 **예방**으로 바꿨다: 대상이 이미 존재하고 내용이 의도와 다르면 **temp를
+  만들기도 전에** `write_replace_unsupported`로 거부한다. `renameSync` 발행 경로는 **삭제**했고 발행은
+  부재 대상 `link(2)` no-replace만 남는다. 네이티브 primitive·런타임 의존성은 **추가하지 않았다**
+  (승인 대상이므로 이 슬라이스에서 도입할 수 없다).
+- **A4 — 재시도가 durability를 증명하게 한다.** `already_applied` 경로도 **부모 디렉터리 fsync 성공 뒤에만**
+  반환한다. fsync가 계속 실패하면 계속 `write_durability_unconfirmed`다.
+
+### B 해소 (2/2)
+
+- **B1 — 정리 실패를 성공으로 삼키지 않는다.** close·unlink 실패를 `status.cleanupFailed`로 모아
+  신규 `write_cleanup_unconfirmed`로 올린다(발행 판정이 성공이었어도 성공 영수증을 내지 않는다).
+  no-replace 분기가 정리 확인 전에 소유권을 비우던 코드를 제거했다(`finally` 하나가 확인한다).
+  **부모 이름이 적대적으로 교체돼 pathname으로 우리 temp를 지울 수 없는 경우**에는 남의 파일을 지우지 않고,
+  대신 **우리가 들고 있는 fd로 `ftruncate(0)`** 해서 남는 파일이 **0바이트**가 되게 한다 → 승인 내용이
+  고아 plaintext로 노출되지 않는다. temp 이름은 `sha256(run|task|attempt|turn|operation)`에서 파생돼
+  (`.m5c-op-<16hex>-<24hex>.tmp`) 정합화 sweep이 **안전하게 귀속**할 수 있다. durable pending 레코드가
+  정합화 신원이다. **발행 뒤에는 truncate 폴백을 쓰지 않는다**(temp fd와 발행된 대상이 같은 inode이므로
+  자르면 산출물이 0바이트가 된다) — 그때는 이름 unlink만 시도하고 실패는 cleanup-unconfirmed다.
+- **B2 = `B-10` — `run_process`의 임의 코드 권위를 제거했다.** `executionAuthority.controllerEntrypoint`
+  (digest 고정 절대경로)를 **필수**로 추가하고, 승인 operation 레코드에서 `executable`·`args`를
+  **삭제**했다. 남은 것은 닫힌 `action` enum(`CONTROLLER_ACTIONS = ["validate-plan"]`)과 **데이터 전용**
+  `data`뿐이며, data 항목은 NUL·고립 surrogate 없고 **`-`로 시작할 수 없다**(그 규칙 하나가
+  `--eval`·`--require`·`--input-type`·`--import` 계열을 형태로 닫는다). argv는 `ProcessLaunchSpec`이
+  `[entrypoint, action, ...data]`로 **파생**하며 이 배열을 만드는 다른 통로가 없다. argv[1]이 절대경로
+  script이므로 Node 옵션 자리 자체가 없다. 명세에 `entrypoint`/`entrypointSha256`/`action`을 실어 spawn
+  직전 `executionBoundary.verifyApprovedExecutable` 재검증이 가능하다. **이 리비전의 spawn 수는 0이다**
+  (승인된 node·entrypoint 경로가 이 환경에 존재하지 않는데도 명세가 나오는 것이 그 증거다).
+  production/deploy/billing/remote-write 표면은 여전히 표현할 타입이 없다.
+
+### C 처리
+
+- **`C1`(발행 seam) — 부분 해소.** hook이 던진 것은 **종류 불문** `write_failed`로 정규화했다 →
+  **호출자가 production 오류 taxonomy를 고를 수 없다**(리뷰가 지목한 진짜 위험). export 자체는
+  **남겼다**: 결정론적 경쟁·fault 재현에 현재 대안이 없고, 이 리비전에서 테스트 전용 하네스로 분리하면
+  같은 슬라이스에서 A/B 검증이 흔들린다. **"module-private"라는 과거 서술은 거짓이었으므로 정정한다**
+  (아래 대장 참조).
+- **`C2`(schema/runtime 동치 과대주장) — 손대지 않았다.** 기한(M5d) 그대로 open. 동치라고 다시 주장하지
+  않는다.
+- **`C-41`(executionBoundary v1 fixture red) — 닫았다.** 이번 manifest 계약 변경이 그 파일을 건드리므로
+  범위 안이다: fixture를 v2로 올려 **1/20 → 20/20**.
+- **`C-38` kernel 행 — 닫았다.** `readClosedOnce`가 호출자 예외를 종류 불문 접는다(이전에는
+  `OrchestrationError`를 그대로 재던져 던지는 getter가 코드를 고를 수 있었다).
+
+### 변경한 assertion 전수 (완화 0 — 전부 강화 또는 계약 정정)
+
+| 파일·테스트 | 이전 | 이후 | 이유 |
+|---|---|---|---|
+| `typedExecution.test.ts` "디렉터리 durability…" → "A4: fsync 실패 뒤 재시도…" | 재시도가 **fsync 없이** `already_applied` | 재시도가 fsync를 **다시 시도**하고, 계속 실패하면 `write_durability_unconfirmed`; 성공해야 `already_applied` | **리뷰가 지적한 대로 옛 assertion이 결함을 고정하고 있었다**(거짓 durability) |
+| 같은 파일 "교체는 발행 직전 preimage…" → "A3: 기존 대상 교체는 temp를 만들기 전에 거부…" | 발행 직전 재확인 후 `write_failed` | `write_replace_unsupported` + **temp 생성 단계 미도달** 단정 + 바이트·inode 불변 | 사후 탐지 → 예방으로 계약이 바뀌었다 |
+| 같은 파일 "성공적인 원자적 쓰기와 교체" → "A3: 부재 대상은 원자적으로 발행되고…" | 교체가 **성공**한다고 단정 | 교체는 거부되고 기존 바이트가 그대로임을 단정 | 같은 계약 변경 |
+| 같은 파일 "부모 디렉터리가 symlink로…" | 남는 temp가 **"우리 내용"** 을 담는다고 단정 | 남는 temp가 **0바이트**·0600·operation 신원 파생 이름임을 단정 | B1 — 승인 내용의 고아 노출 제거 |
+| 같은 파일 "모든 실패 경계가…" 끝부분 | hook이 던진 `already_applied`가 **그대로 전파**된다고 단정 | `write_failed`로 정규화됨을 단정 | `C1` — 호출자 taxonomy 선택 차단 |
+| 같은 파일 "평범한/위조 permit으로는…" | 위조는 `dispatch_permit_invalid` | + **진짜 permit만으로도** 효과 없음(`dispatch_grant_invalid`) · grant 모양 위조 추가 | A2 — 집행 전 durable 등록 강제 |
+| 같은 파일 "lifecycle·attempt·turn…" ⓒ | `chargeTurnUsage(turn-2)`가 durable turn을 갈아끼움 | 미확정 operation이 있으면 과금 거부 · 과금이 claim을 닫음 · 닫힌 turn 재claim 불가 | A1/A2 |
+| 같은 파일 "만료·예산 deadline…" | 루프로 clock을 태워 경계 도달 | `steppableClock`으로 **정확히 그 밀리초**에 등호 판정(+1ms 전 통과 단정) | 등호가 우연이 아니라 단정이 된다 |
+| `orchestrationKernel.test.ts` "kernel 공개 API는 좁은 목록뿐" | 목록에 `beginOperation` 없음 | 추가 | 신규 좁은 진입점 1개 |
+| 같은 파일 "milestone_approval_manifest.schema.json 동치" | `args.maxItems`/`items.maxLength` | `action.enum`/`data.*` + `executable`·`args` **부재** 단정 + `controllerEntrypoint` | `B-10` 계약 변경 |
+| `autopilotLifecycle.test.ts` "typed operation 권위는…" | 비승인 executable → `operation_executable_not_approved` | 실행 대상 필드 자체가 없으므로 `invalid_manifest` + `--eval` 데이터 거부 추가 | `B-10` |
+| 같은 파일 argv 고립 surrogate | `invalid_manifest` | `operation_data_not_approved` | 전용 안정 코드 도입 |
+| `executionBoundary.test.ts` "manifest 누락·형태 위반" | `call({})` → `invalid_manifest` | `manifest_pre_m5c_unsupported` | 빈 객체는 v2 필수 절이 없는 manifest다(둘 다 hard reject) |
+
+### 신규 적대적 테스트 (요구 10종 매핑)
+
+1. 두 turn/계획 경쟁 → `[M5c] A1: durable turn이 null인 동안에도 두 turn/계획이 함께 살아남지 못한다`
+2. 공개 `getState()` monkey-patch → `[M5c] A1: 공개 getState()를 monkey-patch해도…`
+3. 토큰·wall·no-progress **등호** → `[M5c] A1: 토큰 등호·attempt wall 등호·no-progress 등호가…`(효과 0)
+4. 위조·재생·치환·재사용·효과없는성공 → `[M5c] A2: 위조·재생·치환·재사용 영수증과 '효과 없는 성공'이…` ·
+   `[M5c] A2: 집행 게이트를 지나지 않은 grant는…` · `[M5c] A2: 영수증이 커밋된 뒤에는 살아 있던 두 번째
+   grant로도 다시 집행할 수 없다` · `lifecycle·attempt·turn…` ⓑ(낡은 attempt 재생)
+5. 재시작 수렴 → `[M5c] A2: 등록·발행·영수증 사이에서 재시작해도 중복 손상 없이 하나로 수렴한다`
+6. 교체 거부·경쟁자 보존·부모/temp 경쟁 → `[M5c] A3: …` 2건 + `부모 디렉터리가 symlink로…` +
+   `temp 경로가 다른 파일로 교체되면…` + `부재 대상은 경쟁적으로 생긴 파일을 덮어쓰지 않는다`
+7. fsync 재시도 → `[M5c] A4: fsync 실패 뒤 재시도는…`
+8. **실제** close/unlink 실패 주입 → `[M5c] B1: 실제 close/unlink 실패는 성공이 되지 않고…`
+   (부모 디렉터리 `chmod 0500` = 진짜 EACCES · 집행기 temp fd를 (dev,ino)로 찾아 미리 close = 진짜 EBADF)
+9. `run_process` 거부 전수 + spawn 0 → `[M5c] B-10: run_process는 --eval·--require·임의 script/module·
+   action 주입을 표현할 수 없다`
+10. 적대적 객체/proxy/accessor → `[M5c] 적대적 객체·proxy·accessor는 lifecycle을 우회하거나…`
+
+### 검증 (전부 직렬 · 이 세션 실측)
+
+- `npx tsc --noEmit` — **0 error**.
+- 파일 단독 focused: `typedExecution.test.ts` **46/46** · `offlinePlanWorker.test.ts` **10/10** ·
+  `autopilotLifecycle.test.ts` **28/28** · `orchestrationKernel.test.ts` **103/103** ·
+  `executionBoundary.test.ts` **20/20**. 5개 동시 실행 합계 **207/207 pass · 0 fail**.
+- `git diff --check` clean · 전체 diff 육안 검사(생성물·secret·node_modules·완화 테스트 0).
+
+### mutation 검증 (8종 — 전부 해당 테스트를 실패시킨 뒤 **일반 편집으로 정확히 원복**)
+
+| # | 제거·훼손한 guard | 실패한 테스트 |
+|---|---|---|
+| 1 | `issueOperationDispatchPermit`의 경쟁 turn claim 검사 | A1 두 turn/계획 |
+| 2 | `already_applied` 경로의 `confirmDirDurability` | A4 fsync 재시도 |
+| 3 | `targetExists` 교체 거부 | A3 2건 |
+| 4 | `finally`의 close 실패 → `cleanupFailed` | B1 실제 close/unlink |
+| 5 | 성공 marker의 `attempted` 요구 | A2 성공 marker 2건 |
+| 6 | 효과 게이트의 durable pending 확인 | **처음에는 0건 실패 → 커버리지 구멍 발견** → `[M5c] A2: 영수증이 커밋된 뒤에는 살아 있던 두 번째 grant로도…` 테스트 추가 후 재실행하여 실패 확인 |
+| 7 | 토큰 예산 등호(`>=` → `>`) | A1 등호 3종 |
+| 8 | data 인자 `-` 시작 거부 | B-10 · autopilot typed operation 권위 |
+
+원복 확인: `git diff --stat`에 MUTATION 흔적 0 · `npx tsc --noEmit` 0 error · 207/207 재확인.
+
+### 미실행 (정직 목록)
+
+`npm test` · `test:exec` · `test:core` · 전체 acceptance · M4 offline acceptance 3종(fixture만 갱신) ·
+stress · live · 반복(3회) · build/dist 재생성 · M5d. **최종 전체 suite 1회는 supervisor가 M5 최종
+handoff에 예약했다.**
+
+### 알려진 red (실측)
+
+- `stableController.test.ts` — **3/58 pass · 55 fail**(이번 변경 전후 동일 · 의도적 미수정).
+  원인은 v1 manifest fixture(`authorityFor`가 codex+git뿐)와 `startScheduledBatch()` stale 호출이며,
+  **다음 M5c DAG task(StableController 재작성)의 범위**다. 직전 대장의 "3/58 red"라는 표기는
+  "3건이 red"로 읽힐 수 있어 부정확했다 — 정확히는 **3 pass / 55 fail**이다.
+
+### 남은 C / 다음 작업
+
+- open: `C-2`~`C-5`(pathname TOCTOU 잔여 — **`rename` 경로가 사라져 표면이 줄었다**) · `C-18` · `C-19` ·
+  `C-26` · `C-29` · `C-30` · `C-31` · `C-33` · `C-34` · `C-35` · `C-36` · `C-37` · `C-39` ·
+  `C-40`(fixed 유지) · `C2`(schema 동치, M5d) · `C1`(seam export, 부분 해소).
+- open B: `B-7` · `B-9` · `B-11` · `B-12` · `B-13` · `C-12→B`(전부 이번 범위 밖 · 변화 없음).
+- **다음 DAG task**: `StableController` 재작성 + 이 grant/pending lifecycle 배선 → managed process
+  supervisor(+자손 정리) → trusted Git → `autopilot` CLI.
+
+---
+
+## 2026-07-30 (V3 **M5c task 3A 리비전 — 독립 리뷰 A 4건 + 인접 filesystem B 닫음. M5c는 여전히 미완료다** · 그 시점 기록)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `5a35bce27569d672d6aea2803b42d064c175cd49` · stack base `81554cf`. **새 fresh Claude Opus 5 단일

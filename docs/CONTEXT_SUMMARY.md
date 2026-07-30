@@ -2,7 +2,47 @@
 
 최종 갱신: 2026-07-30
 
-## 최신 (2026-07-30 — **V3 M5c task 3A 리비전: 독립 리뷰 A 4건 + 인접 filesystem B 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-30 — **V3 M5c task 3A 2차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `16cdc87` ·
+  코드 커밋 **`cecc529`** · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·
+  자기평가 미상속 · 재개 아님) · Ponytail **full**. 입력 권위: `/private/tmp/m5c-task3a-rereview-output.txt`.
+- **닫은 것**
+  - **A1** dispatch 권위를 **정확히 하나의 turn/계획**에 durable하게 묶었다: `issueOperationDispatchPermit()`이
+    커밋이 되어 `execution.dispatchTurnId`/`dispatchPlanDigest`를 claim한다(다른 turn=`dispatch_identity_stale` ·
+    같은 turn의 다른 계획=`dispatch_plan_conflict` · 과금된 turn 재개방=`turn_already_charged` · 같은
+    (turn,계획) 재발급은 멱등). `chargeTurnUsage()`가 turn을 닫는다. permit이 공개 `getState()`가 아니라
+    private `#state`를 읽는다. 효과 직전마다 **토큰·attempt wall·no-progress 등호**를 추가로 본다.
+  - **A2** 신규 `beginOperation()`이 **집행 전** durable `pendingOperations`를 커밋하고 **일회용 execution
+    grant**를 발급한다. 효과 게이트가 소진하고 `recordOperationReceipt({grant,…})`가 소비한다. 성공 marker는
+    효과 게이트를 지난 grant에서만 나온다. 미확정 operation이 있으면 turn도 완료·차단도 막힌다. 재시작
+    정합화는 결정론적(멱등 재집행 → `already_applied` → 영수증 1건).
+  - **A3** 기존 경로 교체를 **temp 생성 전에** `write_replace_unsupported`로 거부하고 `renameSync` 발행을
+    **삭제**했다. 발행은 부재 대상 `link(2)` no-replace뿐이다(네이티브 의존성 0).
+  - **A4** `already_applied`도 **부모 fsync 성공 뒤에만** 반환한다(계속 실패 = 계속
+    `write_durability_unconfirmed`).
+  - **B1** close·unlink 실패를 `write_cleanup_unconfirmed`로 올린다(성공 삼킴 0). 지울 수 없는 temp는
+    소유 fd로 `ftruncate(0)` → **0바이트**(승인 내용 노출 0) · 이름이 operation 신원 파생이라 귀속 가능.
+  - **B2=`B-10`** `executionAuthority.controllerEntrypoint`(digest 고정) 필수 + 승인 레코드에서
+    `executable`/`args` 삭제 → 닫힌 `action` enum + **데이터 전용** `data`(`-` 시작 금지). argv는
+    `[entrypoint, action, ...data]`로 파생. **spawn 0 유지.**
+  - 부수: `C-41`(executionBoundary v1 fixture) **1/20 → 20/20** · `C-38` kernel 행(호출자 taxonomy 선택) 폐쇄.
+- **정정한 과대주장**: 직전 블록의 "A3 fixed"(최종 pathname `rename` 창은 열려 있었다) · "인접 B fixed"
+  (fsync 재시도·정리 실패·plaintext temp 미해소) · "A2 fixed"(경쟁 turn·구조적 영수증·permit 재사용 미해소).
+  상세 표는 `docs/WORKLOG.md` 최상단.
+- **안 끝난 것(M5c의 남은 핵심)**: **`StableController` 재작성·배선**(다음 DAG task) · managed process
+  supervisor + 자손 정리(`B-13`/`C-18`) · trusted Git(`C-26`) · 구조화 리뷰 검증(`C-19`/`C-35`) ·
+  `autopilot` CLI · legacy `exec`/`mission` 비활성화 · build/dist · M5d.
+- **검증(직렬 실측)**: `npx tsc --noEmit` 0 error · `typedExecution` **46/46** · `offlinePlanWorker` **10/10** ·
+  `autopilotLifecycle` **28/28** · `orchestrationKernel` **103/103** · `executionBoundary` **20/20**
+  (동시 실행 합계 **207/207**) · `git diff --check` clean · mutation **8종** 전부 해당 테스트 실패 확인 후
+  일반 편집으로 원복(6번은 처음에 0건 실패 → 커버리지 구멍을 찾아 테스트를 추가한 뒤 실패 확인).
+- **알려진 red**: `stableController.test.ts` **3 pass / 55 fail**(이번 변경 전후 동일 · 다음 DAG task 범위).
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · M4 acceptance 3종 · stress · live ·
+  반복 3회 · build/dist · M5d. 최종 전체 suite 1회는 **M5 최종 handoff에 예약**돼 있다.
+- 다음 세션 첫 작업: **`StableController` 재작성 + grant/pending lifecycle 배선**.
+
+## 이전 (2026-07-30 — **V3 M5c task 3A 리비전: 독립 리뷰 A 4건 + 인접 filesystem B 닫음** · 그 시점 기록)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `5a35bce` ·
   코드 커밋 `f132d87` · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript 미상속) ·
