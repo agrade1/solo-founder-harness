@@ -1816,7 +1816,27 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### M5c 기반 slice에서의 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신**)
+##### M5c green-recovery slice 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+
+> **범위 경고**: 이 slice는 **직전 기반 slice가 red로 남긴 kernel + M4 offline 검증면을 green으로 되돌린 것**
+> 뿐이며 **M5c 완료 선언이 아니다**. 아래 아래 절("M5c 기반 slice에서의 대장 갱신")의 상태 판정은 그대로
+> 유효하고, 이 절은 **검증면·계약 문서 쪽 진전만** 더한다. 런타임 소스는 한 줄도 바꾸지 않았다.
+> `docs/WORKLOG.md` 최상단 블록이 증거·미실행 목록의 정본이다. 이 세션은 **self-approve하지 않는다.**
+
+| id | 분류 | 항목 | 상태 | 근거·증거 |
+|---|---|---|---|---|
+| `C-40` | C (P3) | 승인 경로 길이 schema↔runtime 의미 불일치 | **fixed 유지 + schema 쪽 증거 보강** | 런타임은 직전 slice에서 코드 포인트로 통일됐고, 이 slice가 `milestone_approval_manifest.schema.json`의 `maxLength`가 draft-07 코드 포인트 의미임을 문서에 명시하고 `orchestrationKernel.test.ts`가 pattern 항등 + 양/음성 경로 표 전수 + 길이 경계를 다시 강제한다 |
+| `C-33` | C (P3) | 손으로 관리하는 marker 목록이 여러 곳에 흩어졌다 | **부분 진전 유지 — 이제 schema까지 동치가 강제된다** | `EVENT_MARKERS`(합집합 32종) · `AUTOPILOT_MARKERS` · `PAUSE_REASONS` · `DELIVERY_MARKERS` · `OPERATION_RECEIPT_MARKERS` · `CLEANUP_STATUSES`가 `orchestration_run_state.schema.json`과 **정확히 동치**임을 `orchestrationKernel.test.ts`가 단정한다(schema 쪽 중복 금지 포함). 여전히 **타입 있는 outcome 단일 출처는 미구현**이므로 `open` 그대로다 |
+| — (신규 관측 · ID 부여 안 함) | 운영 정확성 | **M4 offline acceptance 3종이 `dist`를 소비해 낡은 계약을 검사하며 green이었다** | **fixed (2026-07-30)** | tracked `dist`는 M5b 계약(state/manifest v1)에 머물러 있고 그 갱신은 M5 handoff의 build 단계다 → M5c 창 동안 M4 acceptance는 **검증면으로서 무가치**했다. 세 스크립트를 `src/exec/*.ts` 소비로 바꿨고(로더 없이 들어오면 스스로 `node --import tsx`로 한 번 재실행 — 호출 방식·`scripts/acceptance.sh` grep 문자열 무변경) v2 fixture와 실제 lifecycle 경로로 이관했다. 실측: `m4a` 32/32 · `m4b` 45/45 · `m4c` 80/80(셋 다 exit 0). **미해결 잔여**: `src↔dist` drift 자체는 그대로이고 dist 재생성은 M5 handoff의 build 단계 몫이다 |
+
+**이 slice가 green으로 되돌린 것**: `orchestrationKernel.test.ts` **14/103 → 103/103** ·
+M4a/M4b/M4c offline acceptance **전부 exit 0**. `tsc --noEmit` 0 error · `autopilotLifecycle.test.ts` 27/27 유지.
+**여전히 red**: `stableController.test.ts` **3/58** (`StableController`가 아직 `startScheduledBatch()`를
+부른다 — `B-11`/`B-12`/`B-13`/`C-12→B`의 "controller 배선" 잔여가 그대로라는 뜻이다).
+**미실행**: `npm test` · 전체 `test:core` · 전체 acceptance · `npm run test:exec` · stress · live ·
+mutation 8종 · build/dist.
+
+##### M5c 기반 slice에서의 대장 갱신 (2026-07-30 — **M5c 미완료 상태의 부분 갱신** · 그 시점 기록)
 
 > **범위 경고**: 아래는 M5c의 **기반 slice(state/manifest v2 · lifecycle · durable 회계)** 만 반영한 것이며
 > **M5c 완료 선언이 아니다**. typed 실행 집행 · trusted Git · managed process supervisor · offline plan

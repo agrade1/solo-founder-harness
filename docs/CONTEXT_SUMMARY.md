@@ -2,7 +2,34 @@
 
 최종 갱신: 2026-07-30
 
-## 최신 (2026-07-30 — **V3 M5c 착수: 기반 slice만 구현. M5c 미완료 · 기존 focused 테스트 red** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-30 — **V3 M5c green-recovery slice: v2 schema 정본화 + kernel/M4 검증면 green. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `23d663c` ·
+  stack base `81554cf`. fresh Claude Opus 5 단일 세션 · Ponytail(full).
+- **끝난 것**: ⓐ 계약 문서 2종을 **v2 정본**으로 갱신(`orchestration_run_state` = `schemaVersion "2"` ·
+  필수 `accounting`/`task.execution`/`message.delivery` · 상태 11종 · event 19종 · 사유 21종 · 닫힌 감사
+  필드 7종 · marker/pause/cleanup/operation enum · `eventMarker` 합집합 32종 / `milestone_approval_manifest`
+  = `autopilotPolicy` 8필드 상·하한 · 닫힌 typed operation union · `node`/`processObserver` + nullable
+  `codex`) ⓑ schema↔runtime **동치 단정을 새 v2 표면 전부로 정확히 확장**(경계 밖 값 runtime 거부까지 확인)
+  ⓒ kernel 테스트와 M4 acceptance 3종을 **진짜 lifecycle 경로**로 이관(preflight → start / terminal →
+  cleanup → 완료 / 시도 → 수령) ⓓ legacy `startTask`/`startScheduledBatch` 거부 테스트 보존(기대 코드
+  `preflight_required`) ⓔ M4 acceptance가 **`dist` 대신 `src`를 소비**하도록 고쳤다(dist는 M5b 계약이라
+  acceptance가 낡은 계약을 검사하며 green이었다 — 호출 방식은 `node scripts/m4X-...` 그대로).
+- **안 끝난 것(M5c의 남은 핵심)**: typed 실행 집행 · trusted Git · managed process supervisor + 자손 정리 ·
+  offline plan worker · 구조화 리뷰 검증(`C-19`/`C-35`) · **`StableController` 재작성** · `autopilot` CLI ·
+  legacy `exec`/`mission` 비활성화 · typed-plan/review schema JSON · mutation 8종 · M5d.
+- **검증(직렬)**: `npx tsc --noEmit` 0 error · `autopilotLifecycle.test.ts` **27/27** ·
+  `orchestrationKernel.test.ts` **103/103** · `m4a` **32/32** · `m4b` **45/45** · `m4c` **80/80**(셋 다 exit 0) ·
+  `git diff --check 81554cf..HEAD` clean.
+- **여전히 red**: `stableController.test.ts` **3/58** — controller가 아직 `startScheduledBatch()`를 부른다
+  (런타임 소스 무변경이라 이전 블록과 같은 수치다). **미실행**: `npm test` · 전체 `test:core` ·
+  전체 acceptance · `npm run test:exec` · stress · live · mutation · build/dist.
+- **dist는 여전히 M5b 상태**(src↔dist drift) → 배포 가능 상태가 **아니다**. 단, M4 acceptance는 이제 src를
+  보므로 그 drift가 검증면을 속이지 않는다.
+- 다음 세션의 첫 작업: **`StableController` 재작성**(단일 scheduler + cleanup-before-completion + durable
+  회계 연결)으로 남은 red를 닫고 typed 실행/process 계층으로 간다. **M5c는 self-approved가 아니다.**
+
+## 이전 (2026-07-30 — **V3 M5c 착수: 기반 slice만 구현. M5c 미완료 · 기존 focused 테스트 red** · 그 시점 기록)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · base `81554cf`.
 - **끝난 것**: state/manifest **v2**(마이그레이션 없는 fail closed) · lifecycle 5상태 추가 ·

@@ -3,7 +3,45 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-30 — V3 **M5c 착수 · 기반 slice만 구현 · M5c 미완료 · red 테스트 있음** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-30 — V3 **M5c green-recovery slice · v2 schema 정본화 + kernel/M4 검증면 green · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `23d663c` ·
+  stack base `81554cf`(M5b 8차 재리뷰 `APPROVE_TO_STACK` 시점). fresh Claude Opus 5 단일 세션.
+  원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · live provider 추론 · secret **0**.
+  amend/rebase/reset 0 · 테스트 완화·삭제·assertion 축소 **0**.
+- **M5c는 여전히 승인 대상이 아니고 self-approved도 아니다.** 이 slice가 한 일은 **직전 커밋이 red로
+  남긴 kernel + M4 offline 검증면을 green으로 되돌린 것**뿐이다. 구현·미구현·검증 실측은
+  `docs/WORKLOG.md` 최상단 블록이 정본이다.
+- **이 slice의 변경 파일(7개)**: `schemas/orchestration_run_state.schema.json` ·
+  `schemas/milestone_approval_manifest.schema.json` · `src/exec/orchestrationKernel.test.ts` ·
+  `src/exec/autopilotLifecycle.test.ts`(EOF 빈 줄 1줄) · `scripts/m4a|m4b|m4c-offline-acceptance.mjs`.
+  **런타임 소스(`orchestrationKernel.ts`/`orchestrationStore.ts`/`orchestrationTypes.ts`/
+  `approvalManifest.ts`)는 한 줄도 바꾸지 않았다** — 이관이 커널 결함을 드러내지 않았다는 뜻이다.
+- **검증 실측(직렬)**: `npx tsc --noEmit` 0 error · `autopilotLifecycle.test.ts` **27/27** ·
+  `orchestrationKernel.test.ts` **103/103**(직전 14/103) · `node scripts/m4a-offline-acceptance.mjs`
+  **32/32 exit 0** · `m4b` **45/45 exit 0** · `m4c` **80/80 exit 0** · `git diff --check 81554cf..HEAD` clean.
+- **여전히 red**: `src/exec/stableController.test.ts` **3/58**(이 세션에서 확인만 했다 — 런타임 소스
+  무변경이라 수치가 같다). `StableController`가 아직 `startScheduledBatch()`를 부르므로 autopilot 경로는
+  `kernel_rejected`로 닫힌다. 재작성은 남은 M5c 작업이며 이 slice의 소유 범위 밖이었다.
+- **미실행**: `npm test` · 전체 `test:core` · 전체 acceptance(`scripts/acceptance.sh`) ·
+  `npm run test:exec` · stress · live · 반복(3회) · mutation 8종 · `npm run build`/dist 재생성 · M5d.
+- **리뷰어에게 — 이 slice의 리뷰 범위**: 위 7개 파일과 `81554cf..HEAD` 범위. 특히 ⓐ 두 schema가 런타임
+  validator(`validateRunState`/`validateApprovalManifest`)와 **정확히** 동치인지 ⓑ 이관된 테스트가
+  프로토콜을 **우회·흉내내지 않는지**(상태 직접 편집·cleanup 위조·공개 API 우회 0) ⓒ negative 테스트의
+  의미 경계가 보존됐는지(legacy 거부는 `preflight_required`로, 충돌·pending·세션 초과는 scheduler 미선택 +
+  `preflight_batch_mismatch`로) ⓓ 손으로 만든 durable fixture가 **유효한 v2 + 의도한 위조 하나**인지
+  ⓔ M4 acceptance의 `dist`→`src` 전환이 정당한지(dist는 M5b 계약이므로 dist 소비 시 acceptance가 낡은
+  계약을 검사하며 green이 된다)를 본다.
+- **주의(계약면 변화)**: M4 offline acceptance 3종은 이제 `src/exec/*.ts`를 소비하며, 로더 없이 들어오면
+  스크립트가 스스로 `node --import tsx`로 한 번 재실행한다. 호출 방식(`node scripts/m4X-...`)과
+  `scripts/acceptance.sh`가 grep하는 라벨·코드 문자열은 그대로다(acceptance.sh 수정 0).
+- **열린 하드 게이트**(변화 없음): `B-7`·`B-9`(첫 live 실행 전, 손대지 않음) · `B-10`/`B-12`(부분) ·
+  `B-11`/`B-13`(kernel 계약은 닫혔고 controller·프로세스 정리는 미구현) · `C-12→B`(부분) ·
+  `C-22`(의도적 open) · `C-36`·`C-39`(store 발행 내부 무변경 → open 유지).
+- **src↔dist drift 있음**: dist는 M5b 상태 그대로이므로 **배포 가능 상태가 아니다**. 단 M4 acceptance는
+  이제 src를 보므로 그 drift가 검증면을 속이지 않는다.
+
+## 이전 상태 (2026-07-30 — V3 **M5c 착수 · 기반 slice만 구현 · M5c 미완료 · red 테스트 있음** · 그 시점 기록)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · base `81554cf`
   (M5b 8차 재리뷰 `APPROVE_TO_STACK` 시점). fresh Claude Opus 5 단일 세션.

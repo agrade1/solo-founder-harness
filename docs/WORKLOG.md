@@ -1,6 +1,91 @@
 # WORKLOG.md
 
-## 2026-07-30 (V3 **M5c 착수 — 기반 slice(state/manifest v2 · lifecycle · durable 회계)만 구현. M5c는 미완료이고 기존 테스트가 red다** · 이 블록이 가장 최신이다)
+## 2026-07-30 (V3 **M5c green-recovery slice — v2 계약 schema 정본화 + kernel/M4 검증면 이관. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`23d663c`(아래 블록의 끝 지점) · stack base `81554cf`. **새 fresh Claude Opus 5 단일 세션**(이전 세션
+transcript·자기평가 미상속, subagent·병렬 writer 0). Ponytail SKILL.md(level `full`) 적용 —
+`/Users/jihun/.claude/plugins/cache/ponytail/ponytail/4.8.4/skills/ponytail/SKILL.md`.
+amend/rebase/reset · 원격 push/PR/merge · 네트워크 · `gh` · MCP · 패키지 설치 · 의존성/lockfile 변경 ·
+live Codex/Claude 추론 · secret · deploy · DB · production · live billing **없음**.
+`--dangerously-skip-permissions` 미사용. **테스트 완화·삭제·assertion 축소 0.**
+
+**정직한 판정: 이 slice도 M5c 완료가 아니다.** 아래 블록이 red로 남긴 검증면 중 **kernel + M4 offline
+acceptance만** green으로 되돌렸다. controller/typed 실행/trusted Git/managed process/offline plan
+worker/구조화 리뷰/autopilot CLI는 **여전히 미구현**이고 `stableController.test.ts`는 **여전히 red**다.
+
+### 이 slice가 한 것
+
+- **계약 문서 2종을 v2 정본으로 갱신**(런타임 validator와 동치):
+  - `schemas/orchestration_run_state.schema.json` — `schemaVersion "2"` · 필수 `accounting` ·
+    필수 `task.execution` · 필수 `message.delivery` · task 상태 11종 · event 종류 19종 · 전이 사유 21종 ·
+    닫힌 감사 필드 7종 · `autopilotMarker`/`pauseReason`/`cleanupStatus`/`operationKind`/
+    `operationReceiptMarker`/`eventMarker`(합집합 32종)/`leaseMarker` · 서술용 `resourceHoldingState` ·
+    `safetyOnlyReasons`/`safetyOnlyEventTypes`.
+  - `schemas/milestone_approval_manifest.schema.json` — `autopilotPolicy`(8필드 정확한 상·하한) ·
+    `operationAuthorityByTask`(닫힌 `write_file`/`run_process` union) · `executionAuthority`에
+    `node`/`processObserver` 추가와 `codex` nullable.
+  - 계획에 있던 **typed-plan / review-result schema는 이 slice 범위 밖**이라 만들지 않았다.
+- **schema↔runtime 동치 단정을 새 v2 표면 전부로 정확히 확장**했다: 닫힌 key 집합 · enum · required ·
+  bounds · nullable codex · node/processObserver 권위 · autopilot 정책 · operation 권위 · 회계 ·
+  task 실행 · 전달 · event 감사 필드 · schema 버전. 미상 key는 양쪽에서 여전히 거부된다. 정책 상·하한은
+  **경계 밖 값을 runtime이 실제로 거부하는지**까지 확인해 공허하지 않음을 남겼다.
+- **테스트·스크립트를 실제 lifecycle 경로로 이관**(흉내·우회 없음):
+  시작은 `planRunnableBatch` → `commitPreflightBatch`(정확한 결정 집합) → `startPreparedTask`,
+  완료·차단은 `recordTerminal` → `confirmCleanup` 뒤에만, 수령은 `beginDeliveryAttempt` 뒤에만.
+  legacy `startTask`/`startScheduledBatch` 거부 테스트는 **보존**하고 기대 코드를 `preflight_required`로
+  맞췄다. "충돌·pending·세션 초과 task는 시작할 수 없다"는 이제 **scheduler가 고르지 않음 +
+  `preflight_batch_mismatch`** 로 증명한다(우회 진입점 0). 상태를 손으로 고치거나 공개 API를 우회해
+  cleanup을 위조한 곳은 없다.
+- **손으로 만드는 durable state fixture를 먼저 유효한 v2로** 만들고 **의도한 위조 하나만** 남겼다:
+  `completed`에서 `pendingResult` 정리 · forged `running`에 attempt 배정 · journal 위조의
+  `approvalDigest` 재계산. 그래서 거부가 자기 일관성 검사가 아니라 **전이 권위 묶기**에서 나온 것임이
+  그대로 증명된다.
+- **재시작 site에 fixture 시계를 넘겼다**: 실시간 시계로 열면 durable 예산 deadline(`B-12`)이 낡은
+  fixture를 `budget_elapsed_exhausted`로 닫아 테스트가 **시간 의존**이 된다(2026-07-27 fixture는 실행일에
+  따라 결과가 갈렸다). 계약을 완화한 것이 아니라 fixture를 결정론으로 되돌린 것이다.
+- `[M4a][P0-1]` 위조 표의 허용 거부 코드에 **`accounting_approval_mismatch`를 더했다** — 승인을 넓히면
+  회계↔승인 묶기가 state↔event binding보다 **먼저** 닫는다(약화가 아니라 게이트 추가).
+- `git diff --check` 실패 원인이던 `autopilotLifecycle.test.ts` **EOF 빈 줄 제거**(테스트 동작 무변경).
+- **M4 offline acceptance 3종의 소비 대상을 `dist/exec/*` → `src/exec/*`로 바꿨다.** tracked `dist`는
+  M5b 계약에 머물러 있고(그 갱신은 M5 handoff의 build 단계다) dist를 소비하면 이 acceptance가 **낡은
+  계약을 검사하며 green**이 된다 — 즉 M5c 창 동안 검증면으로서 무가치했다. 호출 방식은 그대로 유지했다
+  (`node scripts/m4X-offline-acceptance.mjs`): 로더 없이 들어오면 스크립트가 tsx로 정확히 한 번
+  재실행한다. `scripts/acceptance.sh`가 grep하는 라벨·코드 문자열은 **전부 보존**했다(수정 0).
+
+### 검증 실측 (직렬 · 실행한 명령 그대로 · 출력 필터로 exit code를 가리지 않았다)
+
+| 명령 | 결과 |
+|---|---|
+| `npx tsc --noEmit` | **0 error** |
+| `npx tsx --test src/exec/autopilotLifecycle.test.ts` | **27/27 pass** |
+| `npx tsx --test src/exec/orchestrationKernel.test.ts` | **103/103 pass** (직전 14/103) |
+| `node scripts/m4a-offline-acceptance.mjs` | **PASS=32 FAIL=0 · exit 0** |
+| `node scripts/m4b-offline-acceptance.mjs` | **PASS=45 FAIL=0 · exit 0** |
+| `node scripts/m4c-offline-acceptance.mjs` | **PASS=80 FAIL=0 · exit 0** |
+| `git diff --check 81554cf..HEAD` | clean |
+
+`npx tsx --test src/exec/stableController.test.ts`는 **판정 정직성 확인용으로만** 한 번 돌렸다 —
+**3/58 pass (55 fail)**, 아래 블록과 동일하다(런타임 소스를 하나도 건드리지 않았으므로 변화가 없다).
+
+### 이 slice가 하지 않은 것 (정직한 기록)
+
+- **여전히 red**: `src/exec/stableController.test.ts` **3/58**. `StableController`는 아직
+  `startScheduledBatch()`를 부르므로 autopilot 경로가 `kernel_rejected`로 닫힌다 — controller 재작성이
+  M5c의 남은 핵심이고 이 slice의 소유 범위 밖이었다.
+- **미구현 그대로**: typed 실행 집행 · trusted Git · managed process supervisor/observer ·
+  offline plan worker · 구조화 리뷰 검증 · autopilot CLI · typed-plan/review schema JSON · mutation 8종 · M5d.
+- **미실행**: `npm test` · 전체 `test:core` · 전체 acceptance(`scripts/acceptance.sh`) ·
+  `npm run test:exec` · stress · live · 반복(3회) · `npm run build`/dist 재생성.
+- **`dist`는 여전히 M5b 상태**이므로 `src↔dist` drift가 남아 있고 **배포 가능 상태가 아니다**.
+  M4 acceptance가 이제 src를 보므로 그 drift가 검증면을 속이지는 않는다.
+- `scripts/acceptance.sh`는 소유 밖이라 수정하지 않았다. 전체 acceptance는 `node scripts/m4X-...`를
+  그대로 부르고 스크립트가 스스로 tsx로 재실행하므로 **호출 계약은 깨지지 않았다**(다만 전체 acceptance
+  자체는 이 세션에서 미실행이다).
+- `B-7`·`B-9`는 손대지 않았고 여전히 **열린 live 하드 게이트**다. `C-22`·`C-36`·`C-39`는 open 그대로다.
+- **M5c 완료 선언이나 자기 승인은 하지 않는다.**
+
+## 2026-07-30 (V3 **M5c 착수 — 기반 slice(state/manifest v2 · lifecycle · durable 회계)만 구현. M5c는 미완료이고 기존 테스트가 red다** · 이 블록은 그 시점 기록이다)
 
 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작·기준 HEAD
 `81554cf`(M5b 8차 재리뷰 `APPROVE_TO_STACK` 시점). fresh Claude Opus 5 단일 세션(subagent·병렬 writer 0).
