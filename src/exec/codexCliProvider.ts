@@ -100,13 +100,13 @@ import { AsyncEventQueue } from "./eventQueue.js";
 import { validateApprovalManifest } from "./approvalManifest.js";
 import { CODEX_SESSION_ID_RE, CodexJsonlParser } from "./codexStreamParser.js";
 import {
+  verifyApprovedExecutable,
   verifyExecutionBoundary,
-  verifyTrustedExecutable,
   type FileIdentity,
   type TrustedExecutable,
   type VerifiedExecutionBoundary,
 } from "./executionBoundary.js";
-import { OrchestrationError, type MilestoneApprovalManifest } from "./orchestrationTypes.js";
+import { OrchestrationError, type ApprovedExecutable, type MilestoneApprovalManifest } from "./orchestrationTypes.js";
 import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from "./types.js";
 
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
@@ -141,15 +141,10 @@ export interface CodexCliProviderOpts {
   /** 판정 계약을 들고 있는 controller checkout 절대·정규 경로. */
   controllerRepoRoot: string;
   /**
-   * codex 실행 파일의 **신뢰된 절대·정규 경로**. 필수다 — PATH·env 조회는 하지 않는다.
-   * 이 값을 고르고 신뢰하는 책임은 controller에 있고, provider는 spawn 직전에 신원만 재확인한다.
+   * **실행 파일 경로 옵션은 없다(6차 리뷰 A1).** codex·git 실행 파일의 정규 경로와 내용 digest는
+   * `manifest.executionAuthority`에서만 오고, 그 manifest는 run 생성 시 승인돼 durable state에
+   * 봉인된 값이다 → 호출자가 실행 대상을 고를 통로가 존재하지 않는다.
    */
-  executablePath: string;
-  /**
-   * **신뢰된 git 실행 파일의 절대·정규 경로**. 필수다 — 실행 경계가 승인 커밋을 증명할 때 쓰고,
-   * PATH·상속 `GIT_*`로는 아무것도 고르지 않는다(`executionBoundary` 참조).
-   */
-  gitExecutablePath: string;
   /**
    * **하위 계층 provider 단위 테스트 전용 in-process seam.** production 진입점은 지정하지 않는다.
    *
@@ -185,6 +180,8 @@ const CODEX_BIN_CODES = {
   path: "codex_config_invalid",
   invalid: "codex_executable_invalid",
   identity: "codex_executable_identity_changed",
+  /** 승인된 내용과 다르다(같은 inode 제자리 덮어쓰기 포함 — 6차 리뷰 A1). */
+  digest: "codex_executable_digest_mismatch",
 } as const;
 
 /** 경계가 쓰는 git 실행 파일을 **provider 생성 시점에도** 같은 규칙으로 검증한다(신원 고정용). */
@@ -192,6 +189,7 @@ const GIT_BIN_CODES = {
   path: "codex_config_invalid",
   invalid: "codex_git_executable_invalid",
   identity: "codex_git_executable_identity_changed",
+  digest: "codex_git_executable_digest_mismatch",
 } as const;
 
 /**
@@ -200,13 +198,8 @@ const GIT_BIN_CODES = {
  * 사전 검증에서 신원을 고정하고 **spawn 직전 동기 게이트에서 다시** 부른다 — 같은 권한의 다른 실행 파일로
  * 교체되는 창까지 막는다(Node에 `fexecve`가 없어 창은 0이 아니고 syscall 몇 개로 줄인 것이다).
  */
-export function verifyCodexExecutable(path: unknown, pinned?: FileIdentity): TrustedExecutable {
-  return verifyTrustedExecutable(path, "executablePath", CODEX_BIN_CODES, pinned);
-}
-
-/** 경로만 필요한 호출자용 shim(신원 고정이 필요하면 `verifyCodexExecutable`을 쓴다). */
-export function assertTrustedExecutable(path: unknown): string {
-  return verifyCodexExecutable(path).path;
+export function verifyCodexExecutable(approved: ApprovedExecutable, pinned?: FileIdentity): TrustedExecutable {
+  return verifyApprovedExecutable(approved, "승인된 codex 실행 파일", CODEX_BIN_CODES, pinned);
 }
 
 /** provider가 소유한 `CODEX_HOME`의 신원 — 경로 문자열이 아니라 이것으로 "같은 홈인가"를 판정한다. */
@@ -361,8 +354,6 @@ export interface SealedCodexSpec extends ResolvedCodexOptions {
   /** 봉인된 harness 세션 id — map 키·소유권 판정의 근거다. */
   sessionId: string;
   cwd: string;
-  executablePath: string;
-  gitExecutablePath: string;
   controllerRepoRoot: string;
   /** 승인 manifest의 신원 · TTL · 상한. 승인 자체가 turn 사이에 바뀌면 프로세스를 띄우지 않는다. */
   milestoneId: string;
@@ -408,8 +399,6 @@ const SEALED_KEYS = [
   "outputSchemaPath",
   "ephemeral",
   "cwd",
-  "executablePath",
-  "gitExecutablePath",
   "controllerRepoRoot",
   "milestoneId",
   "approvedCommit",
@@ -454,10 +443,8 @@ function sealCodexSpec(spec: SessionSpec, opts: CapturedProviderConfig): SealedC
     ...o,
     sessionId: spec.sessionId,
     cwd: spec.cwd,
-    // 실행 파일·git·controller 경로는 여기서 검증하지 않는다(각자의 신뢰 검증이 자기 코드로 보고한다).
-    // 봉인은 "turn 사이에 바뀌었는가"만 판정한다.
-    executablePath: opts.executablePath,
-    gitExecutablePath: opts.gitExecutablePath,
+    // 실행 파일 경로는 봉인 대상이 아니다 — **승인 manifest 안에** 있고 `manifestDigest`가 한 필드도
+    // 빠짐없이 대조한다(6차 리뷰 A1: 호출자 경로 자체가 없어졌다).
     controllerRepoRoot: opts.controllerRepoRoot,
     milestoneId: m.milestoneId,
     approvedCommit: m.approvedCommit,
@@ -636,11 +623,13 @@ interface AttestedCodexIdentity {
  * "일단 만들고 실행할 때 거부"는 controller가 대조할 신원을 주지 못한다.
  */
 function captureIdentity(config: CapturedProviderConfig): AttestedCodexIdentity {
+  // 승인이 곧 실행 권위다(6차 리뷰 A1): 경로·내용 digest 모두 이 manifest에서만 나온다.
+  const manifest = validateApprovalManifest(config.manifest);
   return Object.freeze({
-    executable: Object.freeze(verifyCodexExecutable(config.executablePath)),
-    git: Object.freeze(verifyTrustedExecutable(config.gitExecutablePath, "gitExecutablePath", GIT_BIN_CODES)),
+    executable: Object.freeze(verifyCodexExecutable(manifest.executionAuthority.codex)),
+    git: Object.freeze(verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", GIT_BIN_CODES)),
     controllerRepoRoot: requireAbsolute(config.controllerRepoRoot, "controllerRepoRoot"),
-    manifestDigest: manifestDigestOf(validateApprovalManifest(config.manifest)),
+    manifestDigest: manifestDigestOf(manifest),
     clock: resolveClock(config.nowMs),
   });
 }
@@ -741,8 +730,6 @@ function authorityMatches(identity: AttestedCodexIdentity, expected: ExpectedCod
 interface CapturedProviderConfig {
   manifest: unknown;
   controllerRepoRoot: string;
-  executablePath: string;
-  gitExecutablePath: string;
   nowMs?: () => number;
 }
 
@@ -801,8 +788,6 @@ export class CodexCliProvider implements ExecutionProvider {
     this.#config = Object.freeze({
       manifest: adoptManifestInput(opts.manifest),
       controllerRepoRoot: opts.controllerRepoRoot,
-      executablePath: opts.executablePath,
-      gitExecutablePath: opts.gitExecutablePath,
       nowMs: opts.nowMs,
     });
     if (injected === undefined) {
@@ -1049,7 +1034,7 @@ export class CodexCliProvider implements ExecutionProvider {
     // **생성 시점에 고정된 실행 파일 신원**으로 대조한다(5차 리뷰 A1) — 첫 invocation이 새 baseline을
     // 세우지 않으므로, 증명 이후 같은 경로가 다른 실행 파일로 교체되면 여기서 fail closed다.
     const pinnedBin = this.#identity?.executable.id;
-    const preBin = verifyCodexExecutable(s.executablePath, pinnedBin);
+    const preBin = verifyCodexExecutable(s.manifest.executionAuthority.codex, pinnedBin);
 
     // 대장 `B-5`: 승인된 커밋이 controller/실행 checkout HEAD와 정확히 같을 때만 프로세스를 띄운다.
     const boundary: VerifiedExecutionBoundary = await verifyExecutionBoundary({
@@ -1058,9 +1043,8 @@ export class CodexCliProvider implements ExecutionProvider {
       manifest: s.manifest,
       controllerRepoRoot: s.controllerRepoRoot,
       targetWorktree: s.cwd,
-      gitExecutablePath: s.gitExecutablePath,
-      // git 실행 파일도 **생성 시점 신원**에 묶는다(5차 리뷰 A1) — 증명 이후 교체된 git으로는
-      // 승인 커밋을 증명하지 못한다.
+      // git 실행 파일 경로·digest는 경계가 이 manifest에서 읽는다(6차 리뷰 A1 — 호출자 경로 없음).
+      // 신원도 **생성 시점 값**에 묶는다(5차 리뷰 A1) — 증명 이후 교체된 git으로는 승인 커밋을 증명하지 못한다.
       gitIdentity: this.#identity?.git.id,
       // **봉인된 시각 권위**를 함수로 넘긴다 — 경계는 진입과 spawn 직전 재검증에서 이 함수를 각각
       // 다시 호출한다(시간은 흐르고, 나중에 교체된 `opts.nowMs`는 여기 오지 못한다).
@@ -1085,7 +1069,7 @@ export class CodexCliProvider implements ExecutionProvider {
     assertNoSpecDrift(s, state.spec, this.#optsRef);
     boundary.revalidateSync();
     const home = verifyCodexHome(s.codexHome, { ...homeExpect, identity: preHome.id });
-    const bin = verifyCodexExecutable(s.executablePath, pinnedBin ?? preBin.id);
+    const bin = verifyCodexExecutable(s.manifest.executionAuthority.codex, pinnedBin ?? preBin.id);
     // argv는 **봉인값**으로 컴파일한다(중간에 바뀐 호출자 객체로 인자를 만들지 않는다).
     const args = compileResolvedArgs(s, cwd, resumeSessionId);
 

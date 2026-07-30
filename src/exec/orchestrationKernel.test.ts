@@ -54,6 +54,8 @@ import {
   isRegistryRoleId,
   networkDomainAllowed,
   validateApprovalManifest,
+  APPROVED_EXECUTABLE_KEYS,
+  EXECUTION_AUTHORITY_KEYS,
 } from "./approvalManifest.js";
 import {
   ARTIFACT_RECORD_KEYS,
@@ -151,6 +153,15 @@ function seed(taskId: string, roleId: string, over: Record<string, unknown> = {}
 const APPROVED_COMMIT = "a".repeat(40);
 
 /**
+ * 승인된 실행 권위(6차 리뷰 A1). kernel 테스트는 프로세스를 띄우지 않으므로 **형태만** 필요하다
+ * (파일 내용 검증은 실행 경계·provider·controller 테스트가 실제 파일로 한다).
+ */
+const EXECUTION_AUTHORITY = {
+  codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+  git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+};
+
+/**
  * §8 승인 manifest. **root/dependent task는 여기에 명시된 것만** 만들 수 있고
  * child는 parent ownership 위임으로 검사된다. 테스트가 만들 root/dependent id를 넘긴다.
  */
@@ -165,6 +176,7 @@ function manifestFor(taskIds: string[], over: Record<string, unknown> = {}) {
     allowedCommands: ["npm run build", "npm test"],
     allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
     allowedNetworkDomains: ["registry.npmjs.org"],
+    executionAuthority: EXECUTION_AUTHORITY,
     maxSessions: 8,
     maxTokens: 200000,
     maxElapsedMs: 3_600_000,
@@ -783,7 +795,10 @@ test("[M5b] A3: 실패 후 재시도는 revision 찌꺼기를 만들지 않는�
 
 /**
  * 각 발행 경계에 fault를 넣었을 때 **복구 뒤에 관찰돼야 하는 상태**.
- * `before` = 가시적 전이 0(roll back), `after` = 결정론적 roll forward(감사 이력에 이미 남은 커밋).
+ * `before` = 가시적 전이 0(roll back) · `after` = 이미 목표 state 바이트가 쓰인 뒤라 복구가 마무리만 한다.
+ *
+ * **6차 리뷰 A3 이후 전이는 `state:rename` 성공에서만 durable해진다**: 그 앞의 모든 실패는 roll back이고
+ * (복구가 후속 state를 발행하는 권한이 없다) `after`는 body 발행·journal 정리 두 자리뿐이다.
  */
 const STAGE_OUTCOME: Record<CommitStage, "before" | "after"> = {
   "body:write": "before",
@@ -791,11 +806,11 @@ const STAGE_OUTCOME: Record<CommitStage, "before" | "after"> = {
   "journal:write": "before",
   "journal:rename": "before",
   "events:append": "before",
+  "snapshot:write": "before",
+  "snapshot:rename": "before",
+  "state:write": "before",
+  "state:rename": "before",
   "body:publish": "after",
-  "snapshot:write": "after",
-  "snapshot:rename": "after",
-  "state:write": "after",
-  "state:rename": "after",
   "journal:cleanup": "after",
 };
 
@@ -832,9 +847,9 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
     assert.equal(threw, true, `${stage}: fault를 넣었는데 커밋이 성공했다(회귀가 공허하다)`);
 
     if (STAGE_OUTCOME[stage] === "before") {
-      // 가시적 전이 0: state·events 바이트가 그대로다.
+      // **가시적 전이 0**: 실패 직후 state 바이트가 그대로다(event append는 물리적 중간 산물이며
+      // 아래 복구가 기준 길이로 되돌린다 — 6차 리뷰 A3 이후 그 규칙이 `state:rename` 앞 전부에 적용된다).
       assert.equal(readFileSync(paths.stateFile, "utf8"), before.state, `${stage}: state가 바뀌었다`);
-      assert.equal(readFileSync(paths.eventsFile, "utf8"), before.events, `${stage}: event tail이 남았다`);
     }
     // **journal 발행 전 실패는 이 invocation의 staging까지 스스로 지운다**(5차 리뷰 A3 — 이전 판은
     // journal 전에 **최종** 이름을 만들었고 테스트는 그 orphan을 "무해"로 적었다). 발행 뒤라면
@@ -846,6 +861,11 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
     // reopen이 결정론적으로 복구한다(loadRun이 schema·event chain·binding·body·artifact hash를 다 본다).
     const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
     assert.equal(existsSync(paths.journalFile), false, `${stage}: 복구 뒤에도 journal이 남았다`);
+    if (STAGE_OUTCOME[stage] === "before") {
+      // roll back은 state·event 바이트를 **둘 다** 기준으로 되돌린다(완전한 append도 포함).
+      assert.equal(readFileSync(paths.stateFile, "utf8"), before.state, `${stage}: 복구가 state를 바꿨다`);
+      assert.equal(readFileSync(paths.eventsFile, "utf8"), before.events, `${stage}: 복구가 event tail을 남겼다`);
+    }
     // 복구 뒤 `messages/` 열거는 **색인과 정확히 일치**한다: staged 잔재도, 색인되지 않은 최종 body도 없다.
     assert.deepEqual(
       readdirSync(paths.messagesDir).sort(),
@@ -860,14 +880,14 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
     assert.equal(readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0).length, s.lastEventId, `${stage}: event 중복`);
     assert.deepEqual(s.artifacts.map((a) => `${a.path}@${a.revision}`), taskState === "completed" ? [`${p}@1`] : [], `${stage}: artifact 중복`);
 
-    // 전진 가능: 실패했으면 같은 커밋을 그대로 재시도해 완료되고, roll forward됐으면 다음 커밋이 된다.
+    // 전진 가능: 되돌려졌으면 같은 커밋을 그대로 재시도해 완료되고, 이미 완료됐으면 다음 커밋이 된다.
     if (taskState === "running") {
       const done = reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]));
       assert.equal(done.task.state, "completed", `${stage}: 재시도가 실패했다`);
       assert.deepEqual(done.artifacts.map((a) => a.revision), [1], `${stage}: 실패한 시도가 revision을 태웠다`);
     } else {
       reopened.createRootTask(seed("second", "tech-lead", { ownership: ["docs"] }));
-      assert.equal(reopened.getTask("second")!.state, "ready", `${stage}: roll forward 뒤 다음 커밋이 막혔다`);
+      assert.equal(reopened.getTask("second")!.state, "ready", `${stage}: 마무리 복구 뒤 다음 커밋이 막혔다`);
     }
     // 어느 경로든 다시 열린다(반쪽 상태가 남지 않았다).
     assert.equal(openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }).getState().revision, reopened.getState().revision);
@@ -877,8 +897,9 @@ test("[M5b] A3: 발행 경계마다 fault를 넣어도 관찰 결과는 전/후 
 /**
  * 지정한 발행 경계에서 실패한 **미완 커밋**을 만든다. `base`는 실패 **이전** 바이트이므로
  * "가시적 전이 0"과 "남의 바이트 보존"을 그것과 대조할 수 있다.
- * `events:append`에서 실패하면 journal + staged body + **빈 tail**, `body:publish`면 journal +
- * 완전한 append + staged body, `snapshot:write`면 최종 body까지 발행된 상태다.
+ * `events:append`에서 실패하면 journal + staged body + **빈 tail**, `state:write`면 journal +
+ * 완전한 append + **기준 state**(= roll back 대상), `body:publish`면 journal + 완전한 append +
+ * **목표 state 바이트** + staged body(= 마무리 대상)다.
  */
 function pendingAt(
   stage: CommitStage,
@@ -941,16 +962,37 @@ test("[M5b] A3: 빈 tail(append 0바이트)도 roll back이고 재시도가 성�
   assert.equal(reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }])).task.state, "completed");
 });
 
-test("[M5b] A3: 완전한 append면 roll forward이고 event 바이트를 하나도 버리지 않는다", () => {
+test("[M5b] A3(6차): 기준 state + **완전한** append도 roll back이다 — 복구는 후속을 발행하지 않는다", () => {
+  // 이전 판은 이 자리에서 journal이 적은 target state를 **발행**했다(roll forward) → 해시를 전부 다시
+  // 계산한 위조 후속이 유효 state를 덮어쓸 수 있었다. 지금은 되돌리고, 호출자가 받은 실패가 진실이다.
+  const { ws, p, paths, base } = pendingAt("state:write");
+  const fullEvents = readFileSync(paths.eventsFile, "utf8");
+  assert.notEqual(fullEvents, base.events, "완전한 append가 남지 않아 이 규칙을 시험할 수 없다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "state가 이미 바뀌어 회귀가 공허하다");
+
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "복구가 target state를 발행했다");
+  assert.equal(readFileSync(paths.eventsFile, "utf8"), base.events, "완전한 append를 기준 길이로 되돌리지 않았다");
+  assert.deepEqual(readdirSync(paths.messagesDir).sort(), base.messages, "roll back이 staged/최종 body를 남겼다");
+  assert.equal(reopened.getTask("root")!.state, "running");
+  // 재시도는 그대로 성공한다(같은 커밋을 다시 올린다 — revision 찌꺼기 0).
+  const done = reopened.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]));
+  assert.equal(done.task.state, "completed");
+  assert.deepEqual(done.artifacts.map((a) => a.revision), [1]);
+});
+
+test("[M5b] A3(6차): 목표 state 바이트가 이미 쓰였으면 복구는 body 발행·정리만 마무리한다", () => {
   const { ws, paths, base } = pendingAt("body:publish", ["second"]);
   const fullEvents = readFileSync(paths.eventsFile, "utf8");
-  assert.notEqual(fullEvents, base.events, "append가 남지 않아 roll forward를 시험할 수 없다");
+  const target = readFileSync(paths.stateFile, "utf8");
+  assert.notEqual(target, base.state, "state가 아직 기준이라 마무리 규칙을 시험할 수 없다");
   const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
   assert.equal(existsSync(paths.journalFile), false);
-  assert.equal(readFileSync(paths.eventsFile, "utf8"), fullEvents, "roll forward가 커밋된 event를 잘랐다");
-  assert.notEqual(readFileSync(paths.stateFile, "utf8"), base.state, "roll forward인데 state가 그대로다");
+  assert.equal(readFileSync(paths.eventsFile, "utf8"), fullEvents, "마무리가 커밋된 event를 잘랐다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), target, "마무리가 state를 바꿨다");
   assert.equal(reopened.getTask("root")!.state, "completed");
-  // 최종 body는 roll forward가 발행한다(state가 참조하는 body가 실제로 있다 — load가 hash까지 본다).
+  // 최종 body는 마무리가 발행한다(state가 참조하는 body가 실제로 있다 — load가 hash까지 본다).
   assert.deepEqual(readdirSync(paths.messagesDir).sort(), [...base.messages, "r-atomic.md"].sort(), "body 발행 결과가 색인과 다르다");
 });
 
@@ -981,15 +1023,21 @@ test("[M5b] A3: 접두도 완전 append도 아닌 tail은 fail closed이고 바�
     ],
   ];
   for (const [label, tamper] of cases) {
-    const { ws, paths, base, journal } = pendingAt("body:publish");
+    // 디스크 state가 **기준**인 지점에서 시험한다(6차 리뷰 A3 이후 `state:write`가 그 자리다).
+    const { ws, paths, base, journal } = pendingAt("state:write");
     const baseBytes = Buffer.byteLength(base.events, "utf8");
     tamper(paths, baseBytes, readFileSync(paths.eventsFile));
-    const after = { events: readFileSync(paths.eventsFile), messages: readdirSync(paths.messagesDir).sort() };
+    // 복구 **직전** 바이트가 기준이다(이 지점에서 snapshot은 이미 앞서 있을 수 있다 — 파생물이다).
+    const after = {
+      events: readFileSync(paths.eventsFile),
+      snapshot: readFileSync(paths.snapshotFile, "utf8"),
+      messages: readdirSync(paths.messagesDir).sort(),
+    };
 
     assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_foreign", label);
     assert.deepEqual(readFileSync(paths.eventsFile), after.events, `${label}: 남의 event 바이트를 지웠다`);
     assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, `${label}: state가 바뀌었다`);
-    assert.equal(readFileSync(paths.snapshotFile, "utf8"), base.snapshot, `${label}: snapshot이 바뀌었다`);
+    assert.equal(readFileSync(paths.snapshotFile, "utf8"), after.snapshot, `${label}: snapshot이 바뀌었다`);
     assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${label}: journal이 사라졌다`);
     assert.deepEqual(readdirSync(paths.messagesDir).sort(), after.messages, `${label}: body가 바뀌었다`);
     assert.equal(existsSync(join(paths.messagesDir, "r-atomic.md")), false, `${label}: 최종 body가 생겼다`);
@@ -1117,7 +1165,67 @@ test("[M5b] A3: 손댄 journal은 조용히 넘기지 않고 fail closed다", ()
     ],
     [
       "body 목록이 state에 없는 메시지를 담았다",
-      (j) => JSON.stringify({ ...j, bodies: [...(j.bodies as unknown[]), { messageId: "없는-메시지", sha256: "0".repeat(64) }] }),
+      (j) => JSON.stringify({ ...j, bodies: [...(j.bodies as unknown[]), { messageId: "없는-메시지", sha256: "0".repeat(64), bytes: 1, dev: 1, ino: 1 }] }),
+      "journal_invalid",
+    ],
+    // ── 6차 리뷰 A3: 기준 신원·body 소유권 필드 ──────────────────────────
+    [
+      "기준 신원 필드가 없다",
+      (j) => {
+        const { milestoneId: _drop, ...rest } = j.base as Record<string, unknown>;
+        return JSON.stringify({ ...j, base: rest });
+      },
+      "journal_invalid",
+    ],
+    [
+      "기준 milestone이 journal과 다르다",
+      (j) => JSON.stringify({ ...j, base: { ...(j.base as Record<string, unknown>), milestoneId: "other-milestone" } }),
+      "journal_foreign",
+    ],
+    [
+      "기준 승인 manifest가 목표와 다르다",
+      (j) => JSON.stringify({ ...j, base: { ...(j.base as Record<string, unknown>), manifestDigest: "{}" } }),
+      "journal_foreign",
+    ],
+    [
+      "기준 생성 시각이 목표와 다르다",
+      (j) => JSON.stringify({ ...j, base: { ...(j.base as Record<string, unknown>), createdAt: "2020-01-01T00:00:00.000Z" } }),
+      "journal_foreign",
+    ],
+    [
+      "기준 내용 digest가 디스크와 다르다",
+      (j) => JSON.stringify({ ...j, base: { ...(j.base as Record<string, unknown>), contentDigest: "0".repeat(64) } }),
+      "journal_unrecognized",
+    ],
+    [
+      "기준 메시지 수가 디스크와 다르다",
+      (j) => {
+        const b = j.base as Record<string, unknown>;
+        return JSON.stringify({ ...j, base: { ...b, messageCount: (b.messageCount as number) + 1 } });
+      },
+      "journal_invalid",
+    ],
+    [
+      // `baseEventBytes`를 줄여 **남의 감사 바이트를 자기 append로 주장**하는 경우(자르기 유도).
+      "기준 event 접두가 기준 신원과 맞지 않는다",
+      (j) => JSON.stringify({ ...j, baseEventBytes: 0 }),
+      "journal_unrecognized",
+    ],
+    [
+      "body 바이트 수가 계약 밖이다",
+      (j) => JSON.stringify({ ...j, bodies: (j.bodies as Array<Record<string, unknown>>).map((b) => ({ ...b, bytes: 0 })) }),
+      "journal_invalid",
+    ],
+    [
+      "body staging 신원이 없다",
+      (j) =>
+        JSON.stringify({
+          ...j,
+          bodies: (j.bodies as Array<Record<string, unknown>>).map((b) => {
+            const { ino: _drop, ...rest } = b;
+            return rest;
+          }),
+        }),
       "journal_invalid",
     ],
   ];
@@ -1156,19 +1264,26 @@ test("[M5b] A3: 손댄 journal은 조용히 넘기지 않고 fail closed다", ()
   }
 });
 
-test("[M5b] A3: 발행할 state의 body가 없거나 변조되면 roll forward를 하지 않는다", () => {
-  for (const how of ["missing", "tampered"] as const) {
-    // journal + 완전한 append가 남은 상태에서 staged body를 없애거나 내용을 바꾼다 →
-    // roll forward는 state를 쓰지 않고 fail closed다(참조하는 body가 없는 state를 발행하지 않는다).
-    const { ws, paths, base, journal } = pendingAt("body:publish");
+test("[M5b] A3: staged body가 없거나 변조·교체되면 최종 body를 만들지 않는다(fail closed)", () => {
+  // journal + 완전한 append + **목표 state**가 남은 상태에서 staged body를 없애거나 내용을 바꾸거나
+  // **같은 내용의 다른 inode로 교체**한다 → 발행은 소유 신원까지 보므로 어느 경우도 최종 body를 만들지 않는다.
+  for (const how of ["missing", "tampered", "reinode"] as const) {
+    const { ws, paths, journal } = pendingAt("body:publish");
+    const target = readFileSync(paths.stateFile, "utf8");
     const staged = readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-"));
     assert.equal(staged.length, 1, "staged body가 없다(회귀가 공허하다)");
     const stagedFile = join(paths.messagesDir, staged[0]);
     if (how === "missing") rmSync(stagedFile);
-    else writeFileSync(stagedFile, "# 변조된 body\n");
+    else if (how === "tampered") writeFileSync(stagedFile, "# 변조된 body\n");
+    else {
+      // 내용은 그대로지만 **inode가 다른** 파일로 갈아끼운다(digest만 보는 발행은 이것을 통과한다).
+      const bytes = readFileSync(stagedFile);
+      rmSync(stagedFile);
+      writeFileSync(stagedFile, bytes);
+    }
 
     assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_missing", how);
-    assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, `${how}: state를 발행했다`);
+    assert.equal(readFileSync(paths.stateFile, "utf8"), target, `${how}: state가 바뀌었다`);
     assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: journal이 사라졌다`);
     assert.equal(existsSync(join(paths.messagesDir, "r-atomic.md")), false, `${how}: 최종 body를 만들었다`);
   }
@@ -1325,6 +1440,279 @@ test("[M5b] A3: roll back은 기존 body를 절대 지우지 않는다(자기 �
   assert.equal(readFileSync(join(paths.messagesDir, "r-atomic.md"), "utf8"), committedBody, "roll back이 기존 body를 건드렸다");
   assert.equal(reopened.getTask("second"), null, "roll back인데 task가 남았다");
   assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 0, "staged 파일이 남았다");
+});
+
+// ── M5b 6차 리뷰 A3: journal은 정확한 전이·body 소유권에 묶인다 ────────────────
+
+/**
+ * **유효 journal을 부품에서 다시 조립한다** — event 줄 목록과 state 변형을 받아 해시 체인 · 최종
+ * event 신원 · state 바이트 · 모든 digest를 **전부 다시 계산**한다. 즉 "내부적으로 완전히 일관된"
+ * journal을 만드는 도구이며, 그래서 이 도구로 만든 위조가 거부되면 그 거부는 **자기 일관성 검사가
+ * 아니라 전이 권위 묶기**가 낸 것이다(6차 리뷰 A3의 정확한 실패 경로).
+ */
+function rebuildJournal(
+  j: Record<string, unknown>,
+  opts: { editLines?: (lines: string[]) => string[]; editState?: (s: any) => void; bodies?: unknown } = {},
+): string {
+  const state = JSON.parse(j.state as string) as any;
+  if (opts.editState) opts.editState(state);
+  const contentDigest = stateContentDigest(validateRunState({ ...state, lastEventId: 0, lastEventHash: "0".repeat(64) }));
+  let lines = (j.events as string).split("\n").filter((l) => l.length > 0);
+  if (opts.editLines) lines = opts.editLines(lines);
+  const base = j.base as Record<string, unknown> | null;
+  let prevHash = base === null ? "0".repeat(64) : (base.lastEventHash as string);
+  const rebuilt: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const ev = JSON.parse(lines[i]) as Record<string, unknown>;
+    ev.prevHash = prevHash;
+    ev.revision = state.revision;
+    ev.stateDigest = i === lines.length - 1 ? contentDigest : null;
+    const line = JSON.stringify(ev);
+    rebuilt.push(line);
+    prevHash = createHash("sha256").update(line).digest("hex");
+  }
+  state.lastEventId = (base === null ? 0 : (base.lastEventId as number)) + rebuilt.length;
+  state.lastEventHash = prevHash;
+  const stateText = `${JSON.stringify(state, null, 2)}\n`;
+  return JSON.stringify({
+    ...j,
+    milestoneId: state.milestoneId,
+    targetRevision: state.revision,
+    eventCount: rebuilt.length,
+    events: `${rebuilt.join("\n")}\n`,
+    state: stateText,
+    stateSha256: createHash("sha256").update(stateText).digest("hex"),
+    stateDigest: contentDigest,
+    lastEventId: state.lastEventId,
+    lastEventHash: prevHash,
+    manifestDigest: JSON.stringify(state.manifest),
+    ...(opts.bodies === undefined ? {} : { bodies: opts.bodies }),
+  });
+}
+
+/** journal을 그 append 바이트와 함께 디스크에 심는다(=위조가 실제로 디스크에 도달한 상태). */
+function plantJournal(paths: ReturnType<typeof runPaths>, journalText: string, baseEvents: string): void {
+  writeFileSync(paths.journalFile, journalText);
+  writeFileSync(paths.eventsFile, baseEvents + (JSON.parse(journalText) as { events: string }).events);
+}
+
+test("[M5b] A3(6차): 해시를 전부 다시 계산한 위조 후속도 milestone·승인·task state를 바꾸지 못한다", () => {
+  // 위조자는 journal을 쓸 수 있고 events.jsonl에 자기 append도 남길 수 있다(같은 uid). 이전 판은
+  // 이 상태를 **roll forward**해서 위조 state를 발행했다. 지금은 어떤 경우에도 발행하지 않는다.
+  const cases: Array<[string, (s: any) => void, string]> = [
+    ["task state를 바꾼다(불변 권위는 그대로)", (st) => (st.tasks[0].state = "completed"), "rolled_back"],
+    [
+      // state와 manifest를 **함께** 바꿔 내부 정합성까지 맞춘 위조(그렇지 않으면 자기 일관성 검사에서 걸린다).
+      "milestone을 바꾼다",
+      (st) => {
+        st.milestoneId = "other-milestone";
+        st.manifest.milestoneId = "other-milestone";
+      },
+      "rejected",
+    ],
+    [
+      "승인 manifest를 넓힌다",
+      (st) => {
+        st.manifest.writableRoots = ["docs", "infra", "src"];
+        st.manifest.ownershipByTask.root = ["docs", "infra", "src"];
+      },
+      "rejected",
+    ],
+    ["생성 신원(createdAt)을 바꾼다", (st) => (st.createdAt = "2020-01-01T00:00:00.000Z"), "rejected"],
+  ];
+  for (const [label, editState, want] of cases) {
+    const { ws, k } = bootRoot();
+    const p = put(ws, "docs/a.md", "a\n");
+    const paths = runPaths(ws, RUN_ID);
+    // 유효 journal 하나를 얻는다(발행 전 실패 → journal + staged body).
+    assert.equal(
+      withCommitFault("events:append", () => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))),
+      true,
+    );
+    const valid = JSON.parse(readFileSync(paths.journalFile, "utf8")) as Record<string, unknown>;
+    const baseState = readFileSync(paths.stateFile, "utf8");
+    const baseEvents = readFileSync(paths.eventsFile, "utf8");
+    const forged = rebuildJournal(valid, { editState });
+    plantJournal(paths, forged, baseEvents);
+
+    if (want === "rejected") {
+      assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_foreign", label);
+      assert.equal(readFileSync(paths.journalFile, "utf8"), forged, `${label}: 무효 journal이 사라졌다`);
+      assert.equal(readFileSync(paths.eventsFile, "utf8"), baseEvents + (JSON.parse(forged) as { events: string }).events, `${label}: 남의 바이트를 지웠다`);
+    } else {
+      // 완전히 일관된 위조라도 **되돌린다**(복구는 후속을 만들 권한이 없다).
+      const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+      assert.equal(existsSync(paths.journalFile), false, `${label}: journal이 남았다`);
+      assert.equal(readFileSync(paths.eventsFile, "utf8"), baseEvents, `${label}: 위조 append가 남았다`);
+      assert.equal(reopened.getTask("root")!.state, "running", `${label}: 위조 state가 승격됐다`);
+    }
+    assert.equal(readFileSync(paths.stateFile, "utf8"), baseState, `${label}: state 바이트가 바뀌었다`);
+  }
+});
+
+test("[M5b] A3(6차): key 순서를 바꾼 event 줄은 정규형이 아니다", () => {
+  const { ws, k } = bootRoot();
+  const p = put(ws, "docs/a.md", "a\n");
+  const paths = runPaths(ws, RUN_ID);
+  assert.equal(
+    withCommitFault("events:append", () => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))),
+    true,
+  );
+  const valid = JSON.parse(readFileSync(paths.journalFile, "utf8")) as Record<string, unknown>;
+  const baseState = readFileSync(paths.stateFile, "utf8");
+  const baseEvents = readFileSync(paths.eventsFile, "utf8");
+  // 첫 줄의 key 순서만 뒤집는다(값은 그대로) — 체인·digest는 rebuild가 전부 맞춰 준다.
+  const reordered = rebuildJournal(valid, {
+    editLines: (lines) =>
+      lines.map((l, i) => {
+        if (i !== 0) return l;
+        const ev = JSON.parse(l) as Record<string, unknown>;
+        return JSON.stringify(Object.fromEntries(Object.entries(ev).reverse()));
+      }),
+  });
+  assert.notEqual(reordered, JSON.stringify(valid), "변조가 아무것도 바꾸지 않았다(회귀가 공허하다)");
+  plantJournal(paths, reordered, baseEvents);
+
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_invalid");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), baseState, "state가 바뀌었다");
+  assert.equal(readFileSync(paths.journalFile, "utf8"), reordered, "무효 journal이 사라졌다");
+});
+
+test("[M5b] A3(6차): journal body 목록은 base→target 새 메시지 delta와 정확히 같아야 한다", () => {
+  const cases: Array<[string, (bodies: any[], j: Record<string, unknown>) => unknown]> = [
+    ["delta를 누락했다", () => []],
+    ["없는 delta를 추가했다", (bodies) => [...bodies, { ...bodies[0], messageId: "extra-body" }]],
+    [
+      "기준에 이미 있는 메시지를 delta라고 주장한다",
+      (bodies, j) => {
+        const st = JSON.parse(j.state as string) as any;
+        const old = st.messages.find((m: any) => m.messageId === "asg-root");
+        return [{ ...bodies[0], messageId: old.messageId, sha256: old.bodySha256 }];
+      },
+    ],
+  ];
+  for (const [label, editBodies] of cases) {
+    const { ws, k } = bootRoot();
+    const p = put(ws, "docs/a.md", "a\n");
+    const paths = runPaths(ws, RUN_ID);
+    assert.equal(
+      withCommitFault("events:append", () => k.completeTaskWithArtifacts(completeInput([{ path: p, role: "output" }]))),
+      true,
+    );
+    const valid = JSON.parse(readFileSync(paths.journalFile, "utf8")) as Record<string, unknown>;
+    const baseState = readFileSync(paths.stateFile, "utf8");
+    const baseEvents = readFileSync(paths.eventsFile, "utf8");
+    const tampered = rebuildJournal(valid, { bodies: editBodies(valid.bodies as any[], valid) });
+    plantJournal(paths, tampered, baseEvents);
+
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_invalid", label);
+    assert.equal(readFileSync(paths.stateFile, "utf8"), baseState, `${label}: state가 바뀌었다`);
+    assert.equal(readFileSync(paths.journalFile, "utf8"), tampered, `${label}: 무효 journal이 사라졌다`);
+  }
+});
+
+test("[M5b] A3(6차): 남의 최종 body는 digest가 같아도 채택·덮어쓰기하지 않는다", () => {
+  for (const how of ["same-digest", "different-digest"] as const) {
+    // state는 이미 durable하고 최종 body만 남은 지점에서, **다른 inode**의 최종 파일을 심는다.
+    const { ws, paths, journal } = pendingAt("body:publish");
+    const staged = readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-"));
+    const foreignText = how === "same-digest" ? readFileSync(join(paths.messagesDir, staged[0]), "utf8") : "# 남의 body\n";
+    const finalFile = join(paths.messagesDir, "r-atomic.md");
+    writeFileSync(finalFile, foreignText);
+    const target = readFileSync(paths.stateFile, "utf8");
+
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign", how);
+    assert.equal(readFileSync(finalFile, "utf8"), foreignText, `${how}: 남의 최종 body를 덮거나 지웠다`);
+    assert.equal(readFileSync(paths.stateFile, "utf8"), target, `${how}: state가 바뀌었다`);
+    assert.equal(readFileSync(paths.journalFile, "utf8"), journal, `${how}: journal이 사라졌다`);
+    assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 1, `${how}: staging을 지웠다`);
+  }
+});
+
+test("[M5b] A3(6차): 계획과 발행 사이에 최종 파일이 생기면 덮지 않고 fail closed다", () => {
+  const { ws, paths, journal } = pendingAt("body:publish");
+  const finalFile = join(paths.messagesDir, "r-atomic.md");
+  const target = readFileSync(paths.stateFile, "utf8");
+  // 복구의 발행 경계에서 **던지지 않고** 남의 최종 파일을 만든다 → link(2)가 EEXIST를 받는다.
+  let planted = false;
+  setCommitFaultHook(() => {
+    if (planted) return;
+    planted = true;
+    writeFileSync(finalFile, "# 경합으로 끼어든 남의 body\n");
+  });
+  try {
+    assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_body_foreign");
+  } finally {
+    setCommitFaultHook(null);
+  }
+  assert.equal(planted, true, "발행 경계 hook이 불리지 않았다(회귀가 공허하다)");
+  assert.equal(readFileSync(finalFile, "utf8"), "# 경합으로 끼어든 남의 body\n", "남의 파일을 덮었다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), target, "state가 바뀌었다");
+  assert.equal(readFileSync(paths.journalFile, "utf8"), journal, "journal이 사라졌다");
+});
+
+test("[M5b] A3(6차): roll back은 같은 digest의 남의 최종 body도 지우지 않는다", () => {
+  // 디스크가 아직 기준인 지점(roll back 대상)에서 staged body와 **내용이 같은** 최종 파일을 심는다.
+  const { ws, paths, base } = pendingAt("state:write");
+  const staged = readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-"));
+  assert.equal(staged.length, 1, "staged body가 없다(회귀가 공허하다)");
+  const sameDigest = readFileSync(join(paths.messagesDir, staged[0]), "utf8");
+  const finalFile = join(paths.messagesDir, "r-atomic.md");
+  writeFileSync(finalFile, sameDigest);
+
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(existsSync(paths.journalFile), false, "복구 뒤에도 journal이 남았다");
+  assert.equal(readFileSync(finalFile, "utf8"), sameDigest, "roll back이 같은 digest의 남의 body를 지웠다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), base.state, "roll back이 state를 바꿨다");
+  assert.equal(readFileSync(paths.eventsFile, "utf8"), base.events, "roll back이 event를 되돌리지 않았다");
+  assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 0, "자기 staging을 남겼다");
+  assert.equal(reopened.getTask("root")!.state, "running");
+});
+
+test("[M5b] A3(6차): 다중 body 부분 발행·복구 I/O 실패는 재시도로 멱등하게 완결된다", () => {
+  const { ws, k } = bootRoot();
+  const { input, ids, paths } = twoBodyCommit(ws, k);
+  const baseline = readdirSync(paths.messagesDir).sort();
+  // state까지 durable하게 만든 뒤 body 발행 도중 실패시킨다(첫 body만 발행된다).
+  assert.equal(withCommitFault("body:publish", () => void commitRun(paths, input)), true);
+  const target = readFileSync(paths.stateFile, "utf8");
+  assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 2, "staged body 2건이 아니다");
+
+  // 복구 중 **두 번째** body에서 I/O 실패 → 첫 body만 발행되고 journal이 남는다.
+  let calls = 0;
+  setCommitFaultHook(() => {
+    if (++calls === 2) throw new Error("주입 실패: 복구 중 body 발행");
+  });
+  try {
+    assert.throws(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID }));
+  } finally {
+    setCommitFaultHook(null);
+  }
+  assert.equal(existsSync(paths.journalFile), true, "부분 발행 뒤 journal이 사라졌다");
+  assert.equal(existsSync(join(paths.messagesDir, `${ids[0]}.md`)), true, "첫 body가 발행되지 않았다");
+  assert.equal(existsSync(join(paths.messagesDir, `${ids[1]}.md`)), false, "실패한 두 번째 body가 발행됐다");
+  assert.equal(readdirSync(paths.messagesDir).filter((f) => f.startsWith(".staged-")).length, 1, "남은 staging이 1건이 아니다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), target, "복구 실패가 state를 바꿨다");
+
+  // 재시도는 남은 body를 발행하고 정리까지 끝낸다(멱등).
+  const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID });
+  assert.equal(existsSync(paths.journalFile), false, "재시도 뒤에도 journal이 남았다");
+  assert.deepEqual(readdirSync(paths.messagesDir).sort(), [...baseline, ...ids.map((i) => `${i}.md`)].sort());
+  for (const id of ids) assert.ok(reopened.getMessage(id), `${id}가 색인에 없다`);
+});
+
+test("[M5b] A3(6차): 목표 state 바이트인데 append가 불완전하면 마무리하지 않는다", () => {
+  const { ws, paths, journal } = pendingAt("body:publish");
+  const target = readFileSync(paths.stateFile, "utf8");
+  const events = readFileSync(paths.eventsFile);
+  truncateSync(paths.eventsFile, events.length - 5); // 목표 state + 찢어진 append
+  const after = readFileSync(paths.eventsFile);
+
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID })), "journal_unrecognized");
+  assert.deepEqual(readFileSync(paths.eventsFile), after, "event 바이트를 바꿨다");
+  assert.equal(readFileSync(paths.stateFile, "utf8"), target, "state가 바뀌었다");
+  assert.equal(readFileSync(paths.journalFile, "utf8"), journal, "journal이 사라졌다");
+  assert.equal(existsSync(join(paths.messagesDir, "r-atomic.md")), false, "최종 body를 만들었다");
 });
 
 // ── M5b 4차 리뷰 A4: 호출자 소유 산출물은 한 번만 읽어 입양한다 ────────────────
@@ -3143,6 +3531,14 @@ test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치�
   assert.equal(s.properties.allowedDependencies.items.additionalProperties, false);
   assert.equal(s.properties.allowedDependencies.items.properties.name.pattern, DEPENDENCY_NAME_PATTERN);
   assert.equal(s.properties.allowedDependencies.items.properties.version.pattern, DEPENDENCY_VERSION_PATTERN);
+  // 6차 리뷰 A1 — 승인된 실행 권위도 계약 문서와 런타임 validator가 같은 집합이어야 한다.
+  assert.deepEqual(s.properties.executionAuthority.required, [...EXECUTION_AUTHORITY_KEYS]);
+  assert.equal(s.properties.executionAuthority.additionalProperties, false);
+  assert.deepEqual(Object.keys(s.properties.executionAuthority.properties).sort(), [...EXECUTION_AUTHORITY_KEYS].sort());
+  assert.deepEqual(s.definitions.approvedExecutable.required, [...APPROVED_EXECUTABLE_KEYS]);
+  assert.equal(s.definitions.approvedExecutable.additionalProperties, false);
+  assert.equal(s.definitions.approvedExecutable.properties.sha256.pattern, SHA256_PATTERN);
+  assert.equal(s.definitions.approvedExecutable.properties.path.maxLength, LIMITS.maxPathLength);
   assert.equal(s.properties.allowedNetworkDomains.maxItems, LIMITS.maxAllowedNetworkDomains);
   assert.equal(s.properties.allowedNetworkDomains.items.pattern, DOMAIN_PATTERN);
   assert.equal(s.properties.allowedNetworkDomains.items.maxLength, LIMITS.maxDomainLength);

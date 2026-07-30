@@ -23,6 +23,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,7 +32,7 @@ import { runProcess } from "./runProcess.js";
 import {
   CodexCliProvider,
   assertIsolatedCodexHome,
-  assertTrustedExecutable,
+  verifyCodexExecutable,
   compileCodexArgs,
   compileCodexEnv,
   resolveCodexOptions,
@@ -63,9 +64,42 @@ const TRUSTED_GIT = findGit();
 
 type ProviderOpts = ConstructorParameters<typeof CodexCliProvider>[0];
 
-/** 모든 생성 지점에 신뢰된 git 경로를 채워 준다(계약은 그대로 — 인자만 채운다). */
-function codexProvider(opts: Omit<ProviderOpts, "gitExecutablePath"> & { gitExecutablePath?: string }): CodexCliProvider {
-  return new CodexCliProvider({ gitExecutablePath: TRUSTED_GIT, ...opts });
+/** 파일 내용 digest(없는 파일은 절대 맞지 않는 값) — 승인 record에 적을 값이다. */
+function digestOf(file: unknown): string {
+  try {
+    return createHash("sha256").update(readFileSync(file as string)).digest("hex");
+  } catch {
+    return "0".repeat(64);
+  }
+}
+
+/** 승인된 실행 권위 record 한 벌(6차 리뷰 A1). */
+function authorityFor(codexPath: unknown, gitPath: unknown = TRUSTED_GIT, codexSha?: string) {
+  return {
+    codex: { path: codexPath as string, sha256: codexSha ?? digestOf(codexPath) },
+    git: { path: gitPath as string, sha256: digestOf(gitPath) },
+  };
+}
+
+/**
+ * **테스트 편의 shim.** production 계약에는 실행 파일 경로 옵션이 없다(6차 리뷰 A1 — 경로·digest는
+ * 승인 manifest에서만 온다). 기존 테스트가 쓰는 `executablePath`/`gitExecutablePath`는 여기서
+ * **manifest의 `executionAuthority`로 접혀** 들어간다: 즉 이 shim은 "승인된 실행 권위"를 만드는 것이고
+ * provider에 경로를 따로 주는 통로를 되살리는 것이 아니다.
+ */
+function codexProvider(
+  opts: ProviderOpts & { executablePath?: unknown; gitExecutablePath?: unknown; codexSha256?: string },
+): CodexCliProvider {
+  const { executablePath, gitExecutablePath, codexSha256, ...rest } = opts;
+  // **명시 `undefined`도 그대로 전달한다**(키 부재와 구분) — 경로 계약 회귀가 공허해지지 않게.
+  const codexPath = "executablePath" in opts ? executablePath : TRUSTED_BIN;
+  const gitPath = "gitExecutablePath" in opts ? gitExecutablePath : TRUSTED_GIT;
+  const m = rest.manifest;
+  const withAuthority =
+    typeof m === "object" && m !== null
+      ? { ...(m as Record<string, unknown>), executionAuthority: authorityFor(codexPath, gitPath, codexSha256) }
+      : m;
+  return new CodexCliProvider({ ...rest, manifest: withAuthority });
 }
 const TID = "0199a1b2-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
 const TID2 = "0199ffff-c3d4-4e5f-8a9b-0c1d2e3f4a5b";
@@ -99,6 +133,7 @@ function manifest(approvedCommit: string) {
     allowedCommands: [],
     allowedDependencies: [],
     allowedNetworkDomains: [],
+    executionAuthority: authorityFor(TRUSTED_BIN, TRUSTED_GIT),
     maxSessions: 2,
     maxTokens: 1000,
     maxElapsedMs: 60_000,
@@ -342,27 +377,39 @@ test("[M5a] 설정은 fail closed: codexHome 필수 · workspace-write hard deny
   );
 });
 
-test("[M5a] 실행 파일 신원: 절대·정규·비-symlink 일반 파일·실행 비트·타인 쓰기 금지", async () => {
+test("[M5a/6차] 승인된 실행 파일: 절대·정규·비-symlink 일반 파일·실행 비트·타인 쓰기 금지 + **내용 digest**", async () => {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-bin-")));
+  const check = (path: unknown, sha256 = digestOf(path)) => verifyCodexExecutable({ path: path as string, sha256 });
   try {
-    assert.equal(assertTrustedExecutable(TRUSTED_BIN), TRUSTED_BIN);
-    assert.equal(await codeOfCall(() => assertTrustedExecutable("codex")), "codex_config_invalid");
-    assert.equal(await codeOfCall(() => assertTrustedExecutable(undefined)), "codex_config_invalid");
-    assert.equal(await codeOfCall(() => assertTrustedExecutable(join(dir, "missing"))), "codex_executable_invalid");
-    assert.equal(await codeOfCall(() => assertTrustedExecutable(dir)), "codex_executable_invalid", "디렉터리 거부");
+    assert.equal(check(TRUSTED_BIN).path, TRUSTED_BIN);
+    assert.equal(await codeOfCall(() => check("codex")), "codex_config_invalid");
+    assert.equal(await codeOfCall(() => check(undefined)), "codex_config_invalid");
+    assert.equal(await codeOfCall(() => check(join(dir, "missing"))), "codex_executable_invalid");
+    assert.equal(await codeOfCall(() => check(dir)), "codex_executable_invalid", "디렉터리 거부");
 
     const link = join(dir, "link-to-node");
     symlinkSync(TRUSTED_BIN, link);
-    assert.equal(await codeOfCall(() => assertTrustedExecutable(link)), "codex_executable_invalid", "symlink 거부");
+    assert.equal(await codeOfCall(() => check(link)), "codex_executable_invalid", "symlink 거부");
 
     const plain = join(dir, "plain.sh");
     writeFileSync(plain, "#!/bin/sh\necho hi\n", { mode: 0o644 });
-    assert.equal(await codeOfCall(() => assertTrustedExecutable(plain)), "codex_executable_invalid", "실행 비트 없음");
+    assert.equal(await codeOfCall(() => check(plain)), "codex_executable_invalid", "실행 비트 없음");
 
     chmodSync(plain, 0o777);
-    assert.equal(await codeOfCall(() => assertTrustedExecutable(plain)), "codex_executable_invalid", "타인 쓰기 가능");
+    assert.equal(await codeOfCall(() => check(plain)), "codex_executable_invalid", "타인 쓰기 가능");
     chmodSync(plain, 0o755);
-    assert.equal(assertTrustedExecutable(plain), plain);
+    assert.equal(check(plain).path, plain);
+
+    // **승인된 내용이 아니면 거부다**(6차 리뷰 A1): digest 불일치와 **같은 inode 제자리 덮어쓰기**.
+    assert.equal(await codeOfCall(() => check(plain, "0".repeat(64))), "codex_executable_digest_mismatch");
+    const approved = digestOf(plain);
+    const pinnedId = check(plain).id;
+    writeFileSync(plain, "#!/bin/sh\necho 다른 프로그램\n", { mode: 0o755 });
+    assert.equal(
+      await codeOfCall(() => verifyCodexExecutable({ path: plain, sha256: approved }, pinnedId)),
+      "codex_executable_digest_mismatch",
+      "같은 inode 제자리 교체가 통과했다",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -528,10 +575,23 @@ test("[M5a] 실행 파일이 신뢰 조건을 어기면 spawn 0 — env로 대�
         await expectNoSpawn((repo, home, calls) =>
           providerWith(repo, repo.root, calls, { executablePath: bin }).start(specFor(repo.root, home), "p"),
         ),
-        bin === "codex" || bin === "" || bin === undefined ? "codex_config_invalid" : "codex_executable_invalid",
+        // 경로 계약 위반은 **승인 manifest validator**가 먼저 닫는다(6차 리뷰 A1 — 경로는 승인 안에 있다).
+        bin === "codex" || bin === "" || bin === undefined ? "invalid_manifest" : "codex_executable_invalid",
         String(bin),
       );
     }
+    // 승인된 내용과 다른 실행 파일(신뢰 조건은 만족)도 **생성 자체가** 실패한다 → spawn 0.
+    const wrong = join(dir, "wrong-content");
+    writeFileSync(wrong, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    assert.equal(
+      await expectNoSpawn((repo, home, calls) =>
+        providerWith(repo, repo.root, calls, { executablePath: wrong, codexSha256: "0".repeat(64) }).start(
+          specFor(repo.root, home),
+          "p",
+        ),
+      ),
+      "codex_executable_digest_mismatch",
+    );
     // 정상 경로에서는 env가 오염돼 있어도 **명시 경로로만** spawn하고 env를 물려주지 않는다.
     const repo = await initRepo();
     const home = codexHome();
@@ -1862,10 +1922,8 @@ test("[M5b] 핸들 계약의 정확한 능력: 신원 참조를 보존한 사본
 // ── turn 사이 spec/opts 드리프트 (재개된 C-23) ─────────────────────────────
 
 interface DriftOpts {
-  /** 호출자가 계속 들고 있는 승인 manifest 참조 — 통째로 갈아끼울 수 있다. */
+  /** 호출자가 계속 들고 있는 승인 manifest 참조 — 통째로 갈아끼울 수 있다(실행 권위도 그 안이다). */
   manifest: unknown;
-  executablePath: string;
-  gitExecutablePath: string;
   /** 시각 권위. 없을 수도(= `Date.now` 봉인), 나중에 끼워 넣을 수도 있다. */
   nowMs?: () => number;
 }
@@ -1886,8 +1944,6 @@ async function betweenTurnDrift(
     const opts: DriftOpts & { controllerRepoRoot: string; spawn: SpawnFn } = {
       manifest: manifest(repo.head),
       controllerRepoRoot: repo.root,
-      executablePath: TRUSTED_BIN,
-      gitExecutablePath: TRUSTED_GIT,
       spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
     };
     const provider = new CodexCliProvider(opts);
@@ -1976,24 +2032,25 @@ test("[M5a] C-23: turn 사이 spec/opts 변조는 새 baseline이 되지 못한�
       },
       "codex_spec_mutated",
     ],
+    // 실행 파일 경로는 이제 **승인 manifest 안**에 있다(6차 리뷰 A1) → 교체는 manifest 드리프트다.
     [
-      "codexBinaryPath",
+      "승인된 codex 실행 파일 경로",
       (_s, o) => {
-        const prev = o.executablePath;
-        o.executablePath = "/private/tmp";
+        const prev = o.manifest;
+        o.manifest = { ...(prev as Record<string, unknown>), executionAuthority: authorityFor("/private/tmp") };
         return () => {
-          o.executablePath = prev;
+          o.manifest = prev;
         };
       },
       "codex_spec_mutated",
     ],
     [
-      "gitExecutablePath",
+      "승인된 git 실행 파일 경로",
       (_s, o) => {
-        const prev = o.gitExecutablePath;
-        o.gitExecutablePath = "/private/tmp";
+        const prev = o.manifest;
+        o.manifest = { ...(prev as Record<string, unknown>), executionAuthority: authorityFor(TRUSTED_BIN, "/private/tmp") };
         return () => {
-          o.gitExecutablePath = prev;
+          o.manifest = prev;
         };
       },
       "codex_spec_mutated",

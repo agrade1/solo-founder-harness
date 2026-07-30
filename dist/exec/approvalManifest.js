@@ -7,11 +7,16 @@
  *
  * 이 모듈은 **아무것도 실행하지 않는다.** shell 파싱·패키지 설치·네트워크 접근·git merge·provider
  * 호출은 없다. 여기 있는 것은 ⓐ manifest의 closed 검증 ⓑ role registry ⓒ M5 executor가 쓸
- * **순수 조회(allow/deny) 술어 3개**뿐이다. 조회는 전부 deny-by-default이며 manifest 밖은 거부한다.
+ * **순수 조회(allow/deny) 술어 3개**뿐이다.
+ *
+ * **M5b 6차 리뷰 A1 — `executionAuthority`가 실행 권위의 trust root다.** manifest는 승인된 codex·git
+ * 실행 파일의 **정규 절대경로 + 내용 SHA-256**을 담고, provider·controller·실행 경계는 그것만 쓴다
+ * (호출자가 경로를 고르는 옵션은 없다). 여기서는 **형태만** 검증하고 파일 시스템은 만지지 않는다 —
+ * 내용·신원 검증은 spawn 직전 `executionBoundary.verifyApprovedExecutable`이 한다. 조회는 전부 deny-by-default이며 manifest 밖은 거부한다.
  * repo의 hard deny(production deploy · live billing · 원격 쓰기 · PR merge · MCP `@latest`)는
  * manifest가 무엇을 담든 **항상 더 강하다**.
  */
-import { LIMITS, OrchestrationError, SLUG_PATTERN, assertSlug, assertTimestamp, isSlug, normalizeWorkspacePath, } from "./orchestrationTypes.js";
+import { LIMITS, OrchestrationError, SHA256_PATTERN, SLUG_PATTERN, assertSlug, assertTimestamp, isSlug, normalizeWorkspacePath, } from "./orchestrationTypes.js";
 /**
  * 로드맵 §6의 기본 상위 specialist 7종 — **이 레포의 유일한 정본 registry**다.
  * 중앙이 들고 있는 서술 metadata이며 agent가 스스로 role·scope·권한·도구를 만드는 통로가 아니다.
@@ -61,6 +66,7 @@ export const MANIFEST_KEYS = [
     "allowedCommands",
     "allowedDependencies",
     "allowedNetworkDomains",
+    "executionAuthority",
     "maxSessions",
     "maxTokens",
     "maxElapsedMs",
@@ -68,6 +74,9 @@ export const MANIFEST_KEYS = [
     "expiresAt",
 ];
 export const DEPENDENCY_KEYS = ["name", "version"];
+/** 승인된 실행 권위: codex 하나 · git 하나. 더 넣거나 빼면 `invalid_manifest`다. */
+export const EXECUTION_AUTHORITY_KEYS = ["codex", "git"];
+export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"];
 /** 구체적인 approved commit — 40자 소문자 hex만. 짧은 해시·브랜치·tag는 거부한다. */
 export const COMMIT_PATTERN = "^[0-9a-f]{40}$";
 const COMMIT_RE = new RegExp(COMMIT_PATTERN);
@@ -141,6 +150,38 @@ function normalizeDomain(v, what) {
 export function pathWithin(child, root) {
     return child === root || child.startsWith(`${root}/`);
 }
+/**
+ * 승인된 실행 파일 1건. **경로 계약과 digest 형태만** 본다 — 파일 시스템은 만지지 않는다
+ * (내용·신원 검증은 실행 직전에 `executionBoundary.verifyApprovedExecutable`이 한다).
+ * 경로는 NUL 없는 절대경로이고 `.`/`..` segment·중복 `/`·후행 `/`가 없어야 한다(정규형).
+ */
+function validateApprovedExecutable(raw, what) {
+    const o = asObject(raw, what);
+    closedKeys(o, APPROVED_EXECUTABLE_KEYS, what);
+    const path = o.path;
+    if (typeof path !== "string" ||
+        path.length === 0 ||
+        path.length > LIMITS.maxPathLength ||
+        path.includes("\0") ||
+        !path.startsWith("/") ||
+        path.endsWith("/") ||
+        path.split("/").slice(1).some((seg) => seg === "" || seg === "." || seg === "..")) {
+        throw new OrchestrationError("invalid_manifest", `${what}.path는 정규 절대경로여야 한다`);
+    }
+    if (typeof o.sha256 !== "string" || !new RegExp(SHA256_PATTERN).test(o.sha256)) {
+        throw new OrchestrationError("invalid_manifest", `${what}.sha256은 64자 소문자 hex digest여야 한다`);
+    }
+    return { path, sha256: o.sha256 };
+}
+/** 승인된 실행 권위 전체(codex + git). 누락·미상 key는 거부한다 — 조용한 기본값이 없다. */
+function validateExecutionAuthority(raw) {
+    const o = asObject(raw, "manifest.executionAuthority");
+    closedKeys(o, EXECUTION_AUTHORITY_KEYS, "manifest.executionAuthority");
+    return {
+        codex: validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
+        git: validateApprovedExecutable(o.git, "manifest.executionAuthority.git"),
+    };
+}
 function validateDependency(raw) {
     const o = asObject(raw, "allowedDependencies 항목");
     closedKeys(o, DEPENDENCY_KEYS, "allowedDependencies 항목");
@@ -206,6 +247,7 @@ export function validateApprovalManifest(raw) {
         allowedCommands: normalizedList(o.allowedCommands, "manifest.allowedCommands", LIMITS.maxAllowedCommands, normalizeCommand),
         allowedDependencies,
         allowedNetworkDomains: normalizedList(o.allowedNetworkDomains, "manifest.allowedNetworkDomains", LIMITS.maxAllowedNetworkDomains, normalizeDomain),
+        executionAuthority: validateExecutionAuthority(o.executionAuthority),
         maxSessions: boundedInt(o.maxSessions, "manifest.maxSessions", 1, LIMITS.maxManifestSessions),
         maxTokens: o.maxTokens === null ? null : boundedInt(o.maxTokens, "manifest.maxTokens", 1, LIMITS.maxManifestTokens),
         maxElapsedMs: boundedInt(o.maxElapsedMs, "manifest.maxElapsedMs", 1, LIMITS.maxManifestElapsedMs),
@@ -239,5 +281,5 @@ export function networkDomainAllowed(manifest, domain) {
         return false;
     return manifest.allowedNetworkDomains.includes(domain);
 }
-/** slug 규칙을 registry 문서에서도 쓰기 위해 재수출한다(중복 정의 금지). */
-export { SLUG_PATTERN };
+/** slug·digest 규칙을 registry 문서에서도 쓰기 위해 재수출한다(중복 정의 금지). */
+export { SHA256_PATTERN, SLUG_PATTERN };

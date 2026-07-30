@@ -15,6 +15,8 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runProcess } from "./runProcess.js";
@@ -41,9 +43,26 @@ function findGit(): string {
 }
 const GIT = findGit();
 
-/** 모든 호출에 신뢰된 git 경로를 채워 주는 래퍼(계약은 그대로 — 인자만 채운다). */
-function verify(input: Omit<ExecutionBoundaryInput, "gitExecutablePath"> & { gitExecutablePath?: string }) {
-  return verifyExecutionBoundary({ gitExecutablePath: input.gitExecutablePath ?? GIT, ...input });
+/** 파일 내용 digest — 승인 record에 적을 값이다(6차 리뷰 A1). */
+function digestOf(file: string): string {
+  return createHash("sha256").update(readFileSync(file)).digest("hex");
+}
+const GIT_SHA = digestOf(GIT);
+
+/** 경계는 이제 git 경로를 **승인 manifest에서만** 읽는다 — 호출자 옵션이 없다. */
+function verify(input: ExecutionBoundaryInput) {
+  return verifyExecutionBoundary(input);
+}
+
+/**
+ * 승인된 실행 권위(6차 리뷰 A1). git은 실제로 실행되므로 실측 경로·digest이고, codex는 이 경계가
+ * 열지 않으므로 형태만 있으면 된다.
+ */
+function authority(over: { path?: string; sha256?: string } = {}) {
+  return {
+    codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+    git: { path: over.path ?? GIT, sha256: over.sha256 ?? GIT_SHA },
+  };
 }
 
 function manifest(over: Record<string, unknown> = {}) {
@@ -55,6 +74,7 @@ function manifest(over: Record<string, unknown> = {}) {
     allowedCommands: ["npm run build"],
     allowedDependencies: [],
     allowedNetworkDomains: [],
+    executionAuthority: authority(),
     maxSessions: 2,
     maxTokens: 1000,
     maxElapsedMs: 60_000,
@@ -258,16 +278,20 @@ test("[M5a] git 실행 파일은 신뢰된 절대·정규 경로여야 한다(�
   const repo = await initRepo();
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "m5a-gitbin-")));
   try {
-    const call = (gitExecutablePath: unknown) =>
+    // 경로·digest는 **승인 manifest**에서만 온다(호출자 옵션 없음 — 6차 리뷰 A1).
+    const call = (path: unknown, sha256?: string) =>
       verify({
-        manifest: manifest({ approvedCommit: repo.head }),
+        manifest: manifest({
+          approvedCommit: repo.head,
+          executionAuthority: { codex: authority().codex, git: { path: path as string, sha256: sha256 ?? GIT_SHA } },
+        }),
         controllerRepoRoot: repo.root,
         targetWorktree: repo.root,
-        gitExecutablePath: gitExecutablePath as string,
       });
-    assert.equal(await code(() => call("git")), "boundary_git_path_invalid", "이름으로는 부르지 않는다");
-    assert.equal(await code(() => call(undefined)), "boundary_git_path_invalid");
-    assert.equal(await code(() => call("")), "boundary_git_path_invalid");
+    // manifest validator가 먼저 경로 계약을 닫는다(상대 경로·빈 값·비문자열).
+    assert.equal(await code(() => call("git")), "invalid_manifest", "이름으로는 부르지 않는다");
+    assert.equal(await code(() => call(undefined)), "invalid_manifest");
+    assert.equal(await code(() => call("")), "invalid_manifest");
     assert.equal(await code(() => call(join(dir, "missing"))), "boundary_git_untrusted");
     assert.equal(await code(() => call(dir)), "boundary_git_untrusted", "디렉터리 거부");
 
@@ -277,9 +301,16 @@ test("[M5a] git 실행 파일은 신뢰된 절대·정규 경로여야 한다(�
 
     const fake = join(dir, "git");
     writeFileSync(fake, "#!/bin/sh\necho 0000000000000000000000000000000000000000\n", { mode: 0o644 });
-    assert.equal(await code(() => call(fake)), "boundary_git_untrusted", "실행 비트 없음");
+    assert.equal(await code(() => call(fake, digestOf(fake))), "boundary_git_untrusted", "실행 비트 없음");
     chmodSync(fake, 0o777);
-    assert.equal(await code(() => call(fake)), "boundary_git_untrusted", "타인 쓰기 가능");
+    assert.equal(await code(() => call(fake, digestOf(fake))), "boundary_git_untrusted", "타인 쓰기 가능");
+    // **승인된 내용과 다르면** 신뢰 조건을 다 만족해도 거부다(6차 리뷰 A1).
+    chmodSync(fake, 0o755);
+    assert.equal(await code(() => call(fake, "0".repeat(64))), "boundary_git_digest_mismatch", "승인 digest 불일치");
+    // 같은 inode를 **제자리에서 덮어써도** 거부다 — path/dev/ino만 보던 이전 판의 구멍이다.
+    const approved = digestOf(fake);
+    writeFileSync(fake, "#!/bin/sh\nexec /usr/bin/true\n", { mode: 0o755 });
+    assert.equal(await code(() => call(fake, approved)), "boundary_git_digest_mismatch", "같은 inode 제자리 교체");
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
@@ -353,12 +384,11 @@ test("[M5a] revalidateSync: git 실행 파일이 교체되면 spawn 직전에 �
     // 신뢰된 git으로 exec하는 wrapper를 만들어 그것으로 경계를 통과시킨다(절대경로 exec — PATH 불필요).
     const wrapper = `#!/bin/sh\nexec ${GIT} "$@"\n`;
     writeFileSync(pinned, wrapper, { mode: 0o755 });
-    const v = await verify({
-      manifest: manifest({ approvedCommit: repo.head }),
-      controllerRepoRoot: repo.root,
-      targetWorktree: repo.root,
-      gitExecutablePath: pinned,
+    const pinnedManifest = manifest({
+      approvedCommit: repo.head,
+      executionAuthority: { codex: authority().codex, git: { path: pinned, sha256: digestOf(pinned) } },
     });
+    const v = await verify({ manifest: pinnedManifest, controllerRepoRoot: repo.root, targetWorktree: repo.root });
     v.revalidateSync();
 
     // 같은 경로·같은 권한·같은 내용, **다른 inode**로 교체(rename) → 신원 불일치로 거부.
@@ -366,6 +396,19 @@ test("[M5a] revalidateSync: git 실행 파일이 교체되면 spawn 직전에 �
     writeFileSync(other, wrapper, { mode: 0o755 });
     renameSync(other, pinned);
     assert.equal(await code(() => v.revalidateSync()), "boundary_git_identity_changed");
+
+    // 같은 inode를 **제자리에서 덮어쓰면** 내용 digest가 spawn 직전에 거부한다(6차 리뷰 A1).
+    const v2 = await verify({
+      manifest: manifest({
+        approvedCommit: repo.head,
+        executionAuthority: { codex: authority().codex, git: { path: pinned, sha256: digestOf(pinned) } },
+      }),
+      controllerRepoRoot: repo.root,
+      targetWorktree: repo.root,
+    });
+    v2.revalidateSync();
+    writeFileSync(pinned, `#!/bin/sh\nexec ${GIT} "$@" # 뒤에 붙은 한 줄\n`, { mode: 0o755 });
+    assert.equal(await code(() => v2.revalidateSync()), "boundary_git_digest_mismatch");
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });

@@ -79,6 +79,10 @@ const MANIFEST = {
   ),
   allowedCommands: ["npm test"],
   allowedDependencies: [],
+  executionAuthority: {
+    codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+    git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+  },
   allowedNetworkDomains: [],
   maxSessions: 4,
   maxTokens: null,

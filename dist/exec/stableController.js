@@ -31,11 +31,18 @@
  *   인스턴스**가 전부 거부된다. **주장 범위는 정직하게 좁다**: 같은 프로세스 안에서 *공개 API만으로는*
  *   못 들어온다는 것이고, OS 샌드박스 격리를 주장하지 않는다.
  *   **5차 리뷰 A1 정정**: 그 판은 **메서드 신원만** 증명했으므로 임의의 valid-mode 실행 파일(사용자 소유
- *   0700 스크립트·`/bin/echo`)을 든 provider도 그대로 bridge를 지났다. 지금은 controller가 **명시 필수
- *   옵션 `codexExecutablePath`** 를 스스로 검증하고(정규 경로 + dev/ino) `gitExecutablePath`·checkout
- *   루트·**kernel(SoR) 승인의 canonical digest**·시각 권위와 함께 **기대 권위**로 만들어 증명 함수에
- *   넘긴다. provider가 다른 권위로 발급됐으면 **git도 codex도 띄우기 전에** 생성이 거부된다
- *   (`controller_provider_authority_mismatch`). git 신원은 실행 경계에도 pin으로 넘어간다.
+ *   0700 스크립트·`/bin/echo`)을 든 provider도 그대로 bridge를 지났다.
+ *   **6차 리뷰 A1 정정**: 그 다음 판은 기대 codex·git 경로를 **호출자 옵션**으로 받았으므로,
+ *   provider와 controller에 **같은 임의 경로**(`/usr/bin/true`·사용자 소유 0700 sentinel)를 주면 양쪽이
+ *   같은 path/dev/ino를 관측해 `authorityMatches: true`가 됐다 — "기대값"이 독립 trust root가 아니라
+ *   같은 caller 입력이었다. 같은 inode를 **제자리에서 덮어쓰는** 교체도 dev/ino 검사를 통과했다.
+ *   지금 실행 권위의 유일한 출처는 **kernel(SoR)의 승인 manifest `executionAuthority`** 다:
+ *   codex·git의 **정규 절대경로 + 내용 SHA-256**이 승인 안에 있고(그 승인은 run 생성 시 durable state에
+ *   봉인돼 state↔event binding으로 손편집이 거부된다), controller는 그 경로를 **자기 손으로 열어**
+ *   신원(dev+ino)과 **내용 digest**까지 검증한 뒤 checkout 루트·승인 canonical digest·시각 권위와 함께
+ *   **기대 권위**를 만들어 증명 함수에 넘긴다. provider가 다른 권위로 발급됐으면 **git도 codex도 띄우기
+ *   전에** 생성이 거부된다(`controller_provider_authority_mismatch`). 실행 파일 경로를 고르는 호출자
+ *   옵션은 **존재하지 않는다**. git 신원은 실행 경계에도 pin으로 넘어간다.
  *   controller 성공 경로 테스트는 **production 생성 경로 + 실제 OS 자식 프로세스**(결정론적 fake codex
  *   실행 파일)로 argv·env·stdin·파서까지 지난다 — live Codex/Claude 추론·네트워크는 0이다.
  * - `SessionSpec`은 `permissionMode: "plan"`만 받는다 → `ClaudeCliProvider`의 **기본 `acceptEdits`** 는
@@ -125,7 +132,7 @@ import { LIMITS, OrchestrationError, formatTimestamp } from "./orchestrationType
 import { ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, normalizeWorkspacePath } from "./orchestrationTypes.js";
 import { commandAllowed, dependencyAllowed, networkDomainAllowed, pathWithin, validateApprovalManifest, } from "./approvalManifest.js";
 import { verifyArtifactFile } from "./orchestrationStore.js";
-import { verifyExecutionBoundary, verifyTrustedExecutable } from "./executionBoundary.js";
+import { verifyApprovedExecutable, verifyExecutionBoundary } from "./executionBoundary.js";
 import { attestOrchestrationKernel } from "./orchestrationKernel.js";
 import { consumeExactlyOneTerminal } from "./types.js";
 import { attestReadOnlyCodexProvider, verifyCodexExecutable } from "./codexCliProvider.js";
@@ -410,6 +417,7 @@ const CONTROLLER_GIT_CODES = {
     path: "boundary_git_path_invalid",
     invalid: "boundary_git_untrusted",
     identity: "boundary_git_identity_changed",
+    digest: "boundary_git_digest_mismatch",
 };
 /**
  * **런타임 사설 권위**(2026-07-28 4차 독립 리뷰 A1).
@@ -439,8 +447,6 @@ export class StableController {
         const providerObj = opts.provider;
         const handoff = opts.handoff;
         const controllerRepoRoot = opts.controllerRepoRoot;
-        const gitExecutablePath = opts.gitExecutablePath;
-        const codexExecutablePath = opts.codexExecutablePath;
         const nowMs = opts.nowMs;
         if (typeof nowMs !== "undefined" && typeof nowMs !== "function") {
             fail("controller_config_invalid", "opts.nowMs는 시각(ms)을 돌려주는 함수여야 한다");
@@ -457,11 +463,12 @@ export class StableController {
         if (manifest.milestoneId !== state.milestoneId) {
             fail("controller_manifest_mismatch", "kernel manifest의 milestone이 run과 다르다");
         }
-        // 기대 실행 권위는 **controller 소유 입력**으로 직접 검증한다(provider 말을 믿지 않는다).
-        // 실패는 신뢰 검증 자체의 코드다(`codex_executable_invalid`/`boundary_git_untrusted` 등).
-        const gitBin = atTrusted(() => verifyTrustedExecutable(gitExecutablePath, "gitExecutablePath", CONTROLLER_GIT_CODES));
+        // 기대 실행 권위는 **kernel 승인 manifest**에서 나오고 controller가 직접 파일을 열어 검증한다
+        // (provider 말도, 호출자 경로도 믿지 않는다 — 6차 리뷰 A1). 실패는 신뢰 검증 자체의 코드다
+        // (`codex_executable_invalid`/`codex_executable_digest_mismatch`/`boundary_git_untrusted` 등).
+        const gitBin = atTrusted(() => verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", CONTROLLER_GIT_CODES));
         const provider = captureProvider(providerObj, {
-            executable: atTrusted(() => verifyCodexExecutable(codexExecutablePath)),
+            executable: atTrusted(() => verifyCodexExecutable(manifest.executionAuthority.codex)),
             git: gitBin,
             controllerRepoRoot,
             manifestDigest: JSON.stringify(manifest),
@@ -472,7 +479,6 @@ export class StableController {
             runId: state.runId,
             milestoneId: state.milestoneId,
             controllerRepoRoot,
-            gitExecutablePath,
             gitIdentity: Object.freeze({ ...gitBin.id }),
             providerId: typeof providerId === "string" ? providerId : "",
             clock,
@@ -491,8 +497,6 @@ export class StableController {
             provider: providerObj,
             handoff,
             controllerRepoRoot,
-            gitExecutablePath,
-            codexExecutablePath,
             providerId,
             clock,
             kernelMethods: kernel.raw,
@@ -719,7 +723,7 @@ export class StableController {
             manifest: this.approvedManifest(), // 방어적 불변 사본(권위 객체를 넘기지 않는다)
             controllerRepoRoot: this.#sealed.controllerRepoRoot,
             targetWorktree: cwd,
-            gitExecutablePath: this.#sealed.gitExecutablePath,
+            // git 경로·내용 digest는 경계가 이 manifest에서 읽는다(6차 리뷰 A1).
             // 생성 시점에 고정한 git 신원과 대조한다 — 그 사이 교체된 git으로는 승인 커밋을 증명하지 못한다.
             gitIdentity: this.#sealed.gitIdentity,
             // 시계는 호출자 콜백이다 — 경계 안에서 던져도 그 코드가 marker가 되지 않게 접어서 넘긴다.
@@ -854,8 +858,8 @@ function buildPins(get, kernel, at) {
         pin("provider", () => get().provider, at.provider),
         pin("handoff", () => get().handoff, at.handoff),
         pin("controllerRepoRoot", () => get().controllerRepoRoot, at.controllerRepoRoot),
-        pin("gitExecutablePath", () => get().gitExecutablePath, at.gitExecutablePath),
-        pin("codexExecutablePath", () => get().codexExecutablePath, at.codexExecutablePath),
+        // 실행 파일 경로 pin은 없다 — 경로 자체가 승인 manifest 안에 있고 `manifestDigest` pin이 그것을
+        // 한 필드도 빠짐없이 대조한다(6차 리뷰 A1).
         pin("providerId", () => get().provider.id, at.providerId),
         pin("clock", () => get().nowMs ?? Date.now, at.clock),
         // run 신원과 승인 canonical digest(SoR에서 **포착된** kernel로 다시 읽는다).

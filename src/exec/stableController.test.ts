@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -81,6 +82,26 @@ async function initRepo(): Promise<{ root: string; head: string }> {
   return { root: dir, head: (await runProcess("git", ["-C", dir, "rev-parse", "HEAD"])).stdout.trim() };
 }
 
+/** 파일 내용 digest(없는 파일은 절대 맞지 않는 값) — 승인 record에 적을 값이다(6차 리뷰 A1). */
+function digestOf(file: unknown): string {
+  try {
+    return createHash("sha256").update(readFileSync(file as string)).digest("hex");
+  } catch {
+    return "0".repeat(64);
+  }
+}
+
+/**
+ * **승인된 실행 권위**(6차 리뷰 A1) — 실행 파일 선택의 유일한 trust root다. 이 record는 승인 manifest
+ * 안에 있고 kernel(SoR) durable state에 봉인되므로, 호출자가 "다른 실행 파일"을 고를 통로가 없다.
+ */
+function authorityFor(codexPath: unknown, gitPath: unknown = TRUSTED_GIT, codexSha?: string) {
+  return {
+    codex: { path: codexPath as string, sha256: codexSha ?? digestOf(codexPath) },
+    git: { path: gitPath as string, sha256: digestOf(gitPath) },
+  };
+}
+
 function manifestFor(head: string, taskIds: string[], over: Record<string, unknown> = {}) {
   const ownershipByTask: Record<string, string[]> = {};
   for (const id of taskIds) ownershipByTask[id] = ["src"];
@@ -92,6 +113,7 @@ function manifestFor(head: string, taskIds: string[], over: Record<string, unkno
     allowedCommands: ["npm test", "npm run build"],
     allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
     allowedNetworkDomains: ["registry.npmjs.org"],
+    executionAuthority: authorityFor(FAKE_CODEX_BIN, TRUSTED_GIT),
     maxSessions: 2,
     maxTokens: 100_000,
     maxElapsedMs: 3_600_000,
@@ -240,7 +262,7 @@ class CodexHarness {
 
   constructor(
     script: TurnScript,
-    private readonly opts: { manifest: unknown; controllerRepoRoot: string; cwd: string; executablePath?: string },
+    private readonly opts: { manifest: unknown; controllerRepoRoot: string; cwd: string },
   ) {
     writeFileSync(
       join(opts.cwd, ".fake-codex-scenario.json"),
@@ -252,10 +274,9 @@ class CodexHarness {
       }),
     );
     this.codex = new CodexCliProvider({
+      // 실행 파일 경로·digest는 **승인 manifest 안**에 있다(6차 리뷰 A1 — provider 옵션이 아니다).
       manifest: opts.manifest,
       controllerRepoRoot: opts.controllerRepoRoot,
-      executablePath: opts.executablePath ?? FAKE_CODEX_BIN,
-      gitExecutablePath: TRUSTED_GIT,
       // **spawn을 주지 않는다** — 증명은 production executor일 때만 발급된다(3차 리뷰 A1).
     });
   }
@@ -347,6 +368,8 @@ interface Fixture {
   provider: CodexHarness;
   controller: StableController;
   handoffs: HandoffContext[];
+  /** 이 fixture의 승인된 codex 실행 파일 경로(= manifest `executionAuthority.codex.path`). */
+  codexBin: string;
   /**
    * controller에 넘긴 **호출자 소유 opts 객체**. 4차 리뷰 A1 이후 controller는 이 참조를 `#private`으로
    * 들고 tripwire로만 읽으므로, 드리프트 회귀는 (controller의 필드가 아니라) 이 객체를 바꿔서 시험한다 —
@@ -391,7 +414,9 @@ function ownCodexBin(): string {
 async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
   const repo = await initRepo();
   const taskIds = opts.taskIds ?? ["task-a", "task-b"];
-  const manifest = manifestFor(repo.head, taskIds, opts.manifest);
+  // 이 fixture만 쓰는 codex 실행 파일을 **승인 manifest에** 담는다(호출자 경로 옵션은 없다).
+  const fixtureCodexBin = opts.breakExecutable ? ownCodexBin() : FAKE_CODEX_BIN;
+  const manifest = manifestFor(repo.head, taskIds, { executionAuthority: authorityFor(fixtureCodexBin), ...opts.manifest });
   const kernel = createOrchestrationRun({
     workspaceRoot: repo.root,
     runId: RUN_ID,
@@ -405,20 +430,17 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
   for (const id of taskIds) {
     kernel.createRootTask(seed(id, "dev-lead", opts.shareResource ? { resourceClasses: ["global-tmp"] } : {}));
   }
-  const codexBin = opts.breakExecutable ? ownCodexBin() : FAKE_CODEX_BIN;
+  const codexBin = fixtureCodexBin;
   const provider = new CodexHarness(opts.script ?? (() => okTurn()), {
     manifest,
     controllerRepoRoot: repo.root,
     cwd: repo.root,
-    executablePath: codexBin,
   });
   const handoffs: HandoffContext[] = [];
   const controllerOpts = {
     kernel: opts.wrapKernel ? opts.wrapKernel(kernel) : kernel,
     provider: provider.codex,
     controllerRepoRoot: repo.root,
-    gitExecutablePath: TRUSTED_GIT,
-    codexExecutablePath: codexBin,
     nowMs: opts.nowMs ?? msClock(),
     handoff: (ctx: HandoffContext) => {
       handoffs.push(ctx);
@@ -433,7 +455,7 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
   const controller = new StableController(controllerOpts);
   // 신원 고정 **뒤에** 실행 파일을 신뢰 조건 밖으로 만든다 → 실패는 invocation 시점의 재검증이 낸다.
   if (opts.breakExecutable) chmodSync(codexBin, 0o600);
-  return { repo, kernel, provider, controller, handoffs, opts: controllerOpts as unknown as Record<string, unknown> };
+  return { repo, kernel, provider, controller, handoffs, codexBin, opts: controllerOpts as unknown as Record<string, unknown> };
 }
 
 /** durable 산출물 전부(state·events·messages·snapshot)를 한 문자열로. sentinel 부재 단정용. */
@@ -567,20 +589,16 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     body: body("result"),
     summary: "producer 완료",
   });
-  const codexBin = over.breakExecutable ? ownCodexBin() : FAKE_CODEX_BIN;
   const provider = new CodexHarness(over.script ?? ((t) => okTurn(t === 0 ? "첫 turn" : "두 번째 turn")), {
     manifest: deliveryManifest,
     controllerRepoRoot: repo.root,
     cwd: repo.root,
-    executablePath: codexBin,
   });
   const handoffs: HandoffContext[] = [];
   const controllerOpts = {
     kernel: over.wrapKernel ? over.wrapKernel(kernel) : kernel,
     provider: provider.codex,
     controllerRepoRoot: repo.root,
-    gitExecutablePath: TRUSTED_GIT,
-    codexExecutablePath: codexBin,
     nowMs: over.nowMs ?? msClock(),
     handoff: (ctx: HandoffContext) => {
       handoffs.push(ctx);
@@ -743,15 +761,17 @@ test("[M5b] 승인·controller 신원 드리프트는 kernel·provider를 건드
   const origRoot = f.opts.controllerRepoRoot;
   f.opts.controllerRepoRoot = "/tmp";
   assert.deepEqual(await f.controller.advanceOnce(), { blocked: "controller_binding_drift", started: [], tasks: [] });
-  f.opts.controllerRepoRoot = origRoot;
-  const origGit = f.opts.gitExecutablePath;
-  f.opts.gitExecutablePath = "/usr/bin/env";
-  assert.equal((await f.controller.advanceOnce()).blocked, "controller_binding_drift");
-  f.opts.gitExecutablePath = origGit;
   assert.equal(f.kernel.getState().revision, revBefore, "차단이 state를 바꿨다");
-  assert.equal(f.provider.turns.length, 0);
-  // 되돌리면 정상 진행한다.
-  assert.equal((await f.controller.advanceOnce()).blocked, null);
+  assert.equal(f.provider.turns.length, 0, "차단인데 provider를 불렀다");
+  f.opts.controllerRepoRoot = origRoot;
+  // 실행 파일 경로 pin은 **없어졌다**(6차 리뷰 A1): 경로·digest는 승인 manifest 안에 있고 그 승인은
+  // kernel(SoR)에서만 온다. 호출자가 그 값을 바꾸려면 kernel 자체를 갈아끼워야 하는데 그것은
+  // 아래 kernel 신원 pin과 `attestOrchestrationKernel`이 이미 막는다(진짜 kernel 인스턴스는 frozen이라
+  // `getManifest` monkey-patch 자체가 TypeError다 — 이 줄이 그 사실을 고정한다).
+  assert.throws(() => {
+    (f.kernel as unknown as Record<string, unknown>).getManifest = () => STANDALONE_MANIFEST;
+  }, TypeError);
+  assert.equal((await f.controller.advanceOnce()).blocked, null, "정상 진행이 막혔다");
 });
 
 test("[M5b] 만료·경과·토큰 예산 소진은 bounded blocked marker로 fail closed", async () => {
@@ -1273,8 +1293,6 @@ async function controllerKernelGateCode(
       kernel,
       provider,
       controllerRepoRoot: repo.root,
-      gitExecutablePath: TRUSTED_GIT,
-      codexExecutablePath: FAKE_CODEX_BIN,
       handoff: () => ({ spec: readOnlySpec("s", "dev-lead", repo.root), prompt: "p" }),
     });
     return "(생성됨)";
@@ -1298,10 +1316,16 @@ interface GateRun {
   kernel: OrchestrationKernel;
 }
 
-/** 게이트 회귀용 run 하나(실제 checkout + 진짜 kernel). 여러 후보가 **같은 run**을 공유해도 된다. */
-async function gateRun(): Promise<GateRun> {
+/**
+ * 게이트 회귀용 run 하나(실제 checkout + 진짜 kernel). 여러 후보가 **같은 run**을 공유해도 된다.
+ * **controller의 기대 실행 권위는 이 run의 승인 manifest에서만** 온다(6차 리뷰 A1) — 그래서 "controller가
+ * 무엇을 기대하는가"를 바꾸려면 run을 그 승인으로 만들어야 한다(호출자 옵션은 존재하지 않는다).
+ */
+async function gateRun(authority?: { codex?: unknown; git?: unknown }): Promise<GateRun> {
   const repo = await initRepo();
-  const manifest = manifestFor(repo.head, ["task-a"]);
+  const manifest = manifestFor(repo.head, ["task-a"], {
+    executionAuthority: authorityFor(authority?.codex ?? FAKE_CODEX_BIN, authority?.git ?? TRUSTED_GIT),
+  });
   const kernel = createOrchestrationRun({ workspaceRoot: repo.root, runId: RUN_ID, milestoneId: MILESTONE, manifest });
   kernel.createRootTask(seed("task-a", "dev-lead"));
   return { repo, manifest, kernel };
@@ -1315,8 +1339,6 @@ function gateCode(run: GateRun, candidate: unknown | ProviderFactory, over: Reco
       kernel: run.kernel,
       provider: provider as ExecutionProvider,
       controllerRepoRoot: run.repo.root,
-      gitExecutablePath: TRUSTED_GIT,
-      codexExecutablePath: FAKE_CODEX_BIN,
       handoff: () => ({ spec: readOnlySpec("s", "dev-lead", run.repo.root), prompt: "p" }),
       ...over,
     });
@@ -1340,13 +1362,30 @@ const STANDALONE_MANIFEST = manifestFor("a".repeat(40), ["task-a"]);
  * controller 생성자에만 넣는다. 5차 리뷰 A1 이후 증명은 **설정·신원 스냅샷**을 함께 발급하므로
  * 생성 시점 설정이 실제로 검증 가능해야 한다(임의 실행 파일·잘못된 승인은 생성 자체가 실패한다).
  */
-function genuineCodex(over: Partial<ConstructorParameters<typeof CodexCliProvider>[0]> = {}): CodexCliProvider {
+function genuineCodex(
+  over: Partial<ConstructorParameters<typeof CodexCliProvider>[0]> & {
+    /** 테스트 편의 — 승인 manifest의 `executionAuthority`로 접혀 들어간다(provider 옵션이 아니다). */
+    executablePath?: unknown;
+    gitExecutablePath?: unknown;
+    codexSha256?: string;
+  } = {},
+): CodexCliProvider {
+  const { executablePath, gitExecutablePath, codexSha256, ...rest } = over;
+  const base = (rest.manifest ?? STANDALONE_MANIFEST) as Record<string, unknown>;
+  const needsAuthority = "executablePath" in over || "gitExecutablePath" in over || codexSha256 !== undefined;
   return new CodexCliProvider({
-    manifest: STANDALONE_MANIFEST,
     controllerRepoRoot: "/",
-    executablePath: FAKE_CODEX_BIN,
-    gitExecutablePath: TRUSTED_GIT,
-    ...over,
+    ...rest,
+    manifest: needsAuthority
+      ? {
+          ...base,
+          executionAuthority: authorityFor(
+            "executablePath" in over ? executablePath : FAKE_CODEX_BIN,
+            "gitExecutablePath" in over ? gitExecutablePath : TRUSTED_GIT,
+            codexSha256,
+          ),
+        }
+      : base,
   });
 }
 
@@ -1355,8 +1394,6 @@ function customSpawnCodex(): CodexCliProvider {
   return new CodexCliProvider({
     manifest: STANDALONE_MANIFEST,
     controllerRepoRoot: "/",
-    executablePath: FAKE_CODEX_BIN,
-    gitExecutablePath: TRUSTED_GIT,
     spawn: (() => {
       throw new Error("이 provider는 증명을 받지 못한다");
     }) as unknown as SpawnFn,
@@ -1372,8 +1409,8 @@ const matchingCodex: ProviderFactory = ({ repo, manifest }) => genuineCodex({ ma
  */
 function expectedAuthority(over: Partial<ExpectedCodexAuthority> = {}): ExpectedCodexAuthority {
   return {
-    executable: verifyCodexExecutable(FAKE_CODEX_BIN),
-    git: verifyCodexExecutable(TRUSTED_GIT),
+    executable: verifyCodexExecutable({ path: FAKE_CODEX_BIN, sha256: digestOf(FAKE_CODEX_BIN) }),
+    git: verifyCodexExecutable({ path: TRUSTED_GIT, sha256: digestOf(TRUSTED_GIT) }),
     controllerRepoRoot: "/",
     manifestDigest: JSON.stringify(validateApprovalManifest(STANDALONE_MANIFEST)),
     clock: Date.now,
@@ -1438,9 +1475,10 @@ test("[M5b] A1: 증명은 **설정 권위 대조 결과**만 주고, 임의 실�
 
   // 권위 필드 하나씩 어긋나면 **전부** false다(승인처럼 읽히는 답이 나오지 않는다).
   const other = ownCodexBin();
+  const otherApproved = { path: other, sha256: digestOf(other) };
   const drift: Array<[string, Partial<ExpectedCodexAuthority>]> = [
-    ["codex 실행 파일 경로", { executable: verifyCodexExecutable(other) }],
-    ["git 실행 파일 경로", { git: verifyCodexExecutable(other) }],
+    ["codex 실행 파일 경로", { executable: verifyCodexExecutable(otherApproved) }],
+    ["git 실행 파일 경로", { git: verifyCodexExecutable(otherApproved) }],
     ["controller checkout", { controllerRepoRoot: "/tmp" }],
     ["승인 digest", { manifestDigest: "{}" }],
   ];
@@ -1462,7 +1500,7 @@ test("[M5b] A1: 증명은 **설정 권위 대조 결과**만 주고, 임의 실�
     "진짜 시스템 시계를 든 provider가 거부됐다",
   );
   // 같은 경로·다른 inode도 다른 실행 파일이다(경로 문자열만 보지 않는다).
-  const swapped = verifyCodexExecutable(FAKE_CODEX_BIN);
+  const swapped = verifyCodexExecutable({ path: FAKE_CODEX_BIN, sha256: digestOf(FAKE_CODEX_BIN) });
   const forgedId = { path: swapped.path, id: { dev: swapped.id.dev, ino: swapped.id.ino + 1 } };
   assert.equal(
     attestReadOnlyCodexProvider(genuineCodex(), expectedAuthority({ executable: forgedId }))?.authorityMatches,
@@ -1490,8 +1528,11 @@ test("[M5b] A1: 증명은 **설정 권위 대조 결과**만 주고, 임의 실�
   chmodSync(noExec, 0o600);
   assert.throws(() => genuineCodex({ executablePath: join(FAKE_CODEX_BIN, "nope") }), /codex_executable_invalid/);
   assert.throws(() => genuineCodex({ executablePath: noExec }), /codex_executable_invalid/);
-  assert.throws(() => genuineCodex({ executablePath: "relative/codex" }), /codex_config_invalid/);
+  // 경로 계약 위반은 **승인 manifest validator**가 먼저 닫는다(경로가 승인 안에 있으므로).
+  assert.throws(() => genuineCodex({ executablePath: "relative/codex" }), /invalid_manifest/);
   assert.throws(() => genuineCodex({ gitExecutablePath: noExec }), /codex_git_executable_invalid/);
+  // **승인된 내용과 다른** 실행 파일은 신뢰 조건을 만족해도 생성 자체가 실패한다(6차 리뷰 A1).
+  assert.throws(() => genuineCodex({ codexSha256: "0".repeat(64) }), /codex_executable_digest_mismatch/);
   assert.throws(() => genuineCodex({ manifest: {} }), /invalid_manifest/);
   assert.throws(() => genuineCodex({ controllerRepoRoot: "relative/root" }), /codex_config_invalid/);
 });
@@ -1506,60 +1547,109 @@ test("[M5b] A1: 다른 권위로 발급된 provider는 git·codex를 띄우기 �
   const sentinelGit = sentinelBin(gitSentinel);
   const otherGit = sentinelBin(join(sentinelDir, "other-git-ran"));
 
-  const cases: Array<[string, ProviderFactory, Record<string, unknown>]> = [
-    // ⓐ **임의의 valid-mode codex 실행 파일**을 든 provider(`/bin/echo`·사용자 0700 스크립트와 같은 부류).
-    ["임의 codex 실행 파일", ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, executablePath: sentinelCodex }), {}],
-    // ⓑ git 신원 불일치: provider는 sentinel git, controller는 진짜 git을 기대한다.
-    ["다른 git 실행 파일", ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, gitExecutablePath: sentinelGit }), {}],
-    // ⓒ controller가 기대하는 git이 provider의 것과 다른 반대 방향(경로 자체가 다르다).
-    [
-      "controller가 다른 git을 기대한다",
-      ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, gitExecutablePath: sentinelGit }),
-      { gitExecutablePath: otherGit },
-    ],
-    // ⓓ 다른 승인(manifest)으로 발급된 provider — 같은 실행 파일이라도 권위가 다르다.
-    ["다른 승인 manifest", ({ repo }) => genuineCodex({ manifest: STANDALONE_MANIFEST, controllerRepoRoot: repo.root }), {}],
-    // ⓔ 다른 controller checkout으로 발급된 provider.
-    ["다른 controller checkout", ({ manifest }) => genuineCodex({ manifest, controllerRepoRoot: "/" }), {}],
-    // ⓕ 호출자가 고른 다른 시계로 발급된 provider(만료 판정을 갈라놓을 수 있다).
-    [
-      "다른 시각 권위",
-      ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, nowMs: () => 0 }),
-      { nowMs: msClock() },
-    ],
+  // provider가 **자기 승인(manifest)** 으로 임의 실행 파일을 들고 오는 경우들. controller의 기대는
+  // kernel(SoR) 승인에서만 오므로, 두 승인이 다르면 대조가 실패한다(6차 리뷰 A1).
+  const cases: Array<[string, ProviderFactory]> = [
+    // ⓐ **임의의 valid-mode codex 실행 파일**을 든 provider(`/usr/bin/true`·사용자 0700 스크립트와 같은 부류).
+    ["임의 codex 실행 파일", ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, executablePath: sentinelCodex })],
+    // ⓑ git 신원 불일치: provider 승인은 sentinel git, run 승인은 진짜 git이다.
+    ["다른 git 실행 파일", ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, gitExecutablePath: sentinelGit })],
+    // ⓒ 다른 승인(manifest)으로 발급된 provider — 같은 실행 파일이라도 권위가 다르다.
+    ["다른 승인 manifest", ({ repo }) => genuineCodex({ manifest: STANDALONE_MANIFEST, controllerRepoRoot: repo.root })],
+    // ⓓ 다른 controller checkout으로 발급된 provider.
+    ["다른 controller checkout", ({ manifest }) => genuineCodex({ manifest, controllerRepoRoot: "/" })],
   ];
 
   const run = await gateRun(); // 후보들이 **같은 run**을 공유한다(불필요한 git 부하를 만들지 않는다)
-  for (const [label, make, over] of cases) {
-    assert.equal(gateCode(run, make, over), "controller_provider_authority_mismatch", label);
+  for (const [label, make] of cases) {
+    assert.equal(gateCode(run, make), "controller_provider_authority_mismatch", label);
     assert.equal(existsSync(codexSentinel), false, `${label}: codex sentinel이 실행됐다`);
     assert.equal(existsSync(gitSentinel), false, `${label}: git sentinel이 실행됐다`);
   }
+  // ⓔ 호출자가 고른 다른 시계로 발급된 provider(만료 판정을 갈라놓을 수 있다).
+  assert.equal(
+    gateCode(run, ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, nowMs: () => 0 }), {
+      nowMs: msClock(),
+    }),
+    "controller_provider_authority_mismatch",
+    "다른 시각 권위",
+  );
+  // ⓕ controller가 기대하는 git이 provider의 것과 다른 반대 방향 — run 승인 자체를 다른 git으로 만든다.
+  const otherGitRun = await gateRun({ git: otherGit });
+  assert.equal(
+    gateCode(otherGitRun, ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, gitExecutablePath: sentinelGit })),
+    "controller_provider_authority_mismatch",
+    "controller가 다른 git을 기대한다",
+  );
 
-  // 양성 대조군: **명시로 pin한** 실행 파일을 든 provider는 그대로 쓸 수 있다(sentinel도 여전히 0).
-  const pinnedSentinel: ProviderFactory = ({ repo, manifest }) =>
-    genuineCodex({ manifest, controllerRepoRoot: repo.root, executablePath: sentinelCodex });
-  assert.equal(gateCode(run, pinnedSentinel, { codexExecutablePath: sentinelCodex }), "(생성됨)", "명시로 pin한 실행 파일이 거부됐다");
+  // **caller가 양쪽에 같은 임의 경로를 지정하는 통로가 없다**(6차 리뷰 A1의 정확한 실패): controller
+  // 옵션에 실행 파일 경로를 넣어도 무시되고(승인이 유일한 근거) provider는 여전히 거부된다.
+  assert.equal(
+    gateCode(run, ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root, executablePath: sentinelCodex }), {
+      codexExecutablePath: sentinelCodex,
+      gitExecutablePath: sentinelGit,
+    }),
+    "controller_provider_authority_mismatch",
+    "호출자가 양쪽에 같은 임의 경로를 지정해 통과했다",
+  );
+  assert.equal(existsSync(codexSentinel), false, "codex sentinel이 실행됐다");
+  assert.equal(existsSync(gitSentinel), false, "git sentinel이 실행됐다");
+
+  // 양성 대조군: **승인 manifest가 정확히 그 실행 파일을 승인한** run에서는 그대로 쓸 수 있다
+  // (= offline fake 실행 파일을 명시로 승인하는 정상 경로. 생성만으로는 sentinel도 여전히 0이다).
+  const approvedRun = await gateRun({ codex: sentinelCodex });
+  const approvedProvider: ProviderFactory = ({ repo, manifest }) => genuineCodex({ manifest, controllerRepoRoot: repo.root });
+  assert.equal(gateCode(approvedRun, approvedProvider), "(생성됨)", "승인된 실행 파일이 거부됐다");
   assert.equal(existsSync(codexSentinel), false, "생성만으로 codex sentinel이 실행됐다");
   assert.equal(existsSync(gitSentinel), false, "생성만으로 git sentinel이 실행됐다");
+});
+
+test("[M5b] A1(6차): 같은 inode를 제자리에서 덮어쓰면 생성·advance 모두 거부한다(spawn 0)", async () => {
+  // ⓐ provider 발급 **뒤**, controller 생성 **전**에 같은 inode를 덮어쓴다 → 내용 digest가 다르므로
+  //    controller가 자기 검증에서 거부한다(path/dev/ino만 보던 이전 판은 그대로 통과했다).
+  const bin = ownCodexBin();
+  const run = await gateRun({ codex: bin });
+  const provider = genuineCodex({ manifest: run.manifest, controllerRepoRoot: run.repo.root });
+  writeFileSync(bin, `#!${process.execPath}
+import ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};
+// 제자리 덮어쓰기
+`);
+  assert.equal(gateCode(run, provider), "codex_executable_digest_mismatch", "제자리 내용 교체가 통과했다");
+
+  // ⓑ controller 생성 **뒤**의 제자리 덮어쓰기는 invocation 재검증이 잡는다 → 프로세스 0.
+  const f = await fixture({ taskIds: ["task-a"] });
+  const own = ownCodexBin();
+  // 이 fixture의 승인 경로를 그대로 쓰되 내용만 바꾼다(신원·권한은 그대로).
+  const approvedPath = f.codexBin;
+  const before = readFileSync(approvedPath);
+  try {
+    writeFileSync(approvedPath, `#!${process.execPath}
+import ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};
+// 나중에 덮어썼다
+`);
+    const out = await f.controller.advanceOnce();
+    assert.equal(out.tasks[0].marker, "provider_start_failed", "덮어쓴 실행 파일로 세션이 열렸다");
+    assert.equal(f.provider.turns.length, 0, "덮어쓴 실행 파일이 실제로 떴다");
+  } finally {
+    writeFileSync(approvedPath, before); // 공유 fake 실행 파일을 원복한다
+    chmodSync(approvedPath, 0o700);
+    rmSync(own, { force: true });
+  }
 });
 
 test("[M5b] A1: 같은 경로가 다른 실행 파일로 교체되면 생성 시점 신원이 그것을 거부한다", async () => {
   // ⓐ provider 발급 뒤 같은 경로를 **새 inode**로 갈아치우면 controller 생성이 거부된다.
   const swap = ownCodexBin();
-  const provider = genuineCodex({ executablePath: swap });
+  const run = await gateRun({ codex: swap });
+  const provider = genuineCodex({ manifest: run.manifest, controllerRepoRoot: run.repo.root });
   rmSync(swap);
   writeFileSync(swap, `#!${process.execPath}\nimport ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};\n`);
   chmodSync(swap, 0o700);
-  assert.equal(
-    await controllerGateCode(provider, { codexExecutablePath: swap }),
-    "controller_provider_authority_mismatch",
-    "같은 경로의 다른 실행 파일이 통과했다",
-  );
+  assert.equal(gateCode(run, provider), "controller_provider_authority_mismatch", "같은 경로의 다른 실행 파일이 통과했다");
 
   // ⓑ 실행 시점에도 **생성 시점 신원**이 근거다: controller가 만들어진 뒤 교체하면 spawn 0으로 거부된다.
   const f = await fixture({ taskIds: ["task-a"], breakExecutable: true });
-  const bin = f.opts.codexExecutablePath as string;
+  const bin = f.codexBin;
   chmodSync(bin, 0o700); // 신뢰 조건은 되돌리고 **신원만** 바꾼다
   rmSync(bin);
   writeFileSync(bin, `#!${process.execPath}\nimport ${JSON.stringify(pathToFileURL(FAKE_CODEX).href)};\n`);
@@ -1606,12 +1696,7 @@ test("[M5b] A2: 실제로 생성되지 않은 provider는 controller 생성 자�
     }
   }
   // **production 인자 그대로**(spawn 주입 없음)여도 거부여야 한다 — 거부 근거는 executor가 아니라 subclass다.
-  const subOpts = {
-    manifest: STANDALONE_MANIFEST,
-    controllerRepoRoot: "/",
-    executablePath: FAKE_CODEX_BIN,
-    gitExecutablePath: TRUSTED_GIT,
-  };
+  const subOpts = { manifest: STANDALONE_MANIFEST, controllerRepoRoot: "/" };
   const sub = new EvilSubclass(subOpts);
   assert.equal(gateCode(run, sub), "controller_provider_not_read_only", "subclass가 통과했다");
 

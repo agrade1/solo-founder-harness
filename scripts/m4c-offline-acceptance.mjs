@@ -60,6 +60,10 @@ function manifest(over = {}) {
     },
     allowedCommands: ["npm run build", "npm test"],
     allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
+    executionAuthority: {
+      codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+      git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+    },
     allowedNetworkDomains: ["registry.npmjs.org"],
     maxSessions: 4,
     maxTokens: 200000,

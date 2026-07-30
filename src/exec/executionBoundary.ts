@@ -10,11 +10,17 @@
  *
  * **git 자체가 신뢰 대상이다(2026-07-27 3차 리비전 · 독립 리뷰 A/P1)**: 이전 판은 `git`을 **이름으로**
  * 부르고 `runProcess`가 `process.env`를 상속했다 → 적대적 `PATH`가 다른 실행 파일을, `GIT_DIR`/
- * `GIT_WORK_TREE`/`GIT_*`가 **다른 저장소·커밋을** 증명하게 만들 수 있었다. 이제 ⓐ **신뢰된 절대·정규
- * 비-symlink 일반 실행 파일 경로**(group/other 쓰기 없음)를 **필수 입력**으로 받고 ⓑ 그 경로로만 부르며
+ * `GIT_WORK_TREE`/`GIT_*`가 **다른 저장소·커밋을** 증명하게 만들 수 있었다. 이제 ⓐ **승인 manifest가
+ * 지정한** 절대·정규 비-symlink 일반 실행 파일(group/other 쓰기 없음)만 열고 ⓑ 그 경로로만 부르며
  * ⓒ 자식 env는 **최소 결정론적 화이트리스트**다(PATH·HOME·상속 `GIT_*`·자격증명·설정 경로 0,
- * system/global config는 사용자 상태를 읽지 않고 끈다) ⓓ git 실행 파일 **신원(dev+ino)** 을 고정해
- * spawn 직전 동기 게이트에서 다시 확인한다.
+ * system/global config는 사용자 상태를 읽지 않고 끈다) ⓓ git 실행 파일 **신원(dev+ino)과 승인된
+ * 내용 digest**를 고정해 spawn 직전 동기 게이트에서 다시 확인한다.
+ *
+ * **실행 권위는 호출자가 고르지 않는다(V3 M5b 6차 독립 리뷰 A1).** 이전 판은 `gitExecutablePath`를
+ * 호출자 입력으로 받았고 신원이 path/dev/ino뿐이었다 → ⓐ provider와 controller에 **같은 임의 경로**를
+ * 주면 양쪽이 같은 값을 관측해 "권위 일치"가 됐고 ⓑ 같은 inode를 **제자리에서 덮어쓰면** 검증을
+ * 그대로 통과했다. 지금 git 경로·내용 digest는 **승인 manifest(`executionAuthority.git`)** 에서만
+ * 오고(`ExecutionBoundaryInput`에 경로 필드가 없다) 내용 digest를 진입·spawn 직전 두 번 대조한다.
  * provider 중립이라 `CodexCliProvider`와 이후 `ClaudeCliProvider`/controller가 같은 함수를 쓴다.
  * 승인 manifest 규칙을 약화하지 않는다: 검증은 기존 `validateApprovalManifest`를 그대로 통과해야 한다.
  *
@@ -31,11 +37,12 @@
  *
  * 오류 문자열에는 argv·환경변수·프롬프트·transcript를 담지 않는다(경로와 커밋만).
  */
-import { lstatSync, realpathSync } from "node:fs";
+import { closeSync, constants as fsConstants, fstatSync, lstatSync, openSync, readSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { isAbsolute } from "node:path";
 import { validateApprovalManifest } from "./approvalManifest.js";
-import { OrchestrationError, type MilestoneApprovalManifest } from "./orchestrationTypes.js";
+import { OrchestrationError, type ApprovedExecutable, type MilestoneApprovalManifest } from "./orchestrationTypes.js";
 import { runProcess } from "./runProcess.js";
 
 /** git 조회 상한 — 실행 경계가 프로세스 시작 경로를 무한정 붙잡지 않게 한다. */
@@ -77,24 +84,47 @@ export interface ExecutableCodes {
   invalid: string;
   /** 고정된 신원과 달라짐(교체). 미지정이면 `invalid`를 쓴다. */
   identity?: string;
+  /** 승인된 내용 digest와 다름(같은 inode 제자리 덮어쓰기 포함). 미지정이면 `invalid`를 쓴다. */
+  digest?: string;
 }
 
+/** 내용 digest 계산용 chunk(고정 64KiB — 큰 실행 파일도 메모리 상한 안에서 읽는다). */
+const HASH_CHUNK_BYTES = 65_536;
+/** 실행 파일 크기 상한. 이보다 큰 파일은 승인 대조 대상으로 읽지 않는다(fail closed). */
+const MAX_EXECUTABLE_BYTES = 512 * 1024 * 1024;
+
+const O_NOFOLLOW_SUPPORTED = typeof fsConstants.O_NOFOLLOW === "number";
+
 /**
- * 신뢰된 실행 파일 검증 — **정규 경로 · symlink 아님 · 일반 파일 · 실행 비트 있음 · group/other 쓰기 없음**,
- * 그리고 `pinned`를 주면 **신원(dev+ino)** 까지 같아야 한다.
+ * **승인된 실행 파일 검증**(V3 M5b 6차 독립 리뷰 A1). 승인 record(`manifest.executionAuthority.*`)의
+ * 경로를 **한 번만 열고**(`O_RDONLY|O_NOFOLLOW`) 같은 fd에서 신원·권한·내용을 전부 판정한다:
+ * 정규 경로 · symlink 아님 · 일반 파일 · 실행 비트 · group/other 쓰기 없음 · `pinned` 신원(dev+ino) ·
+ * 그리고 **승인된 내용 SHA-256과 정확히 일치**.
  *
- * 신원을 보는 이유(2026-07-27 3차 리비전): 경로·mode만 보면 검사와 spawn 사이에 **같은 권한의 다른
- * 실행 파일로 교체**되는 창이 남는다. Node에는 열린 fd 상대 실행(`fexecve`)이 없어 창을 **0으로 만들
- * 수는 없고**, syscall 몇 개로 줄이고 어긋나면 fail closed다.
+ * 내용까지 보는 이유: path/dev/ino는 **같은 inode를 제자리에서 덮어쓰는** 교체를 잡지 못한다
+ * (6차 리뷰 A1 — 그 창으로 승인된 이름 뒤에 다른 프로그램을 넣을 수 있었다). digest는 그 창을 닫는다.
+ * 검사–사용 경합을 줄이기 위해 **경로를 한 번만 열고**(검사와 읽기가 같은 fd) spawn 직전에 다시 부른다.
+ *
+ * ponytail: spawn마다 실행 파일 전체를 해싱한다(파일 크기에 비례하는 고정 비용). Node에 `fexecve`가
+ * 없어 "해싱한 fd를 그대로 exec"할 수 없으므로 창이 0이라고 주장하지 않는다 — 상향 경로는 열린 fd 상대
+ * 실행을 지원하는 런타임이며 별도 승인 범위다(대장 `C-5`와 같은 종류의 한계).
  */
-export function verifyTrustedExecutable(
-  raw: unknown,
+export function verifyApprovedExecutable(
+  approved: ApprovedExecutable,
   what: string,
   codes: ExecutableCodes,
   pinned?: FileIdentity,
 ): TrustedExecutable {
+  const raw = approved?.path;
+  const wantDigest = approved?.sha256;
   if (typeof raw !== "string" || raw.length === 0 || raw.includes("\0") || !isAbsolute(raw)) {
     throw new OrchestrationError(codes.path, `${what}는 NUL 없는 절대경로여야 한다`);
+  }
+  if (typeof wantDigest !== "string" || !/^[0-9a-f]{64}$/.test(wantDigest)) {
+    throw new OrchestrationError(codes.path, `${what}의 승인된 내용 digest가 없다`);
+  }
+  if (!O_NOFOLLOW_SUPPORTED) {
+    throw new OrchestrationError(codes.invalid, `${what}: 이 플랫폼은 O_NOFOLLOW를 지원하지 않는다`);
   }
   let real: string;
   try {
@@ -104,29 +134,69 @@ export function verifyTrustedExecutable(
   }
   if (real !== raw) throw new OrchestrationError(codes.invalid, `${what}는 정규 경로여야 한다(symlink 미해석)`);
 
-  let st: ReturnType<typeof lstatSync>;
+  let fd: number;
   try {
-    st = lstatSync(raw);
+    fd = openSync(raw, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
   } catch {
-    throw new OrchestrationError(codes.invalid, `${what}의 상태를 확인할 수 없다`);
+    throw new OrchestrationError(codes.invalid, `${what}를 열 수 없다(symlink·부재·권한)`);
   }
-  if (st.isSymbolicLink() || !st.isFile()) {
-    throw new OrchestrationError(codes.invalid, `${what}는 symlink 아닌 일반 파일이어야 한다`);
+  let id: FileIdentity;
+  let digest: string;
+  try {
+    let st: ReturnType<typeof fstatSync>;
+    try {
+      st = fstatSync(fd);
+    } catch {
+      throw new OrchestrationError(codes.invalid, `${what}의 상태를 확인할 수 없다`);
+    }
+    if (!st.isFile()) throw new OrchestrationError(codes.invalid, `${what}는 symlink 아닌 일반 파일이어야 한다`);
+    if ((st.mode & 0o111) === 0) throw new OrchestrationError(codes.invalid, `${what}에 실행 비트가 없다`);
+    if ((st.mode & 0o022) !== 0) throw new OrchestrationError(codes.invalid, `${what}가 group/other 쓰기 가능이다`);
+    if (st.size > MAX_EXECUTABLE_BYTES) throw new OrchestrationError(codes.invalid, `${what}가 상한보다 크다`);
+    id = { dev: st.dev, ino: st.ino };
+    if (pinned && (pinned.dev !== id.dev || pinned.ino !== id.ino)) {
+      throw new OrchestrationError(codes.identity ?? codes.invalid, `${what}의 실행 파일 신원이 검증 이후 바뀌었다`);
+    }
+    digest = digestOfFd(fd, what, codes);
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // 정리 실패도 실패다(활성 계약 ⑥) — 원 오류가 있으면 그것이 우선한다.
+      throw new OrchestrationError(codes.invalid, `${what}의 fd를 닫을 수 없다`);
+    }
   }
-  if ((st.mode & 0o111) === 0) throw new OrchestrationError(codes.invalid, `${what}에 실행 비트가 없다`);
-  if ((st.mode & 0o022) !== 0) throw new OrchestrationError(codes.invalid, `${what}가 group/other 쓰기 가능이다`);
-
-  const id: FileIdentity = { dev: st.dev, ino: st.ino };
-  if (pinned && (pinned.dev !== id.dev || pinned.ino !== id.ino)) {
-    throw new OrchestrationError(codes.identity ?? codes.invalid, `${what}의 실행 파일 신원이 검증 이후 바뀌었다`);
+  if (digest !== wantDigest) {
+    throw new OrchestrationError(codes.digest ?? codes.invalid, `${what}의 내용이 승인된 digest와 다르다`);
   }
   return { path: raw, id };
+}
+
+/** 열린 fd에서 내용 digest를 읽는다(고정 chunk — 파일 전체를 메모리에 담지 않는다). */
+function digestOfFd(fd: number, what: string, codes: ExecutableCodes): string {
+  const hash = createHash("sha256");
+  const buf = Buffer.allocUnsafe(HASH_CHUNK_BYTES);
+  let offset = 0;
+  for (;;) {
+    let read: number;
+    try {
+      read = readSync(fd, buf, 0, buf.length, offset);
+    } catch {
+      throw new OrchestrationError(codes.invalid, `${what}의 내용을 읽을 수 없다`);
+    }
+    if (read <= 0) break;
+    hash.update(buf.subarray(0, read));
+    offset += read;
+    if (offset > MAX_EXECUTABLE_BYTES) throw new OrchestrationError(codes.invalid, `${what}가 상한보다 크다`);
+  }
+  return hash.digest("hex");
 }
 
 const GIT_CODES: ExecutableCodes = {
   path: "boundary_git_path_invalid",
   invalid: "boundary_git_untrusted",
   identity: "boundary_git_identity_changed",
+  digest: "boundary_git_digest_mismatch",
 };
 
 export interface ExecutionBoundaryInput {
@@ -137,15 +207,12 @@ export interface ExecutionBoundaryInput {
   /** provider 프로세스의 cwd가 될 실행 checkout 절대·정규 경로. */
   targetWorktree: string;
   /**
-   * **신뢰된 git 실행 파일의 절대·정규 경로(필수)**. 이름 조회(`PATH`)를 하지 않는다 — 경계의 증명을
-   * ambient 환경이 고르게 두지 않기 위해서다. 경로 선택·신뢰는 **호출자(controller)** 책임이고
-   * 여기서는 신원·권한을 검증하고 spawn 직전에 다시 확인한다.
-   */
-  gitExecutablePath: string;
-  /**
    * **호출자가 더 이른 시점에 고정한 git 실행 파일 신원(dev+ino)**. 주면 경계 진입에서부터 그 신원과
    * 같은지 확인한다(V3 M5b 5차 리뷰 A1) — 증명·생성 시점 이후 같은 경로가 다른 실행 파일로 교체되면
    * 승인 커밋을 증명하지 못한다. 미지정이면 경계가 진입 시점 신원을 자기 기준으로 고정한다.
+   *
+   * **git 실행 파일 자체는 호출자가 고르지 않는다(6차 리뷰 A1)**: 경로·내용 digest는
+   * `manifest.executionAuthority.git`에서만 온다.
    */
   gitIdentity?: FileIdentity;
   /**
@@ -308,9 +375,10 @@ export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Pr
   const clock = clockOf(input.nowMs);
   assertNotExpired(manifest, clock(), "경계 진입");
 
-  // 증명 도구부터 신뢰한다: 이름 조회 없이 검증된 절대경로 하나만 쓴다.
-  // 신원은 호출자가 더 이른 시점에 고정했다면 **그 값**과 대조하고(교체 거부) 아니면 여기서 고정한다.
-  const gitBin = verifyTrustedExecutable(input.gitExecutablePath, "gitExecutablePath", GIT_CODES, input.gitIdentity);
+  // 증명 도구부터 신뢰한다: **승인 manifest가 지정한** 경로 하나를 열고 내용 digest까지 대조한다
+  // (이름 조회·호출자 경로 없음 — 6차 리뷰 A1). 신원은 호출자가 더 이른 시점에 고정했다면 그 값과
+  // 대조하고(교체 거부) 아니면 여기서 고정한다.
+  const gitBin = verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", GIT_CODES, input.gitIdentity);
 
   const controller = resolveCanonicalDir(input.controllerRepoRoot, "controllerRepoRoot");
   const target = resolveCanonicalDir(input.targetWorktree, "targetWorktree");
@@ -337,8 +405,9 @@ export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Pr
     // 승인 만료를 **여기서 다시** 본다: 위 만료 검사와 이 지점 사이에 비동기 git 조회가 있어
     // 그 사이에 승인이 만료될 수 있다. 만료된 승인으로는 프로세스를 띄우지 않는다.
     assertNotExpired(manifest, clock(), "spawn 직전 재확인");
-    // 증명 도구도 그 사이에 교체될 수 있다 — 신원을 고정해 두고 쓰기 직전에 다시 확인한다.
-    verifyTrustedExecutable(gitBin.path, "gitExecutablePath", GIT_CODES, gitBin.id);
+    // 증명 도구도 그 사이에 교체될 수 있다 — 신원 + **승인된 내용 digest**를 쓰기 직전에 다시 확인한다
+    // (같은 inode 제자리 덮어쓰기도 여기서 거부된다).
+    verifyApprovedExecutable(manifest.executionAuthority.git, "승인된 git 실행 파일", GIT_CODES, gitBin.id);
     const roots: Array<[string, DirIdentity, string]> = sameCheckout
       ? [[controller.path, controller.id, "실행 checkout"]]
       : [

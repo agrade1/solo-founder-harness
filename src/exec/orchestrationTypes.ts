@@ -326,6 +326,20 @@ export interface ApprovedDependency {
 }
 
 /**
+ * **승인된 실행 파일 1건**(V3 M5b 6차 독립 리뷰 A1). 실행 권위의 trust root는 이 record이고,
+ * 런타임 호출자가 주는 경로가 아니다: 승인 manifest는 run 생성 시 durable state에 들어가
+ * `stateContentDigest` → state↔event binding으로 봉인되므로, "무엇을 codex/git으로 실행하는가"는
+ * 사람이 승인한 그 바이트에서만 나온다.
+ *
+ * `path`는 **정규 절대경로**이고 `sha256`은 **그 파일 내용의 정확한 digest**다 —
+ * 같은 inode를 제자리에서 덮어써도 digest가 달라지므로 fail closed다.
+ */
+export interface ApprovedExecutable {
+  path: string;
+  sha256: string;
+}
+
+/**
  * 로드맵 §8 milestone approval manifest. run 생성 시 **반드시** bind되고 durable state에 들어간다
  * (=> `stateContentDigest` → state↔event binding으로 손편집이 거부된다).
  *
@@ -345,6 +359,13 @@ export interface MilestoneApprovalManifest {
   allowedCommands: string[];
   allowedDependencies: ApprovedDependency[];
   allowedNetworkDomains: string[];
+  /**
+   * **승인된 실행 권위**(6차 독립 리뷰 A1) — 이 manifest가 유일한 trust root다.
+   * provider·controller·실행 경계는 여기 적힌 경로만 열고 여기 적힌 digest와 정확히 같은 내용만
+   * 실행한다. 호출자가 다른 경로를 지정할 통로는 없다(옵션 자체가 없다).
+   * 없으면 **조용한 기본값 없이 거부**한다(`invalid_manifest`).
+   */
+  executionAuthority: { codex: ApprovedExecutable; git: ApprovedExecutable };
   /** 동시에 running일 수 있는 task 수의 상한. */
   maxSessions: number;
   /** 선택 예산. 없으면 null(키는 durable 계약이라 항상 존재한다). */
