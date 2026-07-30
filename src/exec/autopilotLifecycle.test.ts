@@ -75,6 +75,8 @@ function body(type: AgentMessageType): string {
 
 const EXECUTION_AUTHORITY = {
   codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+  // M5c 3A 2차 리비전(`B-10`) — typed `run_process`가 실행하는 **유일한** 고정 entrypoint.
+  controllerEntrypoint: { path: "/opt/harness/controller.mjs", sha256: "9".repeat(64) },
   git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
   node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
   processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
@@ -860,12 +862,12 @@ test("[M5c] 공유 정규화 계약이 고립 UTF-16 surrogate 경로를 거부�
       validateApprovalManifest(
         manifestFor(["root"], {
           operationAuthorityByTask: {
-            root: [{ authorityId: "p", kind: "run_process", executable: EXECUTION_AUTHORITY.node.path, args: [`--x=${LOW}`], timeoutMs: 1_000 }],
+            root: [{ authorityId: "p", kind: "run_process", action: "validate-plan", data: [`x=${LOW}`], timeoutMs: 1_000 }],
           },
         }),
       ),
     ),
-    "invalid_manifest",
+    "operation_data_not_approved",
   );
   // ⓔ durable task ownership(kernel 경유)도 같은 규칙이다 — 승인 표만이 아니라 state 진입점도 막는다.
   const ws = makeWorkspace();
@@ -888,7 +890,7 @@ test("[M5c] operation 권위는 승인에 있을 때만 존재한다(부재 = ha
       operationAuthorityByTask: {
         root: [
           { authorityId: "w1", kind: "write_file", path: "src/out.txt", maxBytes: 1024 },
-          { authorityId: "p1", kind: "run_process", executable: EXECUTION_AUTHORITY.node.path, args: ["--version"], timeoutMs: 5_000 },
+          { authorityId: "p1", kind: "run_process", action: "validate-plan", data: ["src/plan.json"], timeoutMs: 5_000 },
         ],
       },
     }),
@@ -918,19 +920,25 @@ test("[M5c] typed operation 권위는 승인 범위·승인된 실행 파일 밖
     ),
     "operation_not_owned",
   );
-  // 승인된 node 실행 파일이 아닌 것(git·codex·임의 경로)은 typed operation이 아니다 — 원격 쓰기 표면 차단.
+  // **실행 대상을 고르는 필드 자체가 없다**(3A 2차 리비전 `B-10`): git·codex·shell·임의 경로는
+  // 물론이고 승인된 node 경로조차 승인 문서에 적을 수 없다 — 실행 대상은 executionAuthority 고정이다.
   assert.equal(
     bad([{ authorityId: "p", kind: "run_process", executable: EXECUTION_AUTHORITY.git.path, args: ["push"], timeoutMs: 1_000 }]),
-    "operation_executable_not_approved",
+    "invalid_manifest",
   );
   assert.equal(
     bad([{ authorityId: "p", kind: "run_process", executable: "/bin/sh", args: ["-c", "x"], timeoutMs: 1_000 }]),
-    "operation_executable_not_approved",
+    "invalid_manifest",
   );
   // shell 문자열·미상 key는 표현할 수 없다(닫힌 key 집합)
   assert.equal(
-    bad([{ authorityId: "p", kind: "run_process", executable: EXECUTION_AUTHORITY.node.path, args: [], timeoutMs: 1_000, shell: true }]),
+    bad([{ authorityId: "p", kind: "run_process", action: "validate-plan", data: [], timeoutMs: 1_000, shell: true }]),
     "invalid_manifest",
+  );
+  // 코드 권위 인자는 데이터 자리에도 들어갈 수 없다(`-` 시작 거부).
+  assert.equal(
+    bad([{ authorityId: "p", kind: "run_process", action: "validate-plan", data: ["--eval"], timeoutMs: 1_000 }]),
+    "operation_data_not_approved",
   );
   assert.equal(bad([{ authorityId: "x", kind: "network_fetch", url: "https://example.com" }]), "invalid_manifest");
   // 바이트 상한을 넘는 승인은 없다

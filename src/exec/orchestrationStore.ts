@@ -91,6 +91,7 @@ import {
   OrchestrationError,
   type OrchestrationRunState,
   type OrchestrationTask,
+  type PendingOperation,
   type PendingTaskResult,
   type RunAccounting,
   type TaskExecution,
@@ -252,6 +253,8 @@ export const TASK_EXECUTION_KEYS = [
   "attemptNo",
   "attemptId",
   "turnId",
+  "dispatchTurnId",
+  "dispatchPlanDigest",
   "preflightDigest",
   "phaseStartedAt",
   "wallDeadlineAt",
@@ -266,7 +269,19 @@ export const TASK_EXECUTION_KEYS = [
   "retryAt",
   "retryDeadlineAt",
   "pendingResult",
+  "pendingOperations",
   "operationReceipts",
+] as const;
+
+/** M5c 3A 2차 리비전 — 미확정 operation 레코드의 닫힌 key 집합. */
+export const PENDING_OPERATION_KEYS = [
+  "operationId",
+  "kind",
+  "authorityId",
+  "attemptId",
+  "turnId",
+  "planDigest",
+  "beganAt",
 ] as const;
 
 export const OPERATION_RECEIPT_KEYS = [
@@ -457,6 +472,21 @@ function validateOperationReceipt(raw: unknown, what: string): OperationReceipt 
   };
 }
 
+/** M5c 3A 2차 리비전 — 미확정 operation 1건(집행 전에 durable해지고 영수증 커밋으로 사라진다). */
+function validatePendingOperation(raw: unknown, what: string): PendingOperation {
+  const o = asObject(raw, what);
+  closedKeys(o, PENDING_OPERATION_KEYS, what);
+  return {
+    operationId: assertSlug(o.operationId, `${what}.operationId`),
+    kind: enumValue(o.kind, APPROVED_OPERATION_KINDS, `${what}.kind`),
+    authorityId: assertSlug(o.authorityId, `${what}.authorityId`),
+    attemptId: assertSlug(o.attemptId, `${what}.attemptId`),
+    turnId: assertSlug(o.turnId, `${what}.turnId`),
+    planDigest: assertSha256(o.planDigest, `${what}.planDigest`),
+    beganAt: assertTimestamp(o.beganAt, `${what}.beganAt`),
+  };
+}
+
 /**
  * **M5c 실행 lifecycle 메타데이터 검증**(closed). 여기서 state와의 정합성도 함께 본다:
  * ⓐ `running`은 attempt를 배정받았어야 한다 ⓑ `cleaning`은 정리가 필요하다고 기록돼 있어야 한다
@@ -482,10 +512,33 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     return r;
   });
 
+  if (!Array.isArray(o.pendingOperations)) {
+    throw new OrchestrationError("invalid_state", "task.execution.pendingOperations는 배열이어야 한다");
+  }
+  if (o.pendingOperations.length > LIMITS.maxPendingOperations) {
+    throw new OrchestrationError("invalid_state", `pendingOperations는 ${LIMITS.maxPendingOperations}개 이하여야 한다`);
+  }
+  const seenPending = new Set<string>();
+  const pendingOperations = o.pendingOperations.map((x, i) => {
+    const p = validatePendingOperation(x, `task.execution.pendingOperations[${i}]`);
+    if (seenPending.has(p.operationId)) {
+      throw new OrchestrationError("invalid_state", `pendingOperations에 중복 operationId가 있다: ${p.operationId}`);
+    }
+    // 같은 operationId가 pending과 영수증에 동시에 있으면 정합화가 이미 끝난 것을 다시 여는 셈이다.
+    if (seenOps.has(p.operationId)) {
+      throw new OrchestrationError("invalid_state", `이미 영수증이 있는 operation이 pending으로 남아 있다: ${p.operationId}`);
+    }
+    seenPending.add(p.operationId);
+    return p;
+  });
+
   const exec: TaskExecution = {
     attemptNo: boundedInt(o.attemptNo, "task.execution.attemptNo", 0, LIMITS.maxTaskAttempts),
     attemptId: o.attemptId === null ? null : assertSlug(o.attemptId, "task.execution.attemptId"),
     turnId: o.turnId === null ? null : assertSlug(o.turnId, "task.execution.turnId"),
+    dispatchTurnId: o.dispatchTurnId === null ? null : assertSlug(o.dispatchTurnId, "task.execution.dispatchTurnId"),
+    dispatchPlanDigest:
+      o.dispatchPlanDigest === null ? null : assertSha256(o.dispatchPlanDigest, "task.execution.dispatchPlanDigest"),
     preflightDigest: o.preflightDigest === null ? null : assertSha256(o.preflightDigest, "task.execution.preflightDigest"),
     phaseStartedAt: o.phaseStartedAt === null ? null : assertTimestamp(o.phaseStartedAt, "task.execution.phaseStartedAt"),
     wallDeadlineAt: o.wallDeadlineAt === null ? null : assertTimestamp(o.wallDeadlineAt, "task.execution.wallDeadlineAt"),
@@ -500,6 +553,7 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     retryAt: o.retryAt === null ? null : assertTimestamp(o.retryAt, "task.execution.retryAt"),
     retryDeadlineAt: o.retryDeadlineAt === null ? null : assertTimestamp(o.retryDeadlineAt, "task.execution.retryDeadlineAt"),
     pendingResult: o.pendingResult === null ? null : validatePendingResult(o.pendingResult),
+    pendingOperations,
     operationReceipts: receipts,
   };
 

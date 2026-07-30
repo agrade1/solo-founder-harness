@@ -82,18 +82,22 @@
       "items": { "type": "string", "minLength": 3, "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" }
     },
     "executionAuthority": {
-      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. 각 항목은 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다. **M5c: node·processObserver가 필수로 추가됐고 codex는 null 허용이다**(M5c는 Codex를 인스턴스화하지 않는다). 네 key 집합은 닫혀 있고, node/processObserver가 없는 v1 manifest는 manifest_pre_m5c_unsupported다.",
+      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. 각 항목은 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다. **M5c: node·processObserver가 필수로 추가됐고 codex는 null 허용이다**(M5c는 Codex를 인스턴스화하지 않는다). **M5c 3A 2차 리비전(B-10): controllerEntrypoint가 필수로 추가됐다** — 모든 typed run_process가 실행하는 유일한 script이며, 승인된 operation 레코드는 실행 대상을 고를 수 없다. 다섯 key 집합은 닫혀 있고, node/processObserver/controllerEntrypoint가 없는 v1 manifest는 manifest_pre_m5c_unsupported다.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["codex", "git", "node", "processObserver"],
+      "required": ["codex", "controllerEntrypoint", "git", "node", "processObserver"],
       "properties": {
         "codex": {
           "description": "offline manifest는 live 추론을 승인하지 않는다 → null이 유효하다.",
           "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
         },
+        "controllerEntrypoint": {
+          "description": "M5c 3A 2차 리비전(대장 B-10) — **digest로 고정된 controller entrypoint**. 모든 typed run_process는 `node <controllerEntrypoint> <action> <data...>` 형태로만 표현되며, 이 경로는 승인 문서 전체에 하나뿐이고 operation 레코드가 바꿀 수 없다. argv[1]이 절대 경로 script이므로 --eval/--require 같은 Node 옵션 자리 자체가 없다.",
+          "$ref": "#/definitions/approvedExecutable"
+        },
         "git": { "$ref": "#/definitions/approvedExecutable" },
         "node": {
-          "description": "M5c — managed process supervisor를 띄우는 승인된 Node 실행 파일. typed run_process 권위의 executable은 **정확히 이 경로**여야 한다.",
+          "description": "M5c — managed process supervisor를 띄우는 승인된 Node 실행 파일. typed run_process의 실행 파일은 **항상 이 경로**이며 operation 레코드에는 그 필드가 없다.",
           "$ref": "#/definitions/approvedExecutable"
         },
         "processObserver": {
@@ -195,7 +199,7 @@
       }
     },
     "approvedOperation": {
-      "description": "M5c — **승인된 typed operation 1건**(대장 B-10). kind별로 key 집합이 닫혀 있다: write_file은 {authorityId, kind, path, maxBytes}, run_process는 {authorityId, kind, executable, args, timeoutMs}뿐이다. shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없다**. 런타임은 여기에 더해 write_file.path가 writableRoots 안이고(operation_outside_writable_root) 그 task의 승인 ownership 안이며(operation_not_owned), run_process.executable이 executionAuthority.node.path와 정확히 같고(operation_executable_not_approved) timeoutMs가 autopilotPolicy.maxAttemptElapsedMs 이하임을 함께 본다.",
+      "description": "M5c — **승인된 typed operation 1건**(대장 B-10). kind별로 key 집합이 닫혀 있다: write_file은 {authorityId, kind, path, maxBytes}, run_process는 {authorityId, kind, action, data, timeoutMs}뿐이다. **3A 2차 리비전에서 run_process의 executable/args를 삭제했다** — 1차 판은 승인된 Node 경로 + bounded 문자열 argv라 --eval·--require·임의 script 경로가 그대로 통과했고, 그것은 승인된 Node 하나가 곧 임의 로컬 코드 권위라는 뜻이었다. 지금 실행 대상은 executionAuthority.node + controllerEntrypoint로 고정이고 승인 문서가 고르는 것은 닫힌 action enum과 데이터 전용 인자뿐이다. shell 문자열 · 인자 wildcard · 런타임 실행 파일/script 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없다**. 런타임은 여기에 더해 write_file.path가 writableRoots 안이고(operation_outside_writable_root) 그 task의 승인 ownership 안이며(operation_not_owned), action이 승인 목록 안이고(operation_action_not_approved) data 항목이 NUL·고립 surrogate 없고 '-'로 시작하지 않으며(operation_data_not_approved) timeoutMs가 autopilotPolicy.maxAttemptElapsedMs 이하임을 함께 본다.",
       "oneOf": [{ "$ref": "#/definitions/writeFileAuthority" }, { "$ref": "#/definitions/runProcessAuthority" }]
     },
     "writeFileAuthority": {
@@ -217,22 +221,19 @@
     "runProcessAuthority": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["authorityId", "kind", "executable", "args", "timeoutMs"],
+      "required": ["authorityId", "kind", "action", "data", "timeoutMs"],
       "properties": {
         "authorityId": { "$ref": "#/definitions/slug" },
         "kind": { "const": "run_process" },
-        "executable": {
-          "description": "**승인된 executionAuthority.node.path와 정확히 같아야 한다**(git·codex·임의 경로는 typed operation이 아니다). 정규 절대경로 형태도 함께 만족한다.",
-          "type": "string",
-          "minLength": 1,
-          "maxLength": 512,
-          "pattern": "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$"
+        "action": {
+          "description": "고정 controller entrypoint가 받아들이는 **닫힌 action 집합**. 여기 없는 문자열은 승인될 수 없고, 목록에 항목을 더하는 것 자체가 사람의 승인 대상이다. 정본은 src/exec/orchestrationTypes.ts의 CONTROLLER_ACTIONS다.",
+          "enum": ["validate-plan"]
         },
-        "args": {
-          "description": "정확한 인자 배열(wildcard·확장·shell 해석 없음). 항목은 NUL 없는 bounded 문자열이며 길이는 코드 포인트로 센다(최대 256).",
+        "data": {
+          "description": "**데이터 전용** 인자 배열(wildcard·확장·shell 해석 없음). 항목은 NUL·고립 surrogate 없는 bounded 문자열이고 길이는 코드 포인트로 센다(최대 256). '-'로 시작할 수 없다 — 그것이 데이터와 런타임 옵션(--eval/--require/--input-type)을 가르는 형태 규칙이다. 파생 argv는 [controllerEntrypoint, action, ...data]이며 이 배열을 만드는 다른 통로가 없다.",
           "type": "array",
           "maxItems": 16,
-          "items": { "type": "string", "minLength": 1, "maxLength": 256, "not": { "pattern": "\\u0000" } }
+          "items": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[^-\\u0000][^\\u0000]*$" }
         },
         "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 3600000 }
       }

@@ -282,6 +282,21 @@
         "at": { "$ref": "#/definitions/timestamp" }
       }
     },
+    "pendingOperation": {
+      "description": "M5c 3A 2차 리비전 — **집행 직전에 durable하게 등록된 operation 1건**. 이 레코드가 존재한다는 것은 '이 attempt의 이 turn의 이 계획에서 이 operation을 집행하려 했다'는 뜻이고 영수증이 커밋되면 사라진다. attempt/turn/planDigest를 함께 담으므로 낡은 attempt·다른 turn·다른 계획의 영수증은 이 레코드와 맞지 않아 거부된다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "kind", "authorityId", "attemptId", "turnId", "planDigest", "beganAt"],
+      "properties": {
+        "operationId": { "$ref": "#/definitions/slug" },
+        "kind": { "$ref": "#/definitions/operationKind" },
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "attemptId": { "$ref": "#/definitions/slug" },
+        "turnId": { "$ref": "#/definitions/slug" },
+        "planDigest": { "$ref": "#/definitions/sha256" },
+        "beganAt": { "$ref": "#/definitions/timestamp" }
+      }
+    },
     "pendingResult": {
       "description": "M5c — 아직 durable 완료 커밋 전인 결과(cleanup 확인을 기다리는 동안 보관한다). 산출물은 아직 등록 전이므로 포인터가 아니다.",
       "type": "object",
@@ -312,6 +327,8 @@
         "attemptNo",
         "attemptId",
         "turnId",
+        "dispatchTurnId",
+        "dispatchPlanDigest",
         "preflightDigest",
         "phaseStartedAt",
         "wallDeadlineAt",
@@ -326,6 +343,7 @@
         "retryAt",
         "retryDeadlineAt",
         "pendingResult",
+        "pendingOperations",
         "operationReceipts"
       ],
       "properties": {
@@ -337,6 +355,14 @@
         },
         "attemptId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
         "turnId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "dispatchTurnId": {
+          "description": "M5c 3A 2차 리비전 — 지금 열려 있는 dispatch turn. issueOperationDispatchPermit이 커밋으로 claim하고 chargeTurnUsage가 그 turn을 닫으며 비운다. null이 아니면 **다른 turn은 permit을 받지 못한다**(durable turn이 null인 동안 두 turn이 각각 permit을 받아 둘 다 집행하는 경로를 닫는다).",
+          "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }]
+        },
+        "dispatchPlanDigest": {
+          "description": "M5c 3A 2차 리비전 — claim한 turn의 계획 canonical digest. 같은 turn에 다른 계획이 오면 dispatch_plan_conflict다.",
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        },
         "preflightDigest": {
           "description": "preflight가 봉인한 결정의 digest. startPreparedTask가 시작 직전에 다시 계산해 대조한다(preflight_drift).",
           "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
@@ -367,6 +393,12 @@
         "retryAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
         "retryDeadlineAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
         "pendingResult": { "oneOf": [{ "$ref": "#/definitions/pendingResult" }, { "type": "null" }] },
+        "pendingOperations": {
+          "description": "M5c 3A 2차 리비전 — 집행 직전에 durable하게 등록됐고 아직 영수증이 커밋되지 않은 operation(operationId 정렬·유일). 하나라도 남아 있으면 turn을 닫을 수도(chargeTurnUsage) task를 완료·차단할 수도 없다. 재시작한 controller는 이 목록으로 '효과는 났는데 결과가 없는' 구간을 정확히 하나의 방법으로 정합화한다.",
+          "type": "array",
+          "maxItems": 8,
+          "items": { "$ref": "#/definitions/pendingOperation" }
+        },
         "operationReceipts": {
           "description": "attempt 하나가 남기는 영수증 수의 상한(64). operationId는 유일하다.",
           "type": "array",
@@ -614,7 +646,9 @@
             "cleanup_started",
             "cleanup_confirmed",
             "cleanup_failed",
-            "operation_receipt"
+            "operation_receipt",
+            "dispatch_claimed",
+            "operation_began"
           ]
         },
         "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },

@@ -27,6 +27,7 @@ import {
   AUTOPILOT_MARKERS,
   CENTRAL_MESSAGE_TYPES,
   CLEANUP_STATUSES,
+  CONTROLLER_ACTIONS,
   DELIVERY_MARKERS,
   EVENT_TYPES,
   LIMITS,
@@ -59,6 +60,7 @@ import {
   COMMAND_PATTERN,
   COMMIT_PATTERN,
   DEPENDENCY_KEYS,
+  CONTROLLER_DATA_ARG_PATTERN,
   RUN_PROCESS_AUTHORITY_KEYS,
   WRITE_FILE_AUTHORITY_KEYS,
   DEPENDENCY_NAME_PATTERN,
@@ -184,6 +186,9 @@ const APPROVED_COMMIT = "a".repeat(40);
  */
 const EXECUTION_AUTHORITY = {
   codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+  // M5c 3A 2차 리비전(`B-10`) — typed `run_process`가 실행하는 **유일한** 고정 entrypoint.
+  // 승인된 operation 레코드는 실행 대상을 고를 수 없고 action/data만 고른다.
+  controllerEntrypoint: { path: "/opt/harness/controller.mjs", sha256: "9".repeat(64) },
   git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
   // M5c(v2) — managed process supervisor용 node와 자손 관측용 실행 파일도 승인 대상이다.
   node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
@@ -2447,6 +2452,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
   assert.deepEqual(actual, [
     "acknowledgeDelivery",
     "beginDeliveryAttempt",
+    // M5c 3A 2차 리비전 A2 — 집행 **직전** durable 등록 + 일회용 grant 발급. 자기 task의 자기 계획
+    // 안에서만 열리고, 남의 task 상태를 바꾸는 통로는 여전히 없다.
+    "beginOperation",
     "chargeTurnUsage",
     "commitPreflightBatch",
     "completeTaskWithArtifacts",
@@ -4245,10 +4253,17 @@ test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치�
   assert.deepEqual(Object.keys(rp.properties).sort(), [...RUN_PROCESS_AUTHORITY_KEYS].sort());
   assert.equal(rp.additionalProperties, false);
   assert.equal(rp.properties.kind.const, "run_process");
-  assert.equal(rp.properties.args.maxItems, LIMITS.maxOperationArgs);
-  assert.equal(rp.properties.args.items.maxLength, LIMITS.maxOperationArgLength);
+  // M5c 3A 2차 리비전(`B-10`) — 승인 문서에 실행 파일·argv 필드가 **없다**. 닫힌 action + 데이터 전용 인자뿐.
+  assert.deepEqual(rp.properties.action.enum, [...CONTROLLER_ACTIONS]);
+  assert.equal(rp.properties.data.maxItems, LIMITS.maxOperationArgs);
+  assert.equal(rp.properties.data.items.maxLength, LIMITS.maxOperationArgLength);
+  assert.equal(rp.properties.data.items.pattern, CONTROLLER_DATA_ARG_PATTERN);
+  assert.equal(rp.properties.executable, undefined, "실행 파일 선택 필드가 되살아났다");
+  assert.equal(rp.properties.args, undefined, "임의 argv 필드가 되살아났다");
   assert.equal(rp.properties.timeoutMs.minimum, 100);
   assert.equal(rp.properties.timeoutMs.maximum, 3_600_000);
+  // 고정 controller entrypoint는 `executionAuthority`에만 있고 승인된 실행 파일과 같은 형태다.
+  assert.deepEqual(s.properties.executionAuthority.properties.controllerEntrypoint.$ref, "#/definitions/approvedExecutable");
   // shell·network 같은 계약 밖 변종은 **표현할 타입이 없다**: 양쪽이 같은 자리에서 거부한다.
   assert.deepEqual(s.definitions.approvedOperation.oneOf.length, 2, "typed operation union이 열렸다");
   assert.equal(

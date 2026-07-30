@@ -103,6 +103,8 @@ const MANIFEST = {
   allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
   executionAuthority: {
     codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+    // M5c 3A 2차 리비전(`B-10`) — typed `run_process`의 고정 entrypoint(여기서는 승인 operation 0건).
+    controllerEntrypoint: { path: "/opt/harness/controller.mjs", sha256: "9".repeat(64) },
     git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
     node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
     processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },

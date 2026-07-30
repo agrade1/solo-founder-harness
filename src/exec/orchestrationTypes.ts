@@ -168,6 +168,13 @@ export const EVENT_TYPES = [
   "cleanup_failed",
   /** controller가 집행한 typed operation 1건의 영수증(내용은 담지 않는다). */
   "operation_receipt",
+  /**
+   * M5c 3A 2차 리비전 — 이 attempt가 **정확히 하나의 (turn, 계획 digest)** 를 durable하게 claim했다.
+   * 크래시 뒤 "어떤 계획/turn이 그 효과를 승인했는가"를 event log만으로 답할 수 있게 하는 근거다.
+   */
+  "dispatch_claimed",
+  /** M5c 3A 2차 리비전 — operation 1건이 **집행 직전에** durable하게 등록됐다(영수증 커밋으로 닫힌다). */
+  "operation_began",
 ] as const;
 export type OrchestrationEventType = (typeof EVENT_TYPES)[number];
 
@@ -367,10 +374,12 @@ export const LIMITS = {
   maxAccountedElapsedMs: 86_400_000,
   /** task 하나에 승인할 수 있는 typed operation 권위 수. */
   maxOperationAuthorities: 32,
-  /** `run_process` 권위 하나의 argv 길이. */
+  /** `run_process` 권위 하나의 **데이터 인자** 개수(코드 인자는 표현할 타입이 없다 — `B-10`). */
   maxOperationArgs: 16,
-  /** argv 항목 1개의 길이(코드 포인트). */
+  /** 데이터 인자 1개의 길이(코드 포인트). */
   maxOperationArgLength: 256,
+  /** attempt 하나가 동시에 열어 둘 수 있는 **미확정 operation** 수(전부 정합화해야 turn을 닫는다). */
+  maxPendingOperations: 8,
 } as const;
 
 /**
@@ -562,6 +571,26 @@ export interface OperationReceipt {
   at: string;
 }
 
+/**
+ * **집행 직전에 durable하게 등록된 operation 1건**(V3 M5c 3A 2차 리비전 A2).
+ *
+ * 이 레코드가 존재한다는 것은 "이 attempt의 이 turn의 이 계획에서 이 operation을 집행하려 했다"는 뜻이고,
+ * 영수증이 커밋되면 사라진다. 그래서 **효과가 일어났는데 결과가 없는 구간**이 durable에 남고, 재시작한
+ * controller는 그 구간을 정확히 하나의 방법으로 정합화한다(같은 operation을 다시 열어 멱등 재집행 →
+ * 영수증 커밋). 미확정 레코드가 하나라도 있으면 turn을 닫을 수도, task를 완료·차단할 수도 없다.
+ */
+export interface PendingOperation {
+  operationId: string;
+  kind: ApprovedOperationKind;
+  authorityId: string;
+  /** 등록 시점의 durable attempt/turn 신원 — 낡은 attempt·다른 turn의 영수증을 거부하는 근거다. */
+  attemptId: string;
+  turnId: string;
+  /** 이 attempt가 durable하게 claim한 계획의 canonical digest. */
+  planDigest: string;
+  beganAt: string;
+}
+
 /** 아직 durable 완료 커밋 전인 결과(cleanup 확인을 기다리는 동안 보관한다). */
 export interface PendingTaskResult {
   summary: string;
@@ -579,6 +608,14 @@ export interface TaskExecution {
   attemptNo: number;
   attemptId: string | null;
   turnId: string | null;
+  /**
+   * **지금 열려 있는 dispatch turn**(3A 2차 리비전 A1). `issueOperationDispatchPermit()`이 커밋으로
+   * claim하고 `chargeTurnUsage()`가 그 turn을 닫을 때 비운다. 이것이 null이 아니면 **다른 turn은 permit을
+   * 받을 수 없다** — "durable turn이 null인 동안 두 turn이 각각 permit을 받아 둘 다 집행"이 불가능해진다.
+   */
+  dispatchTurnId: string | null;
+  /** claim한 turn의 계획 canonical digest. 같은 turn에 **다른 계획**이 오면 fail closed다. */
+  dispatchPlanDigest: string | null;
   /** preflight가 봉인한 결정의 digest — 시작 직전에 다시 계산해 대조한다. */
   preflightDigest: string | null;
   phaseStartedAt: string | null;
@@ -595,6 +632,8 @@ export interface TaskExecution {
   retryAt: string | null;
   retryDeadlineAt: string | null;
   pendingResult: PendingTaskResult | null;
+  /** 등록됐지만 아직 영수증이 커밋되지 않은 operation(operationId 정렬 · 중복 없음). */
+  pendingOperations: PendingOperation[];
   operationReceipts: OperationReceipt[];
 }
 
@@ -604,6 +643,8 @@ export function emptyTaskExecution(): TaskExecution {
     attemptNo: 0,
     attemptId: null,
     turnId: null,
+    dispatchTurnId: null,
+    dispatchPlanDigest: null,
     preflightDigest: null,
     phaseStartedAt: null,
     wallDeadlineAt: null,
@@ -618,6 +659,7 @@ export function emptyTaskExecution(): TaskExecution {
     retryAt: null,
     retryDeadlineAt: null,
     pendingResult: null,
+    pendingOperations: [],
     operationReceipts: [],
   };
 }
@@ -678,12 +720,25 @@ export interface ApprovedExecutable {
  * shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git ·
  * deploy · billing · PR merge 변종은 **존재하지 않는다**(표현할 타입이 없으므로 승인될 수도 없다).
  *
- * worker는 `authorityId`만 고를 수 있다 — 경로·바이트 상한·실행 파일·argv는 **사람이 승인한 이 레코드**에서
+ * worker는 `authorityId`만 고를 수 있다 — 경로·바이트 상한·실행 파일·인자는 **사람이 승인한 이 레코드**에서
  * 나온다. 그래서 "모델이 만든 명령"이라는 것이 애초에 성립하지 않는다.
+ *
+ * **`B-10` 집행(3A 2차 리비전 B2)**: `run_process`는 더 이상 argv를 담지 않는다. 승인 문서가 고를 수 있는
+ * 것은 **닫힌 action enum 하나 + 데이터 전용 인자**뿐이고, 실행 대상은 `executionAuthority.node` +
+ * `executionAuthority.controllerEntrypoint`로 **manifest 전체에 하나로 고정**된다(digest는 실행 경계에서
+ * 다시 확인한다). `--eval`·`--require`·임의 script/module 경로·shell·env·cwd는 **표현할 필드가 없다**.
  */
 export type ApprovedOperation =
   | { authorityId: string; kind: "write_file"; path: string; maxBytes: number }
-  | { authorityId: string; kind: "run_process"; executable: string; args: string[]; timeoutMs: number };
+  | { authorityId: string; kind: "run_process"; action: ControllerAction; data: string[]; timeoutMs: number };
+
+/**
+ * **고정 controller entrypoint가 받아들이는 닫힌 action 집합**(3A 2차 리비전 B2 · 대장 `B-10`).
+ * 여기 없는 문자열은 승인 문서에 담길 수 없고, 이 목록에 항목을 더하는 것 자체가 사람의 승인 대상이다.
+ * M5c에서 실제로 필요한 것은 offline 계획 검증 하나뿐이라 그 하나만 있다(없는 action을 미리 열지 않는다).
+ */
+export const CONTROLLER_ACTIONS = ["validate-plan"] as const;
+export type ControllerAction = (typeof CONTROLLER_ACTIONS)[number];
 
 /**
  * autopilot 실행 정책(V3 M5c). 전부 bounded이고 **조용한 기본값이 없다** — manifest에 없으면 거부다.
@@ -740,6 +795,11 @@ export interface MilestoneApprovalManifest {
    */
   executionAuthority: {
     codex: ApprovedExecutable | null;
+    /**
+     * M5c 3A 2차 리비전 B2 — **모든 typed `run_process`가 실행하는 유일한 script**. digest는 실행 경계에서
+     * 다시 확인한다. 승인 문서의 operation 레코드는 이 값을 바꾸거나 다른 경로를 고를 수 없다.
+     */
+    controllerEntrypoint: ApprovedExecutable;
     git: ApprovedExecutable;
     /** managed process supervisor를 띄우는 승인된 Node 실행 파일. */
     node: ApprovedExecutable;

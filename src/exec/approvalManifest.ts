@@ -17,11 +17,13 @@
  * manifest가 무엇을 담든 **항상 더 강하다**.
  */
 import {
+  CONTROLLER_ACTIONS,
   LIMITS,
   type ApprovedDependency,
   type ApprovedExecutable,
   type ApprovedOperation,
   type AutopilotPolicy,
+  type ControllerAction,
   type MilestoneApprovalManifest,
   OrchestrationError,
   SHA256_PATTERN,
@@ -108,7 +110,7 @@ export const DEPENDENCY_KEYS = ["name", "version"] as const;
  * 승인된 실행 권위 key. M5c(v2)에서 `node`·`processObserver`가 필수로 더해졌고 `codex`는 null 허용이다.
  * 더 넣거나 빼면 `invalid_manifest`이고, v1(`codex`+`git`만)은 `manifest_pre_m5c_unsupported`다.
  */
-export const EXECUTION_AUTHORITY_KEYS = ["codex", "git", "node", "processObserver"] as const;
+export const EXECUTION_AUTHORITY_KEYS = ["codex", "controllerEntrypoint", "git", "node", "processObserver"] as const;
 export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"] as const;
 
 /** M5c autopilot 정책 key(전부 필수 — 조용한 기본값이 없다). */
@@ -125,7 +127,20 @@ export const AUTOPILOT_POLICY_KEYS = [
 
 /** typed operation 권위 항목의 key 집합(kind별로 닫혀 있다). */
 export const WRITE_FILE_AUTHORITY_KEYS = ["authorityId", "kind", "path", "maxBytes"] as const;
-export const RUN_PROCESS_AUTHORITY_KEYS = ["authorityId", "kind", "executable", "args", "timeoutMs"] as const;
+/**
+ * `run_process` 권위 key(3A 2차 리비전 B2 · 대장 `B-10`). **`executable`도 `args`도 없다** — 실행 대상은
+ * manifest 전체에 하나로 고정된 `executionAuthority.node` + `controllerEntrypoint`이고, 승인 문서가 고르는
+ * 것은 닫힌 `action`과 **데이터 전용** `data`뿐이다.
+ */
+export const RUN_PROCESS_AUTHORITY_KEYS = ["authorityId", "kind", "action", "data", "timeoutMs"] as const;
+
+/**
+ * 데이터 인자 1개의 형태. **`-`로 시작할 수 없다** — 그것이 `--eval`·`--require`·`--experimental-*` 같은
+ * 런타임 옵션과 데이터를 가르는 유일하게 단순하고 빈틈없는 규칙이다(고정 entrypoint가 argv[1]이므로
+ * Node 옵션 자리는 애초에 없지만, entrypoint 자신의 파서까지 데이터로 닫아 둔다).
+ */
+export const CONTROLLER_DATA_ARG_PATTERN = "^[^-\\u0000][^\\u0000]*$";
+const CONTROLLER_DATA_ARG_RE = new RegExp(CONTROLLER_DATA_ARG_PATTERN, "u");
 
 /** 구체적인 approved commit — 40자 소문자 hex만. 짧은 해시·브랜치·tag는 거부한다. */
 export const COMMIT_PATTERN = "^[0-9a-f]{40}$";
@@ -262,15 +277,18 @@ function validateExecutionAuthority(raw: unknown): MilestoneApprovalManifest["ex
   const o = asObject(raw, "manifest.executionAuthority");
   // v1 manifest(`codex`+`git`만)는 **마이그레이션하지 않고** 거부한다 — 기본값을 채우면 그것이 곧
   // "승인되지 않은 실행 파일을 승인된 것으로 취급"이다.
-  if (!("node" in o) || !("processObserver" in o)) {
+  if (!("node" in o) || !("processObserver" in o) || !("controllerEntrypoint" in o)) {
     throw new OrchestrationError(
       "manifest_pre_m5c_unsupported",
-      "M5c 이전 승인 manifest다(executionAuthority.node/processObserver 없음). 마이그레이션하지 않으며 새 승인이 필요하다",
+      "M5c 이전 승인 manifest다(executionAuthority.node/processObserver/controllerEntrypoint 없음). 마이그레이션하지 않으며 새 승인이 필요하다",
     );
   }
   closedKeys(o, EXECUTION_AUTHORITY_KEYS, "manifest.executionAuthority");
   return {
     codex: o.codex === null ? null : validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
+    // **고정 controller entrypoint**(3A 2차 리비전 B2): 모든 typed `run_process`가 실행하는 **유일한**
+    // script다. 경로·digest는 여기서만 오고 승인 문서의 다른 어떤 필드도 이것을 바꾸지 못한다.
+    controllerEntrypoint: validateApprovedExecutable(o.controllerEntrypoint, "manifest.executionAuthority.controllerEntrypoint"),
     git: validateApprovedExecutable(o.git, "manifest.executionAuthority.git"),
     node: validateApprovedExecutable(o.node, "manifest.executionAuthority.node"),
     processObserver: validateApprovedExecutable(o.processObserver, "manifest.executionAuthority.processObserver"),
@@ -304,16 +322,19 @@ function validateAutopilotPolicy(raw: unknown, maxElapsedMs: number): AutopilotP
  * **승인된 typed operation 1건**(대장 `B-10`). kind별로 key 집합이 닫혀 있고 shell 문자열·wildcard·
  * 런타임 실행 파일 선택은 표현할 수 없다.
  *
- * `run_process.executable`은 **승인된 Node 실행 파일과 정확히 같아야 한다**(의도적으로 계획보다 좁다).
- * 이유: `git`을 typed operation으로 열면 승인된 argv 배열 하나만으로 `push`/`remote`가 표현 가능해지고
- * 그것은 레포 hard deny(원격 저장소 직접 쓰기)를 **승인 문서가 덮는 형태**가 된다. git은 controller가
- * 소유한 `trustedGit.ts`의 고정 메서드로만 지나가고, `processObserver`는 정리 관측 전용이며 typed
- * operation이 아니다. argv "screen"은 만들지 않는다 — 그것은 집행이 아니라 흉내이기 때문이다.
+ * **`run_process`는 실행 대상을 고를 수 없다**(3A 2차 리비전 B2 · 대장 `B-10`). 1차 판은 승인된 Node 경로 +
+ * "bounded non-NUL 문자열" argv였다 → `--eval`·`--require`·임의 script 경로가 그대로 통과해 **승인된 Node
+ * 하나가 곧 임의 로컬 코드 권위**였다(token 화면으로는 닫히지 않는다 — 그것은 집행이 아니라 흉내다).
+ * 지금 승인 문서가 고를 수 있는 것은 **닫힌 `action` enum 하나와 데이터 전용 `data`뿐**이고, 실행 대상은
+ * `executionAuthority.node` + `controllerEntrypoint`로 manifest 전체에 하나로 고정된다.
+ * `git`도 마찬가지로 typed operation이 아니다(승인된 argv 하나로 `push`/`remote`가 표현되면 레포 hard deny를
+ * 승인 문서가 덮는 형태가 된다). git은 `trustedGit.ts`의 고정 메서드로만 지나가고 `processObserver`는
+ * 정리 관측 전용이다.
  */
 function validateApprovedOperation(
   raw: unknown,
   what: string,
-  ctx: { writableRoots: string[]; approvedOwnership: string[] | undefined; nodePath: string; maxAttemptElapsedMs: number },
+  ctx: { writableRoots: string[]; approvedOwnership: string[] | undefined; maxAttemptElapsedMs: number },
 ): ApprovedOperation {
   const o = asObject(raw, what);
   const kind = o.kind;
@@ -335,36 +356,41 @@ function validateApprovedOperation(
     return { authorityId, kind, path, maxBytes: boundedInt(o.maxBytes, `${what}.maxBytes`, 1, LIMITS.maxWriteBytes) };
   }
   closedKeys(o, RUN_PROCESS_AUTHORITY_KEYS, what);
-  if (typeof o.executable !== "string" || o.executable !== ctx.nodePath) {
+  if (typeof o.action !== "string" || !(CONTROLLER_ACTIONS as readonly string[]).includes(o.action)) {
     throw new OrchestrationError(
-      "operation_executable_not_approved",
-      `${what}.executable은 승인된 executionAuthority.node.path와 정확히 같아야 한다(git·codex·임의 경로는 typed operation이 아니다)`,
+      "operation_action_not_approved",
+      `${what}.action은 ${CONTROLLER_ACTIONS.join("|")} 중 하나여야 한다(임의 명령·script·module 지정자는 표현할 필드가 없다)`,
     );
   }
-  if (!Array.isArray(o.args)) throw new OrchestrationError("invalid_manifest", `${what}.args는 배열이어야 한다`);
-  if (o.args.length > LIMITS.maxOperationArgs) {
-    throw new OrchestrationError("invalid_manifest", `${what}.args는 ${LIMITS.maxOperationArgs}개 이하여야 한다`);
+  if (!Array.isArray(o.data)) throw new OrchestrationError("invalid_manifest", `${what}.data는 배열이어야 한다`);
+  if (o.data.length > LIMITS.maxOperationArgs) {
+    throw new OrchestrationError("invalid_manifest", `${what}.data는 ${LIMITS.maxOperationArgs}개 이하여야 한다`);
   }
-  const args: string[] = [];
-  for (const a of o.args) {
-    // argv도 **정확한 바이트**로 전달돼야 한다: 고립 surrogate는 spawn 경계에서 U+FFFD로 바뀌어
-    // "승인된 인자와 정확히 같은가"가 흉내가 된다(대장 `B-10`은 이것과 별개로 **여전히 열린 게이트**다).
+  const data: string[] = [];
+  for (const a of o.data) {
+    // 데이터 인자도 **정확한 바이트**로 전달돼야 한다: 고립 surrogate는 spawn 경계에서 U+FFFD로 바뀌어
+    // "승인된 인자와 정확히 같은가"가 흉내가 된다. 그리고 `-`로 시작하는 항목은 **데이터가 아니라 옵션**이므로
+    // 거부한다 — `--eval`/`--require`/`--input-type` 계열이 데이터 자리로 새는 통로를 형태로 닫는다.
     if (
       typeof a !== "string" ||
       a.length === 0 ||
       a.includes("\0") ||
       hasLoneSurrogate(a) ||
-      codePointLength(a) > LIMITS.maxOperationArgLength
+      codePointLength(a) > LIMITS.maxOperationArgLength ||
+      !CONTROLLER_DATA_ARG_RE.test(a)
     ) {
-      throw new OrchestrationError("invalid_manifest", `${what}.args 항목은 NUL 없는 bounded 문자열이어야 한다`);
+      throw new OrchestrationError(
+        "operation_data_not_approved",
+        `${what}.data 항목은 NUL·고립 surrogate 없는 bounded 문자열이고 '-'로 시작할 수 없다`,
+      );
     }
-    args.push(a);
+    data.push(a);
   }
   const timeoutMs = boundedInt(o.timeoutMs, `${what}.timeoutMs`, 100, 3_600_000);
   if (timeoutMs > ctx.maxAttemptElapsedMs) {
     throw new OrchestrationError("invalid_manifest", `${what}.timeoutMs는 autopilotPolicy.maxAttemptElapsedMs 이하여야 한다`);
   }
-  return { authorityId, kind, executable: o.executable, args, timeoutMs };
+  return { authorityId, kind, action: o.action as ControllerAction, data, timeoutMs };
 }
 
 function validateDependency(raw: unknown): ApprovedDependency {
@@ -480,7 +506,6 @@ export function validateApprovalManifest(raw: unknown): MilestoneApprovalManifes
       const op = validateApprovedOperation(list[i], `${what}[${i}]`, {
         writableRoots,
         approvedOwnership: Object.prototype.hasOwnProperty.call(ownershipByTask, taskId) ? ownershipByTask[taskId] : undefined,
-        nodePath: executionAuthority.node.path,
         maxAttemptElapsedMs: autopilotPolicy.maxAttemptElapsedMs,
       });
       if (ops.some((x) => x.authorityId === op.authorityId)) {

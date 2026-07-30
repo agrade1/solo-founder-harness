@@ -62,9 +62,31 @@ function verify(input: ExecutionBoundaryInput) {
 function authority(over: { path?: string; sha256?: string } = {}) {
   return {
     codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
+    // M5c(v2) + 3A 2차 리비전: node·processObserver·controllerEntrypoint도 승인 대상이다. 이 경계는
+    // git만 실제로 열므로 나머지는 형태만 있으면 된다(경로가 존재하지 않아도 되는 이유 = spawn 0).
+    controllerEntrypoint: { path: "/opt/harness/controller.mjs", sha256: "9".repeat(64) },
     git: { path: over.path ?? GIT, sha256: over.sha256 ?? GIT_SHA },
+    node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+    processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
   };
 }
+
+/** git만 바꾼 승인 권위(나머지 셋은 v2 필수 필드이므로 그대로 유지한다). */
+function authorityWithGit(git: { path: string; sha256: string }) {
+  return { ...authority(), git };
+}
+
+/** M5c(v2) autopilot 정책 — 없으면 manifest_pre_m5c_unsupported다(조용한 기본값이 없다). */
+const AUTOPILOT_POLICY = {
+  maxTaskAttempts: 2,
+  maxDeliveryAttempts: 2,
+  retryBackoffMs: 0,
+  deliveryDeadlineMs: 30_000,
+  maxNoProgressMs: 30_000,
+  maxAttemptElapsedMs: 30_000,
+  cleanupTermGraceMs: 500,
+  cleanupKillGraceMs: 500,
+};
 
 function manifest(over: Record<string, unknown> = {}) {
   return {
@@ -76,6 +98,8 @@ function manifest(over: Record<string, unknown> = {}) {
     allowedDependencies: [],
     allowedNetworkDomains: [],
     executionAuthority: authority(),
+    autopilotPolicy: AUTOPILOT_POLICY,
+    operationAuthorityByTask: {},
     maxSessions: 2,
     maxTokens: 1000,
     maxElapsedMs: 60_000,
@@ -189,7 +213,9 @@ test("[M5a] manifest 누락·형태 위반은 승인 규칙 그대로 거부한�
     const call = (m: unknown) =>
       verify({ manifest: m, controllerRepoRoot: repo.root, targetWorktree: repo.root });
     assert.equal(await code(() => call(undefined)), "invalid_manifest");
-    assert.equal(await code(() => call({})), "invalid_manifest");
+    // 빈 객체는 **v2 필수 절이 없는 manifest**이므로 M5c 전용 fail-closed 코드로 거부된다
+    // (마이그레이션·기본값 채우기는 곧 조용한 자동 승인이므로 하지 않는다).
+    assert.equal(await code(() => call({})), "manifest_pre_m5c_unsupported");
     assert.equal(await code(() => call(manifest({ approvedCommit: repo.head.slice(0, 7) }))), "invalid_manifest");
     assert.equal(await code(() => call(manifest({ approvedCommit: "main" }))), "invalid_manifest");
     assert.equal(await code(() => call(manifest({ extra: 1 }))), "invalid_manifest");
@@ -284,7 +310,7 @@ test("[M5a] git 실행 파일은 신뢰된 절대·정규 경로여야 한다(�
       verify({
         manifest: manifest({
           approvedCommit: repo.head,
-          executionAuthority: { codex: authority().codex, git: { path: path as string, sha256: sha256 ?? GIT_SHA } },
+          executionAuthority: authorityWithGit({ path: path as string, sha256: sha256 ?? GIT_SHA }),
         }),
         controllerRepoRoot: repo.root,
         targetWorktree: repo.root,
@@ -387,7 +413,7 @@ test("[M5a] revalidateSync: git 실행 파일이 교체되면 spawn 직전에 �
     writeFileSync(pinned, wrapper, { mode: 0o755 });
     const pinnedManifest = manifest({
       approvedCommit: repo.head,
-      executionAuthority: { codex: authority().codex, git: { path: pinned, sha256: digestOf(pinned) } },
+      executionAuthority: authorityWithGit({ path: pinned, sha256: digestOf(pinned) }),
     });
     const v = await verify({ manifest: pinnedManifest, controllerRepoRoot: repo.root, targetWorktree: repo.root });
     v.revalidateSync();
@@ -402,7 +428,7 @@ test("[M5a] revalidateSync: git 실행 파일이 교체되면 spawn 직전에 �
     const v2 = await verify({
       manifest: manifest({
         approvedCommit: repo.head,
-        executionAuthority: { codex: authority().codex, git: { path: pinned, sha256: digestOf(pinned) } },
+        executionAuthority: authorityWithGit({ path: pinned, sha256: digestOf(pinned) }),
       }),
       controllerRepoRoot: repo.root,
       targetWorktree: repo.root,
@@ -625,7 +651,7 @@ function selfRewritingGit(trigger: string): {
 function wrapperManifest(w: { path: string; sha256: string }, approvedCommit: string) {
   return manifest({
     approvedCommit,
-    executionAuthority: { codex: authority().codex, git: { path: w.path, sha256: w.sha256 } },
+    executionAuthority: authorityWithGit({ path: w.path, sha256: w.sha256 }),
   });
 }
 
