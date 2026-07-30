@@ -43,29 +43,46 @@
  * - 중앙이 운반하는 것은 bounded summary와 **검증된 artifact 포인터**뿐 — raw 본문·transcript 없음.
  */
 import {
+  AGENT_MESSAGE_SCHEMA_VERSION,
   type AgentMessageEnvelope,
   type AgentMessageType,
   type ArtifactPointer,
   type ArtifactRecord,
   type ArtifactRole,
   ARTIFACT_ROLES,
+  type AutopilotMarker,
+  AUTOPILOT_MARKERS,
   CENTRAL_MESSAGE_TYPES,
   type Clock,
+  type DeliveryMarker,
+  DELIVERY_MARKERS,
+  EMPTY_EVENT_AUDIT,
   LIMITS,
   type MessageIndexEntry,
   type MilestoneApprovalManifest,
-  ORCHESTRATION_SCHEMA_VERSION,
   ORCHESTRATOR_ID,
+  type OperationReceipt,
   type OrchestrationEvent,
   OrchestrationError,
   type OrchestrationRunState,
   type OrchestrationTask,
+  type PauseReason,
+  PAUSE_REASONS,
+  type PendingTaskResult,
+  RUN_STATE_SCHEMA_VERSION,
+  type RunAccounting,
+  SAFETY_ONLY_EVENT_TYPES,
+  SAFETY_ONLY_REASONS,
   SUMMARY_REQUIRED,
   type TaskState,
   type TransitionReason,
   assertSlug,
   assertText,
+  assertTimestamp,
+  emptyMessageDelivery,
+  emptyTaskExecution,
   formatTimestamp,
+  holdsResources,
   normalizeOwnership,
   normalizeResourceClasses,
   normalizeWorkspacePath,
@@ -73,11 +90,13 @@ import {
 import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import { assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 import {
+  OPERATION_RECEIPT_MARKERS,
   type RunPaths,
   assertReferentialIntegrity,
   commitRun,
   ensureRunDir,
   loadRun,
+  manifestDigest,
   pendingDeliveries,
   runExists,
   runPaths,
@@ -177,6 +196,26 @@ export interface CompletedTask {
 interface Mutation {
   events: Array<Omit<OrchestrationEvent, "prevHash" | "eventId" | "stateDigest">>;
   bodies: Array<{ messageId: string; body: string }>;
+}
+
+/** 감사 필드를 채우지 않은 이벤트에 닫힌 기본값을 붙인다(자유 payload 없음). */
+type NewEvent = Partial<Omit<OrchestrationEvent, "prevHash" | "eventId" | "stateDigest">> & {
+  at: string;
+  type: OrchestrationEvent["type"];
+  revision: number;
+};
+
+function event(e: NewEvent): Omit<OrchestrationEvent, "prevHash" | "eventId" | "stateDigest"> {
+  return {
+    taskId: null,
+    messageId: null,
+    fromState: null,
+    toState: null,
+    reason: null,
+    artifactId: null,
+    ...EMPTY_EVENT_AUDIT,
+    ...e,
+  };
 }
 
 const clone = <T>(v: T): T => structuredClone(v);
@@ -286,10 +325,12 @@ export class OrchestrationKernel {
     }
     assertNotExpired(manifest, now);
     const seed: OrchestrationRunState = {
-      schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
+      schemaVersion: RUN_STATE_SCHEMA_VERSION,
       runId: paths.runId,
       milestoneId,
       manifest,
+      // **durable 예산은 run 생성 시 한 번 정해지고 재시작이 새로 만들지 않는다**(대장 `B-12`).
+      accounting: seedAccounting(manifest, now),
       revision: 1,
       lastEventId: 0,
       lastEventHash: "0".repeat(64),
@@ -302,19 +343,7 @@ export class OrchestrationKernel {
     ensureRunDir(paths);
     const committed = commitRun(paths, {
       state: seed,
-      events: [
-        {
-          at: now,
-          type: "run_created",
-          revision: 1,
-          taskId: null,
-          messageId: null,
-          fromState: null,
-          toState: null,
-          reason: null,
-          artifactId: null,
-        },
-      ],
+      events: [event({ at: now, type: "run_created", revision: 1 })],
       bodies: [],
       // 최초 커밋 — lock 안에서 "state 파일이 아직 없다"를 다시 확인한다(두 프로세스 동시 create 방지).
       base: null,
@@ -368,28 +397,162 @@ export class OrchestrationKernel {
   }
 
   /**
-   * 다음에 시작할 수 있는 ready task를 **결정론적으로** 고른다(state·파일 변경 없음).
-   * taskId 오름차순으로 훑으며 ① 이미 running인 task가 점유한 class와 ② 같은 batch에서 앞서 고른
-   * task의 class를 모두 피한다. 자원을 요구하지 않는 task는 항상 병렬 안전이다.
-   * durable state만 보므로 재시작 뒤에도 같은 답을 낸다.
+   * 다음에 시작할 수 있는 task를 **결정론적으로** 고른다(state·파일 변경 없음 — 읽기 전용).
+   *
+   * taskId 오름차순으로 훑으며 ① 이미 자원을 점유한 task(`prepared`/`running`/`cleaning`)의 class와
+   * ② 같은 batch에서 앞서 고른 task의 class를 모두 피한다. `retry_wait`은 `retryAt`이 **된 것만** 고른다
+   * (두 번째 scheduler를 만들지 않는다 — 재시도도 이 scheduler 하나가 고른다).
+   *
+   * @deprecated `planRunnableBatch()`를 쓴다. 이 이름은 M4b 호출부 호환을 위해 남아 있다.
    */
   scheduleReady(limit: number = LIMITS.maxScheduleBatch): OrchestrationTask[] {
-    return selectSchedulable(this.#state, assertBatchLimit(limit)).map(clone);
+    return this.planRunnableBatch(limit).items;
   }
 
   /**
-   * `scheduleReady()`가 고른 batch를 **한 커밋으로** running으로 올린다(부분 적용 없음 — 커밋
-   * 하나가 실패하면 batch 전체가 전이 0이다). 고를 게 없으면 빈 배열이며 커밋하지 않는다.
+   * **M5c 단일 scheduler 진입점**(대장 `B-11`). `revision`을 함께 돌려주는 이유: preflight 결정은
+   * **이 batch를 고른 그 state**에 대한 것이어야 하므로, 커밋이 `baseRevision`을 대조해 낡은 결정을 거부한다.
    */
-  startScheduledBatch(limit: number = LIMITS.maxScheduleBatch): OrchestrationTask[] {
-    const ids = selectSchedulable(this.#state, assertBatchLimit(limit)).map((t) => t.taskId);
-    if (ids.length === 0) return [];
+  planRunnableBatch(limit: number = LIMITS.maxScheduleBatch): { revision: number; items: OrchestrationTask[] } {
+    const now = formatTimestamp(this.#clock());
+    return {
+      revision: this.#state.revision,
+      items: selectSchedulable(this.#state, assertBatchLimit(limit), now).map(clone),
+    };
+  }
+
+  /**
+   * **원자적 preflight 커밋**(대장 `B-11`). `planRunnableBatch()`가 고른 **정확히 그 batch**에 대한 결정을
+   * 받아 각 task를 `prepared`/`paused`/`retry_wait`/`blocked`로 **한 커밋에** 옮긴다.
+   *
+   * 이전 판(M5b)은 batch 전체를 먼저 `running`으로 올리고 **그 다음에** task별 게이트를 봤다 →
+   * 예산이 batch 중간에 소진되면 남은 task가 provider 호출 0으로 `running`에 남아 자원을 붙잡았다.
+   * 지금은 **아무 프로세스도 뜨지 않은 `prepared`** 까지만 원자적으로 가고, 실제 시작은
+   * `startPreparedTask()`가 task 하나씩 한다 → batch preflight 실패가 남을 running으로 새지 않는다.
+   *
+   * 결정 목록은 batch와 **정확히 같은 taskId 집합**이어야 한다(누락·추가·중복 전부 거부).
+   */
+  commitPreflightBatch(input: PreflightBatchInput): PreflightBatchResult {
+    const baseRevision = input?.baseRevision;
+    if (typeof baseRevision !== "number" || !Number.isInteger(baseRevision)) {
+      throw new OrchestrationError("invalid_preflight", "baseRevision은 정수여야 한다");
+    }
+    if (baseRevision !== this.#state.revision) {
+      throw new OrchestrationError(
+        "preflight_stale_batch",
+        `preflight 결정이 다른 revision(${baseRevision} ≠ ${this.#state.revision})의 batch에 대한 것이다`,
+      );
+    }
+    const actionId = assertSlug(input.actionId, "actionId");
+    const decisions = adoptDecisions(input.decisions);
+    const outcomes: PreflightOutcome[] = [];
     this.#mutate((draft, now) => {
+      const planned = selectSchedulable(draft, LIMITS.maxScheduleBatch, now).map((t) => t.taskId);
+      const decided = decisions.map((d) => d.taskId);
+      if (planned.join(",") !== [...decided].sort().join(",")) {
+        throw new OrchestrationError(
+          "preflight_batch_mismatch",
+          "preflight 결정 집합이 scheduler가 고른 batch와 정확히 같지 않다(누락·추가·중복 거부)",
+        );
+      }
       const mutation: Mutation = { events: [], bodies: [] };
-      for (const id of ids) setState(draft, now, mutation, requireTask(draft, id), "running", "started");
+      for (const id of planned) {
+        const d = decisions.find((x) => x.taskId === id)!;
+        const task = requireTask(draft, id);
+        const from = task.state;
+        switch (d.outcome) {
+          case "prepared": {
+            if (task.execution.attemptNo >= draft.manifest.autopilotPolicy.maxTaskAttempts) {
+              throw new OrchestrationError("attempt_limit_exceeded", `task ${id}의 attempt 상한을 넘었다`);
+            }
+            task.execution = {
+              ...emptyTaskExecution(),
+              attemptNo: task.execution.attemptNo + 1,
+              attemptId: d.attemptId,
+              operationReceipts: [],
+            };
+            task.execution.preflightDigest = preflightDigest(draft, task);
+            setState(draft, now, mutation, task, "prepared", "preflight_accepted", { actionId, attemptId: d.attemptId });
+            break;
+          }
+          case "paused":
+            task.execution = { ...task.execution, pauseReason: d.pauseReason, retryAt: null, retryDeadlineAt: null };
+            setState(draft, now, mutation, task, "paused", "paused", { actionId, marker: d.pauseReason });
+            mutation.events.push(
+              event({ at: now, type: "task_paused", revision: draft.revision, taskId: id, actionId, marker: d.pauseReason }),
+            );
+            break;
+          case "retry_wait": {
+            const policy = draft.manifest.autopilotPolicy;
+            task.execution = {
+              ...task.execution,
+              retryAt: addMs(now, policy.retryBackoffMs),
+              retryDeadlineAt: draft.accounting.budgetDeadlineAt,
+              pauseReason: null,
+            };
+            setState(draft, now, mutation, task, "retry_wait", "retry_scheduled", { actionId });
+            mutation.events.push(
+              event({ at: now, type: "retry_scheduled", revision: draft.revision, taskId: id, actionId }),
+            );
+            break;
+          }
+          case "blocked":
+            task.blockerSummary = `[preflight] ${d.blockedReason}`;
+            task.execution = { ...task.execution, pauseReason: null };
+            setState(draft, now, mutation, task, "blocked", "policy_blocked", { actionId, marker: d.blockedReason });
+            break;
+          case "deferred":
+            // 이번 회차에는 시작하지 않는다. 상태·attempt·자원을 **하나도** 건드리지 않는다.
+            break;
+        }
+        outcomes.push({ taskId: id, from, to: task.state });
+      }
+      // preflight batch 하나가 남기는 단일 요약 이벤트(감사에서 "이 batch가 원자적이었다"를 읽는 근거).
+      mutation.events.push(event({ at: now, type: "preflight_committed", revision: draft.revision, actionId }));
+      recompute(draft, now, mutation);
       return mutation;
     });
-    return ids.map((id) => clone(requireTask(this.#state, id)));
+    return { revision: this.#state.revision, outcomes: outcomes.map(clone) };
+  }
+
+  /**
+   * **prepared → running.** 이 메서드가 실제 실행 직전에 불리는 유일한 시작 지점이다.
+   *
+   * 봉인된 preflight를 **다시 계산해 대조**하므로(`preflight_drift`) 준비 이후에 ownership·자원·승인·
+   * 예산 deadline이 바뀌었으면 시작하지 않는다. attempt wall deadline은
+   * `min(now + maxAttemptElapsedMs, budgetDeadlineAt, expiresAt)`이며 **kernel이 계산한다**(호출자 값 아님).
+   */
+  startPreparedTask(input: { taskId: string; actionId: string; leaseMarker: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const leaseMarker = assertLease(input.leaseMarker);
+    this.#mutate((draft, now) => {
+      const task = requireTask(draft, taskId);
+      if (task.state !== "prepared") {
+        throw new OrchestrationError("preflight_required", `startPreparedTask는 prepared task만 가능하다 (현재 ${task.state})`);
+      }
+      if (task.execution.preflightDigest !== preflightDigest(draft, task)) {
+        throw new OrchestrationError("preflight_drift", `task ${taskId}의 봉인된 preflight가 준비 이후에 바뀌었다`);
+      }
+      const mutation: Mutation = { events: [], bodies: [] };
+      task.execution = {
+        ...task.execution,
+        phaseStartedAt: now,
+        wallDeadlineAt: earliest([
+          addMs(now, draft.manifest.autopilotPolicy.maxAttemptElapsedMs),
+          draft.accounting.budgetDeadlineAt,
+          draft.manifest.expiresAt,
+        ]),
+        lastProgressAt: null,
+        progressCount: 0,
+        processLeaseMarker: leaseMarker,
+        terminalMarker: null,
+        cleanupStatus: "required",
+      };
+      setState(draft, now, mutation, task, "running", "started", { actionId, attemptId: task.execution.attemptId });
+      return mutation;
+    });
+    return clone(requireTask(this.#state, taskId));
   }
 
   getMessage(messageId: string): MessageIndexEntry | null {
@@ -459,21 +622,25 @@ export class OrchestrationKernel {
   }
 
   /**
-   * ready → running. scheduler를 거치지 않는 직접 호출도 **같은 배타 자원 충돌 규칙**을 받는다:
-   * 커밋 경로의 공용 불변식(`assertExclusiveResourceClaims`)이 running 두 개의 class 충돌을 거부하므로
-   * 이 메서드에도, 앞으로 추가되는 어떤 전이 경로에도 우회로가 없다(`resource_conflict`, 전이 0).
+   * **폐기됨 — ready → running 직접 전이는 M5c에서 존재하지 않는다**(대장 `B-11`).
+   *
+   * 남겨 둔 이유는 "우회로가 없다"를 **안정 코드로 단정할 수 있게** 하는 것이다: 제거하면 `TypeError`가
+   * 나서 taxonomy가 없고, 남기면 어떤 호출자도 `preflight_required`를 받는다. 커밋을 시도하지 않으므로
+   * 전이 0·디스크 변화 0이다. 시작 경로는 `planRunnableBatch` → `commitPreflightBatch` → `startPreparedTask`뿐이다.
    */
-  startTask(taskId: string): OrchestrationTask {
-    this.#mutate((draft, now) => {
-      const t = requireTask(draft, assertSlug(taskId, "taskId"));
-      if (t.state !== "ready") {
-        throw new OrchestrationError("invalid_transition", `startTask는 ready task만 가능하다 (현재 ${t.state})`);
-      }
-      const mutation: Mutation = { events: [], bodies: [] };
-      setState(draft, now, mutation, t, "running", "started");
-      return mutation;
-    });
-    return clone(requireTask(this.#state, taskId));
+  startTask(_taskId: string): OrchestrationTask {
+    throw new OrchestrationError(
+      "preflight_required",
+      "ready→running 직접 전이는 없다: planRunnableBatch → commitPreflightBatch → startPreparedTask를 쓴다",
+    );
+  }
+
+  /** **폐기됨** — batch를 running으로 올리는 경로는 없다(같은 이유로 `preflight_required`다). */
+  startScheduledBatch(_limit?: number): OrchestrationTask[] {
+    throw new OrchestrationError(
+      "preflight_required",
+      "batch를 바로 running으로 올리지 않는다: commitPreflightBatch로 prepared까지만 간다",
+    );
   }
 
   /**
@@ -534,7 +701,9 @@ export class OrchestrationKernel {
         );
       }
       const summary = assertText(input.summary, "result summary", LIMITS.maxSummaryLength);
-      const task = requireRunningTask(draft, envelope.taskId, "result");
+      // **완료는 확인된 정리 뒤에만 가능하다**(V3 M5c · 대장 `B-13`): 생존자 0을 모르는 채로 자원을 놓고
+      // 결과를 발행하는 경로가 없다. artifact 등록·result 수락·완료 전이는 여전히 **한 커밋**이다.
+      const task = requireCleanedTask(draft, envelope.taskId, "result");
 
       const mutation: Mutation = { events: [], bodies: [] };
       const pointers = addArtifacts(draft, now, mutation, this.paths, task, input.outputs);
@@ -542,6 +711,9 @@ export class OrchestrationKernel {
       acceptMessage(draft, now, mutation, this.paths, { ...envelope, artifactRefs: pointers }, input.body, summary);
       task.artifactRefs = pointers.map(clone);
       task.resultSummary = summary;
+      // 완료 커밋은 attempt 자원을 **같은 커밋에서** 놓는다: lease와 미확정 결과가 남아 있으면
+      // 재시작한 controller가 "정리해야 할 프로세스가 있다"고 읽는다.
+      task.execution = { ...task.execution, processLeaseMarker: null, pendingResult: null };
       setState(draft, now, mutation, task, "completed", "result_accepted");
       recompute(draft, now, mutation);
       done = { task, artifacts: pointers };
@@ -562,14 +734,12 @@ export class OrchestrationKernel {
         throw new OrchestrationError("message_type_mismatch", "submitResult에는 result만 제출할 수 있다");
       }
       const summary = assertText(input.summary, "result summary", LIMITS.maxSummaryLength);
-      const task = requireTask(draft, envelope.taskId);
-      if (task.state !== "running") {
-        throw new OrchestrationError("invalid_transition", `result는 running task만 제출할 수 있다 (현재 ${task.state})`);
-      }
+      const task = requireCleanedTask(draft, envelope.taskId, "result");
       const mutation: Mutation = { events: [], bodies: [] };
       acceptMessage(draft, now, mutation, this.paths, envelope, input.body, summary);
       task.artifactRefs = envelope.artifactRefs.map(clone);
       task.resultSummary = summary;
+      task.execution = { ...task.execution, processLeaseMarker: null, pendingResult: null };
       setState(draft, now, mutation, task, "completed", "result_accepted");
       recompute(draft, now, mutation);
       done = task;
@@ -587,13 +757,12 @@ export class OrchestrationKernel {
         throw new OrchestrationError("message_type_mismatch", "submitBlocker에는 blocker만 제출할 수 있다");
       }
       const summary = assertText(input.summary, "blocker summary", LIMITS.maxSummaryLength);
-      const task = requireTask(draft, envelope.taskId);
-      if (task.state !== "running") {
-        throw new OrchestrationError("invalid_transition", `blocker는 running task만 제출할 수 있다 (현재 ${task.state})`);
-      }
+      // `blocked`도 자원을 놓는 종료 상태다 → 완료와 **같은 규칙**을 받는다(확인된 정리 뒤에만).
+      const task = requireCleanedTask(draft, envelope.taskId, "blocker");
       const mutation: Mutation = { events: [], bodies: [] };
       acceptMessage(draft, now, mutation, this.paths, envelope, input.body, summary);
       task.blockerSummary = summary;
+      task.execution = { ...task.execution, processLeaseMarker: null, pendingResult: null };
       setState(draft, now, mutation, task, "blocked", "blocker_accepted");
       recompute(draft, now, mutation);
       blocked = task;
@@ -697,7 +866,7 @@ export class OrchestrationKernel {
    * 전달 수령. 좁은 중앙 전이 하나이며 durable event(`delivery_acknowledged`)를 남긴다.
    * task 상태는 바꾸지 않고, 남의 inbox 항목은 수령할 수 없다. 범용 queue/retry는 만들지 않는다.
    */
-  acknowledgeDelivery(input: { taskId: string; messageId: string }): MessageIndexEntry {
+  acknowledgeDelivery(input: { taskId: string; messageId: string; actionId?: string }): MessageIndexEntry {
     const messageId = assertSlug(input.messageId, "messageId");
     this.#mutate((draft, now) => {
       const task = requireTask(draft, assertSlug(input.taskId, "taskId"));
@@ -710,25 +879,539 @@ export class OrchestrationKernel {
       if (entry.acknowledgedAt !== null) {
         throw new OrchestrationError("delivery_already_acknowledged", `이미 수령한 전달이다: ${messageId}`);
       }
+      // **수령은 시도가 시작된 뒤에만 가능하다**(대장 `C-12→B`): 시도 기록 없이 ack하면 "실패한 전달을
+      // 성공으로 적는" 경로가 다시 열린다. 시도는 `beginDeliveryAttempt`가 durable하게 남긴다.
+      if (entry.delivery.attempts === 0 || entry.delivery.activeAttemptId === null) {
+        throw new OrchestrationError("delivery_attempt_missing", `${messageId}는 진행 중인 전달 시도가 없다`);
+      }
       entry.acknowledgedAt = now;
+      entry.delivery.lastAttemptAt = now;
+      entry.delivery.lastMarker = "delivered";
+      entry.delivery.activeAttemptId = null;
+      entry.delivery.nextAttemptAt = null;
       return {
         events: [
-          {
+          event({
             at: now,
             type: "delivery_acknowledged",
             revision: draft.revision,
             taskId: task.taskId,
             messageId,
-            fromState: null,
-            toState: null,
-            reason: null,
-            artifactId: null,
-          },
+            actionId: input.actionId === undefined ? null : assertSlug(input.actionId, "actionId"),
+            marker: "delivered",
+          }),
         ],
         bodies: [],
       };
     });
     return clone(this.#state.messages.find((m) => m.messageId === messageId)!);
+  }
+
+  // ── M5c: durable 실행 lifecycle ────────────────────────────────────────────
+
+  /**
+   * **turn 하나의 토큰·경과를 durable 회계에 반영한다**(대장 `B-12`). safety-only reducer이므로 만료·run
+   * deadline 뒤에도 지난다 — 이미 태운 자원을 적는 일을 막으면 만료가 곧 회계 누락이 된다.
+   *
+   * **같은 `turnId`는 정확히 한 번만 과금된다**: 재시도·크래시 복구가 같은 turn을 두 번 세지 않는다.
+   * 회계는 **증가만** 한다(리셋·감소 경로가 없다).
+   */
+  chargeTurnUsage(input: {
+    taskId: string;
+    turnId: string;
+    actionId: string;
+    inputTokens: number;
+    outputTokens: number;
+    elapsedMs: number;
+  }): RunAccounting {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const turnId = assertSlug(input.turnId, "turnId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const delta = boundedCount(input.inputTokens, "inputTokens") + boundedCount(input.outputTokens, "outputTokens");
+    const elapsedMs = boundedCount(input.elapsedMs, "elapsedMs");
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        const acc = draft.accounting;
+        if (acc.chargedTurnIds.includes(turnId)) {
+          throw new OrchestrationError("turn_already_charged", `이미 과금한 turn이다: ${turnId}`);
+        }
+        if (acc.chargedTurnIds.length >= LIMITS.maxChargedTurnIds) {
+          throw new OrchestrationError("charged_turns_exhausted", "과금 기록 상한을 넘었다(새 run이 필요하다)");
+        }
+        acc.tokensUsed = Math.min(LIMITS.maxAccountedTokens, acc.tokensUsed + delta);
+        acc.elapsedMsUsed = Math.min(LIMITS.maxAccountedElapsedMs, Math.max(acc.elapsedMsUsed, elapsedMs));
+        acc.chargedTurnIds = [...acc.chargedTurnIds, turnId].sort();
+        task.execution = { ...task.execution, turnId };
+        return {
+          events: [
+            event({
+              at: now,
+              type: "usage_charged",
+              revision: draft.revision,
+              taskId,
+              actionId,
+              turnId,
+              attemptId: task.execution.attemptId,
+              tokenDelta: delta,
+              elapsedMs,
+            }),
+          ],
+          bodies: [],
+        };
+      },
+      { safetyOnly: true },
+    );
+    return clone(this.#state.accounting);
+  }
+
+  /**
+   * **인정되는 진행 신호 1건.** no-progress deadline을 되돌리는 **유일한** 경로다(heartbeat·미상 이벤트는
+   * 여기 오지 않는다). 진행이 한 번도 없으면 종료 결과가 와도 `silent_session`이 된다.
+   */
+  recordProgress(input: { taskId: string; actionId: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    this.#mutate((draft, now) => {
+      const task = requireTask(draft, taskId);
+      if (task.state !== "running") {
+        throw new OrchestrationError("invalid_transition", `진행 기록은 running task만 가능하다 (현재 ${task.state})`);
+      }
+      if (task.execution.progressCount >= LIMITS.maxProgressEvents) {
+        throw new OrchestrationError("progress_limit_exceeded", `attempt당 진행 이벤트는 ${LIMITS.maxProgressEvents}건까지다`);
+      }
+      task.execution = { ...task.execution, lastProgressAt: now, progressCount: task.execution.progressCount + 1 };
+      return {
+        events: [
+          event({
+            at: now,
+            type: "progress_recorded",
+            revision: draft.revision,
+            taskId,
+            actionId,
+            attemptId: task.execution.attemptId,
+          }),
+        ],
+        bodies: [],
+      };
+    });
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **running → cleaning.** 종료·오류·취소·deadline·재시작이 관측된 그 자리에서 부른다. 결과는 아직
+   * 확정되지 않으며 자원은 계속 격리 상태다(대장 `B-13`). safety-only이므로 만료 뒤에도 지난다.
+   *
+   * 성공한 turn이면 `pendingResult`를 함께 봉인한다 — cleanup이 확인된 뒤에만 durable 완료로 승격된다.
+   */
+  recordTerminal(input: {
+    taskId: string;
+    actionId: string;
+    marker: AutopilotMarker;
+    pendingResult?: PendingTaskResult | null;
+  }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const marker = enumOf(input.marker, AUTOPILOT_MARKERS, "marker");
+    const pending = input.pendingResult == null ? null : adoptPendingResult(input.pendingResult);
+    if (marker === "turn_completed" && pending === null) {
+      throw new OrchestrationError("invalid_terminal", "turn_completed는 봉인할 결과가 있어야 한다");
+    }
+    if (marker !== "turn_completed" && pending !== null) {
+      throw new OrchestrationError("invalid_terminal", "실패 marker는 결과를 봉인하지 않는다");
+    }
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        if (task.state !== "running") {
+          throw new OrchestrationError("invalid_transition", `종료 기록은 running task만 가능하다 (현재 ${task.state})`);
+        }
+        if (task.execution.terminalMarker !== null) {
+          throw new OrchestrationError("terminal_already_recorded", `이 attempt는 이미 종료가 기록됐다: ${taskId}`);
+        }
+        const mutation: Mutation = { events: [], bodies: [] };
+        task.execution = { ...task.execution, terminalMarker: marker, pendingResult: pending, cleanupStatus: "required" };
+        setState(draft, now, mutation, task, "cleaning", "cleanup_required", {
+          actionId,
+          attemptId: task.execution.attemptId,
+          marker,
+        });
+        mutation.events.push(
+          event({
+            at: now,
+            type: "cleanup_started",
+            revision: draft.revision,
+            taskId,
+            actionId,
+            attemptId: task.execution.attemptId,
+            marker,
+          }),
+        );
+        return mutation;
+      },
+      { safetyOnly: true },
+    );
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **취소 요청 기록.** safety-only다 — 취소는 전진이 아니므로 만료 뒤에도 가능해야 한다.
+   * `running`이면 같은 커밋에서 `cleaning`으로 내려간다(자원은 계속 붙잡는다).
+   */
+  requestCancel(input: { taskId: string; actionId: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        if (isTerminal(task.state)) {
+          throw new OrchestrationError("invalid_transition", `종료된 task는 취소할 수 없다 (현재 ${task.state})`);
+        }
+        const mutation: Mutation = { events: [], bodies: [] };
+        task.execution = { ...task.execution, cancelRequestedAt: task.execution.cancelRequestedAt ?? now };
+        mutation.events.push(
+          event({ at: now, type: "cancel_requested", revision: draft.revision, taskId, actionId, marker: "cancelled" }),
+        );
+        if (task.state === "running") {
+          task.execution = { ...task.execution, terminalMarker: task.execution.terminalMarker ?? "cancelled", cleanupStatus: "required" };
+          setState(draft, now, mutation, task, "cleaning", "cancel_requested", { actionId, marker: "cancelled" });
+          mutation.events.push(
+            event({ at: now, type: "cleanup_started", revision: draft.revision, taskId, actionId, marker: "cancelled" }),
+          );
+        }
+        return mutation;
+      },
+      { safetyOnly: true },
+    );
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **zero-survivor 확인.** `cleaning` task가 다음 상태로 나갈 **유일한** 자격이다. 영수증은 controller가
+   * 프로세스 감독자에게서 받은 것이며 kernel은 그 형태(`survivors === 0`)만 다시 확인한다.
+   * 확인 뒤에도 상태는 `cleaning`에 남는다 — 다음 상태는 호출자가 결과에 맞춰 별도 reducer로 정한다.
+   */
+  confirmCleanup(input: { taskId: string; actionId: string; leaseMarker: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const leaseMarker = assertLease(input.leaseMarker);
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        if (task.state !== "cleaning") {
+          throw new OrchestrationError("invalid_transition", `cleanup 확인은 cleaning task만 가능하다 (현재 ${task.state})`);
+        }
+        if (task.execution.processLeaseMarker !== leaseMarker) {
+          throw new OrchestrationError("cleanup_lease_mismatch", "정리 영수증이 이 attempt의 lease와 다르다");
+        }
+        task.execution = { ...task.execution, cleanupStatus: "confirmed" };
+        return {
+          events: [
+            event({
+              at: now,
+              type: "cleanup_confirmed",
+              revision: draft.revision,
+              taskId,
+              actionId,
+              attemptId: task.execution.attemptId,
+              marker: "cleanup_confirmed",
+            }),
+          ],
+          bodies: [],
+        };
+      },
+      { safetyOnly: true },
+    );
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **정리 실패(또는 관측 불확실).** task는 `cleaning`에 남고 자원도 계속 붙잡는다 — 이것이 계약이다
+   * (대장 `B-13`/`C-18`). 시도 상한을 넘으면 `cleanupStatus: "failed"`로 **안정 격리** 상태가 된다.
+   */
+  failCleanup(input: { taskId: string; actionId: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        if (task.state !== "cleaning") {
+          throw new OrchestrationError("invalid_transition", `cleanup 실패 기록은 cleaning task만 가능하다 (현재 ${task.state})`);
+        }
+        const attempts = Math.min(LIMITS.maxCleanupAttempts, task.execution.cleanupAttempts + 1);
+        task.execution = {
+          ...task.execution,
+          cleanupAttempts: attempts,
+          cleanupStatus: attempts >= LIMITS.maxCleanupAttempts ? "failed" : "required",
+        };
+        return {
+          events: [
+            event({
+              at: now,
+              type: "cleanup_failed",
+              revision: draft.revision,
+              taskId,
+              actionId,
+              attemptId: task.execution.attemptId,
+              marker: "cleanup_unconfirmed",
+            }),
+          ],
+          bodies: [],
+        };
+      },
+      { safetyOnly: true },
+    );
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **cleaning → paused.** 실패·중단·비대화 승인 부재·시계 이상의 fail-closed 착지점이다. safety-only다.
+   * cleanup이 확인되지 않았으면 거부한다 — 자원을 놓기 전에 프로세스가 0임을 알아야 한다.
+   */
+  pauseTask(input: { taskId: string; actionId: string; pauseReason: PauseReason }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const reason = enumOf(input.pauseReason, PAUSE_REASONS, "pauseReason");
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        if (isTerminal(task.state)) {
+          throw new OrchestrationError("invalid_transition", `종료된 task는 pause할 수 없다 (현재 ${task.state})`);
+        }
+        if (holdsResources(task.state) && task.execution.cleanupStatus === "required") {
+          throw new OrchestrationError("cleanup_unconfirmed", `cleanup이 확인되지 않아 pause할 수 없다: ${taskId}`);
+        }
+        const mutation: Mutation = { events: [], bodies: [] };
+        task.execution = { ...task.execution, pauseReason: reason, processLeaseMarker: null, pendingResult: null };
+        setState(draft, now, mutation, task, "paused", "paused", { actionId, marker: reason });
+        mutation.events.push(
+          event({ at: now, type: "task_paused", revision: draft.revision, taskId, actionId, marker: reason }),
+        );
+        return mutation;
+      },
+      { safetyOnly: true },
+    );
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **paused → ready**(같은 유효 승인 아래에서만). 전진 작업이므로 만료·run deadline 뒤에는 거부된다.
+   * 범위를 넓히는 재개는 없다 — 그것은 새 run이다.
+   */
+  resumeTask(input: { taskId: string; actionId: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    this.#mutate((draft, now) => {
+      const task = requireTask(draft, taskId);
+      if (task.state !== "paused") {
+        throw new OrchestrationError("invalid_transition", `resumeTask는 paused task만 가능하다 (현재 ${task.state})`);
+      }
+      if (task.execution.attemptNo >= draft.manifest.autopilotPolicy.maxTaskAttempts) {
+        throw new OrchestrationError("attempt_limit_exceeded", `task ${taskId}의 attempt 상한을 넘었다 — 새 run이 필요하다`);
+      }
+      const mutation: Mutation = { events: [], bodies: [] };
+      task.execution = { ...emptyTaskExecution(), attemptNo: task.execution.attemptNo };
+      setState(draft, now, mutation, task, "ready", "resumed", { actionId });
+      mutation.events.push(event({ at: now, type: "task_resumed", revision: draft.revision, taskId, actionId }));
+      recompute(draft, now, mutation);
+      return mutation;
+    });
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **cleaning → retry_wait / blocked / cancelled.** 확인된 정리 뒤의 착지점을 정한다.
+   * ⓐ 취소가 요청됐으면 `cancelled` ⓑ attempt 여유가 있으면 `retry_wait` ⓒ 없으면 `blocked`다.
+   * safety-only다(작업을 시작하지 않고 결과를 발행하지 않는다).
+   */
+  settleCleanedAttempt(input: { taskId: string; actionId: string }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    this.#mutate(
+      (draft, now) => {
+        const task = requireTask(draft, taskId);
+        if (task.state !== "cleaning") {
+          throw new OrchestrationError("invalid_transition", `settle은 cleaning task만 가능하다 (현재 ${task.state})`);
+        }
+        if (task.execution.cleanupStatus !== "confirmed") {
+          throw new OrchestrationError("cleanup_unconfirmed", `cleanup이 확인되지 않았다: ${taskId}`);
+        }
+        const mutation: Mutation = { events: [], bodies: [] };
+        const policy = draft.manifest.autopilotPolicy;
+        task.execution = { ...task.execution, processLeaseMarker: null, pendingResult: null };
+        if (task.execution.cancelRequestedAt !== null) {
+          setState(draft, now, mutation, task, "cancelled", "cancelled", { actionId, marker: "cancelled" });
+        } else if (task.execution.attemptNo < policy.maxTaskAttempts) {
+          task.execution = {
+            ...task.execution,
+            retryAt: addMs(now, policy.retryBackoffMs),
+            retryDeadlineAt: draft.accounting.budgetDeadlineAt,
+          };
+          setState(draft, now, mutation, task, "retry_wait", "retry_scheduled", { actionId });
+          mutation.events.push(event({ at: now, type: "retry_scheduled", revision: draft.revision, taskId, actionId }));
+        } else {
+          task.blockerSummary = `[autopilot] ${task.execution.terminalMarker ?? "attempts_exhausted"}`;
+          setState(draft, now, mutation, task, "blocked", "attempts_exhausted", { actionId });
+        }
+        recompute(draft, now, mutation);
+        return mutation;
+      },
+      { safetyOnly: true },
+    );
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /** **집행한 typed operation 1건의 영수증**을 durable에 남긴다(내용은 담지 않는다). */
+  recordOperationReceipt(input: { taskId: string; actionId: string; receipt: OperationReceipt }): OrchestrationTask {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const receipt = adoptReceipt(input.receipt);
+    this.#mutate((draft, now) => {
+      const task = requireTask(draft, taskId);
+      if (task.state !== "running") {
+        throw new OrchestrationError("invalid_transition", `영수증은 running task만 남길 수 있다 (현재 ${task.state})`);
+      }
+      if (task.execution.operationReceipts.some((r) => r.operationId === receipt.operationId)) {
+        throw new OrchestrationError("operation_already_recorded", `이미 기록된 operation이다: ${receipt.operationId}`);
+      }
+      if (task.execution.operationReceipts.length >= LIMITS.maxOperationReceipts) {
+        throw new OrchestrationError("operation_limit_exceeded", `attempt당 영수증은 ${LIMITS.maxOperationReceipts}건까지다`);
+      }
+      task.execution = { ...task.execution, operationReceipts: [...task.execution.operationReceipts, { ...receipt, at: now }] };
+      return {
+        events: [
+          event({
+            at: now,
+            type: "operation_receipt",
+            revision: draft.revision,
+            taskId,
+            actionId,
+            attemptId: task.execution.attemptId,
+            operationId: receipt.operationId,
+            marker: receipt.marker,
+          }),
+        ],
+        bodies: [],
+      };
+    });
+    return clone(requireTask(this.#state, taskId));
+  }
+
+  /**
+   * **전달 시도 시작 기록**(대장 `C-12→B`). `acknowledgedAt`은 건드리지 않는다 — 수령은 그 turn이
+   * 완전하고 검증된 성공을 낸 뒤 `acknowledgeDelivery()`가 한다(조기 ack 경로가 없다).
+   */
+  beginDeliveryAttempt(input: { taskId: string; messageId: string; actionId: string; attemptId: string }): MessageIndexEntry {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const messageId = assertSlug(input.messageId, "messageId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const attemptId = assertSlug(input.attemptId, "attemptId");
+    this.#mutate((draft, now) => {
+      const task = requireTask(draft, taskId);
+      if (task.state !== "running") {
+        throw new OrchestrationError("invalid_transition", `전달 시도는 running task만 가능하다 (현재 ${task.state})`);
+      }
+      const entry = requireRoutedTo(draft, messageId, taskId);
+      const policy = draft.manifest.autopilotPolicy;
+      const d = entry.delivery;
+      if (d.attempts >= policy.maxDeliveryAttempts) {
+        throw new OrchestrationError("delivery_attempts_exhausted", `${messageId}의 전달 시도 상한을 넘었다`);
+      }
+      const deadlineAt = d.deadlineAt ?? addMs(now, policy.deliveryDeadlineMs);
+      if (now >= deadlineAt) {
+        throw new OrchestrationError("delivery_deadline_exceeded", `${messageId}의 전달 deadline을 넘었다`);
+      }
+      entry.delivery = {
+        attempts: d.attempts + 1,
+        activeAttemptId: attemptId,
+        firstAttemptAt: d.firstAttemptAt ?? now,
+        lastAttemptAt: now,
+        nextAttemptAt: null,
+        deadlineAt,
+        lastMarker: d.lastMarker,
+      };
+      return {
+        events: [
+          event({
+            at: now,
+            type: "delivery_attempted",
+            revision: draft.revision,
+            taskId,
+            messageId,
+            actionId,
+            attemptId,
+          }),
+        ],
+        bodies: [],
+      };
+    });
+    return clone(this.#state.messages.find((m) => m.messageId === messageId)!);
+  }
+
+  /**
+   * **전달 실패를 원자적으로 기록한다 — 수령하지 않는다.** 재시도 여유가 있으면 `nextAttemptAt`을 남기고,
+   * 없으면 marker가 `attempts_exhausted`가 되어 호출자가 task를 pause한다. safety-only가 **아니다**:
+   * 실패 기록은 다음 시도를 예약하는 전진 작업이다.
+   */
+  failDeliveryAttempt(input: { taskId: string; messageId: string; actionId: string; marker: DeliveryMarker }): MessageIndexEntry {
+    const taskId = assertSlug(input.taskId, "taskId");
+    const messageId = assertSlug(input.messageId, "messageId");
+    const actionId = assertSlug(input.actionId, "actionId");
+    const wanted = enumOf(input.marker, DELIVERY_MARKERS, "marker");
+    if (wanted === "delivered") {
+      throw new OrchestrationError("invalid_delivery_marker", "실패 기록에 delivered를 쓸 수 없다");
+    }
+    this.#mutate((draft, now) => {
+      const entry = requireRoutedTo(draft, messageId, taskId);
+      if (entry.acknowledgedAt !== null) {
+        throw new OrchestrationError("delivery_already_acknowledged", `이미 수령한 전달이다: ${messageId}`);
+      }
+      const policy = draft.manifest.autopilotPolicy;
+      const d = entry.delivery;
+      const exhausted = d.attempts >= policy.maxDeliveryAttempts;
+      const deadlinePassed = d.deadlineAt !== null && now >= d.deadlineAt;
+      const marker: DeliveryMarker = exhausted ? "attempts_exhausted" : deadlinePassed ? "deadline_exceeded" : wanted;
+      entry.delivery = {
+        ...d,
+        activeAttemptId: null,
+        lastAttemptAt: now,
+        nextAttemptAt: marker === "attempts_exhausted" || marker === "deadline_exceeded" ? null : addMs(now, policy.retryBackoffMs),
+        lastMarker: marker,
+      };
+      return {
+        events: [
+          event({ at: now, type: "delivery_failed", revision: draft.revision, taskId, messageId, actionId, marker }),
+        ],
+        bodies: [],
+      };
+    });
+    return clone(this.#state.messages.find((m) => m.messageId === messageId)!);
+  }
+
+  /**
+   * **action 정합화**(대장 `C-37`). 커밋 호출이 애매하게 실패했을 때(디스크 I/O) 재시작한 controller가
+   * "내 요청이 durable해졌는가"를 event log에서 정확히 판정한다 — 같은 부작용을 두 번 만들지 않는 근거다.
+   * 읽기 전용이다.
+   */
+  hasCommittedAction(actionId: string): boolean {
+    const id = assertSlug(actionId, "actionId");
+    return loadRun(this.paths).events.some((e) => e.actionId === id);
+  }
+
+  /** durable 회계(깊은 사본). 재시작 뒤에도 이 값이 예산의 진실이다. */
+  getAccounting(): RunAccounting {
+    return clone(this.#state.accounting);
+  }
+
+  /** 남은 토큰(무제한이면 `null`)과 남은 경과 시간 — 전부 durable state에서 계산한다. */
+  remainingBudget(nowIso?: string): { tokens: number | null; elapsedMs: number } {
+    const now = nowIso === undefined ? formatTimestamp(this.#clock()) : assertTimestamp(nowIso, "now");
+    const acc = this.#state.accounting;
+    const maxTokens = this.#state.manifest.maxTokens;
+    return {
+      tokens: maxTokens === null ? null : Math.max(0, maxTokens - acc.tokensUsed),
+      elapsedMs: Math.max(0, Date.parse(acc.budgetDeadlineAt) - Date.parse(now)),
+    };
   }
 
   // ── 내부 ────────────────────────────────────────────────────────────────
@@ -778,10 +1461,15 @@ export class OrchestrationKernel {
    * 커밋 기준(`base`)은 이 인스턴스가 들고 있던 **직전 state**의 revision/event tail이다. 같은 run을
    * 두 kernel이 같은 revision에서 열었으면 늦은 쪽 커밋은 `stale_writer`로 거부된다(lost update 없음).
    */
-  #mutate(fn: (draft: OrchestrationRunState, now: string) => Mutation): void {
+  #mutate(fn: (draft: OrchestrationRunState, now: string) => Mutation, opts?: { safetyOnly?: boolean }): void {
     const now = formatTimestamp(this.#clock());
-    // 만료된 승인으로는 어떤 변경도 하지 않는다(읽기는 계속 가능하다). 전이 0.
-    assertNotExpired(this.#state.manifest, now);
+    // **전진 작업은 만료·run deadline에서 닫힌다. safety-only reducer만 그 뒤에도 지난다**
+    // (V3 M5c — DECISIONS 2026-07-30 · 로드맵 §8.1). `C-17`: 경계 **포함**(`>=`)이다.
+    if (opts?.safetyOnly === true) {
+      assertClockSane(this.#state, now);
+    } else {
+      assertForwardWorkAllowed(this.#state, now);
+    }
     const base = {
       revision: this.#state.revision,
       lastEventId: this.#state.lastEventId,
@@ -795,19 +1483,24 @@ export class OrchestrationKernel {
     draft.tasks.sort((a, b) => (a.taskId < b.taskId ? -1 : a.taskId > b.taskId ? 1 : 0));
     draft.messages.sort((a, b) => (a.messageId < b.messageId ? -1 : a.messageId > b.messageId ? 1 : 0));
     draft.artifacts.sort((a, b) => (a.artifactId < b.artifactId ? -1 : a.artifactId > b.artifactId ? 1 : 0));
+    // safety-only 커밋은 **닫힌 event·사유 집합만** 낼 수 있다: 작업 시작·수락·발행·완료가 섞이면 거부한다.
+    if (opts?.safetyOnly === true) assertSafetyOnlyMutation(mutation);
     assertReferentialIntegrity(draft);
 
     this.#state = commitRun(this.paths, { state: draft, events: mutation.events, bodies: mutation.bodies, base });
   }
 }
 
-// ── M4b scheduler (순수 함수 — state만 본다) ────────────────────────────────
+// ── M4b/M5c scheduler (순수 함수 — state만 본다) ────────────────────────────
 
-/** `running` task가 점유 중인 class 집합. `waiting_children`은 중단 상태라 점유하지 않는다. */
+/**
+ * **자원 점유 상태**(`prepared`/`running`/`cleaning`) task가 잡고 있는 class 집합.
+ * `waiting_children`은 중단 상태라 점유하지 않는다. 목록의 정본은 `RESOURCE_HOLDING_STATES`다.
+ */
 function heldResourceClasses(state: OrchestrationRunState): Set<string> {
   const held = new Set<string>();
   for (const t of state.tasks) {
-    if (t.state !== "running") continue;
+    if (!holdsResources(t.state)) continue;
     for (const r of t.resourceClasses) held.add(r);
   }
   return held;
@@ -816,21 +1509,293 @@ function heldResourceClasses(state: OrchestrationRunState): Set<string> {
 /**
  * 결정론적 선택: `state.tasks`는 taskId 오름차순 불변식이므로 같은 state면 항상 같은 목록이 나온다.
  * 이미 점유된 class와 **이 batch에서 앞서 고른** class를 모두 피하므로 batch 내부도 충돌이 없다.
- * M4c: 남은 세션 여유(`maxSessions` − 현재 running)도 상한이라 batch가 승인 범위를 넘지 않는다.
+ *
+ * 고르는 대상은 ⓐ `ready` 전부와 ⓑ **`retryAt`이 된** `retry_wait`이다 — 재시도도 이 scheduler 하나가
+ * 고르므로 두 번째 scheduler가 생기지 않는다(대장 `C-12→B`). 남은 세션 여유
+ * (`maxSessions` − 현재 점유 수)도 상한이라 batch가 승인 범위를 넘지 않는다.
  */
-function selectSchedulable(state: OrchestrationRunState, limit: number): OrchestrationTask[] {
+function selectSchedulable(state: OrchestrationRunState, limit: number, now: string): OrchestrationTask[] {
   const held = heldResourceClasses(state);
-  const running = state.tasks.filter((t) => t.state === "running").length;
-  const budget = Math.min(limit, Math.max(0, state.manifest.maxSessions - running));
+  const holders = state.tasks.filter((t) => holdsResources(t.state)).length;
+  const budget = Math.min(limit, Math.max(0, state.manifest.maxSessions - holders));
   const picked: OrchestrationTask[] = [];
   for (const t of state.tasks) {
     if (picked.length >= budget) break;
-    if (t.state !== "ready") continue;
+    if (!isSchedulableNow(t, now)) continue;
     if (t.resourceClasses.some((r) => held.has(r))) continue;
     for (const r of t.resourceClasses) held.add(r);
     picked.push(t);
   }
   return picked;
+}
+
+function isSchedulableNow(t: OrchestrationTask, now: string): boolean {
+  if (t.state === "ready") return true;
+  // 예약 시각이 되지 않은 재시도는 고르지 않는다. deadline을 이미 넘긴 재시도도 고르지 않는다
+  // (그 task는 pause 대상이며 조용히 다시 시작하지 않는다).
+  if (t.state !== "retry_wait") return false;
+  const at = t.execution.retryAt;
+  const deadline = t.execution.retryDeadlineAt;
+  return at !== null && now >= at && (deadline === null || now < deadline);
+}
+
+// ── M5c preflight 계약 ──────────────────────────────────────────────────────
+
+/**
+ * preflight 결정 1건. 닫힌 union이므로 "결정하지 않음"이라는 상태가 없다.
+ *
+ * `deferred`는 **계획(§2)의 네 결과에 더한 다섯 번째**이며 의도적이다: batch가 `maxSessions`·자원 여유로
+ * 여러 task를 고르지만 controller가 이번 회차에 **일부만** 시작하기로 할 수 있다. 그때 남은 task를
+ * `paused`/`retry_wait`로 만들면 **아무 일도 없었는데 상태가 오염**된다(사람의 재개가 필요해진다).
+ * `deferred`는 그 task를 `ready`에 그대로 두고 attempt도 자원도 잡지 않는다 — 네 결과보다 **엄격히 적게**
+ * 하므로 B-11의 원자성(모든 batch 항목이 결정을 받는다)은 그대로다.
+ */
+export type PreflightDecision =
+  | { taskId: string; outcome: "prepared"; attemptId: string }
+  | { taskId: string; outcome: "paused"; pauseReason: PauseReason }
+  | { taskId: string; outcome: "retry_wait" }
+  | { taskId: string; outcome: "blocked"; blockedReason: PauseReason }
+  | { taskId: string; outcome: "deferred" };
+
+export interface PreflightBatchInput {
+  /** `planRunnableBatch()`가 준 revision. 다르면 `preflight_stale_batch`다. */
+  baseRevision: number;
+  /** 이 커밋의 멱등 신원(대장 `C-37`). */
+  actionId: string;
+  decisions: ReadonlyArray<PreflightDecision>;
+}
+
+export interface PreflightOutcome {
+  taskId: string;
+  from: TaskState;
+  to: TaskState;
+}
+
+export interface PreflightBatchResult {
+  revision: number;
+  outcomes: PreflightOutcome[];
+}
+
+const DECISION_KEYS_BY_OUTCOME: Record<string, readonly string[]> = {
+  prepared: ["taskId", "outcome", "attemptId"],
+  paused: ["taskId", "outcome", "pauseReason"],
+  retry_wait: ["taskId", "outcome"],
+  blocked: ["taskId", "outcome", "blockedReason"],
+  deferred: ["taskId", "outcome"],
+};
+
+/**
+ * 호출자 소유 결정 목록을 **각 property를 정확히 한 번 읽어 입양**한다(M5b 4차 리뷰 A4와 같은 규칙).
+ * 교대 getter가 "검증한 결정"과 "적용하는 결정"을 다르게 만들 창이 없다.
+ */
+function adoptDecisions(raw: unknown): PreflightDecision[] {
+  if (!Array.isArray(raw)) throw new OrchestrationError("invalid_preflight", "decisions는 배열이어야 한다");
+  const length = raw.length; // ← 길이를 읽는 유일한 지점
+  if (length > LIMITS.maxScheduleBatch) {
+    throw new OrchestrationError("invalid_preflight", `decisions는 ${LIMITS.maxScheduleBatch}건 이하여야 한다`);
+  }
+  const out: PreflightDecision[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < length; i++) {
+    const item = raw[i];
+    if (item === null || typeof item !== "object") {
+      throw new OrchestrationError("invalid_preflight", `decisions[${i}]는 객체여야 한다`);
+    }
+    let outcome: unknown;
+    let keys: string[];
+    try {
+      outcome = (item as Record<string, unknown>).outcome;
+      keys = Reflect.ownKeys(item).filter((k): k is string => typeof k === "string");
+      if (keys.length !== Reflect.ownKeys(item).length) {
+        throw new OrchestrationError("invalid_preflight", `decisions[${i}]에 symbol key가 있다`);
+      }
+    } catch (e) {
+      if (e instanceof OrchestrationError) throw e;
+      throw new OrchestrationError("invalid_preflight", `decisions[${i}]를 읽을 수 없다(getter/proxy가 던졌다)`);
+    }
+    if (typeof outcome !== "string" || !(outcome in DECISION_KEYS_BY_OUTCOME)) {
+      throw new OrchestrationError("invalid_preflight", `decisions[${i}].outcome이 닫힌 집합 밖이다`);
+    }
+    const allowed = DECISION_KEYS_BY_OUTCOME[outcome];
+    for (const k of keys) {
+      if (!allowed.includes(k)) throw new OrchestrationError("invalid_preflight", `decisions[${i}]에 허용되지 않은 필드: ${k}`);
+    }
+    for (const k of allowed) {
+      if (!keys.includes(k)) throw new OrchestrationError("invalid_preflight", `decisions[${i}]에 필수 필드 없음: ${k}`);
+    }
+    const o = item as Record<string, unknown>;
+    const taskId = assertSlug(o.taskId, `decisions[${i}].taskId`);
+    if (seen.has(taskId)) throw new OrchestrationError("invalid_preflight", `decisions에 중복 taskId가 있다: ${taskId}`);
+    seen.add(taskId);
+    switch (outcome) {
+      case "prepared":
+        out.push({ taskId, outcome, attemptId: assertSlug(o.attemptId, `decisions[${i}].attemptId`) });
+        break;
+      case "paused":
+        out.push({ taskId, outcome, pauseReason: enumOf(o.pauseReason, PAUSE_REASONS, `decisions[${i}].pauseReason`) });
+        break;
+      case "retry_wait":
+      case "deferred":
+        out.push({ taskId, outcome });
+        break;
+      default:
+        out.push({ taskId, outcome: "blocked", blockedReason: enumOf(o.blockedReason, PAUSE_REASONS, `decisions[${i}].blockedReason`) });
+    }
+  }
+  return out;
+}
+
+/**
+ * **preflight 봉인 digest.** kernel이 계산하므로 호출자가 위조할 수 없고, `startPreparedTask()`가
+ * 시작 직전에 **다시 계산해 대조**한다. 담는 것은 시작 자격을 결정하는 durable 사실 전부다:
+ * 승인 canonical digest · 예산 deadline · 이 attempt 번호 · ownership · 배타 자원 · 승인된 operation 권위.
+ */
+function preflightDigest(state: OrchestrationRunState, task: OrchestrationTask): string {
+  const authorities = Object.prototype.hasOwnProperty.call(state.manifest.operationAuthorityByTask, task.taskId)
+    ? state.manifest.operationAuthorityByTask[task.taskId]
+    : [];
+  return sha256Hex(
+    JSON.stringify({
+      runId: state.runId,
+      taskId: task.taskId,
+      approvalDigest: state.accounting.approvalDigest,
+      budgetDeadlineAt: state.accounting.budgetDeadlineAt,
+      attemptNo: task.execution.attemptNo,
+      attemptId: task.execution.attemptId,
+      ownership: task.ownership,
+      resourceClasses: task.resourceClasses,
+      dependsOn: task.dependsOn,
+      authorities,
+    }),
+  );
+}
+
+/** run 생성 시 한 번 정해지는 durable 예산. `min(start + maxElapsedMs, expiresAt)`이 deadline이다. */
+function seedAccounting(manifest: MilestoneApprovalManifest, now: string): RunAccounting {
+  const byElapsed = addMs(now, manifest.maxElapsedMs);
+  const deadline = byElapsed < manifest.expiresAt ? byElapsed : manifest.expiresAt;
+  if (deadline <= now) {
+    throw new OrchestrationError("budget_window_empty", "승인된 예산 창이 비어 있다(만료가 이미 지났거나 maxElapsedMs가 0이다)");
+  }
+  return {
+    approvalDigest: manifestDigest(manifest),
+    budgetStartedAt: now,
+    budgetDeadlineAt: deadline,
+    tokensUsed: 0,
+    elapsedMsUsed: 0,
+    chargedTurnIds: [],
+  };
+}
+
+/** 계약 타임스탬프에 ms를 더한다(고정 폭 UTC 문자열로 되돌린다). */
+function addMs(now: string, ms: number): string {
+  return formatTimestamp(new Date(Date.parse(now) + ms));
+}
+
+/** 여러 계약 타임스탬프 중 가장 이른 것(고정 폭 UTC라 문자열 비교로 충분하다). */
+function earliest(times: string[]): string {
+  return times.reduce((a, b) => (a < b ? a : b));
+}
+
+function boundedCount(v: unknown, what: string): number {
+  if (typeof v !== "number" || !Number.isFinite(v) || v < 0 || !Number.isInteger(v)) {
+    throw new OrchestrationError("invalid_usage", `${what}는 0 이상 정수여야 한다`);
+  }
+  return Math.min(v, LIMITS.maxAccountedTokens);
+}
+
+function enumOf<T extends string>(v: unknown, allowed: readonly T[], what: string): T {
+  if (typeof v !== "string" || !(allowed as readonly string[]).includes(v)) {
+    throw new OrchestrationError("invalid_enum", `${what}는 ${allowed.join("|")} 중 하나여야 한다`);
+  }
+  return v as T;
+}
+
+function assertLease(v: unknown): string {
+  if (typeof v !== "string" || !/^lease\.[0-9a-f]{32}$/.test(v)) {
+    throw new OrchestrationError("invalid_lease_marker", "leaseMarker는 `lease.<32 hex>` 형태여야 한다");
+  }
+  return v;
+}
+
+const RECEIPT_KEYS = ["operationId", "kind", "authorityId", "path", "resultSha256", "exitCode", "marker"] as const;
+
+/** 호출자 소유 영수증을 **한 번 읽어** 불변값으로 굳힌다(내용·argv·stdout은 애초에 필드가 없다). */
+function adoptReceipt(raw: unknown): OperationReceipt {
+  const read = readClosedOnce(raw, RECEIPT_KEYS, "operation 영수증");
+  const kind = enumOf(read.kind, ["write_file", "run_process"] as const, "receipt.kind");
+  return Object.freeze({
+    operationId: assertSlug(read.operationId, "receipt.operationId"),
+    kind,
+    authorityId: assertSlug(read.authorityId, "receipt.authorityId"),
+    path: read.path == null ? null : normalizeWorkspacePath(read.path, "receipt.path"),
+    resultSha256: read.resultSha256 == null ? null : assertSha256Local(read.resultSha256),
+    exitCode: read.exitCode == null ? null : boundedExit(read.exitCode),
+    marker: enumOf(read.marker, OPERATION_RECEIPT_MARKERS, "receipt.marker"),
+    at: "1970-01-01T00:00:00.000Z", // 커밋 시각으로 덮어쓴다(호출자 시각을 durable로 쓰지 않는다)
+  });
+}
+
+function assertSha256Local(v: unknown): string {
+  if (typeof v !== "string" || !/^[0-9a-f]{64}$/.test(v)) {
+    throw new OrchestrationError("invalid_sha256", "receipt.resultSha256은 소문자 hex SHA-256이어야 한다");
+  }
+  return v;
+}
+
+function boundedExit(v: unknown): number {
+  if (typeof v !== "number" || !Number.isInteger(v) || v < -255 || v > 255) {
+    throw new OrchestrationError("invalid_receipt", "receipt.exitCode는 -255..255 정수여야 한다");
+  }
+  return v;
+}
+
+const PENDING_KEYS = ["summary", "outputs"] as const;
+
+/** 봉인할 미확정 결과를 한 번 읽어 굳힌다(산출물은 아직 등록 전이므로 포인터가 아니다). */
+function adoptPendingResult(raw: unknown): PendingTaskResult {
+  const read = readClosedOnce(raw, PENDING_KEYS, "미확정 결과");
+  const outputs = adoptOutputs(read.outputs as ReadonlyArray<TaskOutput> | undefined);
+  return Object.freeze({
+    summary: assertText(read.summary, "pendingResult.summary", LIMITS.maxSummaryLength),
+    outputs: outputs.map((o) => ({ path: o.path, role: o.role })),
+  });
+}
+
+/** 전달 대상이 이 task인 메시지 index 항목. */
+function requireRoutedTo(state: OrchestrationRunState, messageId: string, taskId: string): MessageIndexEntry {
+  const entry = state.messages.find((m) => m.messageId === messageId);
+  if (!entry) throw new OrchestrationError("unknown_message", `미상 messageId: ${messageId}`);
+  if (entry.routeToTaskId !== taskId) {
+    throw new OrchestrationError("delivery_not_addressed", `${messageId}는 ${taskId}에게 전달된 메시지가 아니다`);
+  }
+  return entry;
+}
+
+function isTerminal(state: TaskState): boolean {
+  return state === "completed" || state === "blocked" || state === "cancelled";
+}
+
+/**
+ * **safety-only 커밋의 내용 검사**(DECISIONS 2026-07-30). 만료 뒤에 지나갈 수 있는 것은 회계·정리·
+ * 취소·pause뿐이다: 작업 시작(`started`)·결과 수락(`result_accepted`)·메시지 수락·artifact 등록·
+ * 전달 수령이 섞인 mutation은 여기서 거부된다(전이 0).
+ */
+function assertSafetyOnlyMutation(mutation: Mutation): void {
+  if (mutation.bodies.length > 0) {
+    throw new OrchestrationError("safety_only_violation", "safety-only 커밋은 메시지 본문을 발행할 수 없다");
+  }
+  for (const e of mutation.events) {
+    if (!(SAFETY_ONLY_EVENT_TYPES as readonly string[]).includes(e.type)) {
+      throw new OrchestrationError("safety_only_violation", `safety-only 커밋이 허용되지 않은 event를 낸다: ${e.type}`);
+    }
+    if (e.reason !== null && !(SAFETY_ONLY_REASONS as readonly string[]).includes(e.reason)) {
+      throw new OrchestrationError("safety_only_violation", `safety-only 커밋이 허용되지 않은 전이 사유를 낸다: ${e.reason}`);
+    }
+    if (e.toState === "completed" || e.toState === "running") {
+      throw new OrchestrationError("safety_only_violation", `safety-only 커밋은 ${e.toState}로 전이할 수 없다`);
+    }
+  }
 }
 
 function assertBatchLimit(limit: unknown): number {
@@ -848,11 +1813,30 @@ function requireTask(state: OrchestrationRunState, taskId: string): Orchestratio
   return t;
 }
 
-/** 산출물 등록·결과 제출이 가능한 running task. 두 진입점이 같은 전이 규칙을 쓴다. */
+/** 산출물 등록이 가능한 running task. */
 function requireRunningTask(state: OrchestrationRunState, taskId: unknown, what: string): OrchestrationTask {
   const task = requireTask(state, assertSlug(taskId, "taskId"));
   if (task.state !== "running") {
     throw new OrchestrationError("invalid_transition", `${what}는 running task만 가능하다 (현재 ${task.state})`);
+  }
+  return task;
+}
+
+/**
+ * **결과·차단을 수락할 수 있는 task**(V3 M5c · 대장 `B-13`): `cleaning`이고 **zero-survivor가 확인된**
+ * 상태여야 한다. 자원을 놓는 종료 전이(`completed`/`blocked`)는 전부 이 규칙 하나를 지난다 —
+ * 새 진입점이 추가돼도 우회로가 생기지 않는다.
+ */
+function requireCleanedTask(state: OrchestrationRunState, taskId: unknown, what: string): OrchestrationTask {
+  const task = requireTask(state, assertSlug(taskId, "taskId"));
+  if (task.state !== "cleaning") {
+    throw new OrchestrationError(
+      "invalid_transition",
+      `${what}는 cleaning task만 수락된다 (현재 ${task.state}) — recordTerminal로 정리 단계에 먼저 들어간다`,
+    );
+  }
+  if (task.execution.cleanupStatus !== "confirmed") {
+    throw new OrchestrationError("cleanup_unconfirmed", `${what}: 자손 프로세스 0이 확인되지 않았다 (${task.taskId})`);
   }
   return task;
 }
@@ -983,27 +1967,49 @@ function addArtifact(
     supersedes: prior === null ? null : prior.artifactId,
   };
   draft.artifacts.push(record);
-  mutation.events.push({
-    at: now,
-    type: "artifact_registered",
-    revision: draft.revision,
-    taskId: task.taskId,
-    messageId: null,
-    fromState: null,
-    toState: null,
-    reason: null,
-    artifactId: record.artifactId,
-  });
+  mutation.events.push(
+    event({ at: now, type: "artifact_registered", revision: draft.revision, taskId: task.taskId, artifactId: record.artifactId }),
+  );
   return { path, sha256, revision, producerTaskId: task.taskId, role };
 }
 
-/** 승인 만료 확인. 타임스탬프는 고정 폭 UTC라 문자열 비교로 충분하다. */
+/**
+ * 승인 만료 확인. 타임스탬프는 고정 폭 UTC라 문자열 비교로 충분하다.
+ * **경계 포함이다(`>=`)** — 대장 `C-17`: 이전 판의 `>`는 만료 밀리초에 전이 하나를 통과시켰고
+ * 실행 경계(`executionBoundary`)는 이미 `>=`였으므로 두 계층의 판정이 갈렸다.
+ */
 function assertNotExpired(manifest: MilestoneApprovalManifest, now: string): void {
-  if (now > manifest.expiresAt) {
+  if (now >= manifest.expiresAt) {
     throw new OrchestrationError(
       "manifest_expired",
-      `승인 manifest가 만료됐다(expiresAt ${manifest.expiresAt}, now ${now}) — 재승인 없이는 변경하지 않는다`,
+      `승인 manifest가 만료됐다(expiresAt ${manifest.expiresAt}, now ${now}) — 재승인 없이는 전진하지 않는다`,
     );
+  }
+}
+
+/**
+ * **전진 작업 게이트**(V3 M5c). 만료와 **durable run deadline** 둘 다 본다 — 재시작이 예산 창을 새로
+ * 만들지 못하므로 deadline은 재시작을 넘어 유효하다(대장 `B-12`).
+ */
+function assertForwardWorkAllowed(state: OrchestrationRunState, now: string): void {
+  assertClockSane(state, now);
+  assertNotExpired(state.manifest, now);
+  if (now >= state.accounting.budgetDeadlineAt) {
+    throw new OrchestrationError(
+      "budget_elapsed_exhausted",
+      `승인된 경과 예산을 넘었다(deadline ${state.accounting.budgetDeadlineAt}, now ${now})`,
+    );
+  }
+}
+
+/**
+ * **시계 역행·이상은 fail closed다.** 커밋 시각이 run 생성 시각보다 이르면 durable 회계·deadline 판정이
+ * 전부 무의미해지므로 safety-only 경로에서도 거부한다(그 경우 호출자는 `paused/clock_invalid`로 내려간다 —
+ * 다만 그 pause 자체도 이 게이트를 지나야 하므로, 시계가 정상으로 돌아온 뒤에만 durable해진다).
+ */
+function assertClockSane(state: OrchestrationRunState, now: string): void {
+  if (now < state.createdAt || now < state.accounting.budgetStartedAt) {
+    throw new OrchestrationError("clock_invalid", `커밋 시각이 run 시작보다 이르다(now ${now})`);
   }
 }
 
@@ -1097,19 +2103,23 @@ function setState(
   task: OrchestrationTask,
   to: TaskState,
   reason: TransitionReason,
+  audit?: { actionId?: string | null; attemptId?: string | null; marker?: string | null },
 ): void {
   if (task.state === to) return;
-  mutation.events.push({
-    at: now,
-    type: "task_state_changed",
-    revision: draft.revision,
-    taskId: task.taskId,
-    messageId: null,
-    fromState: task.state,
-    toState: to,
-    reason,
-    artifactId: null,
-  });
+  mutation.events.push(
+    event({
+      at: now,
+      type: "task_state_changed",
+      revision: draft.revision,
+      taskId: task.taskId,
+      fromState: task.state,
+      toState: to,
+      reason,
+      actionId: audit?.actionId ?? null,
+      attemptId: audit?.attemptId ?? null,
+      marker: audit?.marker ?? null,
+    }),
+  );
   task.state = to;
   task.updatedAt = now;
 }
@@ -1164,24 +2174,17 @@ function addTask(
     resultSummary: null,
     blockerSummary: null,
     artifactRefs: [],
+    execution: emptyTaskExecution(),
   };
   draft.tasks.push(task);
-  mutation.events.push({
-    at: now,
-    type: "task_created",
-    revision: draft.revision,
-    taskId,
-    messageId: null,
-    fromState: null,
-    toState: "pending",
-    reason: "created",
-    artifactId: null,
-  });
+  mutation.events.push(
+    event({ at: now, type: "task_created", revision: draft.revision, taskId, toState: "pending", reason: "created" }),
+  );
   if (dependsOn.length === 0) setState(draft, now, mutation, task, "ready", "created");
 
   // task_assignment는 중앙 kernel이 보낸다 (sender=orchestrator, recipient=task role).
   const envelope: AgentMessageEnvelope = {
-    schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
+    schemaVersion: AGENT_MESSAGE_SCHEMA_VERSION,
     messageId: assertSlug(seed.assignmentMessageId, "assignmentMessageId"),
     runId: draft.runId,
     milestoneId: draft.milestoneId,
@@ -1277,20 +2280,19 @@ function acceptMessage(
     summary,
     routeToTaskId,
     acknowledgedAt: null,
+    delivery: emptyMessageDelivery(),
   };
   draft.messages.push(entry);
   mutation.bodies.push({ messageId: envelope.messageId, body });
-  mutation.events.push({
-    at: now,
-    type: "message_accepted",
-    revision: draft.revision,
-    taskId: envelope.taskId,
-    messageId: envelope.messageId,
-    fromState: null,
-    toState: null,
-    reason: null,
-    artifactId: null,
-  });
+  mutation.events.push(
+    event({
+      at: now,
+      type: "message_accepted",
+      revision: draft.revision,
+      taskId: envelope.taskId,
+      messageId: envelope.messageId,
+    }),
+  );
 }
 
 /**

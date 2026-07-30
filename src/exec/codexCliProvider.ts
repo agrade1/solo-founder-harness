@@ -198,7 +198,12 @@ const GIT_BIN_CODES = {
  * 사전 검증에서 신원을 고정하고 **spawn 직전 동기 게이트에서 다시** 부른다 — 같은 권한의 다른 실행 파일로
  * 교체되는 창까지 막는다(Node에 `fexecve`가 없어 창은 0이 아니고 syscall 몇 개로 줄인 것이다).
  */
-export function verifyCodexExecutable(approved: ApprovedExecutable, pinned?: FileIdentity): TrustedExecutable {
+export function verifyCodexExecutable(approved: ApprovedExecutable | null, pinned?: FileIdentity): TrustedExecutable {
+  // **승인이 codex를 담지 않았으면 fail closed다**(V3 M5c): M5c offline manifest는 `codex: null`로
+  // "live 추론은 승인되지 않았다"를 정직하게 표현한다. 그 승인으로는 provider가 만들어지지 않는다.
+  if (approved === null) {
+    throw new OrchestrationError("codex_not_approved", "이 승인 manifest는 codex 실행 권위를 담지 않는다(live 추론 미승인)");
+  }
   return verifyApprovedExecutable(approved, "승인된 codex 실행 파일", CODEX_BIN_CODES, pinned);
 }
 
@@ -1132,7 +1137,11 @@ export class CodexCliProvider implements ExecutionProvider {
     // stderr는 요약·redaction 후에만 쓰인다(원문은 큐·상태로 나가지 않는다).
     child.stderr?.setEncoding("utf8");
     child.stderr?.on("data", (d: string) => {
-      if (stderr.length < MAX_STDERR_BUFFER) stderr += d;
+      // **상한은 정확하다**(대장 `C-24`): 이전 판은 "아직 상한 아래면 chunk 전체를 붙인다"였으므로
+      // 큰 chunk 하나가 상한을 임의로 넘길 수 있었다(8 KiB 상한에 1 MiB가 들어갈 수 있었다).
+      // 남은 자리만큼만 정확히 잘라 붙인다 — 요약·redaction은 그 뒤 단계다.
+      const room = MAX_STDERR_BUFFER - stderr.length;
+      if (room > 0) stderr += d.length > room ? d.slice(0, room) : d;
     });
     // stdin EPIPE 등은 프로세스 종료 경로로 수렴시킨다(여기서 던지면 unhandled가 된다).
     child.stdin?.on("error", () => parser.protocolFail("stdin_error"));

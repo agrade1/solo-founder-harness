@@ -160,6 +160,21 @@ const APPROVED_COMMIT = "a".repeat(40);
 const EXECUTION_AUTHORITY = {
   codex: { path: "/opt/harness/codex", sha256: "c".repeat(64) },
   git: { path: "/opt/harness/git", sha256: "d".repeat(64) },
+  // M5c(v2) — managed process supervisor용 node와 자손 관측용 실행 파일도 승인 대상이다.
+  node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+  processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
+};
+
+/** M5c autopilot 정책 기본 fixture(전부 필수 — manifest에 없으면 `manifest_pre_m5c_unsupported`다). */
+const AUTOPILOT_POLICY = {
+  maxTaskAttempts: 4,
+  maxDeliveryAttempts: 4,
+  retryBackoffMs: 0,
+  deliveryDeadlineMs: 600_000,
+  maxNoProgressMs: 60_000,
+  maxAttemptElapsedMs: 600_000,
+  cleanupTermGraceMs: 500,
+  cleanupKillGraceMs: 500,
 };
 
 /**
@@ -178,6 +193,8 @@ function manifestFor(taskIds: string[], over: Record<string, unknown> = {}) {
     allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
     allowedNetworkDomains: ["registry.npmjs.org"],
     executionAuthority: EXECUTION_AUTHORITY,
+    autopilotPolicy: AUTOPILOT_POLICY,
+    operationAuthorityByTask: {},
     maxSessions: 8,
     maxTokens: 200000,
     maxElapsedMs: 3_600_000,

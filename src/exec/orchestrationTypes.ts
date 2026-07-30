@@ -14,23 +14,81 @@
  * registry(`approvalManifest.ts`). envelope 필드 집합은 **무변경**이다 — route·권한은 envelope가
  * 아니라 중앙 state가 들고 있다(agent가 자기 권한·경로를 만들 수 없다).
  *
- * 여전히 범위 밖(의도적 미구현): 실제 agent spawn·동시 실행, provider bridge/autopilot(M5),
- * 범용 queue/retry/priority/fairness, 크래시 복구·stale lock 회수, schema 마이그레이션 도구.
+ * M5c가 더한 것 — **durable autopilot lifecycle**: `prepared`/`cleaning`/`retry_wait`/`paused`/`cancelled`
+ * 상태, run 단위 **durable 토큰·경과 회계**(`accounting`), task 단위 **실행 lifecycle 메타데이터**
+ * (`task.execution`), 메시지 단위 **전달 재시도 메타데이터**(`message.delivery`), 그리고 typed
+ * operation 권위(`manifest.operationAuthorityByTask`)·autopilot 정책(`manifest.autopilotPolicy`).
+ * **state·manifest schema 버전은 2로 올라가고 마이그레이션은 없다**(fail closed) — envelope는 1 그대로다.
+ *
+ * 여전히 범위 밖(의도적 미구현): 범용 queue/priority/fairness, schema 마이그레이션 도구,
+ * live provider 추론, M6 context rotation, M9 병렬 구현.
  */
 
-/** state 파일과 message envelope 공통 schema 버전. */
-export const ORCHESTRATION_SCHEMA_VERSION = "1";
+/**
+ * **schema 버전은 계약별로 분리한다**(V3 M5c). 이전에는 상수 하나가 state와 envelope를 함께 가리켰으므로
+ * state 계약이 바뀌면 **아무 것도 바뀌지 않은 message envelope**까지 버전이 올라갔다(그 반대도 같다).
+ */
+/** message envelope 계약 — M5c에서 **바뀌지 않았다**. */
+export const AGENT_MESSAGE_SCHEMA_VERSION = "1";
+/** `run_state.json` 계약 — M5c가 durable lifecycle/회계를 더해 **2**다. v1은 마이그레이션 없이 거부한다. */
+export const RUN_STATE_SCHEMA_VERSION = "2";
+/** 승인 manifest 계약 — M5c가 typed operation 권위·autopilot 정책을 더해 **2**다. */
+export const APPROVAL_MANIFEST_SCHEMA_VERSION = "2";
+/** worker가 내는 typed 실행 계획 계약(M5c 신규). */
+export const TYPED_EXECUTION_PLAN_SCHEMA_VERSION = "1";
+/** 구조화 리뷰 결과 계약(M5c 신규 — 대장 `C-19`/`C-35`). */
+export const REVIEW_RESULT_SCHEMA_VERSION = "1";
 
-/** M4a가 쓰는 task 상태 전부. 이 6개 외의 상태는 존재하지 않는다. */
+/**
+ * @deprecated 계약별 상수를 쓴다. envelope 계약을 뜻하는 옛 이름이며 값은 `AGENT_MESSAGE_SCHEMA_VERSION`이다.
+ */
+export const ORCHESTRATION_SCHEMA_VERSION = AGENT_MESSAGE_SCHEMA_VERSION;
+
+/**
+ * task 상태 전부. **이 11개 외의 상태는 존재하지 않는다.**
+ *
+ * M5c가 더한 5개(`prepared`·`cleaning`·`retry_wait`·`paused`·`cancelled`)의 요점:
+ * - `prepared` — preflight(권한·예산·계획 digest·attempt 배정)가 **durable하게 수락됐고** 아직 아무
+ *   프로세스도 뜨지 않은 상태. 자원을 점유한다(그래서 batch preflight 실패가 남을 running으로 새지 않는다).
+ * - `cleaning` — 종료·오류·취소·deadline·재시작이 관측됐고 **결과는 미정**이며 자원은 격리 상태다.
+ *   zero-survivor가 확인될 때까지 여기서 나가지 못한다.
+ * - `retry_wait` — cleanup이 확인됐고 bounded 재시도가 예약된 상태(자원 점유 없음).
+ * - `paused` — 살아 있는 프로세스가 없고 사람의 조치나 새 run이 필요한 상태(비대화 승인 부재도 여기다).
+ * - `cancelled` — 취소가 요청되고 cleanup이 확인된 종료 상태.
+ */
 export const TASK_STATES = [
   "pending",
   "ready",
+  "prepared",
   "running",
+  "cleaning",
+  "retry_wait",
+  "paused",
   "waiting_children",
   "completed",
   "blocked",
+  "cancelled",
 ] as const;
 export type TaskState = (typeof TASK_STATES)[number];
+
+/**
+ * **배타 자원과 세션 예산을 점유하는 상태**(V3 M5c — 대장 `B-11`/`B-13`).
+ * `prepared`는 이미 attempt·worktree·권한을 배정받았고 `cleaning`은 자손 프로세스가 남아 있을 수 있으므로
+ * 둘 다 점유한다. 이 목록 하나가 scheduler·커밋 불변식·load 검증의 공통 정본이다.
+ */
+export const RESOURCE_HOLDING_STATES = ["prepared", "running", "cleaning"] as const;
+export type ResourceHoldingState = (typeof RESOURCE_HOLDING_STATES)[number];
+
+export function holdsResources(state: TaskState): boolean {
+  return (RESOURCE_HOLDING_STATES as readonly string[]).includes(state);
+}
+
+/** 종료(terminal) 상태 — 여기서는 새 작업이 시작되지 않는다. */
+export const TERMINAL_TASK_STATES = ["completed", "blocked", "cancelled"] as const;
+
+export function isTerminalTaskState(state: TaskState): boolean {
+  return (TERMINAL_TASK_STATES as readonly string[]).includes(state);
+}
 
 /** 로드맵 §5.1 메시지 타입 **10종 전부**(M4c에서 4종 → 10종으로 닫았다). */
 export const AGENT_MESSAGE_TYPES = [
@@ -80,7 +138,10 @@ export const SUMMARY_REQUIRED: Record<AgentMessageType, boolean> = {
 export const ARTIFACT_ROLES = ["input", "contract", "output", "evidence", "diff", "test"] as const;
 export type ArtifactRole = (typeof ARTIFACT_ROLES)[number];
 
-/** append-only event log의 이벤트 종류. */
+/**
+ * append-only event log의 이벤트 종류. M5c가 lifecycle·회계·전달·정리·typed operation 감사 이벤트를
+ * 더했다. **자유 형식 payload는 없다** — 아래 닫힌 nullable 필드 집합만 쓴다.
+ */
 export const EVENT_TYPES = [
   "run_created",
   "task_created",
@@ -89,6 +150,24 @@ export const EVENT_TYPES = [
   "task_state_changed",
   /** M4c — 수신 task가 자기 inbox의 전달을 수령했다(상태 전이 없음). */
   "delivery_acknowledged",
+  // ── M5c autopilot lifecycle ──
+  /** preflight batch가 **원자적으로** 수락됐다(task별 결정 포함). */
+  "preflight_committed",
+  /** worker가 인정되는 진행 신호를 냈다(no-progress 시계를 되돌리는 유일한 신호). */
+  "progress_recorded",
+  /** turn 하나의 토큰·경과를 durable 회계에 반영했다(turnId 단위 idempotent). */
+  "usage_charged",
+  "delivery_attempted",
+  "delivery_failed",
+  "retry_scheduled",
+  "task_paused",
+  "task_resumed",
+  "cancel_requested",
+  "cleanup_started",
+  "cleanup_confirmed",
+  "cleanup_failed",
+  /** controller가 집행한 typed operation 1건의 영수증(내용은 담지 않는다). */
+  "operation_receipt",
 ] as const;
 export type OrchestrationEventType = (typeof EVENT_TYPES)[number];
 
@@ -103,8 +182,118 @@ export const TRANSITION_REASONS = [
   "dependencies_completed",
   "child_blocked",
   "dependency_blocked",
+  // ── M5c ──
+  /** ready → prepared: 이 task의 preflight가 durable하게 수락됐다. */
+  "preflight_accepted",
+  /** running → cleaning: 종료·오류·취소·deadline·재시작이 관측됐다. */
+  "cleanup_required",
+  /** cleaning → (completed|retry_wait|paused|blocked|cancelled): zero-survivor가 확인됐다. */
+  "cleanup_confirmed",
+  "retry_scheduled",
+  /** retry_wait → ready: 예약 시각이 됐다. */
+  "retry_due",
+  "paused",
+  /** paused → ready: 같은 유효 승인 아래 사람이 재개했다. */
+  "resumed",
+  "cancel_requested",
+  "cancelled",
+  /** attempt 상한을 다 썼다 → blocked. */
+  "attempts_exhausted",
+  /** 되돌릴 수 없는 정책·무결성 위반 → blocked. */
+  "policy_blocked",
+  "deadline_exceeded",
 ] as const;
 export type TransitionReason = (typeof TRANSITION_REASONS)[number];
+
+/**
+ * **만료·run deadline 이후에도 허용되는 safety-only reducer의 전이 사유**(V3 M5c — DECISIONS 2026-07-30).
+ * 이 목록은 닫혀 있고, 여기에 없는 사유의 전이는 만료 후 전부 거부된다.
+ * 이 사유들은 **작업을 시작하지 않고**(`started`가 없다) **완료하지 않고**(`result_accepted`가 없다)
+ * 실패한 전달을 수령하지 않고 artifact를 등록하지 않는다.
+ */
+export const SAFETY_ONLY_REASONS = [
+  "cleanup_required",
+  "cleanup_confirmed",
+  "paused",
+  "cancel_requested",
+  "cancelled",
+  "retry_scheduled",
+  "deadline_exceeded",
+  /**
+   * 확인된 정리 뒤 attempt 여유가 없을 때의 **fail-closed 착지**(`blocked`). 새 작업을 시작하지 않고
+   * 결과를 발행하지도 않으므로 safety 범주다 — 만료 뒤에도 자원을 회수할 수 있어야 한다.
+   * 반면 preflight의 `policy_blocked`는 전진 결정이므로 **이 목록에 없다**.
+   */
+  "attempts_exhausted",
+] as const;
+
+/**
+ * safety-only reducer가 남길 수 있는 event 종류(전이 없는 회계·정리 이벤트 포함).
+ * `artifact_registered`·`delivery_acknowledged`·`message_accepted`는 **없다**.
+ */
+export const SAFETY_ONLY_EVENT_TYPES = [
+  "task_state_changed",
+  "usage_charged",
+  "cancel_requested",
+  "cleanup_started",
+  "cleanup_confirmed",
+  "cleanup_failed",
+  "task_paused",
+  "retry_scheduled",
+  "operation_receipt",
+] as const;
+
+/**
+ * autopilot의 **닫힌 결과 marker 집합**(대장 `C-33` — 손으로 관리하는 문자열 목록을 하나로 모은다).
+ * durable state(`task.execution.terminalMarker`)와 controller outcome이 같은 이 목록을 쓴다.
+ */
+export const AUTOPILOT_MARKERS = [
+  /** turn이 프로토콜을 지키고 정상 종료했다(완료 자체는 cleanup 확인 뒤에 결정된다). */
+  "turn_completed",
+  /** 진행 이벤트 없이 최종 결과만 온 스트림 — 허용하지 않는다(로드맵 M5 완료 조건). */
+  "silent_session",
+  "no_progress_timeout",
+  "wall_deadline_exceeded",
+  "cancelled",
+  "worker_failed",
+  "plan_invalid",
+  "operation_denied",
+  "process_failed",
+  "cleanup_unconfirmed",
+  "stream_invalid",
+  "delivery_failed",
+  "review_invalid",
+] as const;
+export type AutopilotMarker = (typeof AUTOPILOT_MARKERS)[number];
+
+/** `paused`의 닫힌 사유 집합. */
+export const PAUSE_REASONS = [
+  /** 비대화 모드에서 승인이 필요하다 — **stdin을 기다리지 않고** 여기로 내려앉는다. */
+  "approval_required",
+  "attempts_exhausted",
+  "delivery_deadline_exceeded",
+  "budget_tokens_exhausted",
+  "budget_elapsed_exhausted",
+  "manifest_expired",
+  "clock_invalid",
+  /** 프로세스가 살아 있는 중에 controller가 사라졌다(재시작 복구 경로). */
+  "interrupted",
+  "cleanup_unconfirmed",
+  "operator_requested",
+] as const;
+export type PauseReason = (typeof PAUSE_REASONS)[number];
+
+/** 전달 시도 1건의 닫힌 결과 marker. */
+export const DELIVERY_MARKERS = ["delivered", "send_failed", "turn_failed", "deadline_exceeded", "attempts_exhausted"] as const;
+export type DeliveryMarker = (typeof DELIVERY_MARKERS)[number];
+
+/** cleanup 진행 상태. `confirmed`만 다음 상태로 나갈 자격이 된다. */
+export const CLEANUP_STATUSES = ["none", "required", "confirmed", "failed"] as const;
+export type CleanupStatus = (typeof CLEANUP_STATUSES)[number];
+
+/** typed operation 종류 — 닫힌 union(shell 문자열·wildcard·런타임 실행 파일 선택은 없다). */
+export const APPROVED_OPERATION_KINDS = ["write_file", "run_process"] as const;
+export type ApprovedOperationKind = (typeof APPROVED_OPERATION_KINDS)[number];
 
 /**
  * bounded 상한. spawn 상한 3종은 M4a 필수 요건이고 나머지는 state·메시지가 무제한으로
@@ -154,7 +343,49 @@ export const LIMITS = {
   maxManifestTokens: 100_000_000,
   /** manifest `maxElapsedMs` 상한 = 24h. */
   maxManifestElapsedMs: 86_400_000,
+
+  // ── M5c: autopilot lifecycle 상한 (계획 §3) ──
+  /** task 하나의 총 attempt 수(1..4). */
+  maxTaskAttempts: 4,
+  /** 메시지 하나의 전달 시도 수(1..4). */
+  maxDeliveryAttempts: 4,
+  /** turn 하나가 낼 수 있는 typed operation 수. */
+  maxOperationsPerTurn: 64,
+  /** attempt 하나가 남기는 progress 이벤트 수. */
+  maxProgressEvents: 256,
+  /** attempt 하나가 남기는 operation 영수증 수. */
+  maxOperationReceipts: 64,
+  /** typed `write_file` 본문 바이트 상한 = 1 MiB. */
+  maxWriteBytes: 1_048_576,
+  /** stable quarantine 전 cleanup 재시도 수. */
+  maxCleanupAttempts: 2,
+  /** idempotent 과금을 위해 기억하는 turnId 수. */
+  maxChargedTurnIds: 512,
+  /** durable `tokensUsed` 상한(manifest 상한과 같은 자리). */
+  maxAccountedTokens: 100_000_000,
+  /** durable `elapsedMsUsed` 상한 = 24h. */
+  maxAccountedElapsedMs: 86_400_000,
+  /** task 하나에 승인할 수 있는 typed operation 권위 수. */
+  maxOperationAuthorities: 32,
+  /** `run_process` 권위 하나의 argv 길이. */
+  maxOperationArgs: 16,
+  /** argv 항목 1개의 길이(코드 포인트). */
+  maxOperationArgLength: 256,
 } as const;
+
+/**
+ * **문자열 길이를 Unicode 코드 포인트로 센다**(V3 M5c — 대장 `C-40`).
+ *
+ * JavaScript `.length`는 UTF-16 code unit 수이고 JSON Schema draft-07 `maxLength`는 **코드 포인트 수**다.
+ * 그래서 `/` + 😀 256개는 코드 포인트 257개·UTF-16 513 unit이 되어 **schema는 통과시키고 runtime은
+ * 거부했다**(같은 승인 문서에 대해 두 판정이 갈렸다). 경로 길이 상한은 이제 이 함수 하나로 판정한다.
+ * (문자열 iterator는 surrogate pair를 하나로 센다. 고립 surrogate는 1로 세며 draft-07과 같다.)
+ */
+export function codePointLength(s: string): number {
+  let n = 0;
+  for (const _ of s) n += 1;
+  return n;
+}
 
 /** slug 규칙: 소문자·숫자로 시작하고 `[a-z0-9._-]`만 허용, 1..64자. */
 export const SLUG_PATTERN = "^[a-z0-9][a-z0-9._-]{0,63}$";
@@ -293,6 +524,85 @@ export interface ArtifactRecord extends ArtifactPointer {
   supersedes: string | null;
 }
 
+/**
+ * **집행한 typed operation 1건의 영수증**(V3 M5c). 내용(파일 본문·stdout·argv)은 **담지 않는다** —
+ * operation 신원 · 경로 · 결과 hash · 안정 marker만 durable하다. 같은 `operationId`가 다시 오면
+ * 이 영수증이 idempotent 판정의 근거가 된다(크래시 뒤 재시도가 두 번 쓰지 않는다).
+ */
+export interface OperationReceipt {
+  operationId: string;
+  kind: ApprovedOperationKind;
+  authorityId: string;
+  /** `write_file`이면 정규화된 workspace-relative 경로, `run_process`면 null. */
+  path: string | null;
+  /** `write_file`이면 결과 내용 sha256, `run_process`면 null. */
+  resultSha256: string | null;
+  /** `run_process`의 종료 코드(정상 종료만). 그 밖은 null. */
+  exitCode: number | null;
+  marker: "applied" | "already_applied" | "write_conflict" | "denied" | "failed";
+  at: string;
+}
+
+/** 아직 durable 완료 커밋 전인 결과(cleanup 확인을 기다리는 동안 보관한다). */
+export interface PendingTaskResult {
+  summary: string;
+  outputs: Array<{ path: string; role: ArtifactRole }>;
+}
+
+/**
+ * **task 하나의 실행 lifecycle 메타데이터**(V3 M5c — 대장 `B-11`/`B-12`/`B-13`/`C-18`).
+ * 전부 durable이다: 재시작한 controller는 이 필드만 보고 "무엇이 떠 있었고 무엇을 정리해야 하는가"를 안다.
+ * **raw는 하나도 없다** — PID/PGID/argv/env/session handle/transcript가 아니라 `processLeaseMarker`
+ * (충돌 저항 난수 문자열)만 남는다.
+ */
+export interface TaskExecution {
+  /** 1..maxTaskAttempts. 0은 "아직 시작 안 함"이다. */
+  attemptNo: number;
+  attemptId: string | null;
+  turnId: string | null;
+  /** preflight가 봉인한 결정의 digest — 시작 직전에 다시 계산해 대조한다. */
+  preflightDigest: string | null;
+  phaseStartedAt: string | null;
+  wallDeadlineAt: string | null;
+  lastProgressAt: string | null;
+  progressCount: number;
+  /** 살아 있을 수 있는 supervisor를 찾는 **유일한** durable 단서. PID가 아니다. */
+  processLeaseMarker: string | null;
+  terminalMarker: AutopilotMarker | null;
+  cleanupStatus: CleanupStatus;
+  cleanupAttempts: number;
+  cancelRequestedAt: string | null;
+  pauseReason: PauseReason | null;
+  retryAt: string | null;
+  retryDeadlineAt: string | null;
+  pendingResult: PendingTaskResult | null;
+  operationReceipts: OperationReceipt[];
+}
+
+/** 새 task의 초기 실행 메타데이터(모든 필드가 durable 계약이라 항상 존재한다). */
+export function emptyTaskExecution(): TaskExecution {
+  return {
+    attemptNo: 0,
+    attemptId: null,
+    turnId: null,
+    preflightDigest: null,
+    phaseStartedAt: null,
+    wallDeadlineAt: null,
+    lastProgressAt: null,
+    progressCount: 0,
+    processLeaseMarker: null,
+    terminalMarker: null,
+    cleanupStatus: "none",
+    cleanupAttempts: 0,
+    cancelRequestedAt: null,
+    pauseReason: null,
+    retryAt: null,
+    retryDeadlineAt: null,
+    pendingResult: null,
+    operationReceipts: [],
+  };
+}
+
 /** task 1건. ownership은 M4a에서 **기록·검증 메타데이터**일 뿐 실제 파일 권한이 아니다. */
 export interface OrchestrationTask {
   taskId: string;
@@ -317,6 +627,11 @@ export interface OrchestrationTask {
   resultSummary: string | null;
   blockerSummary: string | null;
   artifactRefs: ArtifactPointer[];
+  /**
+   * M5c — 실행 lifecycle 메타데이터(필수). 이 필드가 없는 pre-M5c state는 마이그레이션하지 않고
+   * `state_pre_m5c_unsupported`로 거부한다.
+   */
+  execution: TaskExecution;
 }
 
 /** manifest가 승인한 dependency 1건 — 버전은 **정확히 pin된 값**만 유효하다(범위·tag·latest 거부). */
@@ -337,6 +652,41 @@ export interface ApprovedDependency {
 export interface ApprovedExecutable {
   path: string;
   sha256: string;
+}
+
+/**
+ * **승인된 typed operation 1건**(V3 M5c — 대장 `B-10`). 이 union이 닫혀 있다는 것이 이 계층의 전부다:
+ * shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git ·
+ * deploy · billing · PR merge 변종은 **존재하지 않는다**(표현할 타입이 없으므로 승인될 수도 없다).
+ *
+ * worker는 `authorityId`만 고를 수 있다 — 경로·바이트 상한·실행 파일·argv는 **사람이 승인한 이 레코드**에서
+ * 나온다. 그래서 "모델이 만든 명령"이라는 것이 애초에 성립하지 않는다.
+ */
+export type ApprovedOperation =
+  | { authorityId: string; kind: "write_file"; path: string; maxBytes: number }
+  | { authorityId: string; kind: "run_process"; executable: string; args: string[]; timeoutMs: number };
+
+/**
+ * autopilot 실행 정책(V3 M5c). 전부 bounded이고 **조용한 기본값이 없다** — manifest에 없으면 거부다.
+ * 사람이 승인하는 것은 "얼마나 오래·몇 번·얼마나 기다릴 수 있는가"이며 이 값들이 deadline·재시도의 정본이다.
+ */
+export interface AutopilotPolicy {
+  /** 1..4 */
+  maxTaskAttempts: number;
+  /** 1..4 */
+  maxDeliveryAttempts: number;
+  /** 0..60_000 */
+  retryBackoffMs: number;
+  /** 1_000..3_600_000 */
+  deliveryDeadlineMs: number;
+  /** 1_000..900_000 — 인정되는 진행 신호 없이 지날 수 있는 최대 시간. */
+  maxNoProgressMs: number;
+  /** 1_000..3_600_000 이고 `maxElapsedMs` 이하 — attempt 하나의 wall deadline. */
+  maxAttemptElapsedMs: number;
+  /** 100..30_000 — TERM 후 KILL까지의 유예. */
+  cleanupTermGraceMs: number;
+  /** 100..30_000 — KILL 후 zero-survivor 확인까지의 유예. */
+  cleanupKillGraceMs: number;
 }
 
 /**
@@ -365,7 +715,25 @@ export interface MilestoneApprovalManifest {
    * 실행한다. 호출자가 다른 경로를 지정할 통로는 없다(옵션 자체가 없다).
    * 없으면 **조용한 기본값 없이 거부**한다(`invalid_manifest`).
    */
-  executionAuthority: { codex: ApprovedExecutable; git: ApprovedExecutable };
+  /**
+   * M5c: `node`·`processObserver`가 더해졌고 `codex`는 **null 허용**이다 — offline manifest가 "live 추론이
+   * 가능한 척" 하지 않게 한다(M5c는 Codex를 인스턴스화하지 않는다). 넷 다 정규 절대경로 + 내용 digest다.
+   */
+  executionAuthority: {
+    codex: ApprovedExecutable | null;
+    git: ApprovedExecutable;
+    /** managed process supervisor를 띄우는 승인된 Node 실행 파일. */
+    node: ApprovedExecutable;
+    /** 자손 프로세스 관측(zero-survivor 확인)에 쓰는 승인된 실행 파일. */
+    processObserver: ApprovedExecutable;
+  };
+  /** M5c — autopilot deadline·재시도 정책(필수). */
+  autopilotPolicy: AutopilotPolicy;
+  /**
+   * M5c — taskId → 그 task가 요청할 수 있는 typed operation 권위 목록.
+   * 목록에 없는 task는 **어떤 write·process도** 할 수 없다(빈 목록이 기본이고 부재는 hard deny다).
+   */
+  operationAuthorityByTask: Record<string, ApprovedOperation[]>;
   /** 동시에 running일 수 있는 task 수의 상한. */
   maxSessions: number;
   /** 선택 예산. 없으면 null(키는 durable 계약이라 항상 존재한다). */
@@ -401,6 +769,34 @@ export interface MessageIndexEntry {
   routeToTaskId: string | null;
   /** 수신 task가 수령한 시각. 전달 대상이 아니거나 미수령이면 null. */
   acknowledgedAt: string | null;
+  /**
+   * M5c — **전달 재시도 메타데이터**(대장 `C-12→B`). `acknowledgedAt`은 완전하고 검증된 전달 turn이
+   * 성공한 뒤에만 채워진다 — 실패는 여기에 재시도 정보만 원자적으로 남기고 **수령하지 않는다**.
+   */
+  delivery: MessageDelivery;
+}
+
+/** 전달 시도 이력(bounded). 전달 대상이 없는 메시지는 전부 초기값이다. */
+export interface MessageDelivery {
+  attempts: number;
+  activeAttemptId: string | null;
+  firstAttemptAt: string | null;
+  lastAttemptAt: string | null;
+  nextAttemptAt: string | null;
+  deadlineAt: string | null;
+  lastMarker: DeliveryMarker | null;
+}
+
+export function emptyMessageDelivery(): MessageDelivery {
+  return {
+    attempts: 0,
+    activeAttemptId: null,
+    firstAttemptAt: null,
+    lastAttemptAt: null,
+    nextAttemptAt: null,
+    deadlineAt: null,
+    lastMarker: null,
+  };
 }
 
 /** append-only event log 1줄. */
@@ -424,6 +820,49 @@ export interface OrchestrationEvent {
   toState: TaskState | null;
   reason: TransitionReason | null;
   artifactId: string | null;
+  /**
+   * M5c — **닫힌 nullable 감사 필드**(자유 형식 payload는 없다).
+   * `actionId`는 호출자가 준 멱등 action 신원이다: 커밋 결과가 애매한 실패(대장 `C-37`)에서 재시작한
+   * controller가 "내 요청이 durable해졌는가"를 event log에서 정확히 판정하는 근거다.
+   */
+  actionId: string | null;
+  attemptId: string | null;
+  turnId: string | null;
+  operationId: string | null;
+  marker: string | null;
+  tokenDelta: number | null;
+  elapsedMs: number | null;
+}
+
+/** M5c 이전 event에는 없던 필드의 기본값(신규 event를 만들 때 쓰는 닫힌 초기값). */
+export const EMPTY_EVENT_AUDIT = Object.freeze({
+  actionId: null,
+  attemptId: null,
+  turnId: null,
+  operationId: null,
+  marker: null,
+  tokenDelta: null,
+  elapsedMs: null,
+} as const);
+
+/**
+ * **run 하나의 durable 예산 회계**(V3 M5c — 대장 `B-12`).
+ *
+ * 이전 판은 controller의 `#private` 필드에만 있었으므로 **재시작이 토큰·경과 예산을 리셋**했다 →
+ * 무인 autopilot이 재시작을 반복하는 것만으로 승인된 상한을 무한히 넘길 수 있었다.
+ * 지금 예산의 진실은 이 durable 레코드이고 controller는 여기서 읽어 여기에 더한다.
+ */
+export interface RunAccounting {
+  /** 이 회계가 묶여 있는 승인의 canonical digest — 승인이 바뀌면 회계도 같이 못 쓴다(fail closed). */
+  approvalDigest: string;
+  budgetStartedAt: string;
+  /** `min(budgetStartedAt + manifest.maxElapsedMs, manifest.expiresAt)` — 재시작해도 이 값이 정본이다. */
+  budgetDeadlineAt: string;
+  tokensUsed: number;
+  /** monotonic(감소하지 않는다). */
+  elapsedMsUsed: number;
+  /** 이미 과금한 turnId(정렬·중복 없음, bounded) — 같은 turn을 두 번 과금하지 않는다. */
+  chargedTurnIds: string[];
 }
 
 /** `outputs/orchestration/<run-id>/run_state.json` — orchestration 실행 상태의 SoR. */
@@ -436,6 +875,11 @@ export interface OrchestrationRunState {
    * 이 필드가 없는 pre-M4c state는 마이그레이션하지 않고 `state_pre_m4c_unsupported`로 거부한다.
    */
   manifest: MilestoneApprovalManifest;
+  /**
+   * M5c — **durable 토큰·경과 회계**(대장 `B-12`). 재시작은 예산을 새로 만들지 않고 이 값을 이어 쓴다.
+   * 이 필드가 없는 pre-M5c state는 `state_pre_m5c_unsupported`로 거부한다(마이그레이션 없음).
+   */
+  accounting: RunAccounting;
   /** 성공한 kernel 변경 1회당 +1 (monotonic). */
   revision: number;
   /** events.jsonl의 줄 수 (monotonic). */
@@ -511,8 +955,9 @@ export function normalizeWorkspacePath(raw: unknown, what: string): string {
   if (typeof raw !== "string" || raw.length === 0) {
     throw new OrchestrationError("path_empty", `${what}는 비어 있을 수 없다`);
   }
-  if (raw.length > LIMITS.maxPathLength) {
-    throw new OrchestrationError("path_too_long", `${what}는 ${LIMITS.maxPathLength}자 이하여야 한다`);
+  // 길이는 **코드 포인트**로 센다 — schema `maxLength`와 같은 의미여야 한다(대장 `C-40`).
+  if (codePointLength(raw) > LIMITS.maxPathLength) {
+    throw new OrchestrationError("path_too_long", `${what}는 ${LIMITS.maxPathLength} 코드 포인트 이하여야 한다`);
   }
   if (raw.includes("\0")) {
     throw new OrchestrationError("path_nul", `${what}에 NUL 바이트가 있다`);

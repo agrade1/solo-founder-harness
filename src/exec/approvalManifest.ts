@@ -20,12 +20,15 @@ import {
   LIMITS,
   type ApprovedDependency,
   type ApprovedExecutable,
+  type ApprovedOperation,
+  type AutopilotPolicy,
   type MilestoneApprovalManifest,
   OrchestrationError,
   SHA256_PATTERN,
   SLUG_PATTERN,
   assertSlug,
   assertTimestamp,
+  codePointLength,
   isSlug,
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
@@ -88,6 +91,9 @@ export const MANIFEST_KEYS = [
   "allowedDependencies",
   "allowedNetworkDomains",
   "executionAuthority",
+  // ── M5c (v2) ──
+  "autopilotPolicy",
+  "operationAuthorityByTask",
   "maxSessions",
   "maxTokens",
   "maxElapsedMs",
@@ -97,9 +103,28 @@ export const MANIFEST_KEYS = [
 
 export const DEPENDENCY_KEYS = ["name", "version"] as const;
 
-/** 승인된 실행 권위: codex 하나 · git 하나. 더 넣거나 빼면 `invalid_manifest`다. */
-export const EXECUTION_AUTHORITY_KEYS = ["codex", "git"] as const;
+/**
+ * 승인된 실행 권위 key. M5c(v2)에서 `node`·`processObserver`가 필수로 더해졌고 `codex`는 null 허용이다.
+ * 더 넣거나 빼면 `invalid_manifest`이고, v1(`codex`+`git`만)은 `manifest_pre_m5c_unsupported`다.
+ */
+export const EXECUTION_AUTHORITY_KEYS = ["codex", "git", "node", "processObserver"] as const;
 export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"] as const;
+
+/** M5c autopilot 정책 key(전부 필수 — 조용한 기본값이 없다). */
+export const AUTOPILOT_POLICY_KEYS = [
+  "maxTaskAttempts",
+  "maxDeliveryAttempts",
+  "retryBackoffMs",
+  "deliveryDeadlineMs",
+  "maxNoProgressMs",
+  "maxAttemptElapsedMs",
+  "cleanupTermGraceMs",
+  "cleanupKillGraceMs",
+] as const;
+
+/** typed operation 권위 항목의 key 집합(kind별로 닫혀 있다). */
+export const WRITE_FILE_AUTHORITY_KEYS = ["authorityId", "kind", "path", "maxBytes"] as const;
+export const RUN_PROCESS_AUTHORITY_KEYS = ["authorityId", "kind", "executable", "args", "timeoutMs"] as const;
 
 /** 구체적인 approved commit — 40자 소문자 hex만. 짧은 해시·브랜치·tag는 거부한다. */
 export const COMMIT_PATTERN = "^[0-9a-f]{40}$";
@@ -211,7 +236,8 @@ function validateApprovedExecutable(raw: unknown, what: string): ApprovedExecuta
   const o = asObject(raw, what);
   closedKeys(o, APPROVED_EXECUTABLE_KEYS, what);
   const path = o.path;
-  if (typeof path !== "string" || path.length > LIMITS.maxPathLength || !APPROVED_PATH_RE.test(path)) {
+  // 길이는 **코드 포인트**로 센다 — schema `maxLength`와 같은 의미여야 한다(대장 `C-40`).
+  if (typeof path !== "string" || codePointLength(path) > LIMITS.maxPathLength || !APPROVED_PATH_RE.test(path)) {
     throw new OrchestrationError("invalid_manifest", `${what}.path는 정규 절대경로여야 한다`);
   }
   if (typeof o.sha256 !== "string" || !new RegExp(SHA256_PATTERN).test(o.sha256)) {
@@ -220,14 +246,109 @@ function validateApprovedExecutable(raw: unknown, what: string): ApprovedExecuta
   return { path, sha256: o.sha256 };
 }
 
-/** 승인된 실행 권위 전체(codex + git). 누락·미상 key는 거부한다 — 조용한 기본값이 없다. */
-function validateExecutionAuthority(raw: unknown): { codex: ApprovedExecutable; git: ApprovedExecutable } {
+/**
+ * 승인된 실행 권위 전체. 누락·미상 key는 거부한다 — 조용한 기본값이 없다.
+ * `codex`는 **null 허용**이다(M5c offline manifest는 live 추론을 승인하지 않는다). 나머지 셋은 필수다.
+ */
+function validateExecutionAuthority(raw: unknown): MilestoneApprovalManifest["executionAuthority"] {
   const o = asObject(raw, "manifest.executionAuthority");
+  // v1 manifest(`codex`+`git`만)는 **마이그레이션하지 않고** 거부한다 — 기본값을 채우면 그것이 곧
+  // "승인되지 않은 실행 파일을 승인된 것으로 취급"이다.
+  if (!("node" in o) || !("processObserver" in o)) {
+    throw new OrchestrationError(
+      "manifest_pre_m5c_unsupported",
+      "M5c 이전 승인 manifest다(executionAuthority.node/processObserver 없음). 마이그레이션하지 않으며 새 승인이 필요하다",
+    );
+  }
   closedKeys(o, EXECUTION_AUTHORITY_KEYS, "manifest.executionAuthority");
   return {
-    codex: validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
+    codex: o.codex === null ? null : validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
     git: validateApprovedExecutable(o.git, "manifest.executionAuthority.git"),
+    node: validateApprovedExecutable(o.node, "manifest.executionAuthority.node"),
+    processObserver: validateApprovedExecutable(o.processObserver, "manifest.executionAuthority.processObserver"),
   };
+}
+
+/** M5c autopilot 정책. 전부 bounded 정수이고 `maxAttemptElapsedMs <= maxElapsedMs`를 함께 본다. */
+function validateAutopilotPolicy(raw: unknown, maxElapsedMs: number): AutopilotPolicy {
+  const o = asObject(raw, "manifest.autopilotPolicy");
+  closedKeys(o, AUTOPILOT_POLICY_KEYS, "manifest.autopilotPolicy");
+  const policy: AutopilotPolicy = {
+    maxTaskAttempts: boundedInt(o.maxTaskAttempts, "autopilotPolicy.maxTaskAttempts", 1, LIMITS.maxTaskAttempts),
+    maxDeliveryAttempts: boundedInt(o.maxDeliveryAttempts, "autopilotPolicy.maxDeliveryAttempts", 1, LIMITS.maxDeliveryAttempts),
+    retryBackoffMs: boundedInt(o.retryBackoffMs, "autopilotPolicy.retryBackoffMs", 0, 60_000),
+    deliveryDeadlineMs: boundedInt(o.deliveryDeadlineMs, "autopilotPolicy.deliveryDeadlineMs", 1_000, 3_600_000),
+    maxNoProgressMs: boundedInt(o.maxNoProgressMs, "autopilotPolicy.maxNoProgressMs", 1_000, 900_000),
+    maxAttemptElapsedMs: boundedInt(o.maxAttemptElapsedMs, "autopilotPolicy.maxAttemptElapsedMs", 1_000, 3_600_000),
+    cleanupTermGraceMs: boundedInt(o.cleanupTermGraceMs, "autopilotPolicy.cleanupTermGraceMs", 100, 30_000),
+    cleanupKillGraceMs: boundedInt(o.cleanupKillGraceMs, "autopilotPolicy.cleanupKillGraceMs", 100, 30_000),
+  };
+  if (policy.maxAttemptElapsedMs > maxElapsedMs) {
+    throw new OrchestrationError(
+      "invalid_manifest",
+      `autopilotPolicy.maxAttemptElapsedMs는 manifest.maxElapsedMs(${maxElapsedMs}) 이하여야 한다`,
+    );
+  }
+  return policy;
+}
+
+/**
+ * **승인된 typed operation 1건**(대장 `B-10`). kind별로 key 집합이 닫혀 있고 shell 문자열·wildcard·
+ * 런타임 실행 파일 선택은 표현할 수 없다.
+ *
+ * `run_process.executable`은 **승인된 Node 실행 파일과 정확히 같아야 한다**(의도적으로 계획보다 좁다).
+ * 이유: `git`을 typed operation으로 열면 승인된 argv 배열 하나만으로 `push`/`remote`가 표현 가능해지고
+ * 그것은 레포 hard deny(원격 저장소 직접 쓰기)를 **승인 문서가 덮는 형태**가 된다. git은 controller가
+ * 소유한 `trustedGit.ts`의 고정 메서드로만 지나가고, `processObserver`는 정리 관측 전용이며 typed
+ * operation이 아니다. argv "screen"은 만들지 않는다 — 그것은 집행이 아니라 흉내이기 때문이다.
+ */
+function validateApprovedOperation(
+  raw: unknown,
+  what: string,
+  ctx: { writableRoots: string[]; approvedOwnership: string[] | undefined; nodePath: string; maxAttemptElapsedMs: number },
+): ApprovedOperation {
+  const o = asObject(raw, what);
+  const kind = o.kind;
+  if (kind !== "write_file" && kind !== "run_process") {
+    throw new OrchestrationError("invalid_manifest", `${what}.kind는 write_file|run_process여야 한다`);
+  }
+  const authorityId = assertSlug(o.authorityId, `${what}.authorityId`);
+  if (kind === "write_file") {
+    closedKeys(o, WRITE_FILE_AUTHORITY_KEYS, what);
+    const path = normalizeWorkspacePath(o.path, `${what}.path`);
+    if (!ctx.writableRoots.some((root) => pathWithin(path, root))) {
+      throw new OrchestrationError("operation_outside_writable_root", `${what}.path가 승인된 writableRoots 밖이다: ${path}`);
+    }
+    // 이 task의 ownership이 manifest에 명시돼 있으면 그 범위도 함께 본다(child는 durable ownership으로
+    // dispatch 시점에 검사된다 — manifest는 child ownership을 알 수 없다).
+    if (ctx.approvedOwnership !== undefined && !ctx.approvedOwnership.some((own) => pathWithin(path, own))) {
+      throw new OrchestrationError("operation_not_owned", `${what}.path가 그 task의 승인된 ownership 밖이다: ${path}`);
+    }
+    return { authorityId, kind, path, maxBytes: boundedInt(o.maxBytes, `${what}.maxBytes`, 1, LIMITS.maxWriteBytes) };
+  }
+  closedKeys(o, RUN_PROCESS_AUTHORITY_KEYS, what);
+  if (typeof o.executable !== "string" || o.executable !== ctx.nodePath) {
+    throw new OrchestrationError(
+      "operation_executable_not_approved",
+      `${what}.executable은 승인된 executionAuthority.node.path와 정확히 같아야 한다(git·codex·임의 경로는 typed operation이 아니다)`,
+    );
+  }
+  if (!Array.isArray(o.args)) throw new OrchestrationError("invalid_manifest", `${what}.args는 배열이어야 한다`);
+  if (o.args.length > LIMITS.maxOperationArgs) {
+    throw new OrchestrationError("invalid_manifest", `${what}.args는 ${LIMITS.maxOperationArgs}개 이하여야 한다`);
+  }
+  const args: string[] = [];
+  for (const a of o.args) {
+    if (typeof a !== "string" || a.length === 0 || a.includes("\0") || codePointLength(a) > LIMITS.maxOperationArgLength) {
+      throw new OrchestrationError("invalid_manifest", `${what}.args 항목은 NUL 없는 bounded 문자열이어야 한다`);
+    }
+    args.push(a);
+  }
+  const timeoutMs = boundedInt(o.timeoutMs, `${what}.timeoutMs`, 100, 3_600_000);
+  if (timeoutMs > ctx.maxAttemptElapsedMs) {
+    throw new OrchestrationError("invalid_manifest", `${what}.timeoutMs는 autopilotPolicy.maxAttemptElapsedMs 이하여야 한다`);
+  }
+  return { authorityId, kind, executable: o.executable, args, timeoutMs };
 }
 
 function validateDependency(raw: unknown): ApprovedDependency {
@@ -251,6 +372,14 @@ function validateDependency(raw: unknown): ApprovedDependency {
  */
 export function validateApprovalManifest(raw: unknown): MilestoneApprovalManifest {
   const o = asObject(raw, "manifest");
+  // **M5c(v2) 판정은 마이그레이션 없이 fail closed다.** 없는 정책·권위를 기본값으로 채우면 그것이 곧
+  // 조용한 자동 승인이므로, v1 manifest는 안정 코드로 거부하고 새 승인을 요구한다.
+  if (!("autopilotPolicy" in o) || !("operationAuthorityByTask" in o)) {
+    throw new OrchestrationError(
+      "manifest_pre_m5c_unsupported",
+      "M5c 이전 승인 manifest다(autopilotPolicy/operationAuthorityByTask 없음). 마이그레이션하지 않으며 새 승인이 필요하다",
+    );
+  }
   closedKeys(o, MANIFEST_KEYS, "manifest");
 
   if (typeof o.approvedCommit !== "string" || !COMMIT_RE.test(o.approvedCommit)) {
@@ -311,6 +440,43 @@ export function validateApprovalManifest(raw: unknown): MilestoneApprovalManifes
     throw new OrchestrationError("invalid_manifest", "manifest.localMergeAllowed는 boolean이어야 한다");
   }
 
+  const executionAuthority = validateExecutionAuthority(o.executionAuthority);
+  const maxElapsedMs = boundedInt(o.maxElapsedMs, "manifest.maxElapsedMs", 1, LIMITS.maxManifestElapsedMs);
+  const autopilotPolicy = validateAutopilotPolicy(o.autopilotPolicy, maxElapsedMs);
+
+  // typed operation 권위 — taskId 사전순, task 안에서 authorityId 유일, 전부 승인 범위 안.
+  const opsRaw = asObject(o.operationAuthorityByTask, "manifest.operationAuthorityByTask");
+  const opTaskIds = Object.keys(opsRaw);
+  if (opTaskIds.length > LIMITS.maxTasksPerRun) {
+    throw new OrchestrationError("invalid_manifest", `manifest.operationAuthorityByTask는 ${LIMITS.maxTasksPerRun}개 이하여야 한다`);
+  }
+  const operationAuthorityByTask: Record<string, ApprovedOperation[]> = {};
+  for (const taskId of opTaskIds.sort()) {
+    assertSlug(taskId, "manifest.operationAuthorityByTask key");
+    const list = opsRaw[taskId];
+    const what = `manifest.operationAuthorityByTask[${taskId}]`;
+    if (!Array.isArray(list)) throw new OrchestrationError("invalid_manifest", `${what}는 배열이어야 한다`);
+    if (list.length > LIMITS.maxOperationAuthorities) {
+      throw new OrchestrationError("invalid_manifest", `${what}는 ${LIMITS.maxOperationAuthorities}개 이하여야 한다`);
+    }
+    const ops: ApprovedOperation[] = [];
+    for (let i = 0; i < list.length; i++) {
+      const op = validateApprovedOperation(list[i], `${what}[${i}]`, {
+        writableRoots,
+        approvedOwnership: Object.prototype.hasOwnProperty.call(ownershipByTask, taskId) ? ownershipByTask[taskId] : undefined,
+        nodePath: executionAuthority.node.path,
+        maxAttemptElapsedMs: autopilotPolicy.maxAttemptElapsedMs,
+      });
+      if (ops.some((x) => x.authorityId === op.authorityId)) {
+        throw new OrchestrationError("invalid_manifest", `${what}에 중복 authorityId가 있다: ${op.authorityId}`);
+      }
+      ops.push(op);
+    }
+    // authorityId 사전순 고정 — 같은 승인이 두 바이트로 저장되지 않게 한다(digest 결정성).
+    ops.sort((a, b) => (a.authorityId < b.authorityId ? -1 : a.authorityId > b.authorityId ? 1 : 0));
+    operationAuthorityByTask[taskId] = ops;
+  }
+
   return {
     milestoneId: assertSlug(o.milestoneId, "manifest.milestoneId"),
     approvedCommit: o.approvedCommit,
@@ -324,13 +490,29 @@ export function validateApprovalManifest(raw: unknown): MilestoneApprovalManifes
       LIMITS.maxAllowedNetworkDomains,
       normalizeDomain,
     ),
-    executionAuthority: validateExecutionAuthority(o.executionAuthority),
+    executionAuthority,
+    autopilotPolicy,
+    operationAuthorityByTask,
     maxSessions: boundedInt(o.maxSessions, "manifest.maxSessions", 1, LIMITS.maxManifestSessions),
     maxTokens: o.maxTokens === null ? null : boundedInt(o.maxTokens, "manifest.maxTokens", 1, LIMITS.maxManifestTokens),
-    maxElapsedMs: boundedInt(o.maxElapsedMs, "manifest.maxElapsedMs", 1, LIMITS.maxManifestElapsedMs),
+    maxElapsedMs,
     localMergeAllowed: o.localMergeAllowed,
     expiresAt: assertTimestamp(o.expiresAt, "manifest.expiresAt"),
   };
+}
+
+/**
+ * **정확히 이 task의 이 authorityId가 승인됐는가**(deny-by-default). 없으면 `null`이고 호출자는
+ * hard deny한다 — "부재"가 곧 허용이 되는 경로는 없다.
+ */
+export function approvedOperationFor(
+  manifest: MilestoneApprovalManifest,
+  taskId: unknown,
+  authorityId: unknown,
+): ApprovedOperation | null {
+  if (typeof taskId !== "string" || typeof authorityId !== "string") return null;
+  if (!Object.prototype.hasOwnProperty.call(manifest.operationAuthorityByTask, taskId)) return null;
+  return manifest.operationAuthorityByTask[taskId].find((op) => op.authorityId === authorityId) ?? null;
 }
 
 // ── M5 executor용 순수 조회 API (deny-by-default, 실행 없음) ─────────────────
