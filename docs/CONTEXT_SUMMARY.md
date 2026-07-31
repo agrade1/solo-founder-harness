@@ -2,7 +2,46 @@
 
 최종 갱신: 2026-07-31
 
-## 최신 (2026-07-31 — **V3 M5c task 3A 4차 리비전: 독립 재리뷰 `REVISE A/P1=3`의 A 3건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-31 — **V3 M5c task 3A 5차 리비전: 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건 닫음. M5c·M5 모두 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `7d3f547` ·
+  코드 커밋 **`de59348`**. fresh Claude Opus 5 단일 세션(CLI `2.1.220` · 이전 작성자 transcript·자기평가
+  미상속 · 재개 아님) · Ponytail **full**. 입력 권위:
+  `/private/tmp/m5c-task3a-revision4-codex-review-output.txt`(Codex `gpt-5.6-sol` xhigh read-only ·
+  세션 `019fb685-3f2f-7512-aa13-9d12f3e47585` · 범위 `20530b0..7d3f547`).
+- **닫은 것**
+  - **A1** bare 회계(`chargeTurnUsage`)가 **남이 claim한 생산 turn을 선점**할 수 없다(커밋 안에서
+    `turn_conflict`). 정산 권위가 run 전역 `chargedTurnIds`에서 **task-local 진짜 과금 증거**
+    (`execution.turnId` + `chargedPlanDigest == dispatchPlanDigest` + 그 turn 미확정 0)로 옮겨졌다 →
+    생산 task의 진짜 사용량이 영구히 과금 불가가 되는 일도, 거짓 정산으로 claim이 교체되는 일도 없다.
+    claim 없는 turn의 safety-only 회계(`B-12`)는 그대로다.
+  - **A2** permit·grant·outcome·진행 채널이 **발급 kernel 인스턴스 자체**를 들고 있고 수신 메서드 5종이
+    `this`와 `===`로 대조한다. `LIVE_GRANTS`는 발급자별 `Map` → durable ID가 같은 두 workspace가 서로
+    교차 과금·등록·표시·영수증·grant 소비를 하지 못한다. **같은 workspace의 두 번째 인스턴스도 남**이고
+    권위는 durable 경로(정확한 permit **커밋 없는** 재발급 / handle-free 정합화)로만 넘어간다.
+  - **A3** `src/exec/writeFileEffect.ts` **삭제** — 위조 가능한 구조적 `DispatchAuthority`로 도달하던
+    `judgeWriteFile` export가 사라졌다. 집행기는 grant 등록부와 같은 모듈의 **사설 함수**이고 유일한
+    진입점은 진짜 grant를 요구하는 `executeWriteFileOperation()`이다.
+  - **A4** `attemptedAt` 표시 커밋 **이후** 권위를 전수 재확인한 뒤에만 집행기에 들어간다(표시 커밋은
+    safety-only라 deadline을 보지 않는다) → 커밋 도중 만료·예산·wall·no-progress 경계를 지나면 파일
+    효과 0 · 영수증 0이고 pending은 `outcome_unknown`으로만 닫힌다.
+  - **A5** 새 pending마다 **영수증 자리를 먼저 예약**한다
+    (`operationReceipts + pendingOperations <= 64` — 커밋과 store load 양쪽) → 영수증 상한 위에서 열려
+    어떤 경로로도 닫히지 않던 미아 pending이 없다.
+  - pending schema 서술 정정: 재시작한 `running` kernel도 `attemptedAt: null`이면 새 permit으로 재발급한다
+    (handle-free는 attempted·cleaning·게이트 폐쇄에서 **필수**).
+- **검증**: `npx tsc --noEmit` exit 0 · focused **223/223 pass**(typedExecution 62 · kernel 103 ·
+  autopilotLifecycle 28 · executionBoundary + offlinePlanWorker) · M4a/M4b/M4c offline acceptance
+  32/45/80 FAIL=0 · `git diff --check` 0 · mutation 10종(각 게이트 red 확인 · 원복 후 tree clean ·
+  흔적 grep 0). **미실행**: `npm test` · 전체 acceptance · stress · 반복 · live(전체 suite 1회는 M5
+  handoff 게이트).
+- **여전히 열린 것**: 열린 A 없음(단 **독립 재리뷰 전 self-approve 금지**) · `B-F1`(launcher 첫 소비자·
+  첫 spawn 전) · `B-16`(첫 typed-write 산출물 배선 전, 늦어도 M5c 통합) · `B-7`/`B-9`/`B-11`/`B-12`/
+  `B-13`/`C-12→B` · `C-1`(발행 seam export, M5d 전) · `C2`(draft-07 실검증, M5d 전).
+- **다음 DAG task는 착수하지 않았다**: StableController 재작성/배선 · managed process supervisor/launcher ·
+  trusted Git · 첫 spawn · M5d · live 실행 전부 미구현. 사용자 `fable5` 선호는 **다음 task부터** 적용된다.
+
+## (그 시점 기록) 2026-07-31 — **V3 M5c task 3A 4차 리비전: 독립 재리뷰 `REVISE A/P1=3`의 A 3건 닫음. M5c는 여전히 미완료** · 위 블록이 이를 정정한다
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `20530b0` ·
   코드 커밋 **`5ec0a57`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 미상속 · 재개
@@ -98,7 +137,7 @@
 - **다음 DAG task는 시작하지 않았다**: controller 재작성·배선 · managed launcher · trusted Git · 첫 spawn ·
   M5d · live. 사용자의 `fable5` 모델 선택은 **다음 task부터** 적용된다.
 
-## 이전 (2026-07-30 — **V3 M5c task 3A 2차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 이전 (2026-07-30 — **V3 M5c task 3A 2차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 닫음. M5c는 여전히 미완료** · **그 시점 기록** — 현행은 맨 위 블록이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `16cdc87` ·
   코드 커밋 **`cecc529`** · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·
@@ -207,7 +246,7 @@
   dist는 M5b 상태 그대로다. 다음 세션의 첫 작업: **managed process supervisor + `StableController` 배선**.
   **M5c는 self-approved가 아니다.**
 
-## 이전 (2026-07-30 — **V3 M5c green-recovery slice: v2 schema 정본화 + kernel/M4 검증면 green. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 이전 (2026-07-30 — **V3 M5c green-recovery slice: v2 schema 정본화 + kernel/M4 검증면 green. M5c는 여전히 미완료** · **그 시점 기록** — 현행은 맨 위 블록이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `23d663c` ·
   stack base `81554cf`. fresh Claude Opus 5 단일 세션 · Ponytail(full).

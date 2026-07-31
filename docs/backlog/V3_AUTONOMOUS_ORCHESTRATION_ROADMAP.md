@@ -1816,7 +1816,60 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### M5c task 3A **4차 리비전**(독립 재리뷰 `REVISE A/P1=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+##### M5c task 3A **5차 리비전**(독립 재리뷰 `REVISE A=5·B=2·C=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+
+> **범위 경고**: 이 리비전은 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰
+> (`20530b0..7d3f547` · 세션 `019fb685-3f2f-7512-aa13-9d12f3e47585` ·
+> `/private/tmp/m5c-task3a-revision4-codex-review-output.txt` · 판정 **`REVISE — A=5, B=2, C=3`**)의
+> **Category A 5건**을 닫고 인접 C를 처리했다. **M5c 완료 선언이 아니다.** managed process supervisor·
+> 자손 정리 · trusted Git · **`StableController` 재작성/배선** · managed launcher · 첫 spawn ·
+> 구조화 리뷰 검증 · `autopilot` CLI · legacy 비활성화 · build/dist · M5d는 **미구현·미실행**이다.
+> 프로세스 spawn 0 · 네트워크 0 · 신규 런타임/dev 의존성 0 · package·lockfile 변경 0 · live 실행 0 ·
+> **다음 DAG task 착수 0**. 코드 커밋 `de59348`(시작 HEAD `7d3f547`). 증거·미실행 목록의 정본은
+> `docs/WORKLOG.md` 최상단 블록이다. 이 세션은 **self-approve하지 않는다.**
+>
+> **직전 절(4차 리비전)의 과대주장을 정정한다.** 아래 "4차 리비전" 절의 `A1`~`A3` 행은 **fixed로 적혔지만
+> 재리뷰가 셋 다 불완전 — blocking으로 되돌렸고, 새로 A 2건을 더 찾았다**:
+> ⓐ `A1 fixed`("효과 게이트를 per-task 증거로 옮겼다")는 **효과 승인만** 막았다. `chargeTurnUsage`는
+> 여전히 caller-selected `{taskId, turnId}`를 받고 중복 namespace가 run 전역이었으므로, sibling이 생산
+> task의 **claim된 turn ID를 0 토큰으로 선점**해 ① 생산 task의 진짜 사용량을 **영구히 과금 불가**로 만들고
+> ② `dispatchTurnSettled`가 run 전역 turn ID를 정산 권위로 봤기 때문에 **거짓 정산 위에서 claim 교체**를
+> 열 수 있었다. 그 테스트는 이것을 "DoS일 뿐"이라고 **명시적으로 단정하고 있었다**(불안전한 assertion).
+> ⓑ `A2 fixed`("임의 콜백 표면 삭제")는 콜백만 지웠다. 새로 만든 `src/exec/writeFileEffect.ts`가
+> `judgeWriteFile(auth, op)`를 **export**했고 `DispatchAuthority`는 평범한 구조적 interface였으므로,
+> 그 모듈을 직접 import하면 **위조 authority 하나로** 파일을 열어 hash하고 디렉터리를 fsync하고 성공
+> marker까지 받을 수 있었다(진짜 permit·과금·durable 상태 확인 0). 패키지는 `dist` 전체를 exports map
+> 없이 배포하므로 "내부 파일"·이름·주석·barrel 누락·TS 가시성은 경계가 아니었다. 또한 permit·grant·
+> outcome·진행 채널 등록부가 **모듈 전역**이어서 durable ID가 같은 두 workspace가 서로 교차 과금·교차
+> 등록·교차 표시·교차 영수증을 하고 live grant key까지 서로 죽였다.
+> ⓒ `A2`의 `attemptedAt` 표시는 순서만 맞췄다 — 표시 커밋은 safety-only라 deadline을 **의도적으로 보지
+> 않는데**, 집행기는 표시 **이전**의 판정을 그대로 들고 들어갔다 → 첫 시계 읽기에서 유효했던 deadline이
+> 커밋 도중 지나도 효과가 나갔다.
+> ⓓ `A3 fixed`(정합화 경로)는 **용량 경계를 빠뜨렸다**: operation은 turn 단위(64), 영수증은 attempt
+> 단위(64) 상한인데 `beginOperation`은 동시 pending 용량만 봤으므로, 뒤 turn이 영수증 64건 위에서 65번째
+> operation을 열 수 있었고 그 pending은 **어떤 경로로도 닫히지 않는 영구 미아**였다.
+> 그 절은 dated history로 보존하고 **현행 판정은 이 절이다.**
+>
+> **여전히 열린 미래 게이트**: `B-F1`(managed launcher 첫 소비자·첫 spawn 전) · `B-16`(첫 typed-write
+> 산출물 배선 전, 늦어도 M5c 통합). 둘 다 **트리거 변경 없이 open 유지**다.
+
+| id | 분류 | 항목 | 상태 | 근거·증거 |
+|---|---|---|---|---|
+| A1 | **A (P1) → fixed** | bare 회계(`chargeTurnUsage`)가 **남이 claim한 생산 turn을 선점**할 수 있었고, `dispatchTurnSettled`가 **run 전역 `chargedTurnIds`** 를 정산 권위로 봤다 → ① 생산 task의 진짜 사용량이 영구히 과금 불가(`turn_already_charged`) ② 거짓 정산 위에서 claim 교체 가능. 테스트가 이것을 "DoS일 뿐"이라고 단정 | **fixed (2026-07-31, `de59348`)** | ⓐ `#chargeTurn`의 권위 없는 분기가 **커밋 안에서** `draft.tasks.find(t => t.execution.dispatchTurnId === turnId)`를 보고 `turn_conflict`로 거부한다(자기 이름·남의 이름 모두). 기존 "이 task가 claim을 들고 있으면 permit 필수" 검사는 그대로다. ⓑ `dispatchTurnSettled(task)`가 `accounting`을 **더 이상 보지 않는다** — 정산은 `execution.turnId === 열린 claim` + `execution.chargedPlanDigest !== null` + `chargedPlanDigest === dispatchPlanDigest` + 그 turn의 미확정 0, 즉 **정확히 이 run/task/attempt/turn/계획의 진짜 과금**에서만 나온다. ⓒ claim 없는 turn의 safety-only 회계는 그대로 가능하다(대장 `B-12` 유지 — 테스트 ⓔ가 단정). 증거: `A1: bare 회계는 남이 claim한 생산 turn을 선점·정산할 수 없다`(선점 2종 거부 + 회계·revision 불변 + 거짓 정산 거부 + **진짜 생산자 과금 성공** + 미확정 0까지 claim 유지 + 정산 후 교체 + claim 없는 turn 회계 허용) + mutation `MUT-1`(claimant 검사 제거 → red) · `MUT-8+1`(양쪽 layer 제거 → 4차 동작 재현) |
+| A2 | **A (P1) → fixed** | permit·grant·outcome·진행 채널 등록부가 **모듈 전역**이고 수신 메서드가 발급 인스턴스를 보지 않았다 → durable ID가 같은 두 workspace가 교차 과금·교차 pending 등록·교차 attempted 표시·교차 영수증 커밋을 하고 **live grant key까지 서로 죽였다** | **fixed (2026-07-31, `de59348`)** | 발급된 모든 handle이 **발급 kernel 인스턴스 자체**를 들고 있고(`PermitRecord.issuer`·`GrantRecord.issuer`·`ProgressChannelRecord.issuer`), 수신 메서드 5종(`chargeDispatchTurnUsage`·`beginOperation`·`recordOperationReceipt`·`failOperation`·`recordProgress`)이 `this`와 **동일 객체인지**(`===`) 본다 — 평범한 durable 문자열 ID는 발급자 신원이 아니다. `LIVE_GRANTS`는 `WeakMap<issuer, Map<pendingKey, …>>`이라 durable ID 충돌이 성립하지 않고 죽은 kernel 항목도 수거된다. grant의 `markAttempted`는 **발급 인스턴스의 private 전이**를 부르는 클로저이므로 집행은 발급 kernel의 state로만 작용한다. **같은 workspace의 두 번째 인스턴스도 남이다**(명시적 결정 — DECISIONS 2026-07-31 결정 2): 권위는 durable 경로로만 넘어간다(정확한 `(turn, 계획)` permit **커밋 없는** 재발급 / handle-free `reconcileUncertainOperation`). 증거: `A2: 진짜 handle은 발급 kernel 인스턴스에만 통한다`(**바이트 동일 durable ID 두 workspace** — 교차 과금·등록·실패종결·live key·표시·영수증·채널 8종 + 같은 issuer 정상 동작 대조군) · `A2: 같은 workspace의 두 번째 인스턴스도 남이다`(거부 4종 + durable 재발급 경로 성공) + mutation `MUT-2`(issuer 검사 제거 → red 2건) · `MUT-3`(live key 전역 공유 → `dispatch_grant_spent`) |
+| A3 | **A (P1) → fixed(파일 삭제)** | `src/exec/writeFileEffect.ts`가 `judgeWriteFile(auth, op)`를 **export**했고 `DispatchAuthority`는 위조 가능한 구조적 interface였다 → 직접 import로 진짜 permit·과금·durable 확인 **없이** 선택 파일을 열어 hash하고 디렉터리를 fsync하고 성공 marker를 받을 수 있었다. `dist` 전체 배포 + exports map 부재 | **fixed (2026-07-31, `de59348`) — 이름 변경·`@internal`·barrel 제외가 아니라 파일 제거** | 파일 시스템 집행기를 **kernel 모듈 안 사설 함수**(`judgeWriteFile`/`judgeWriteTransaction`/`walkParents`/`confirmDirDurability` — export 없음)로 옮기고 `src/exec/writeFileEffect.ts`를 **삭제**했다. 이제 grant 등록부와 효과 코드가 같은 모듈에 있으므로 유일한 진입점은 **진짜 grant를 요구하는** `executeWriteFileOperation()`이다. 남은 export는 부수 효과 0인 순수 권위 판정(`resolveApprovedOperation`/`resolveWriteAuthority` — 호출자가 준 manifest를 되비추기만 하고 파일을 열지 않는다) · 안정 코드 목록(`WRITE_EFFECT_CODES`) · 테스트 seam이다. 런타임 순환 없음(`typedExecution → kernel` 한 방향). 보존 확인: 임의 콜백 0 · A4 발행 fail-closed · B1 정리 우선 · 신규 의존성/helper 0 · `run_process` 성공 집행기 부재. 증거: `A3: 위조 authority로 파일 시스템 효과에 도달하는 import 표면이 없다`(**helper 모듈 import가 `ERR_MODULE_NOT_FOUND`** + kernel/facade **모든 함수 export**를 위조 authority로 두 인자 순서 호출 → 성공 marker 0·inode·바이트·목록 불변 + 진짜 경로 대조군) + mutation `MUT-4`(집행기 재 export → red) |
+| A4 | **A (P1) → fixed** | `executeWriteFileOperation`이 권위를 한 번 읽고, deadline을 **의도적으로 보지 않는** safety-only `attemptedAt` 커밋을 한 뒤, **그 옛 판정으로** 집행기에 들어갔다 → 첫 시계 읽기에서 유효했던 deadline이 커밋 도중 지나도 효과가 나갔다(이전 테스트는 **정지한 시계**의 등호만 봤다) | **fixed (2026-07-31, `de59348`)** | 순서를 `진입 자격 → 표시 커밋 → 일회용 소진 → **권위 전수 재확인** → 집행기`로 바꿨다. 재확인이 거부하면 파일 효과 0 · 영수증 0 · 거짓 성공 0이고, pending은 보수적으로 "시도됐을 수 있다"로 남아 재발급(`operation_attempt_uncertain`)도 평범한 실패도 거부되며 **`reconcileUncertainOperation`의 `outcome_unknown`으로만** 닫힌다. 증거: `A4: 표시 커밋 도중 deadline을 넘으면 집행기에 들어가지 않는다`(표시 커밋 직후 정확히 경계로 넘어가는 clock으로 **만료·예산 deadline·attempt wall·no-progress 등호 4종** + 각 경계 **1ms 전 성공 대조군** + 영수증 0 + 재발급·실패 종결 거부 + `outcome_unknown` + 바이트·목록 불변) + mutation `MUT-5`(재확인 제거 → 만료 등호에서 `already_applied`) |
+| A5 | **A (P1) → fixed** | operation은 turn 단위(64) · 영수증은 attempt 단위(64) 상한인데 `beginOperation`이 **동시 pending 용량만** 봤다 → 뒤 turn이 영수증 64건 위에서 65번째 operation을 열 수 있었고, 영수증 커밋·handle-free 정합화가 둘 다 상한에서 거부되는데 attempt 이탈 전이는 전부 pending 0을 요구하므로 **영구 미아 + 영구 stall** | **fixed (2026-07-31, `de59348`)** | 새 pending마다 **영수증 자리를 먼저 예약**한다: 불변식 `operationReceipts.length + pendingOperations.length <= LIMITS.maxOperationReceipts`를 **커밋(`beginOperation`)과 store load**가 함께 본다. 정확한 재발급(기존 eligible pending)은 커밋 밖에서 반환되므로 **두 번째 자리를 쓰지 않는다**. 수락된 pending은 재시작·만료·cleaning·집행기 예외에서도 닫을 자리를 유지한다. 증거: `A5: 영수증 용량을 먼저 예약한다`(`cap-1` 영수증 + pending 1 → 정합화 성공 / 다음 turn의 operation 65 → **pending·revision·`events.jsonl` 전부 불변**으로 `operation_limit_exceeded` / cleanup·settle 정상) · `A5: 상한을 넘긴 pending+영수증 조합은 load에서 거부된다` + mutation `MUT-6`·`MUT-7`·**`MUT-6+7`**(양쪽 제거 시 operation 65가 실제로 열린다 = 미아 재현) |
+| `B-F1` | B (P1) | managed launcher 첫 소비자가 현재 권능을 그대로 실행 권위로 믿으면 안 된다 | **open — 변화 없음(트리거 유지)** | 이 리비전은 launcher·capability 소비자·spawn을 만들지 않았다(spawn 수 0). 심각도·확률·영향·rework·공수·**기한(첫 capability 소비자 또는 첫 spawn 전)**·담당·증거는 4차 리비전 절의 `B-F1` 행 그대로다 |
+| `B-16` | B (P1) | typed write가 새 파일을 만들지 못한다(A4 fail-closed의 직접 결과) | **open — 변화 없음(트리거 유지)** | 발행 경로를 다시 열지 않았다. A3의 파일 이동은 발행 계약을 **바꾸지 않았다**(`write_publish_unsupported` 그대로 · 부작용 0). **기한: 첫 real typed-write 산출물 발행/배선 전, 늦어도 M5c 통합.** 담당·증거는 3차 리비전 절의 `B-16` 행 그대로다 |
+| `C-1`(pending schema 서술) | C (P3) → **fixed(주장 정정)** | pending schema가 "재시작하면 무조건 handle-free 경로"라고 적었다 — 실제로는 **재시작한 `running` kernel도** `attemptedAt: null`이면 새 permit을 받아 grant를 재발급할 수 있고, handle-free 경로가 **필수인 것**은 attempted·cleaning·전진 게이트 폐쇄 경우다 | **fixed (2026-07-31, `de59348`)** | schema description이 갈림길을 **attemptedAt + task 상태 + 전진 게이트**로 정확히 적는다: (1) `attemptedAt === null` + `running` + 게이트 열림 → 어느 인스턴스든 같은 `(turnId, planDigest)`의 **커밋 없는** permit 재발급 → 새 grant(단, **다른 인스턴스의 옛 handle은 거부** — A2) (2) `attemptedAt !== null` 또는 `cleaning` 또는 게이트 닫힘 → `reconcileUncertainOperation` 필수. A5 교차 불변식도 두 자리(`pendingOperations`·`operationReceipts` description)에 적었다 |
+| `C-1`(발행 seam export) | C (P2) | 파일 시스템 판정의 테스트 seam setter가 shipped export다 — 같은 프로세스 코드가 성공할 판정을 **실패로** 바꿀 수 있다(성공은 만들 수 없다) | **open — 위치만 옮겼고 표면은 그대로다(정직 기록)** | 심각도 **C/P2**. 확률 **낮음**(같은 프로세스·같은 파일 권한 전제). 영향 반경: in-process 집행기 판정 1건 — hook이 던진 것은 **전부 `write_failed`로 정규화**되므로 거짓 성공·권한 상승·승인 우회는 불가능하고 남는 것은 DoS다. 유예 비용 **낮음**, 수정 공수 **낮음**(shipped export 정리 슬라이스). A3로 파일이 사라져 seam은 이제 kernel 모듈에서 export된다(표면 개수 동일 · 4종). **기한: shipped export 정리, 늦어도 M5d handoff.** 담당: typed-execution 유지 담당. 증거: `orchestrationKernel.ts` `__setPublicationSeamsForTest` 주석 · `typedExecution.ts` 재수출. **C 단독으로 리비전 루프를 다시 돌리지 않는다.** |
+| `C2`(draft-07 실검증) | C (P3) | draft-07 구현으로 적대적 행렬을 실제 검증하지 않았다(구조 대조만 한다) | **open — 변화 없음(트리거 유지)** | 이번에도 draft-07 validator를 넣지 않았다(신규 의존성 0). **기한: 외부 provider/worker에 schema를 넘기기 전, 늦어도 M5d 계약 handoff.** 담당: schema 유지 담당. 증거: 테스트 이름이 "구조적으로 일치한다"이고 헤더가 "draft-07 validator를 실행하지 않는다"를 명시한다 |
+| `A4` `B1` `B2`=`B-10` `C1`(재발급 멱등) `C2`(적대적 manifest) | — | 3차 리비전이 닫은 항목 | **closed 유지 — 이 리비전이 재확인했다** | A4: 발행·생성 syscall 0(코드가 파일만 옮겼고 판정 로직은 동일 · `write_publish_unsupported` 테스트 유지) · B1: temp/unlink/truncate 부재 + 정리 실패 우선 · B2: opaque 권능(spawn 0) · C1: 정확한 재발급이 **커밋 없이** 멱등(A2 두 번째 인스턴스 테스트가 `revision` 불변으로 재확인) · C2: descriptor 기반 단일 입양 |
+| `B-7` `B-9` `B-11` `B-12` `B-13` `C-12→B` | B (P1) | live 게이트와 lifecycle 잔여 | **open — 변화 없음** | live 실행 0이고 controller·프로세스 계층을 건드리지 않았다. `stableController.test.ts`는 **3 pass / 55 fail**(이번 변경 전후 동일 · 실패 55건 전부 `manifest_pre_m5c_unsupported` = 다음 DAG task 범위) |
+| `C-5` `C-18` `C-19` `C-26` `C-29` `C-30` `C-31` `C-33` `C-34` `C-35` `C-36` `C-37` `C-38` `C-39` | C | 이 리비전이 손대지 않은 나머지 | **변화 없음** | 프로세스 감독자 · 리뷰 검증 · trusted Git · outcome 단일 출처 · seam provenance · store 발행 내부 · pathname TOCTOU 잔여는 이 리비전의 소유 범위 밖이었다 |
+
+##### M5c task 3A **4차 리비전**(독립 재리뷰 `REVISE A/P1=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 그 시점 기록 · 위 절이 이를 정정한다**)
 
 > **범위 경고**: 이 리비전은 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰
 > (`2956ffc..20530b0` · 세션 `019fb648-ae3a-7252-ada5-e23edd37770a` ·

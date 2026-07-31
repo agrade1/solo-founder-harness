@@ -1,5 +1,56 @@
 # DECISIONS.md
 
+## 2026-07-31 (V3 M5c task 3A **5차 리비전** — **효과 코드는 권위 경계 안에 살고, handle은 발급자를 떠나지 않는다**)
+
+- **결정 1 — 집행기를 별도 파일에서 kernel 모듈 안으로 옮기고 그 파일을 삭제했다.** 4차 판은 런타임 순환을
+  피하려고 파일 시스템 판정을 `src/exec/writeFileEffect.ts`로 갈랐고 `judgeWriteFile(auth, op)`를
+  export했다. 그런데 `DispatchAuthority`는 평범한 구조적 interface이므로 **그 모듈을 직접 import하면
+  위조 객체 하나로** 파일을 열어 hash하고 디렉터리를 fsync하고 성공 marker까지 받을 수 있었다 — 진짜
+  permit·과금·durable 상태 확인이 하나도 없이. 패키지는 `dist` 전체를 exports map 없이 배포하므로
+  "내부 파일"·이름·주석·barrel 누락·TypeScript 가시성은 경계가 **아니었다**. 대안 셋: ⓐ exports map 추가·
+  `@internal`·이름 변경 — 리뷰가 명시적으로 배제했고 실제로 경계가 아니다 ⓑ helper 모듈을 남기고
+  **위조 불가한 발급자 토큰**을 요구하기 — kernel이 토큰을 넘겨야 하는데, 공격자가 kernel 없이 helper만
+  import하면 자기 토큰을 등록할 수 있고 로드 순서에 의존한다(안전을 증명할 수 없다) ⓒ **채택**: 효과
+  함수를 grant 등록부(`GENUINE_GRANTS`)와 **같은 모듈의 사설 함수**로 옮기고 파일을 삭제. 유일한 진입점은
+  진짜 grant를 요구하는 `executeWriteFileOperation()`이다. **대가**: `orchestrationKernel.ts`가 커졌다
+  (3618 → 4173줄, 439줄 파일 하나가 사라졌다). **얻는 것**: "효과에 도달하는 import 표면"이라는 개념 자체가 사라진다 — 남은
+  export는 부수 효과 0인 순수 판정과 안정 코드 목록, 테스트 seam뿐이다. 순환은 생기지 않는다
+  (`typedExecution → kernel` 한 방향).
+- **결정 2 — 프로세스 메모리 handle은 kernel 인스턴스 경계를 넘지 않는다(같은 workspace의 두 번째
+  인스턴스도 남이다).** 4차 판의 등록부는 모듈 전역이고 수신 메서드는 "이 모듈이 발급했는가"만 봤다 →
+  durable ID가 같은 두 workspace가 교차 과금·교차 pending 등록·교차 attempted 표시·교차 영수증 커밋을
+  하고 live grant key까지 서로 죽였다. 대안 둘: ⓐ 등록부 key에 `workspaceRoot`를 섞기 — 문자열이므로
+  같은 경로를 쓰는 두 인스턴스에서는 여전히 통하고, "발급자 신원"을 문자열로 표현하는 순간 그것이 곧
+  위조 가능한 축이 된다 ⓑ **채택**: 발급된 모든 handle이 **발급 인스턴스 객체 자체**를 들고 있고 수신
+  메서드가 `this`와 `===`로 대조한다. `LIVE_GRANTS`도 `WeakMap<issuer, Map<…>>`이다.
+  **명시적 판단**: 같은 workspace를 두 번 열어도 첫 인스턴스의 handle은 두 번째에서 **거부**된다. 권위는
+  durable 경로로만 넘어간다 — `attemptedAt === null`이면 같은 `(turnId, planDigest)`의 **커밋 없는**
+  permit 재발급, 그 밖이면 handle을 요구하지 않는 `reconcileUncertainOperation()`이다.
+  **대가(정직)**: 한 프로세스가 같은 run을 두 인스턴스로 열고 handle을 주고받는 사용 패턴은 이제 불가능하다.
+  그 패턴은 durable 재발급으로 대체되며, 그것이 재시작과 **같은 경로**라서 검증 표면이 하나로 줄어든다.
+- **결정 3 — 표시 커밋 이후 권위를 다시 읽는다(첫 판정을 재사용하지 않는다).** `attemptedAt` 표시는
+  safety-only 커밋이므로 만료·예산·wall·no-progress deadline을 **의도적으로 보지 않는다**(그러지 않으면
+  불확실 구간이 durable에 남지 않아 미아가 된다 — 3차 A3). 그런데 4차 판은 그 커밋을 사이에 두고 **표시
+  이전의 판정**으로 집행기에 들어갔다 → 첫 시계 읽기에 유효했던 deadline이 커밋 도중 지나도 효과가 나갔다.
+  대안: 표시 커밋에 deadline을 다시 넣기 — 미아 문제가 되살아난다(폐기). **채택**: 표시는 그대로
+  safety-only로 두고 **집행기 진입 직전에 전수 재확인**한다. 재확인이 거부하면 효과 0이고, pending은
+  보수적으로 "시도됐을 수 있다"로 남아 정합화(`outcome_unknown`)로만 닫힌다. **대가(정직)**: 실제로는
+  아무 효과도 없었는데 `outcome_unknown`으로 기록된다 — 리뷰가 요구한 보수적 쪽이며, 거짓 성공보다 안전하다.
+- **결정 4 — 닫을 자리가 없으면 열지 않는다(영수증 용량 선예약).** operation은 turn 단위(64)·영수증은
+  attempt 단위(64)로 상한이 다르므로, 동시 pending 용량만 보면 뒤 turn이 영수증이 꽉 찬 attempt에
+  pending을 열 수 있었고 그 pending은 **어떤 전이로도 닫히지 않았다**(attempt 이탈은 전부 pending 0을
+  요구한다). 대안: 영수증 상한을 늘리거나 attempt마다 영수증을 잘라내기 — 감사 기록을 지우는 쪽이므로 폐기.
+  **채택**: `operationReceipts.length + pendingOperations.length <= maxOperationReceipts`를 **커밋과 store
+  load 양쪽**에서 강제한다. **대가**: 영수증이 상한에 가까운 attempt는 새 operation을 열지 못하고
+  `operation_limit_exceeded`로 fail closed다(그 attempt는 정리·재시도로 간다). 미아보다 낫다.
+- **결정 5 — 정산 권위를 run 전역 turn ID 집합에서 task-local 증거로 옮겼다.** `chargedTurnIds`는 run
+  전역 중복 namespace이므로 그것만으로 "이 task의 이 turn이 끝났다"를 판정하면 남의 과금이 정산을 흉내 낼
+  수 있다. **채택**: `dispatchTurnSettled`가 `execution.turnId` + `chargedPlanDigest == dispatchPlanDigest`
+  + 그 turn의 미확정 0만 본다. 동시에 bare 회계가 **남이 claim한 turn**을 커밋 안에서 거부한다.
+  **정직한 기록**: 두 번째 장치(claimant 거부)가 부패 상태를 도달 불가로 만들기 때문에, 첫 번째 장치를
+  단독으로 되돌리는 mutation은 현재 테스트로 관측되지 않는다(`MUT-8` red 0). 그래도 두 장치를 모두 두는
+  이유는 "정산은 자기 증거에서 나온다"가 run 전역 namespace의 무결성에 **의존하지 않아야** 하기 때문이다.
+
 ## 2026-07-31 (V3 M5c task 3A **4차 리비전** — **권위는 자기 것이어야 하고, 집행기는 고정이며, 불확실은 불확실로 남는다**)
 
 - **결정 1 — 과금 진입점을 둘로 갈랐다(권위 있는 것 / 없는 것).** 3차 판은 효과 승인을 run 전역

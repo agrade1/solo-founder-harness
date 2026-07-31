@@ -1,6 +1,138 @@
 # WORKLOG.md
 
-## 2026-07-31 (V3 **M5c task 3A 4차 리비전 — 독립 재리뷰 `REVISE A/P1=3`의 A 3건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-31 (V3 **M5c task 3A 5차 리비전 — 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`7d3f547d6d47ec9f0cefa8904c8e45a52d80cab0` · 코드 커밋 `de59348`. **새 fresh Claude Opus 5 단일
+세션**(이전 작성자 transcript·자기평가 **미상속** · subagent·병렬 writer 0 · 재개 세션 아님 ·
+Claude Code CLI `2.1.220` · 모델 `claude-opus-5`).
+Ponytail SKILL.md **level `full`** 적용 —
+`/Users/jihun/.claude/plugins/cache/ponytail/ponytail/4.8.4/skills/ponytail/SKILL.md`
+(SessionStart hook이 전문을 주입했고 `Skill(ponytail:ponytail, full)`로 다시 확인했다 — 그 경로는
+allowed working directory 밖이라 `Read`/`ls`가 권한으로 막혔고 skill 호출이 base directory와 전문을
+돌려주었다). amend/rebase/reset/merge/stash · 원격 push/PR/merge · 네트워크 · `gh` · MCP ·
+패키지 설치 · 의존성/lockfile 변경 · live Codex/Claude 추론 · secret · deploy · DB · production ·
+live billing · **프로세스 spawn 0**. 유일한 untracked 항목은 supervisor가 제공한 `node_modules`
+symlink이며 손대지 않았다(stage 0). **테스트 완화·삭제 0**(교체한 assertion 2건은 아래
+§"교체한 assertion 전수"에 기록했다).
+
+**입력 권위**: `/private/tmp/m5c-task3a-revision4-codex-review-output.txt` — 독립 fresh Codex
+`gpt-5.6-sol` xhigh read-only 재리뷰(세션 `019fb685-3f2f-7512-aa13-9d12f3e47585` ·
+범위 `20530b0038266b66b2f83cbc36bf7f358dab1c55..7d3f547`), 판정 **`REVISE — A=5, B=2, C=3`**.
+
+**정직한 판정: 이 리비전도 M5c 완료가 아니고 M5 완료도 아니다.** managed process supervisor·자손 정리 ·
+trusted Git · **`StableController` 재작성/배선** · managed launcher · 첫 spawn · 구조화 리뷰 검증 ·
+`autopilot` CLI · legacy 비활성화 · build/dist · M5d는 **여전히 미구현**이다. **다음 DAG task는
+착수하지 않았다.** **self-approve하지 않는다.**
+
+### 직전 문서의 과대주장 정정
+
+| 직전 주장(HEAD `7d3f547`) | 실제(5차 독립 리뷰) | 이번 조치 |
+|---|---|---|
+| "A1 fixed — 효과 게이트를 per-task 증거로 옮겼다" | **효과 승인만 막았다.** `chargeTurnUsage`는 여전히 caller-selected `{taskId, turnId}`를 받고 중복 namespace가 run 전역이었으므로, sibling이 생산 task의 **claim된 turn ID를 0 토큰으로 선점**해 ① 생산 task의 진짜 사용량을 **영구히 과금 불가**로 만들고 ② `dispatchTurnSettled`가 run 전역 turn ID를 정산 권위로 봤으므로 **거짓 정산 위에서 claim 교체**를 열 수 있었다. 테스트가 이것을 "DoS일 뿐"이라고 **명시적으로 단정**하고 있었다 | bare 회계가 **남이 claim한 turn**을 커밋 안에서 거부하고, 정산 권위를 `accounting`에서 떼어 **task-local 진짜 과금 증거**로 옮겼다. 불안전한 assertion을 선점·거짓 정산 전수 거부로 **교체** |
+| "A2 fixed — 임의 콜백 표면 삭제" | **콜백만 지웠다.** 새로 만든 `writeFileEffect.ts`가 `judgeWriteFile(auth, op)`를 **export**했고 `DispatchAuthority`는 평범한 구조적 interface였다 → 직접 import로 **위조 authority 하나로** 파일을 열어 hash하고 디렉터리를 fsync하고 성공 marker를 받을 수 있었다. 그리고 permit·grant·outcome·채널 등록부가 **모듈 전역**이라 durable ID가 같은 두 workspace가 서로 교차 과금·등록·표시·영수증을 하고 live grant key까지 죽였다 | `writeFileEffect.ts`를 **삭제**하고 집행기를 kernel 모듈 **사설 함수**로 옮겼다. 모든 handle이 **발급 인스턴스**를 들고 있고 수신 메서드 5종이 `this`와 동일 객체인지 본다. `LIVE_GRANTS`는 발급자별 `Map` |
+| "A2 — 집행 경계 진입을 효과보다 먼저 durable에 적는다" | **순서만 맞았다.** 표시 커밋은 safety-only라 deadline을 **의도적으로 보지 않는데** 집행기는 표시 **이전**의 판정을 들고 들어갔다 → 첫 시계 읽기에 유효했던 deadline이 커밋 도중 지나도 효과가 나갔다. 이전 테스트는 **정지한 시계**의 등호만 봤다 | 표시 커밋 **이후** 권위를 전수 재확인한 뒤에만 집행기에 들어간다. 표시 직후 경계로 넘어가는 clock으로 **등호 4종 + 1ms 전 대조군** 추가 |
+| "A3 fixed — 정합화 경로가 열려 있다" | **용량 경계를 빠뜨렸다.** operation은 turn 단위(64)·영수증은 attempt 단위(64) 상한인데 `beginOperation`은 동시 pending만 봤으므로 뒤 turn이 영수증 64건 위에서 65번째를 열 수 있었고 그 pending은 **영구 미아**였다 | 새 pending마다 **영수증 자리를 먼저 예약**한다(커밋 + store load 양쪽). 다중 turn 경계 테스트와 crafted over-cap load 테스트 추가 |
+| pending schema "재시작하면 handle-free 경로" | **부정확.** 재시작한 `running` kernel도 `attemptedAt: null`이면 새 permit을 받아 grant를 재발급한다. handle-free가 **필수인 것**은 attempted·cleaning·전진 게이트 폐쇄 경우다 | schema description이 갈림길을 attemptedAt + task 상태 + 전진 게이트로 정확히 적는다(A5 교차 불변식도 함께) |
+
+### 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `de59348` | 코드·schema·테스트 (A1~A5 · pending schema 서술 정정 · `writeFileEffect.ts` 삭제) |
+| (이 문서 커밋) | 진행/handoff 문서 + 로드맵 §9.1 대장 |
+
+### 변경 파일 (삭제 1 · 변경 6)
+
+- **삭제** `src/exec/writeFileEffect.ts` — 4차 판이 새로 만든 파일이다. 그 파일이 `judgeWriteFile`을
+  export했고 `DispatchAuthority`가 위조 가능한 구조적 interface였으므로 **직접 import 우회**가 됐다
+  (A3). 이름 변경·`@internal`·barrel 제외·exports map은 리뷰가 명시적으로 배제했으므로 **파일을 없애고**
+  집행기를 grant 등록부와 같은 모듈로 옮겼다.
+- `src/exec/orchestrationKernel.ts` — A1 bare 회계 claimant 거부 + `dispatchTurnSettled` task-local화 ·
+  A2 `issuer` 필드 3종 + 수신 메서드 5종 대조 + `LIVE_GRANTS` 발급자별 격리 · A3 집행기 사설 이관
+  (`WRITE_EFFECT_CODES`·`resolveApprovedOperation`·`resolveWriteAuthority`·seam은 순수/테스트용으로 유지) ·
+  A4 표시 커밋 이후 권위 재확인 · A5 `beginOperation` 영수증 자리 예약.
+- `src/exec/orchestrationStore.ts` — A5 load 교차 불변식
+  (`operationReceipts + pendingOperations <= maxOperationReceipts`).
+- `src/exec/typedExecution.ts` — import·재수출 경로를 kernel로 옮기고 헤더 계약 서술을 갱신했다
+  (공개 facade 계약 자체는 **불변** — `applyWriteFile`/`resolveWriteFileAuthority`/
+  `resolveProcessLaunchCapability` 시그니처 동일).
+- `schemas/orchestration_run_state.schema.json` — pending 정합화 경로 서술 정정 + A5 교차 불변식 2곳.
+- `src/exec/typedExecution.test.ts` · `src/exec/autopilotLifecycle.test.ts` — 아래 참조.
+
+**무변경 확인**: `package.json` · `package-lock.json` · `AGENTS.md` · `CLAUDE.md` ·
+`orchestrationTypes.ts` · `approvalManifest.ts` · `typedPlan.ts` · `agentMessage.ts` ·
+`executionBoundary.ts` · `offlinePlanWorker.ts` · `stableController.ts` · managed process/controller ·
+trusted Git · provider/CLI · legacy exec/mission · `scripts/*` · tracked `dist` · 다음 DAG task 코드.
+두 번째 scheduler·대안 controller·신규 런타임/dev 의존성 **0**.
+
+### 교체한 assertion 전수 (완화가 아니라 강화 — 삭제·skip 0)
+
+1. `typedExecution.test.ts` — 구 `A1: 생산 turn 과금은 kernel 발급 권위에만 묶인다…` ⓐ/ⓒ:
+   sibling의 bare 과금이 **통과하는 것**과 그 결과를 **"남의 과금은 DoS일 뿐 우회가 아니다"** 로 단정하던
+   두 assertion. 실제로는 생산 task의 진짜 사용량이 영구히 과금 불가가 되고 거짓 정산으로 claim 교체가
+   열렸다 → 테스트를 `A1: bare 회계는 남이 claim한 생산 turn을 선점·정산할 수 없다`로 바꾸고
+   **선점 2종 거부 · 회계·revision 불변 · 거짓 정산 거부 · 진짜 생산자 과금 성공 · 미확정 0까지 claim 유지 ·
+   정산 후 교체 · claim 없는 turn 회계 허용**을 단정한다.
+2. `autopilotLifecycle.test.ts` — `만료 후: 전진은 닫히고 safety-only reducer만 통과한다`에서 **다른 kernel
+   인스턴스가 발급한 진행 채널을 만료 게이트까지 수락하는 것**을 정상으로 고정하던 assertion
+   (`manifest_expired` 기대). 발급자 격리 뒤에는 **더 이른 자리**에서 `invalid_progress_channel`이다 →
+   그 코드로 바꾸고, 원래 사실("만료 뒤 진행으로 시계를 되돌릴 수 없다")을 유지하기 위해
+   **만료된 인스턴스는 채널을 새로 발급받을 수도 없다**(`startPreparedTask` → `manifest_expired`)를 더했다.
+
+### 실행한 검증 (명령과 카운트 그대로)
+
+| 명령 | 결과 |
+|---|---|
+| `npx tsc --noEmit` | exit 0 (경고 0) |
+| `npx tsx --test src/exec/typedExecution.test.ts` | **62/62 pass**(신규 5건 포함) |
+| `npx tsx --test src/exec/orchestrationKernel.test.ts` | **103/103 pass** |
+| `npx tsx --test src/exec/autopilotLifecycle.test.ts` | **28/28 pass** |
+| `npx tsx --test src/exec/executionBoundary.test.ts` + `offlinePlanWorker.test.ts` | 위 3종과 합쳐 **223/223 pass** |
+| `node scripts/m4a-offline-acceptance.mjs` | PASS=32 FAIL=0 (exit 0) |
+| `node scripts/m4b-offline-acceptance.mjs` | PASS=45 FAIL=0 (exit 0) |
+| `node scripts/m4c-offline-acceptance.mjs` | PASS=80 FAIL=0 (exit 0) |
+| `git diff --check` | 출력 0 |
+| `npx tsx --test src/exec/stableController.test.ts` | **3 pass / 55 fail** — 실패 55건 전부 `manifest_pre_m5c_unsupported`(변경 전후 동일 · **다음 DAG task 범위**, 이 세션은 그 파일을 수정하지 않았다) |
+
+**미실행(정직)**: `npm test` · `npm run test:core` · `npm run test:exec` · 전체 acceptance ·
+stress(`acceptance:stress:m3d2`) · 반복 3회 · live runner · 실제 Claude/Codex 추론 · build/dist.
+지시에 따라 위험 비례 focused 범위만 돌렸다 — **전체 suite 1회는 M5 handoff 게이트로 남는다.**
+
+### mutation 증거 (각 신규 게이트 · 원복 뒤 tree clean · 흔적 grep 0)
+
+| id | 무엇을 되돌렸나 | 결과 |
+|---|---|---|
+| `MUT-1` | A1 bare 회계의 claimant 검사 제거 | `A1: bare 회계는…` **red** (`no-error` ≠ `turn_conflict`) |
+| `MUT-2` | A2 `record.issuer !== issuer` 검사 무력화 | A2 테스트 **2건 red** |
+| `MUT-3` | A2 `LIVE_GRANTS`를 모듈 전역 공유 `Map`으로 되돌림 | A2 교차 공격 테스트 **red** (`dispatch_grant_spent` — B의 발급이 A의 grant를 소비) |
+| `MUT-4` | A3 `judgeWriteFile`을 다시 `export` | A3 표면 테스트 **red** ("kernel.judgeWriteFile이 위조 authority로 집행 결과를 냈다") |
+| `MUT-5` | A4 표시 커밋 이후 재확인 제거(옛 판정 재사용) | A4 테스트 **red** (만료 **등호**에서 `already_applied` = 거짓 성공) |
+| `MUT-6` | A5 `beginOperation` 영수증 자리 예약 제거 | A5 다중 turn 테스트 **red** (`invalid_state` — load layer가 대신 잡는다) |
+| `MUT-7` | A5 store load 교차 불변식 제거 | A5 crafted-load 테스트 **red** (`state_event_binding_mismatch`) |
+| **`MUT-6+7`** | A5 **두 layer 동시 제거** | operation 65가 **실제로 열린다**(`no-error`) = 4차 판의 영구 미아 재현 |
+| `MUT-8` | A1 `dispatchTurnSettled`를 run 전역 `chargedTurnIds`로 되돌림 | **red 없음 — 193/193 pass.** 정직한 판정: claimant 검사(A1ⓐ)가 부패 상태를 도달 불가로 만들기 때문에 이 layer는 **단독으로는 관측되지 않는 defense-in-depth**다. 리뷰가 요구한 "정산은 task-local 증거에서" 계약 자체는 코드로 성립한다 |
+| **`MUT-8+1`** | A1 **두 layer 동시 제거** | A1 테스트 **red** — 4차 판 동작(sibling 선점 성공)이 그대로 재현된다 |
+
+원복 증거: 각 mutation 뒤 `git checkout -- <file>` → `git status --short`가 `?? node_modules` 한 줄
+(= 커밋 `de59348`과 바이트 동일) · `grep -rn "MUT[1-8]" src/ schemas/` → **0건** · 원복 후
+`npx tsc --noEmit` exit 0 + focused **223/223 pass** 재확인.
+
+### 남은 A/B/C (트리거 포함)
+
+- **열린 A: 없다**(이 리비전이 A 5건을 닫았다 — 다만 **독립 재리뷰 전에는 self-approve하지 않는다**).
+- **`B-F1`** (P1, open) — managed launcher 첫 소비자가 현재 권능을 실행 권위로 믿으면 안 된다.
+  **트리거: 첫 capability 소비자 또는 첫 spawn 전.** 담당 managed-launcher 구현자.
+- **`B-16`** (P1, open) — typed write가 새 파일을 만들지 못한다.
+  **트리거: 첫 real typed-write 산출물 발행/배선 전, 늦어도 M5c 통합.** 담당 M5c 통합 구현자.
+- **`B-7` `B-9` `B-11` `B-12` `B-13` `C-12→B`** (P1, open) — live 게이트·lifecycle 잔여. 변화 없음.
+- **`C-1`(발행 seam export)** (P2, open) — 위치만 kernel 모듈로 옮겼고 표면 개수는 그대로(4종).
+  hook이 던진 것은 전부 `write_failed`로 정규화되므로 거짓 성공·승인 우회는 불가능하고 남는 것은 DoS다.
+  **트리거: shipped export 정리, 늦어도 M5d handoff.**
+- **`C2`(draft-07 실검증)** (P3, open) — **트리거: 외부 provider/worker schema handoff 전, 늦어도 M5d.**
+- 나머지 C(`C-5` `C-18` `C-19` `C-26` `C-29`~`C-39`)는 변화 없음. 상세는 로드맵 §9.1 5차 리비전 표.
+
+## 2026-07-31 (V3 **M5c task 3A 4차 리비전 — 독립 재리뷰 `REVISE A/P1=3`의 A 3건을 닫았다. M5c는 여전히 미완료다** · 그 시점 기록 · 위 블록이 이를 정정한다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `20530b0038266b66b2f83cbc36bf7f358dab1c55` · 코드 커밋 `5ec0a57`. **새 fresh Claude Opus 5
