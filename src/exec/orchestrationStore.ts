@@ -255,6 +255,7 @@ export const TASK_EXECUTION_KEYS = [
   "turnId",
   "dispatchTurnId",
   "dispatchPlanDigest",
+  "chargedPlanDigest",
   "preflightDigest",
   "phaseStartedAt",
   "wallDeadlineAt",
@@ -282,6 +283,8 @@ export const PENDING_OPERATION_KEYS = [
   "turnId",
   "planDigest",
   "beganAt",
+  // M5c 3A 4차 리비전 A2 — 일회용 집행 경계 진입 시각(null이면 아직 아무 효과도 시도되지 않았다).
+  "attemptedAt",
 ] as const;
 
 export const OPERATION_RECEIPT_KEYS = [
@@ -299,8 +302,18 @@ export const OPERATION_RECEIPT_KEYS = [
   "at",
 ] as const;
 
-/** operation 영수증의 닫힌 marker 집합. */
-export const OPERATION_RECEIPT_MARKERS = ["applied", "already_applied", "write_conflict", "denied", "failed"] as const;
+/**
+ * operation 영수증의 닫힌 marker 집합.
+ * `outcome_unknown`은 3A 4차 리비전 A3의 fail-safe 종결이다(성공도 실패도 단정하지 않는다).
+ */
+export const OPERATION_RECEIPT_MARKERS = [
+  "applied",
+  "already_applied",
+  "write_conflict",
+  "denied",
+  "failed",
+  "outcome_unknown",
+] as const;
 
 export const PENDING_RESULT_KEYS = ["summary", "outputs"] as const;
 
@@ -492,6 +505,7 @@ function validatePendingOperation(raw: unknown, what: string): PendingOperation 
     turnId: assertSlug(o.turnId, `${what}.turnId`),
     planDigest: assertSha256(o.planDigest, `${what}.planDigest`),
     beganAt: assertTimestamp(o.beganAt, `${what}.beganAt`),
+    attemptedAt: o.attemptedAt === null ? null : assertTimestamp(o.attemptedAt, `${what}.attemptedAt`),
   };
 }
 
@@ -547,6 +561,8 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     dispatchTurnId: o.dispatchTurnId === null ? null : assertSlug(o.dispatchTurnId, "task.execution.dispatchTurnId"),
     dispatchPlanDigest:
       o.dispatchPlanDigest === null ? null : assertSha256(o.dispatchPlanDigest, "task.execution.dispatchPlanDigest"),
+    chargedPlanDigest:
+      o.chargedPlanDigest === null ? null : assertSha256(o.chargedPlanDigest, "task.execution.chargedPlanDigest"),
     preflightDigest: o.preflightDigest === null ? null : assertSha256(o.preflightDigest, "task.execution.preflightDigest"),
     phaseStartedAt: o.phaseStartedAt === null ? null : assertTimestamp(o.phaseStartedAt, "task.execution.phaseStartedAt"),
     wallDeadlineAt: o.wallDeadlineAt === null ? null : assertTimestamp(o.wallDeadlineAt, "task.execution.wallDeadlineAt"),
@@ -578,6 +594,11 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     bad("cleaning은 cleanupStatus가 required|failed|confirmed여야 한다");
   }
   if (state === "paused" && exec.pauseReason === null) bad("paused는 사유가 있어야 한다");
+  // **과금 권위 증거는 그 turn의 과금 없이 존재할 수 없다**(M5c 3A 4차 리비전 A1): 손으로 심은
+  // `chargedPlanDigest` 하나로 효과 게이트를 지나가는 경로를 load에서도 막는다.
+  if (exec.chargedPlanDigest !== null && exec.turnId === null) {
+    bad("chargedPlanDigest가 있는데 과금된 turn이 없다");
+  }
   if (state === "retry_wait" && (exec.retryAt === null || exec.retryDeadlineAt === null)) bad("retry 예약 시각이 없다");
   // **cleanup 미확인 상태로는 종료 상태에 갈 수 없다**(프로세스가 남은 채로 자원을 놓는 경로를 닫는다).
   if ((state === "completed" || state === "cancelled") && exec.cleanupStatus === "required") {

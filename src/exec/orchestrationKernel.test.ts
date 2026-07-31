@@ -88,6 +88,7 @@ import {
   MESSAGE_KEYS,
   manifestDigest,
   OPERATION_RECEIPT_KEYS,
+  PENDING_OPERATION_KEYS,
   OPERATION_RECEIPT_MARKERS,
   PENDING_RESULT_KEYS,
   STATE_KEYS,
@@ -132,9 +133,15 @@ process.on("exit", () => {
 });
 
 /** 결정론적 clock — 호출마다 1초씩 전진. */
+/**
+ * 결정론적 테스트 clock. **tick은 프로세스 전역으로 단조**다(3A 4차 리비전 A1): 이전 판은 kernel을 다시
+ * 열 때마다 `n`을 0으로 되돌렸으므로 재시작한 인스턴스의 시각이 durable `updatedAt`보다 **이전**이었다 —
+ * 즉 fixture 자체가 시계 역행을 흉내 내고 있었다. 지금은 커밋 시각이 durable 기록보다 이르면 모든
+ * mutation이 `clock_invalid`이므로, fixture도 진짜 시계처럼 단조여야 한다.
+ */
+let fixedClockTick = 0;
 function fixedClock(): () => Date {
-  let n = 0;
-  return () => new Date(Date.UTC(2026, 6, 27, 0, 0, n++));
+  return () => new Date(Date.UTC(2026, 6, 27, 0, 0, fixedClockTick++));
 }
 
 function body(type: AgentMessageType, extra = ""): string {
@@ -2456,6 +2463,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     // M5c 3A 2차 리비전 A2 — 집행 **직전** durable 등록 + 일회용 grant 발급. 자기 task의 자기 계획
     // 안에서만 열리고, 남의 task 상태를 바꾸는 통로는 여전히 없다.
     "beginOperation",
+    // M5c 3A 4차 리비전 A1 — 권위 없는 회계(만료·재시작 뒤에도 가능)와 **효과를 승인하는** 권위 과금을
+    // 두 진입점으로 갈랐다. `chargeDispatchTurnUsage`만 kernel 발급 permit을 요구하고 증거를 남긴다.
+    "chargeDispatchTurnUsage",
     "chargeTurnUsage",
     "commitPreflightBatch",
     "completeTaskWithArtifacts",
@@ -2465,8 +2475,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "createRootTask",
     "failCleanup",
     "failDeliveryAttempt",
-    // M5c 3A 3차 리비전 A2 — 집행하지 않았거나 실패한 operation을 `denied`/`failed`로만 닫는 좁은 전이.
-    // 성공 marker를 만드는 통로는 `executeUnderGrant` 하나뿐이므로 여기서는 성공이 나오지 않는다.
+    // M5c 3A 3차 리비전 A2 — **집행을 시도하지 않은** operation을 `denied`/`failed`로만 닫는 좁은 전이.
+    // 성공 marker를 만드는 통로는 kind별 고정 집행기(`executeWriteFileOperation`)뿐이고, 집행 경계에
+    // 들어간 pending은 여기서 닫히지 않는다(4차 리비전 A2 — `reconcileUncertainOperation`이 담당한다).
     "failOperation",
     "getAccounting",
     "getArtifact",
@@ -2485,6 +2496,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "pauseTask",
     "planRunnableBatch",
     "rebuildSnapshot",
+    // M5c 3A 4차 리비전 A3 — **재시작 안전한 safety-only 정합화**. kernel 발급 handle을 하나도 요구하지
+    // 않는 대신 durable 신원을 전수 대조하고, 성공을 만들 입력이 시그니처에 아예 없다.
+    "reconcileUncertainOperation",
     "recordDecision",
     "recordOperationReceipt",
     "recordProgress",
@@ -2858,7 +2872,9 @@ function readSchema(name: string): any {
   return JSON.parse(readFileSync(join(REPO_ROOT, "schemas", name), "utf8"));
 }
 
-test("[M4a] agent_message.schema.json이 runtime 계약과 동치다", () => {
+// **정직한 이름**(3A 4차 리비전 C-1): 아래 schema 테스트들은 draft-07 validator를 **실행하지 않는다**.
+// schema의 key 집합·enum·상한을 runtime 상수와 **구조적으로 대조**할 뿐이다.
+test("[M4a] agent_message.schema.json의 key·enum·상한이 runtime 상수와 구조적으로 일치한다", () => {
   const s = readSchema("agent_message.schema.json");
   assert.deepEqual(s.properties.type.enum, [...AGENT_MESSAGE_TYPES]);
   assert.deepEqual(s.required, [...ENVELOPE_KEYS]);
@@ -2886,7 +2902,7 @@ test("[M4a] agent_message.schema.json이 runtime 계약과 동치다", () => {
   }
 });
 
-test("[M4a] orchestration_run_state.schema.json이 runtime 계약과 동치다", () => {
+test("[M4a] orchestration_run_state.schema.json의 key·enum·상한이 runtime 상수와 구조적으로 일치한다", () => {
   const s = readSchema("orchestration_run_state.schema.json");
   assert.deepEqual(s.required, [...STATE_KEYS]);
   assert.deepEqual(Object.keys(s.properties).sort(), [...STATE_KEYS].sort());
@@ -2973,6 +2989,15 @@ test("[M4a] orchestration_run_state.schema.json이 runtime 계약과 동치다",
   assert.deepEqual(d.operationKind.enum, [...APPROVED_OPERATION_KINDS]);
   assert.equal(d.operationReceipt.properties.exitCode.oneOf[0].minimum, -255);
   assert.equal(d.operationReceipt.properties.exitCode.oneOf[0].maximum, 255);
+  // M5c 3A 4차 리비전 — 미확정 operation 레코드(`attemptedAt` 포함)도 schema와 정확히 같아야 한다.
+  assert.deepEqual(d.pendingOperation.required, [...PENDING_OPERATION_KEYS]);
+  assert.deepEqual(Object.keys(d.pendingOperation.properties).sort(), [...PENDING_OPERATION_KEYS].sort());
+  assert.equal(d.pendingOperation.additionalProperties, false);
+  assert.equal(te.pendingOperations.maxItems, LIMITS.maxPendingOperations);
+  assert.equal(te.pendingOperations.items.$ref, "#/definitions/pendingOperation");
+  // 권위 과금 증거는 sha256|null이다(3A 4차 리비전 A1).
+  assert.equal(te.chargedPlanDigest.oneOf[0].$ref, "#/definitions/sha256");
+  assert.equal(te.dispatchPlanDigest.oneOf[0].$ref, "#/definitions/sha256");
 
   // ⓓ 전달 재시도(대장 C-12→B)
   assert.deepEqual(d.messageDelivery.required, [...DELIVERY_KEYS]);
@@ -4110,7 +4135,7 @@ test("[M4c] 라우팅 진입점은 타입·방향·summary 계약을 강제한�
   assert.equal(k.getState().messages.find((m) => m.type === "task_assignment")!.summary, null);
 });
 
-test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치다", () => {
+test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runtime 상수와 구조적으로 일치한다", () => {
   const s = readSchema("milestone_approval_manifest.schema.json");
   assert.deepEqual(s.required, [...MANIFEST_KEYS]);
   assert.deepEqual(Object.keys(s.properties).sort(), [...MANIFEST_KEYS].sort());

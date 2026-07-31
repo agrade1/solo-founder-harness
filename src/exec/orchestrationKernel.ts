@@ -46,6 +46,7 @@ import {
   AGENT_MESSAGE_SCHEMA_VERSION,
   type AgentMessageEnvelope,
   type AgentMessageType,
+  APPROVED_OPERATION_KINDS,
   type ArtifactPointer,
   type ArtifactRecord,
   type ArtifactRole,
@@ -108,6 +109,9 @@ import {
   verifyArtifactFile,
   writeSnapshot,
 } from "./orchestrationStore.js";
+// **고정 집행기**(3A 4차 리비전 A2). 이 모듈은 kernel을 **타입으로만** import하므로 런타임 순환이 없다.
+import { judgeWriteFile } from "./writeFileEffect.js";
+import type { TypedWriteFileOperation } from "./typedPlan.js";
 
 /** 새 task를 만들 때 공통으로 필요한 입력. */
 export interface TaskSeed {
@@ -337,6 +341,11 @@ interface GrantRecord {
   pendingKey: string;
   /** 집행기가 실제로 낸 canonical 결과. 영수증은 **이 값만** 쓴다(호출자 필드를 채택하지 않는다). */
   outcome: EffectOutcome | null;
+  /**
+   * **일회용 집행 경계 진입을 durable pending에 먼저 적는다**(3A 4차 리비전 A2 — 발급한 kernel에 묶인
+   * 클로저다. 호출자가 만들 수 없고 다른 run/task를 가리킬 수도 없다). 멱등이다.
+   */
+  markAttempted: () => void;
 }
 
 /**
@@ -376,6 +385,46 @@ const LIVE_GRANTS = new Map<string, GrantRecord>();
 
 function pendingKeyOf(permit: OperationDispatchPermit, planDigest: string, operationId: string): string {
   return JSON.stringify([permit.runId, permit.taskId, permit.attemptId, permit.turnId, planDigest, operationId]);
+}
+
+// ── worker 진행 채널 (V3 M5c 3A 4차 리비전 A1) ────────────────────────────────
+
+/**
+ * **kernel이 발급한 진짜 worker 진행 채널 등록부**(위 permit/grant와 같은 패턴 — 밖으로 나가지 않는다).
+ *
+ * 이것이 필요한 이유(3차 판의 결함): 진행 신호의 provenance가 **durable `processLeaseMarker` 하나**였고
+ * 그 값은 `getTask()`가 그대로 돌려준다 → state를 읽을 수 있는 코드는 누구든 lease를 베껴 no-progress
+ * 시계를 되돌릴 수 있었다. 게다가 `seq`는 **모양만** 검사했으므로 같은 이벤트를 무한히 재생하거나
+ * 역순으로 넣어도 통과했다(독립 리뷰 A-1). 지금 채널은 **`startPreparedTask()`가 시작을 커밋한 그 순간
+ * 딱 한 번** 발급된다 — durable 값에서 되만들 수 있는 공개 통로가 없고, 채널마다 **단조 sequence**를
+ * 들고 있으며, 사용할 때마다 현재 durable run/task/attempt/lease와 다시 대조한다.
+ */
+const GENUINE_PROGRESS_CHANNELS = new WeakMap<object, ProgressChannelRecord>();
+
+interface ProgressChannelRecord {
+  runId: string;
+  taskId: string;
+  attemptId: string;
+  leaseMarker: string;
+  /** **커밋에 성공한** 마지막 seq. 재생·역순·같은 seq는 전부 거부된다(엄격 증가). */
+  lastSeq: number;
+}
+
+/**
+ * **worker 진행 채널**(봉인 handle). 담긴 필드는 감사용이고 권위는 등록부 연결에서만 나오므로
+ * 전개 사본(`{...channel}`)·수제 객체·`Proxy`는 진행을 기록하지 못한다.
+ * 이 attempt가 끝나면(새 attempt·새 lease) 같은 handle은 durable 대조에서 죽는다.
+ */
+export interface WorkerProgressChannel {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+}
+
+/** `startPreparedTask()`의 결과 — 시작된 task와 그 attempt에 **한 번만** 발급되는 진행 채널. */
+export interface StartedTask {
+  task: OrchestrationTask;
+  progress: WorkerProgressChannel;
 }
 
 /**
@@ -495,42 +544,41 @@ export function readDispatchAuthority(handle: unknown, op: TypedOperation): Read
 }
 
 /**
- * **효과 게이트 — 진입은 일회용이고 결과는 집행기가 낸 것만 남는다**(3A 3차 리비전 A2).
+ * **`write_file` operation 1건의 고정 집행 진입점**(3A 4차 리비전 A2).
  *
- * 이전 판(`consumeExecutionGrant`)은 게이트 통과와 결과 주장이 **갈라져 있었다**: grant를 `executing`으로
- * 올려 두기만 하면(예: 아무것도 spawn하지 않는 프로세스 명세 발급) 호출자가 **직접 만든** `applied` 영수증이
- * 수락됐고, 진짜 집행 뒤에도 marker·path·hash·exitCode를 바꿔 넣을 수 있었다.
+ * 이전 판(`executeUnderGrant(grant, op, 임의콜백)`)은 **호출자가 넘긴 아무 함수**의 반환값을 canonical
+ * 성공으로 굳혔다 → **아무 효과도 내지 않는 콜백 하나로 진짜 `applied` 영수증**을 만들 수 있었다
+ * (독립 리뷰 A-2). 그래서 임의 콜백 표면을 **삭제**했다: grant를 소비하는 함수는 operation kind마다
+ * 고정돼 있고, 그 안에서 부르는 집행기도 정적으로 고정된 `judgeWriteFile` 하나다.
+ * `run_process`에는 이런 진입점이 **없다**(성공을 만들 통로가 아예 없다 — 대장 `B-10`/`B-F1`).
  *
- * 지금은 효과가 **이 함수 안에서** 일어난다: `readDispatchAuthority`의 모든 확인 + durable pending 레코드
- * 확인을 지난 뒤 `effect(authority)`를 **정확히 한 번** 부르고, 정상 반환한 값만 grant 안에 canonical
- * 결과로 굳혀 opaque handle을 돌려준다. 던지면 grant는 `errored`가 되어 **성공 marker를 낼 수 없다**.
- *
- * 확인하는 것:
- * 8. grant가 이 모듈 발급이고 아직 쓰이지 않았는가(중복 집행·재사용 차단).
- * 9. grant가 **바로 이 operation**에 묶여 있는가(operation 치환 차단).
- * 10. **durable pending 레코드**가 이 attempt/turn/계획/operation으로 남아 있는가(집행 전 등록 강제).
- *
- * **주장하지 않는 범위(정직)**: 진짜 grant를 손에 쥔 같은 프로세스의 코드는 거짓말하는 `effect`를 넘길 수
- * 있다. 그러나 진짜 grant는 진짜 permit → `beginOperation` 커밋을 지나야만 나오므로 그 코드는 이미 승인된
- * dispatch 경로 안에 있다. 밖에서 오는 **구조적 영수증·재생·치환·중복 집행**은 전부 여기서 닫힌다.
+ * 순서가 계약이다:
+ * 1. grant가 이 모듈 발급이고 아직 쓰이지 않았는가(중복 집행·재사용 차단) + **바로 이 operation**인가.
+ * 2. `readDispatchAuthority`의 모든 확인(현재 durable state) + **durable pending 레코드** 확인.
+ * 3. **`attemptedAt`을 durable하게 먼저 적는다** — 외부 효과가 일어났을 수 있다는 사실이 효과보다 먼저
+ *    영속돼야 재시작이 그 구간을 정직하게 정합화할 수 있다(A-2/A-3). 이 표시 뒤에는 새 grant가
+ *    발급되지 않고 `failOperation`도 거부된다(평범한 실패로 불확실성을 지울 수 없다).
+ * 4. 고정 집행기를 **정확히 한 번** 부른다. 정상 반환값만 canonical 결과로 굳혀 opaque handle을 준다.
+ *    던지면 grant는 `errored`로 남고 pending은 **불확실**로 남는다 → `reconcileUncertainOperation()`의
+ *    `outcome_unknown`으로만 닫힌다.
  */
-export function executeUnderGrant(
-  grant: unknown,
-  op: TypedOperation,
-  effect: (authority: Readonly<DispatchAuthority>) => EffectOutcome,
-): Readonly<OperationOutcome> {
+export function executeWriteFileOperation(grant: unknown, op: TypedWriteFileOperation): Readonly<OperationOutcome> {
   const rec = genuineGrant(grant);
   if (rec.state !== "issued") {
     throw dispatchDenied("dispatch_grant_spent", "이미 소진된 execution grant다(중복 집행·재사용 금지)");
   }
-  if (rec.op !== op) {
+  if ((rec.op as TypedOperation) !== (op as unknown as TypedOperation)) {
     throw dispatchDenied("dispatch_operation_unbound", "execution grant가 이 operation에 묶여 있지 않다");
   }
-  const { authority, task, permitRecord } = authorityFromPermit(rec.permit, op);
-  requirePendingOperation(task, rec.permit, permitRecord.planDigest, op.operationId);
+  if (rec.op.kind !== "write_file") {
+    throw dispatchDenied("dispatch_operation_unbound", "이 진입점은 write_file operation 전용이다");
+  }
+  const { authority } = authorityFromPermit(rec.permit, rec.op);
+  // **효과보다 먼저 durable에 적는다**: 여기서 실패하면 아직 아무 효과도 시도되지 않았다.
+  rec.markAttempted();
   // **진입은 여기서 한 번뿐이다**: 아래에서 무엇이 일어나든 이 grant로 다시 들어올 수 없다.
   rec.state = "errored";
-  const produced = effect(authority);
+  const produced = judgeWriteFile(authority, op);
   rec.outcome = Object.freeze({
     marker: enumOf(produced.marker, OPERATION_RECEIPT_MARKERS, "effect outcome marker"),
     path: produced.path === null ? null : normalizeWorkspacePath(produced.path, "effect outcome path"),
@@ -539,9 +587,9 @@ export function executeUnderGrant(
   });
   rec.state = "attempted";
   const handle: OperationOutcome = Object.freeze({
-    operationId: op.operationId,
-    kind: op.kind,
-    authorityId: op.authorityId,
+    operationId: rec.op.operationId,
+    kind: rec.op.kind,
+    authorityId: rec.op.authorityId,
     ...rec.outcome,
   });
   GENUINE_OUTCOMES.set(handle, rec);
@@ -557,6 +605,7 @@ function newGrant(
   op: TypedOperation,
   operationId: string,
   planDigest: string,
+  markAttempted: () => void,
 ): OperationExecutionGrant {
   const pendingKey = pendingKeyOf(permit, planDigest, operationId);
   const previous = LIVE_GRANTS.get(pendingKey);
@@ -568,16 +617,36 @@ function newGrant(
     turnId: permit.turnId,
     operationId,
   });
-  const record: GrantRecord = { permit, op, state: "issued", pendingKey, outcome: null };
+  const record: GrantRecord = { permit, op, state: "issued", pendingKey, outcome: null, markAttempted };
   GENUINE_GRANTS.set(grant, record);
   LIVE_GRANTS.set(pendingKey, record);
   return grant;
+}
+
+/** durable pending 신원 하나에 살아 있는 grant가 있으면 그 자리에서 폐기한다(정합화 뒤 재사용 차단). */
+function killLiveGrant(pendingKey: string): void {
+  const live = LIVE_GRANTS.get(pendingKey);
+  if (live === undefined) return;
+  live.state = "consumed";
+  LIVE_GRANTS.delete(pendingKey);
 }
 
 /** grant를 최종 소비한다(영수증·실패 종결 뒤 — 같은 key가 무한히 쌓이지 않게 등록부에서도 뺀다). */
 function consumeGrant(rec: GrantRecord): void {
   rec.state = "consumed";
   if (LIVE_GRANTS.get(rec.pendingKey) === rec) LIVE_GRANTS.delete(rec.pendingKey);
+}
+
+/** 이 모듈이 발급한 진짜 permit인가(구조적 위조·재구성·proxy 거부). */
+function genuinePermit(permit: unknown): { permit: OperationDispatchPermit; record: PermitRecord } {
+  if (typeof permit !== "object" || permit === null) {
+    throw new OrchestrationError("dispatch_permit_invalid", "dispatch permit이 kernel 발급 값이 아니다");
+  }
+  const record = GENUINE_PERMITS.get(permit);
+  if (record === undefined) {
+    throw new OrchestrationError("dispatch_permit_invalid", "dispatch permit이 kernel 발급 값이 아니다");
+  }
+  return { permit: permit as OperationDispatchPermit, record };
 }
 
 function genuineGrant(grant: unknown): GrantRecord {
@@ -665,6 +734,19 @@ function requirePendingOperation(
 }
 
 /**
+ * **집행 경계에 들어간 pending은 다시 열리지도, 평범한 실패로 닫히지도 않는다**(3A 4차 리비전 A2).
+ * 외부 효과가 일어났을 수 있으므로 "일어나지 않았다"고 단정하는 종결을 허용하면 durable 기록이 거짓이 된다.
+ */
+function assertNotAttempted(pending: PendingOperation): void {
+  if (pending.attemptedAt !== null) {
+    throw new OrchestrationError(
+      "operation_attempt_uncertain",
+      `operation ${pending.operationId}은 이미 집행 경계에 들어갔다 — 재발급·평범한 실패 종결이 아니라 정합화(outcome_unknown)로만 닫힌다`,
+    );
+  }
+}
+
+/**
  * permit 하나에서 **현재 durable 상태**를 다시 읽어 집행 권위를 만든다(부수 효과 0).
  * 반환하는 `task`는 kernel 내부 state의 참조이므로 **읽기에만** 쓴다(밖으로 나가는 것은 동결 사본이다).
  */
@@ -734,14 +816,6 @@ function requireDispatchableTask(
   if (state.manifest.maxTokens !== null && state.accounting.tokensUsed >= state.manifest.maxTokens) {
     throw dispatchDenied("budget_tokens_exhausted", "승인된 토큰 예산을 다 썼다");
   }
-  // **계획을 만든 turn이 먼저 durable하게 과금돼 있어야 한다**(3A 3차 리비전 A1). 이 확인이 없으면 위
-  // 토큰 판정이 **항상 한 turn 뒤처진 값**을 보므로, 상한 직전에서 그 turn이 얼마를 태웠든 효과가 나간다.
-  if (!state.accounting.chargedTurnIds.includes(bound.turnId)) {
-    throw dispatchDenied(
-      "budget_turn_unaccounted",
-      "계획을 만든 turn의 사용량이 아직 durable 회계에 없다(과금 → grant → 효과 순서다)",
-    );
-  }
   if (state.runId !== bound.runId) {
     throw dispatchDenied("dispatch_identity_stale", "permit의 run 신원이 현재 durable run과 다르다");
   }
@@ -763,8 +837,21 @@ function requireDispatchableTask(
   if (task.execution.dispatchPlanDigest !== record.planDigest) {
     throw dispatchDenied("dispatch_plan_conflict", "이 turn에 durable하게 claim된 계획이 아니다");
   }
-  // `execution.turnId`는 **마지막으로 과금된** turn이고 활성 claim이 아니다. 활성 판정은 위의
-  // `dispatchTurnId` 하나로 하며(그쪽이 더 강하다), 닫힌 turn의 재개방은 `chargedTurnIds`가 막는다.
+  // **계획을 만든 turn이 먼저 durable하게 과금돼 있어야 한다**(3A 3차 리비전 A1). 이 확인이 없으면 위
+  // 토큰 판정이 **항상 한 turn 뒤처진 값**을 보므로, 상한 직전에서 그 turn이 얼마를 태웠든 효과가 나간다.
+  //
+  // **증거는 이 task 자신의 것이어야 한다**(3A 4차 리비전 A1). 이전 판은 run 전역
+  // `accounting.chargedTurnIds`에 그 turn ID가 **있기만 하면** 통과시켰다 → claim이 없는 sibling task가
+  // 생산 task의 bare turn ID를 0 토큰으로 과금해 남의 효과를 승인할 수 있었다. 지금 보는 것은
+  // ⓐ `execution.turnId`(= 이 task가 마지막으로 과금한 turn)와 ⓑ `execution.chargedPlanDigest`
+  // (= **kernel 발급 permit으로** 과금했다는 canonical 증거)다. 위에서 attempt·claim된 turn·계획 digest를
+  // 이미 확인했으므로, 이 둘이 맞으면 과금은 **정확히 이 run/task/attempt/turn/계획**에 묶여 있다.
+  if (task.execution.turnId !== bound.turnId || task.execution.chargedPlanDigest !== record.planDigest) {
+    throw dispatchDenied(
+      "budget_turn_unaccounted",
+      "이 task가 이 계획의 turn을 kernel 발급 권위로 과금하지 않았다(권위 과금 → grant → 효과 순서다)",
+    );
+  }
   // **attempt wall deadline과 no-progress deadline도 효과 직전마다 본다**(경계 포함).
   if (task.execution.wallDeadlineAt !== null && now >= task.execution.wallDeadlineAt) {
     throw dispatchDenied("attempt_wall_exhausted", "이 attempt의 wall deadline을 넘었다");
@@ -1032,8 +1119,12 @@ export class OrchestrationKernel {
    * 봉인된 preflight를 **다시 계산해 대조**하므로(`preflight_drift`) 준비 이후에 ownership·자원·승인·
    * 예산 deadline이 바뀌었으면 시작하지 않는다. attempt wall deadline은
    * `min(now + maxAttemptElapsedMs, budgetDeadlineAt, expiresAt)`이며 **kernel이 계산한다**(호출자 값 아님).
+   *
+   * **이 attempt의 worker 진행 채널을 여기서 딱 한 번 발급한다**(3A 4차 리비전 A1). 진행 신호의 권위를
+   * durable `processLeaseMarker`에 두면 `getTask()`로 베낄 수 있으므로, 채널은 **시작을 커밋한 호출자에게만**
+   * 이 순간 건네진다 — durable 값에서 채널을 되만드는 공개 통로는 존재하지 않는다.
    */
-  startPreparedTask(input: { taskId: string; actionId: string; leaseMarker: string }): OrchestrationTask {
+  startPreparedTask(input: { taskId: string; actionId: string; leaseMarker: string }): StartedTask {
     const taskId = assertSlug(input.taskId, "taskId");
     const actionId = assertSlug(input.actionId, "actionId");
     const leaseMarker = assertLease(input.leaseMarker);
@@ -1063,7 +1154,20 @@ export class OrchestrationKernel {
       setState(draft, now, mutation, task, "running", "started", { actionId, attemptId: task.execution.attemptId });
       return mutation;
     });
-    return clone(requireTask(this.#state, taskId));
+    const started = requireTask(this.#state, taskId);
+    const progress: WorkerProgressChannel = Object.freeze({
+      runId: this.#state.runId,
+      taskId,
+      attemptId: started.execution.attemptId!,
+    });
+    GENUINE_PROGRESS_CHANNELS.set(progress, {
+      runId: this.#state.runId,
+      taskId,
+      attemptId: started.execution.attemptId!,
+      leaseMarker,
+      lastSeq: -1,
+    });
+    return { task: clone(started), progress };
   }
 
   getMessage(messageId: string): MessageIndexEntry | null {
@@ -1430,12 +1534,16 @@ export class OrchestrationKernel {
    * **과금은 효과보다 먼저다**(3A 3차 리비전 A1). 이전 판은 "과금 = turn 닫기"였고 미확정 operation이
    * 있으면 아예 거부했으므로, 계획을 만든 turn은 **효과가 끝난 뒤에야** 과금될 수 있었다 → 효과 게이트의
    * 토큰 판정이 항상 한 turn 뒤처진 값을 봤다(승인 상한 우회). 지금은 **회계와 turn 닫기를 분리**한다:
-   * - claim된 turn이 있으면 **정확히 그 turn만** 과금할 수 있다(`turn_conflict`) — 열린 turn의 계획이
-   *   집행되는 동안 다른 turn을 과금해 durable turn 신원을 갈아끼우는 경로가 사라진다.
    * - 회계는 **미확정 operation이 있어도 반영된다**(그래야 grant·효과가 최신 총량으로 판정된다).
    *   과금해도 **dispatch claim은 그대로 살아 있다** → 그 계획의 grant·영수증 경로가 무효화되지 않는다.
-   * - **turn은 미확정 operation이 0이 될 때 닫힌다**(과금 시점 또는 마지막 영수증 커밋 시점).
+   * - **claim 교체는 지연된다**: 끝난 claim(과금 + 미확정 0)만 다음 turn의 permit 요청이 교체한다.
    * - 닫힌 turn은 `chargedTurnIds`에 남아 **다시 claim되지 않는다**.
+   *
+   * **이 진입점은 효과를 승인하지 않는다**(3A 4차 리비전 A1). 여기서는 dispatch claim이 **없는** turn만
+   * 과금할 수 있고(claim이 있으면 `turn_conflict` — `chargeDispatchTurnUsage()`를 써야 한다),
+   * 생산 turn 과금 권위의 canonical 증거인 `execution.chargedPlanDigest`를 **채우지 않는다**.
+   * 그래서 "sibling이 남의 bare turn ID를 0 토큰으로 과금해 남의 효과를 승인"하는 경로가 존재하지 않으면서도,
+   * **만료·재시작 뒤에 이미 태운 자원을 적는 일**(대장 `B-12`)은 그대로 가능하다.
    */
   chargeTurnUsage(input: {
     taskId: string;
@@ -1447,7 +1555,62 @@ export class OrchestrationKernel {
   }): RunAccounting {
     const taskId = assertSlug(input.taskId, "taskId");
     const turnId = assertSlug(input.turnId, "turnId");
-    const actionId = assertSlug(input.actionId, "actionId");
+    return this.#chargeTurn({
+      taskId,
+      turnId,
+      actionId: assertSlug(input.actionId, "actionId"),
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      elapsedMs: input.elapsedMs,
+      authority: null,
+    });
+  }
+
+  /**
+   * **kernel 발급 permit으로 생산 turn을 과금한다**(3A 4차 리비전 A1 — 효과를 승인하는 **유일한** 과금).
+   *
+   * 이전 판의 결함: 효과 게이트가 run 전역 `accounting.chargedTurnIds`에 그 turn ID가 **있기만 하면**
+   * 통과시켰고, `chargeTurnUsage`는 `{taskId, turnId, 카운트}`를 호출자가 전부 고를 수 있었다 →
+   * **claim이 없는 sibling task**가 생산 task의 bare turn ID를 0 토큰으로 과금해 그 효과를 승인할 수
+   * 있었다(독립 리뷰 A-1).
+   *
+   * 지금 신원은 **호출자가 아니라 permit**에서 나온다(`run/task/attempt/turn` + 묶인 계획 digest).
+   * 성공하면 `execution.turnId`와 `execution.chargedPlanDigest`를 함께 적고, 효과 게이트는 그 둘을
+   * claim된 `dispatchTurnId`/`dispatchPlanDigest`/`attemptId`와 **함께** 본다.
+   *
+   * safety-only 커밋이므로 만료·deadline 뒤에도 지난다 — 이미 태운 자원을 적는 일이기 때문이다.
+   * (permit 자체는 전진 게이트를 지나야 나오므로 만료 후 새로 만들 수는 없다.)
+   */
+  chargeDispatchTurnUsage(input: {
+    permit: unknown;
+    actionId: string;
+    inputTokens: number;
+    outputTokens: number;
+    elapsedMs: number;
+  }): RunAccounting {
+    const { permit, record } = genuinePermit(input?.permit);
+    return this.#chargeTurn({
+      taskId: permit.taskId,
+      turnId: permit.turnId,
+      actionId: assertSlug(input.actionId, "actionId"),
+      inputTokens: input.inputTokens,
+      outputTokens: input.outputTokens,
+      elapsedMs: input.elapsedMs,
+      authority: { attemptId: permit.attemptId, planDigest: record.planDigest },
+    });
+  }
+
+  /** 과금 커밋 하나(권위 있는 것과 없는 것의 **유일한** 차이는 `authority`다). */
+  #chargeTurn(input: {
+    taskId: string;
+    turnId: string;
+    actionId: string;
+    inputTokens: number;
+    outputTokens: number;
+    elapsedMs: number;
+    authority: { attemptId: string; planDigest: string } | null;
+  }): RunAccounting {
+    const { taskId, turnId, actionId, authority } = input;
     const delta = boundedCount(input.inputTokens, "inputTokens") + boundedCount(input.outputTokens, "outputTokens");
     const elapsedMs = boundedCount(input.elapsedMs, "elapsedMs");
     this.#mutate(
@@ -1460,18 +1623,38 @@ export class OrchestrationKernel {
         if (acc.chargedTurnIds.length >= LIMITS.maxChargedTurnIds) {
           throw new OrchestrationError("charged_turns_exhausted", "과금 기록 상한을 넘었다(새 run이 필요하다)");
         }
-        if (task.execution.dispatchTurnId !== null && task.execution.dispatchTurnId !== turnId) {
-          throw new OrchestrationError(
-            "turn_conflict",
-            `task ${taskId}는 turn ${task.execution.dispatchTurnId}을 durable하게 claim했다 — 다른 turn을 과금할 수 없다`,
-          );
+        if (authority === null) {
+          // 권위 없는 회계는 **claim이 없는 turn에만** 허용된다. claim이 열려 있으면 그 turn은 효과를
+          // 승인하는 생산 turn이므로 permit을 요구한다(`chargeDispatchTurnUsage`).
+          if (task.execution.dispatchTurnId !== null) {
+            throw new OrchestrationError(
+              "turn_conflict",
+              `task ${taskId}는 turn ${task.execution.dispatchTurnId}을 durable하게 claim했다 — 권위 없는 과금은 할 수 없다`,
+            );
+          }
+        } else {
+          // permit이 발급된 뒤 durable claim이 바뀌었으면 과금 권위도 무효다(낡은 attempt·교체된 claim).
+          if (task.execution.attemptId !== authority.attemptId) {
+            throw new OrchestrationError("dispatch_identity_stale", `task ${taskId}의 durable attempt 신원이 바뀌었다`);
+          }
+          if (task.execution.dispatchTurnId !== turnId) {
+            throw new OrchestrationError("turn_conflict", `task ${taskId}가 durable하게 claim한 turn이 아니다: ${turnId}`);
+          }
+          if (task.execution.dispatchPlanDigest !== authority.planDigest) {
+            throw new OrchestrationError("dispatch_plan_conflict", `task ${taskId}의 이 turn에는 다른 계획이 claim돼 있다`);
+          }
         }
         acc.tokensUsed = Math.min(LIMITS.maxAccountedTokens, acc.tokensUsed + delta);
         acc.elapsedMsUsed = Math.min(LIMITS.maxAccountedElapsedMs, Math.max(acc.elapsedMsUsed, elapsedMs));
         acc.chargedTurnIds = [...acc.chargedTurnIds, turnId].sort();
         // **claim은 여기서 닫지 않는다**(3A 3차 리비전 A1): 순서가 과금 → grant → 효과이므로 지금 닫으면
         // 바로 그 계획의 grant가 죽는다. 끝난 claim은 다음 turn의 permit 요청이 교체한다.
-        task.execution = { ...task.execution, turnId };
+        task.execution = {
+          ...task.execution,
+          turnId,
+          // 권위 없는 회계는 효과 승인 증거를 남기지 않는다(A1의 핵심).
+          chargedPlanDigest: authority === null ? null : authority.planDigest,
+        };
         return {
           events: [
             event({
@@ -1482,7 +1665,7 @@ export class OrchestrationKernel {
               actionId,
               turnId,
               attemptId: task.execution.attemptId,
-              planDigest: task.execution.dispatchPlanDigest,
+              planDigest: authority === null ? null : authority.planDigest,
               tokenDelta: delta,
               elapsedMs,
             }),
@@ -1503,26 +1686,42 @@ export class OrchestrationKernel {
    *
    * - **이미 소진된 attempt는 진행으로 되살아나지 않는다.** 효과 게이트와 **같은 등호 규칙**으로
    *   `no_progress_exhausted` · `attempt_wall_exhausted`를 먼저 본다(늦은 진행 = 거부).
-   * - **provenance**: 이 attempt의 durable `processLeaseMarker`를 제시해야 하고
-   *   (`cleanup_lease_mismatch` — `confirmCleanup`과 같은 attempt 권위다), 진행 이벤트는 worker 스트림의
-   *   `{kind:"progress", seq, step}` 형태로 **닫힌 읽기**를 지나야 한다 → `heartbeat`·미상 이벤트·
-   *   구조 없는 호출은 시계를 되돌리지 못한다.
+   * - **provenance**: 진행은 **kernel이 `startPreparedTask()`에서 발급한 worker 채널**로만 들어온다
+   *   (3A 4차 리비전 A1). 3차 판은 durable `processLeaseMarker` 하나를 자격으로 삼았는데 그 값은
+   *   `getTask()`가 그대로 돌려주므로, state를 읽을 수 있는 코드는 누구든 **lease를 베껴** 시계를 되돌릴
+   *   수 있었다. 채널은 durable 값에서 되만들 수 없고, 사용할 때마다 **현재** run/task/attempt/lease와
+   *   다시 대조하므로 sibling 권위·낡은 attempt·교체된 lease는 전부 거부된다.
+   * - **단조 sequence**: `seq`는 그 채널의 마지막 **성공 커밋**보다 엄격히 커야 한다 → 같은 이벤트 재생 ·
+   *   역순 · 반복 주입이 시계를 되돌리지 못한다. 진행 이벤트는 여전히 worker 스트림의
+   *   `{kind:"progress", seq, step}` 닫힌 형태여야 한다(`heartbeat`·미상 이벤트·구조 없는 호출은 거부).
    *
-   * **정직한 한계**: lease marker는 durable 값이므로 state 파일을 읽을 수 있는 코드에는 비밀이 아니다.
-   * kernel이 발급하는 brand된 스트림 채널은 stream 수용 계층(controller task)의 몫이며 대장 `C-42`다.
+   * **정직한 범위**: 진짜 채널을 쥔 같은 프로세스의 코드는 진행을 낼 수 있다 — 그 코드가 바로 이 attempt를
+   * 시작한 주체다. 밖에서 오는 구조적 사본·재생·lease 복사·sibling 주입은 여기서 전부 닫힌다.
    */
-  recordProgress(input: { taskId: string; actionId: string; leaseMarker: string; event: unknown }): OrchestrationTask {
-    const taskId = assertSlug(input.taskId, "taskId");
-    const actionId = assertSlug(input.actionId, "actionId");
-    const leaseMarker = assertLease(input.leaseMarker);
-    adoptProgressEvent(input.event);
+  recordProgress(input: { channel: unknown; actionId: string; event: unknown }): OrchestrationTask {
+    const actionId = assertSlug(input?.actionId, "actionId");
+    const channel = input?.channel;
+    const chan = typeof channel === "object" && channel !== null ? GENUINE_PROGRESS_CHANNELS.get(channel) : undefined;
+    if (chan === undefined) {
+      throw new OrchestrationError("invalid_progress_channel", "진행 신호가 kernel 발급 worker 채널로 오지 않았다");
+    }
+    const seq = adoptProgressEvent(input.event);
+    // **재생·역순은 커밋 전에 거부한다**(채널 상태는 성공한 커밋에서만 전진한다).
+    if (seq <= chan.lastSeq) {
+      throw new OrchestrationError("invalid_progress_event", "진행 seq가 단조 증가하지 않는다(재생·역순 금지)");
+    }
+    const taskId = chan.taskId;
     this.#mutate((draft, now) => {
+      if (draft.runId !== chan.runId) {
+        throw new OrchestrationError("invalid_progress_channel", "진행 채널의 run 신원이 현재 durable run과 다르다");
+      }
       const task = requireTask(draft, taskId);
       if (task.state !== "running") {
         throw new OrchestrationError("invalid_transition", `진행 기록은 running task만 가능하다 (현재 ${task.state})`);
       }
-      if (task.execution.processLeaseMarker !== leaseMarker) {
-        throw new OrchestrationError("cleanup_lease_mismatch", "진행 신호가 이 attempt의 lease와 다르다");
+      // attempt·lease가 하나라도 어긋나면 이 채널은 죽은 attempt의 것이다(늦은 진행이 부활시키지 못한다).
+      if (task.execution.attemptId !== chan.attemptId || task.execution.processLeaseMarker !== chan.leaseMarker) {
+        throw new OrchestrationError("cleanup_lease_mismatch", "진행 채널이 이 attempt의 lease와 다르다");
       }
       if (task.execution.wallDeadlineAt !== null && now >= task.execution.wallDeadlineAt) {
         throw new OrchestrationError("attempt_wall_exhausted", "이 attempt의 wall deadline을 넘었다(늦은 진행은 되살리지 않는다)");
@@ -1549,6 +1748,7 @@ export class OrchestrationKernel {
         bodies: [],
       };
     });
+    chan.lastSeq = seq;
     return clone(requireTask(this.#state, taskId));
   }
 
@@ -1950,20 +2150,16 @@ export class OrchestrationKernel {
    * 가능했다. 지금은 순서가 계약이다: **pending 커밋 → 효과 → 영수증 커밋**. 미확정 pending이 하나라도
    * 있으면 turn을 닫을 수도(`chargeTurnUsage`), task를 완료·차단할 수도 없다.
    *
-   * **재시작 정합화**: 같은 operation을 다시 열면 pending 레코드는 그대로 두고 새 grant만 준다 —
-   * 멱등 재집행(`already_applied`) 후 영수증을 커밋하면 정확히 하나의 결과로 수렴한다.
+   * **재시작 정합화**: **아직 집행 경계에 들어가지 않은**(`attemptedAt === null`) operation만 다시 열어
+   * 새 grant를 받는다 — 멱등 재집행 후 영수증을 커밋하면 정확히 하나의 결과로 수렴한다.
+   * 이미 집행 경계에 들어간 pending은 **다시 열리지 않는다**(3A 4차 리비전 A2: `effect(g1)` → 재발급 →
+   * `effect(g2)`가 두 번째 효과를 내는 경로를 닫는다). 그런 pending은 살아 있는 grant의 결과 영수증 또는
+   * `reconcileUncertainOperation()`의 `outcome_unknown`으로만 정직하게 닫힌다.
    */
   beginOperation(input: { permit: unknown; operationId: string; actionId: string }): OperationExecutionGrant {
     const operationId = assertSlug(input?.operationId, "operationId");
     const actionId = assertSlug(input?.actionId, "actionId");
-    if (typeof input?.permit !== "object" || input.permit === null) {
-      throw new OrchestrationError("dispatch_permit_invalid", "dispatch permit이 kernel 발급 값이 아니다");
-    }
-    const record = GENUINE_PERMITS.get(input.permit);
-    if (record === undefined) {
-      throw new OrchestrationError("dispatch_permit_invalid", "dispatch permit이 kernel 발급 값이 아니다");
-    }
-    const permit = input.permit as OperationDispatchPermit;
+    const { permit, record } = genuinePermit(input?.permit);
     const op = record.plan.operations.find((o) => o.operationId === operationId);
     if (op === undefined) {
       throw new OrchestrationError("dispatch_operation_unbound", `operation ${operationId}는 이 permit의 계획에 없다`);
@@ -1977,8 +2173,9 @@ export class OrchestrationKernel {
     // grant만 다시 준다 — 재집행은 멱등이고 영수증 커밋이 정확히 하나로 수렴한다.
     const already = current.execution.pendingOperations.find((p) => p.operationId === operationId);
     if (already !== undefined) {
-      requirePendingOperation(current, permit, record.planDigest, operationId);
-      return newGrant(permit, op, operationId, record.planDigest);
+      const pending = requirePendingOperation(current, permit, record.planDigest, operationId);
+      assertNotAttempted(pending);
+      return this.#issueGrant(permit, op, operationId, record.planDigest);
     }
 
     this.#mutate((draft, now) => {
@@ -2003,6 +2200,8 @@ export class OrchestrationKernel {
         turnId: permit.turnId,
         planDigest: record.planDigest,
         beganAt: now,
+        // 아직 아무 효과도 시도되지 않았다 — 집행 경계 진입은 `#markOperationAttempted`가 따로 적는다.
+        attemptedAt: null,
       };
       task.execution = {
         ...task.execution,
@@ -2028,7 +2227,64 @@ export class OrchestrationKernel {
       };
     });
 
-    return newGrant(permit, op, operationId, record.planDigest);
+    return this.#issueGrant(permit, op, operationId, record.planDigest);
+  }
+
+  /**
+   * 일회용 grant 하나를 발급하고, 그 grant에 **이 kernel에 묶인** `markAttempted` 클로저를 심는다
+   * (3A 4차 리비전 A2 — 집행 경계 진입을 durable에 먼저 적는 유일한 통로다).
+   */
+  #issueGrant(
+    permit: OperationDispatchPermit,
+    op: TypedOperation,
+    operationId: string,
+    planDigest: string,
+  ): OperationExecutionGrant {
+    return newGrant(permit, op, operationId, planDigest, () =>
+      this.#markOperationAttempted(permit, planDigest, operationId),
+    );
+  }
+
+  /**
+   * **"외부 효과가 일어났을 수 있다"를 durable pending에 먼저 적는다**(3A 4차 리비전 A2).
+   *
+   * safety-only 커밋이다: 만료·예산 deadline·`cleaning`이 이 기록을 막으면 불확실 구간 자체가 durable에
+   * 남지 않아 정합화가 불가능해진다(그것이 A-3의 미아 pending이다). 이미 표시돼 있으면 아무것도 하지 않는다.
+   */
+  #markOperationAttempted(permit: OperationDispatchPermit, planDigest: string, operationId: string): void {
+    {
+      const task = requireReconcilableTask(this.#state, permit);
+      const pending = requirePendingOperation(task, permit, planDigest, operationId);
+      if (pending.attemptedAt !== null) return; // 멱등
+    }
+    this.#mutate(
+      (draft, now) => {
+        const task = requireReconcilableTask(draft, permit);
+        const pending = requirePendingOperation(task, permit, planDigest, operationId);
+        task.execution = {
+          ...task.execution,
+          pendingOperations: task.execution.pendingOperations.map((p) =>
+            p.operationId === operationId ? { ...p, attemptedAt: now } : p,
+          ),
+        };
+        return {
+          events: [
+            event({
+              at: now,
+              type: "operation_attempted",
+              revision: draft.revision,
+              taskId: permit.taskId,
+              attemptId: pending.attemptId,
+              turnId: pending.turnId,
+              operationId,
+              planDigest: pending.planDigest,
+            }),
+          ],
+          bodies: [],
+        };
+      },
+      { safetyOnly: true },
+    );
   }
 
   /**
@@ -2059,9 +2315,12 @@ export class OrchestrationKernel {
   }
 
   /**
-   * **집행하지 않았거나 집행이 실패한 operation을 닫는다**(3A 3차 리비전 A2).
-   * `denied`/`failed`만 가능하다 — 성공 marker를 만들 수 있는 통로는 `executeUnderGrant` 하나뿐이다.
-   * 이 경로가 있어야 "효과를 포기한 pending"도 durable하게 정합화된다(A3의 미아 pending 방지).
+   * **집행을 시도하지 않은 operation을 닫는다**(3A 3차 리비전 A2 · 4차 리비전 A2로 좁혔다).
+   * `denied`/`failed`만 가능하다 — 성공 marker를 만들 수 있는 통로는 operation kind별 고정 집행기뿐이다.
+   *
+   * **집행 경계에 들어간 pending은 여기서 닫히지 않는다**(4차 리비전 A2): 부분 외부 효과 뒤에 예외가 나면
+   * 이전 판은 그것을 평범한 `failed` 영수증으로 **지울 수 있었다**. 그런 pending은 불확실로 남고
+   * `reconcileUncertainOperation()`의 `outcome_unknown`으로만 정직하게 닫힌다.
    */
   failOperation(input: { grant: unknown; actionId: string; marker: "denied" | "failed" }): OrchestrationTask {
     const actionId = assertSlug(input?.actionId, "actionId");
@@ -2076,7 +2335,113 @@ export class OrchestrationKernel {
         "집행 결과가 있는 grant는 그 결과로 닫아야 한다(recordOperationReceipt)",
       );
     }
+    {
+      // durable 진실이 "시도됐을 수 있다"면 평범한 실패로 닫을 수 없다(예외가 부분 효과를 지우는 경로 차단).
+      const planDigest = GENUINE_PERMITS.get(rec.permit)!.planDigest;
+      const task = requireReconcilableTask(this.#state, rec.permit);
+      assertNotAttempted(requirePendingOperation(task, rec.permit, planDigest, rec.op.operationId));
+    }
     return this.#commitOperationOutcome(rec, { marker, path: null, resultSha256: null, exitCode: null }, actionId);
+  }
+
+  /**
+   * **재시작 안전한 safety-only 정합화**(3A 4차 리비전 A3 — 독립 리뷰가 요구한 durable pending-keyed 경로).
+   *
+   * 이전 판의 결함: permit·grant·outcome handle은 전부 **프로세스 메모리 `WeakMap`**이었다. 재시작하면
+   * `cleaning` pending은 새 permit을 받을 수 없고(`issueOperationDispatchPermit`은 `running`을 요구한다),
+   * 만료·deadline을 넘긴 `running`도 마찬가지이며, 옛 handle이 없으니 `recordOperationReceipt`도
+   * `failOperation`도 부를 수 없었다 → 그 pending은 **영구 미아**가 되고 attempt를 떠나는 모든 전이가
+   * 무한히 막혔다.
+   *
+   * 이 경로는 handle을 **하나도** 요구하지 않는다. 대신 호출자가 durable 신원 전부
+   * (`run/task/attempt/turn/plan/operation/kind/authority`)를 **정확히** 제시해야 하고, 저장된 pending
+   * 레코드와 전수 대조해 하나라도 어긋나면 거부한다.
+   *
+   * **성공은 만들 수 없다.** marker는 호출자 입력이 아니라 **durable 진실에서 파생**된다:
+   * 집행 경계에 들어간 pending(`attemptedAt !== null`)은 `outcome_unknown`, 들어가지 않은 것은 `failed`다.
+   * 경로·hash·exit code는 전부 `null`이며 "외부 효과가 일어나지 않았다"고 단정하지 않는다.
+   *
+   * safety-only이므로 만료·예산 deadline·attempt wall·no-progress를 넘긴 뒤에도, `cleaning`으로 내려간
+   * 뒤에도 지난다. 정합화가 끝나면 pending이 사라지므로 cleanup·settle이 정상 진행된다.
+   */
+  reconcileUncertainOperation(input: {
+    runId: string;
+    taskId: string;
+    attemptId: string;
+    turnId: string;
+    planDigest: string;
+    operationId: string;
+    kind: string;
+    authorityId: string;
+    actionId: string;
+  }): OrchestrationTask {
+    const runId = assertSlug(input?.runId, "runId");
+    const taskId = assertSlug(input?.taskId, "taskId");
+    const attemptId = assertSlug(input?.attemptId, "attemptId");
+    const turnId = assertSlug(input?.turnId, "turnId");
+    const planDigest = assertSha256Local(input?.planDigest);
+    const operationId = assertSlug(input?.operationId, "operationId");
+    const kind = enumOf(input?.kind, APPROVED_OPERATION_KINDS, "kind");
+    const authorityId = assertSlug(input?.authorityId, "authorityId");
+    const actionId = assertSlug(input?.actionId, "actionId");
+    // 신원 묶음은 permit과 **같은 모양**이지만 권위가 아니다 — 여기서 하는 일은 대조뿐이고 결과는
+    // 성공이 될 수 없다(그래서 kernel 발급 handle 없이도 안전하다).
+    const identity = { runId, taskId, attemptId, turnId } as OperationDispatchPermit;
+    let pendingKey = "";
+    this.#mutate(
+      (draft, now) => {
+        const task = requireReconcilableTask(draft, identity);
+        const pending = requirePendingOperation(task, identity, planDigest, operationId);
+        if (pending.kind !== kind || pending.authorityId !== authorityId) {
+          throw new OrchestrationError("invalid_receipt", "durable pending 레코드의 kind·authority가 제시한 신원과 다르다");
+        }
+        if (task.execution.operationReceipts.length >= LIMITS.maxOperationReceipts) {
+          throw new OrchestrationError("operation_limit_exceeded", `attempt당 영수증은 ${LIMITS.maxOperationReceipts}건까지다`);
+        }
+        pendingKey = JSON.stringify([runId, taskId, attemptId, turnId, planDigest, operationId]);
+        // **marker는 durable 진실에서 파생된다**(호출자가 고를 수 없다 — 성공도 불가능하다).
+        const marker: OperationReceipt["marker"] = pending.attemptedAt === null ? "failed" : "outcome_unknown";
+        const receipt: OperationReceipt = {
+          operationId: pending.operationId,
+          kind: pending.kind,
+          authorityId: pending.authorityId,
+          attemptId: pending.attemptId,
+          turnId: pending.turnId,
+          planDigest: pending.planDigest,
+          path: null,
+          resultSha256: null,
+          exitCode: null,
+          marker,
+          at: now,
+        };
+        task.execution = {
+          ...task.execution,
+          pendingOperations: task.execution.pendingOperations.filter((p) => p.operationId !== operationId),
+          operationReceipts: [...task.execution.operationReceipts, receipt],
+        };
+        return {
+          events: [
+            event({
+              at: now,
+              type: "operation_receipt",
+              revision: draft.revision,
+              taskId,
+              actionId,
+              attemptId: pending.attemptId,
+              turnId: pending.turnId,
+              operationId,
+              planDigest: pending.planDigest,
+              marker,
+            }),
+          ],
+          bodies: [],
+        };
+      },
+      { safetyOnly: true },
+    );
+    // 같은 프로세스에 아직 살아 있는 grant가 있었다면 그 자리에서 죽인다(정합화 뒤 영수증 재발행 차단).
+    killLiveGrant(pendingKey);
+    return clone(requireTask(this.#state, taskId));
   }
 
   /** 영수증 커밋 하나(성공·실패 공통). **safety-only**이므로 만료·deadline·cleaning 뒤에도 지난다. */
@@ -2565,7 +2930,7 @@ function assertLease(v: unknown): string {
  */
 const PROGRESS_EVENT_KEYS = ["kind", "seq", "step"] as const;
 
-function adoptProgressEvent(raw: unknown): void {
+function adoptProgressEvent(raw: unknown): number {
   const read = readClosedOnce(raw, PROGRESS_EVENT_KEYS, "진행 이벤트");
   if (read.kind !== "progress") {
     throw new OrchestrationError("invalid_progress_event", "progress 이벤트만 no-progress 시계를 되돌린다");
@@ -2576,6 +2941,7 @@ function adoptProgressEvent(raw: unknown): void {
   if (typeof read.step !== "string" || read.step.length === 0 || codePointLength(read.step) > MAX_PROGRESS_STEP_CHARS) {
     throw new OrchestrationError("invalid_progress_event", `progress.step은 1..${MAX_PROGRESS_STEP_CHARS} 코드 포인트여야 한다`);
   }
+  return read.seq;
 }
 
 function assertSha256Local(v: unknown): string {
@@ -2868,10 +3234,17 @@ function assertForwardWorkAllowed(state: OrchestrationRunState, now: string): vo
  * **시계 역행·이상은 fail closed다.** 커밋 시각이 run 생성 시각보다 이르면 durable 회계·deadline 판정이
  * 전부 무의미해지므로 safety-only 경로에서도 거부한다(그 경우 호출자는 `paused/clock_invalid`로 내려간다 —
  * 다만 그 pause 자체도 이 게이트를 지나야 하므로, 시계가 정상으로 돌아온 뒤에만 durable해진다).
+ *
+ * **`state.updatedAt`도 함께 본다**(3A 4차 리비전 A1). 3차 판은 여기서 run 시작 시각 두 개만 봤고
+ * `#mutate`는 `draft.updatedAt = now`로 **덮어썼다** → safety-only 커밋(회계·정리·취소·pause) 하나로
+ * `updatedAt`을 **뒤로 돌릴** 수 있었고, 그러면 `updatedAt`을 상한으로 쓰는 효과 게이트의 시계 단조
+ * 판정이 무력해져 attempt wall·no-progress 창이 다시 열렸다. `updatedAt`은 마지막 커밋 시각이므로
+ * `phaseStartedAt`·`lastProgressAt`을 포함한 **모든 durable 시각의 상한**이다 — 여기서 한 번 막으면
+ * 모든 mutation 경로(전진·safety-only)가 같은 규칙을 지난다.
  */
 function assertClockSane(state: OrchestrationRunState, now: string): void {
-  if (now < state.createdAt || now < state.accounting.budgetStartedAt) {
-    throw new OrchestrationError("clock_invalid", `커밋 시각이 run 시작보다 이르다(now ${now})`);
+  if (now < state.createdAt || now < state.accounting.budgetStartedAt || now < state.updatedAt) {
+    throw new OrchestrationError("clock_invalid", `커밋 시각이 durable 기록보다 이르다(now ${now})`);
   }
 }
 

@@ -39,7 +39,7 @@ import type { AgentMessageType } from "./orchestrationTypes.js";
 import { APPROVED_PATH_PATTERN, approvedOperationFor, validateApprovalManifest } from "./approvalManifest.js";
 import { manifestDigest, runPaths, validateRunState } from "./orchestrationStore.js";
 import { OrchestrationKernel, createOrchestrationRun, openOrchestrationRun } from "./orchestrationKernel.js";
-import type { PreflightDecision, TaskSeed } from "./orchestrationKernel.js";
+import type { PreflightDecision, TaskSeed, WorkerProgressChannel } from "./orchestrationKernel.js";
 import type { AutopilotMarker } from "./orchestrationTypes.js";
 
 const RUN_ID = "m5c-run";
@@ -174,20 +174,29 @@ function preflight(k: OrchestrationKernel, wanted: string[]): void {
   k.commitPreflightBatch({ baseRevision: batch.revision, actionId: nextAction(), decisions });
 }
 
-/** 진짜 시작 경로 전부를 지난다(ready → prepared → running). lease marker를 돌려준다. */
+/**
+ * 진짜 시작 경로 전부를 지난다(ready → prepared → running). lease marker를 돌려준다.
+ *
+ * 3A 4차 리비전 A1 — 진행 채널은 **`startPreparedTask()`가 시작을 커밋한 그 순간에만** 발급되므로
+ * (durable lease를 베껴 되만들 수 없다) 여기서 받아 lease 기준으로 보관한다.
+ */
+const CHANNELS = new Map<string, WorkerProgressChannel>();
 function startNow(k: OrchestrationKernel, taskId: string): string {
   preflight(k, [taskId]);
   const leaseMarker = nextLease();
-  k.startPreparedTask({ taskId, actionId: nextAction(), leaseMarker });
+  const started = k.startPreparedTask({ taskId, actionId: nextAction(), leaseMarker });
+  CHANNELS.set(leaseMarker, started.progress);
   return leaseMarker;
 }
 
 /**
- * 인정되는 진행 신호 1건. 3A 3차 리비전 A1로 **attempt lease + worker `progress` 이벤트**가 필수다
- * (heartbeat·구조 없는 호출은 no-progress 시계를 되돌리지 못한다).
+ * 인정되는 진행 신호 1건. 3A 4차 리비전 A1로 **kernel 발급 worker 채널 + 단조 seq + worker `progress`
+ * 이벤트**가 필수다(복사한 lease·구조 사본·heartbeat·재생은 no-progress 시계를 되돌리지 못한다).
  */
 function progress(k: OrchestrationKernel, taskId: string, leaseMarker: string, seq = 1): void {
-  k.recordProgress({ taskId, actionId: nextAction(), leaseMarker, event: { kind: "progress", seq, step: "step" } });
+  const channel = CHANNELS.get(leaseMarker);
+  assert.ok(channel, `${taskId}의 진행 채널이 없다`);
+  k.recordProgress({ channel, actionId: nextAction(), event: { kind: "progress", seq, step: "step" } });
 }
 
 /** running → cleaning → cleanup 확인. 완료·차단 수락 자격을 만든다. */
@@ -747,12 +756,13 @@ test("[M5c] 만료 후: 전진은 닫히고 safety-only reducer만 통과한다(
   const expired = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(after) });
 
   // ── 전진은 전부 거부된다 ──
+  // 진행 채널은 이 attempt를 시작한 kernel 인스턴스가 발급한 것이고 durable state를 다시 읽으므로,
+  // 재시작한 `expired` 인스턴스에 넘겨도 만료 게이트가 먼저 닫는다(3A 4차 리비전 A1).
   assert.equal(
     codeOf(() =>
       expired.recordProgress({
-        taskId: "root",
+        channel: CHANNELS.get(lease),
         actionId: nextAction(),
-        leaseMarker: lease,
         event: { kind: "progress", seq: 1, step: "step" },
       }),
     ),

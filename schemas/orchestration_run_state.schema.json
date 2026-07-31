@@ -181,8 +181,8 @@
       "enum": ["write_file", "run_process"]
     },
     "operationReceiptMarker": {
-      "description": "M5c — 집행한 typed operation 1건의 닫힌 결과 marker.",
-      "enum": ["applied", "already_applied", "write_conflict", "denied", "failed"]
+      "description": "M5c — 집행한 typed operation 1건의 닫힌 결과 marker. outcome_unknown은 M5c 3A 4차 리비전(A3)이 더한 fail-safe 종결이다: 일회용 집행 경계에 들어간 뒤(pendingOperation.attemptedAt != null) 결과를 잃어버린 operation은 성공도 실패도 단정할 수 없으므로 이 marker로만 정직하게 닫힌다.",
+      "enum": ["applied", "already_applied", "write_conflict", "denied", "failed", "outcome_unknown"]
     },
     "eventMarker": {
       "description": "M5c — event.marker의 **닫힌 합집합**(대장 C-33): autopilot 결과 · pause 사유 · 전달 결과 · operation 영수증 marker + 정리 결과 2종. 자유 문자열은 없고 새 코드가 자동 편입되지도 않는다. 정본은 src/exec/orchestrationStore.ts의 EVENT_MARKERS다.",
@@ -218,6 +218,7 @@
         "write_conflict",
         "denied",
         "failed",
+        "outcome_unknown",
         "cleanup_confirmed"
       ]
     },
@@ -289,7 +290,7 @@
       "description": "M5c 3A 2차 리비전 — **집행 직전에 durable하게 등록된 operation 1건**. 이 레코드가 존재한다는 것은 '이 attempt의 이 turn의 이 계획에서 이 operation을 집행하려 했다'는 뜻이고 영수증이 커밋되면 사라진다. attempt/turn/planDigest를 함께 담으므로 낡은 attempt·다른 turn·다른 계획의 영수증은 이 레코드와 맞지 않아 거부된다.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["operationId", "kind", "authorityId", "attemptId", "turnId", "planDigest", "beganAt"],
+      "required": ["operationId", "kind", "authorityId", "attemptId", "turnId", "planDigest", "beganAt", "attemptedAt"],
       "properties": {
         "operationId": { "$ref": "#/definitions/slug" },
         "kind": { "$ref": "#/definitions/operationKind" },
@@ -297,7 +298,11 @@
         "attemptId": { "$ref": "#/definitions/slug" },
         "turnId": { "$ref": "#/definitions/slug" },
         "planDigest": { "$ref": "#/definitions/sha256" },
-        "beganAt": { "$ref": "#/definitions/timestamp" }
+        "beganAt": { "$ref": "#/definitions/timestamp" },
+        "attemptedAt": {
+          "description": "M5c 3A 4차 리비전(A2) — **일회용 집행 경계에 들어간 시각**. null이면 아직 아무 외부 효과도 시도되지 않았다(새 grant 발급 가능 · failOperation(denied|failed)으로 종결 가능). null이 아니면 외부 효과가 일어났을 수 있으므로 **새 grant를 발급하지 않고**(operation_attempt_uncertain) 살아 있는 grant의 결과 영수증 또는 재시작 안전한 safety-only 정합화(outcome_unknown)로만 닫힌다.",
+          "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }]
+        }
       }
     },
     "pendingResult": {
@@ -332,6 +337,7 @@
         "turnId",
         "dispatchTurnId",
         "dispatchPlanDigest",
+        "chargedPlanDigest",
         "preflightDigest",
         "phaseStartedAt",
         "wallDeadlineAt",
@@ -359,11 +365,15 @@
         "attemptId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
         "turnId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
         "dispatchTurnId": {
-          "description": "M5c 3A 2차 리비전 — 지금 열려 있는 dispatch turn. issueOperationDispatchPermit이 커밋으로 claim하고 chargeTurnUsage가 그 turn을 닫으며 비운다. null이 아니면 **다른 turn은 permit을 받지 못한다**(durable turn이 null인 동안 두 turn이 각각 permit을 받아 둘 다 집행하는 경로를 닫는다).",
+          "description": "M5c 3A 2차 리비전 — 지금 열려 있는 dispatch turn. issueOperationDispatchPermit이 커밋으로 claim한다. null이 아니면 **다른 turn은 permit을 받지 못한다**(durable turn이 null인 동안 두 turn이 각각 permit을 받아 둘 다 집행하는 경로를 닫는다). **과금은 이 claim을 지우지 않는다**(3A 3차 리비전 A1 — 순서가 과금 → grant → 효과이므로 과금 시점에 닫으면 그 계획의 grant가 죽는다): 끝난 claim(그 turn이 과금됐고 미확정 operation 0)만 **다음 turn의 permit 요청이 교체한다**(lazy replacement).",
           "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }]
         },
         "dispatchPlanDigest": {
           "description": "M5c 3A 2차 리비전 — claim한 turn의 계획 canonical digest. 같은 turn에 다른 계획이 오면 dispatch_plan_conflict다.",
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        },
+        "chargedPlanDigest": {
+          "description": "M5c 3A 4차 리비전(A1) — **생산 turn 과금 권위의 canonical 증거**. kernel 발급 permit으로 과금하는 chargeDispatchTurnUsage()만 이 값을 채우며 값은 그 permit에 묶인 계획의 canonical digest다. 효과 게이트는 turnId(마지막 과금 turn) + 이 값 + dispatchTurnId/dispatchPlanDigest/attemptId를 함께 보므로 run/task/attempt/turn/계획 전부에 묶인 과금만 효과를 승인한다. 권위 없는 chargeTurnUsage()(만료 뒤 재시작 회계·claim 없는 turn)는 이 값을 채우지 않는다 → bare run-global turn ID로 남의 효과를 승인하는 경로가 없다. **런타임 전용 교차 불변식**: null이 아니면 turnId도 null이 아니어야 한다.",
           "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
         },
         "preflightDigest": {
@@ -397,7 +407,7 @@
         "retryDeadlineAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
         "pendingResult": { "oneOf": [{ "$ref": "#/definitions/pendingResult" }, { "type": "null" }] },
         "pendingOperations": {
-          "description": "M5c 3A 2차 리비전 — 집행 직전에 durable하게 등록됐고 아직 영수증이 커밋되지 않은 operation(operationId 정렬·유일). 하나라도 남아 있으면 dispatch turn을 닫을 수도, attempt를 떠날 수도(preflight/pause/resume/settle) task를 완료·차단할 수도 없다. 재시작한 controller는 이 목록으로 '효과는 났는데 결과가 없는' 구간을 정확히 하나의 방법으로 정합화한다. **M5c 3A 3차 리비전(A3) 교차 불변식(런타임 전용 — draft-07으로 표현할 수 없다)**: 각 항목의 attemptId는 execution.attemptId와, turnId는 execution.dispatchTurnId와, planDigest는 execution.dispatchPlanDigest와 **정확히 같아야 한다**. 상태 제약(running|cleaning에서만 존재 가능)은 아래 allOf가 표현한다.",
+          "description": "M5c 3A 2차 리비전 — 집행 직전에 durable하게 등록됐고 아직 영수증이 커밋되지 않은 operation(operationId 정렬·유일). 하나라도 남아 있으면 dispatch turn을 닫을 수도, attempt를 떠날 수도(preflight/pause/resume/settle) task를 완료·차단할 수도 없다. **M5c 3A 4차 리비전(A3) 재시작 경로(정확히 적는다)**: permit·grant·outcome handle은 프로세스 메모리이므로 재시작하면 사라진다. 그래서 정합화 경로는 둘이다 — (1) **같은 프로세스**에서 handle이 살아 있고 attemptedAt이 null이면 새 grant를 받아 멱등 재집행 후 영수증 커밋 (2) **재시작했거나 attemptedAt이 null이 아니면** reconcileUncertainOperation()으로 durable 신원(run/task/attempt/turn/plan/operation/kind/authority)을 전수 대조한 뒤 **성공을 만들지 않는** safety-only 영수증만 커밋한다(attemptedAt != null이면 outcome_unknown, null이면 failed). 이 경로는 만료·예산 deadline·running|cleaning 어디서나 열려 있다. **교차 불변식(런타임 전용 — draft-07으로 표현할 수 없다)**: 각 항목의 attemptId는 execution.attemptId와, turnId는 execution.dispatchTurnId와, planDigest는 execution.dispatchPlanDigest와 **정확히 같아야 한다**. 상태 제약(running|cleaning에서만 존재 가능)은 아래 allOf가 표현한다.",
           "type": "array",
           "maxItems": 8,
           "items": { "$ref": "#/definitions/pendingOperation" }
@@ -667,7 +677,8 @@
             "cleanup_failed",
             "operation_receipt",
             "dispatch_claimed",
-            "operation_began"
+            "operation_began",
+            "operation_attempted"
           ]
         },
         "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
@@ -733,7 +744,7 @@
       ]
     },
     "safetyOnlyEventTypes": {
-      "description": "M5c — safety-only reducer가 남길 수 있는 event 종류(전이 없는 회계·정리 이벤트 포함). artifact_registered·delivery_acknowledged·message_accepted는 **없다**. 정본은 src/exec/orchestrationTypes.ts의 SAFETY_ONLY_EVENT_TYPES다.",
+      "description": "M5c — safety-only reducer가 남길 수 있는 event 종류(전이 없는 회계·정리 이벤트 포함). artifact_registered·delivery_acknowledged·message_accepted는 **없다**. operation_attempted가 여기 있는 이유(3A 4차 리비전 A2): '외부 효과가 일어났을 수 있다'를 durable에 적는 일을 만료·deadline이 막으면 불확실 구간 자체가 durable에 남지 않아 정합화가 불가능해진다. 정본은 src/exec/orchestrationTypes.ts의 SAFETY_ONLY_EVENT_TYPES다.",
       "const": [
         "task_state_changed",
         "usage_charged",
@@ -743,7 +754,8 @@
         "cleanup_failed",
         "task_paused",
         "retry_scheduled",
-        "operation_receipt"
+        "operation_receipt",
+        "operation_attempted"
       ]
     }
   }

@@ -175,6 +175,11 @@ export const EVENT_TYPES = [
   "dispatch_claimed",
   /** M5c 3A 2차 리비전 — operation 1건이 **집행 직전에** durable하게 등록됐다(영수증 커밋으로 닫힌다). */
   "operation_began",
+  /**
+   * M5c 3A 4차 리비전 A2 — operation 1건이 **일회용 집행 경계에 들어갔다**(외부 효과가 일어났을 수 있다).
+   * 이 표시 뒤에는 새 grant를 발급하지 않는다: 재집행이 아니라 **정직한 정합화**만 남는다.
+   */
+  "operation_attempted",
 ] as const;
 export type OrchestrationEventType = (typeof EVENT_TYPES)[number];
 
@@ -248,6 +253,11 @@ export const SAFETY_ONLY_EVENT_TYPES = [
   "task_paused",
   "retry_scheduled",
   "operation_receipt",
+  /**
+   * "효과가 일어났을 수 있다"를 durable에 적는 일은 **막으면 안 된다**(3A 4차 리비전 A2): 만료·deadline이
+   * 그 기록을 막으면 불확실 구간이 durable에 남지 않아 정합화 자체가 불가능해진다.
+   */
+  "operation_attempted",
 ] as const;
 
 /**
@@ -575,7 +585,12 @@ export interface OperationReceipt {
   resultSha256: string | null;
   /** `run_process`의 종료 코드(정상 종료만). 그 밖은 null. */
   exitCode: number | null;
-  marker: "applied" | "already_applied" | "write_conflict" | "denied" | "failed";
+  /**
+   * `outcome_unknown`은 **3A 4차 리비전 A3**가 더한 fail-safe 종결이다: 일회용 집행 경계에 들어간 뒤
+   * (`PendingOperation.attemptedAt !== null`) 결과를 잃어버린 operation은 "실패했다"고 단정할 수 없다 —
+   * 외부 효과가 일어났을 수도 있다. 성공도 실패도 아닌 이 marker만 그 pending을 정직하게 닫는다.
+   */
+  marker: "applied" | "already_applied" | "write_conflict" | "denied" | "failed" | "outcome_unknown";
   at: string;
 }
 
@@ -597,6 +612,13 @@ export interface PendingOperation {
   /** 이 attempt가 durable하게 claim한 계획의 canonical digest. */
   planDigest: string;
   beganAt: string;
+  /**
+   * **일회용 집행 경계에 들어간 시각**(3A 4차 리비전 A2). `null`이면 아직 아무 효과도 시도되지 않았다 →
+   * 새 grant를 발급해 다시 집행할 수 있고 `failOperation(denied|failed)`으로 정직하게 닫을 수 있다.
+   * `null`이 아니면 **외부 효과가 일어났을 수 있다** → 새 grant를 발급하지 않고(`operation_attempt_uncertain`)
+   * 살아 있는 grant의 결과 영수증 또는 재시작 안전한 safety-only 정합화(`outcome_unknown`)로만 닫힌다.
+   */
+  attemptedAt: string | null;
 }
 
 /** 아직 durable 완료 커밋 전인 결과(cleanup 확인을 기다리는 동안 보관한다). */
@@ -618,12 +640,27 @@ export interface TaskExecution {
   turnId: string | null;
   /**
    * **지금 열려 있는 dispatch turn**(3A 2차 리비전 A1). `issueOperationDispatchPermit()`이 커밋으로
-   * claim하고 `chargeTurnUsage()`가 그 turn을 닫을 때 비운다. 이것이 null이 아니면 **다른 turn은 permit을
-   * 받을 수 없다** — "durable turn이 null인 동안 두 turn이 각각 permit을 받아 둘 다 집행"이 불가능해진다.
+   * claim한다. 이것이 null이 아니면 **다른 turn은 permit을 받을 수 없다** — "durable turn이 null인 동안
+   * 두 turn이 각각 permit을 받아 둘 다 집행"이 불가능해진다.
+   *
+   * **과금은 이 claim을 지우지 않는다**(3A 3차 리비전 A1 — 순서가 과금 → grant → 효과이므로 과금 시점에
+   * 닫으면 바로 그 계획의 grant가 죽는다). 닫기는 **지연**된다: 끝난 claim(= 그 turn이 과금됐고 미확정
+   * operation이 0)만 **다음 turn의 permit 요청이 교체**한다(lazy replacement). 아직 과금되지 않았거나
+   * 미확정 operation이 남은 claim은 계속 다른 turn을 막는다.
    */
   dispatchTurnId: string | null;
   /** claim한 turn의 계획 canonical digest. 같은 turn에 **다른 계획**이 오면 fail closed다. */
   dispatchPlanDigest: string | null;
+  /**
+   * **생산 turn 과금 권위의 canonical 증거**(3A 4차 리비전 A1). `chargeDispatchTurnUsage()`가
+   * **kernel 발급 permit**으로 과금할 때만 채워지며, 값은 그 permit에 묶인 계획의 canonical digest다.
+   * 효과 게이트는 `turnId`(= 마지막 과금 turn) + 이 값 + claim된 `dispatchTurnId`/`dispatchPlanDigest`/
+   * `attemptId`를 함께 보므로 **run/task/attempt/turn/계획 전부에 묶인 과금**만 효과를 승인한다.
+   *
+   * 권위 없는 `chargeTurnUsage()`(만료 뒤 재시작 회계 · claim 없는 turn)는 이 값을 **채우지 않는다** →
+   * 회계는 잃지 않으면서 "bare run-global turn ID로 남의 효과를 승인"하는 경로가 존재하지 않는다.
+   */
+  chargedPlanDigest: string | null;
   /** preflight가 봉인한 결정의 digest — 시작 직전에 다시 계산해 대조한다. */
   preflightDigest: string | null;
   phaseStartedAt: string | null;
@@ -653,6 +690,7 @@ export function emptyTaskExecution(): TaskExecution {
     turnId: null,
     dispatchTurnId: null,
     dispatchPlanDigest: null,
+    chargedPlanDigest: null,
     preflightDigest: null,
     phaseStartedAt: null,
     wallDeadlineAt: null,

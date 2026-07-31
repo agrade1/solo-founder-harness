@@ -55,9 +55,11 @@ const RUN_ID = "m4c-acceptance";
 const MILESTONE = "m4c";
 const MARKER = "RAW-ARTIFACT-BODY-MUST-NOT-BE-COPIED-m4c-7b31";
 
+// tick은 **프로세스 전역으로 단조**다(V3 M5c 3A 4차 리비전 A1): 커밋 시각이 durable `updatedAt`보다
+// 이르면 모든 mutation이 `clock_invalid`이므로, kernel을 다시 열 때 시각이 0으로 되돌아가면 안 된다.
+let clockTick = 0;
 function makeClock() {
-  let n = 0;
-  return () => new Date(Date.UTC(2026, 6, 27, 0, 0, n++));
+  return () => new Date(Date.UTC(2026, 6, 27, 0, 0, clockTick++));
 }
 
 function manifest(over = {}) {
