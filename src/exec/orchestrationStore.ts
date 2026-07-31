@@ -288,6 +288,10 @@ export const OPERATION_RECEIPT_KEYS = [
   "operationId",
   "kind",
   "authorityId",
+  // M5c 3A 3차 리비전 A2 — 영수증에도 실행 신원을 남긴다(claim이 닫힌 뒤에도 재구성 가능).
+  "attemptId",
+  "turnId",
+  "planDigest",
   "path",
   "resultSha256",
   "exitCode",
@@ -369,6 +373,7 @@ export const EVENT_KEYS = [
   "attemptId",
   "turnId",
   "operationId",
+  "planDigest",
   "marker",
   "tokenDelta",
   "elapsedMs",
@@ -464,6 +469,9 @@ function validateOperationReceipt(raw: unknown, what: string): OperationReceipt 
     operationId: assertSlug(o.operationId, `${what}.operationId`),
     kind: enumValue(o.kind, APPROVED_OPERATION_KINDS, `${what}.kind`),
     authorityId: assertSlug(o.authorityId, `${what}.authorityId`),
+    attemptId: assertSlug(o.attemptId, `${what}.attemptId`),
+    turnId: assertSlug(o.turnId, `${what}.turnId`),
+    planDigest: assertSha256(o.planDigest, `${what}.planDigest`),
     path: o.path === null ? null : normalizeWorkspacePath(o.path, `${what}.path`),
     resultSha256: o.resultSha256 === null ? null : assertSha256(o.resultSha256, `${what}.resultSha256`),
     exitCode: o.exitCode === null ? null : boundedInt(o.exitCode, `${what}.exitCode`, -255, 255),
@@ -576,6 +584,21 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     bad("cleanup이 확인되지 않았다");
   }
   if (state === "completed" && exec.pendingResult !== null) bad("완료된 task에 미확정 결과가 남아 있다");
+  // **미확정 operation은 활성 attempt에만 존재할 수 있다**(M5c 3A 3차 리비전 A3). 그 밖의 상태는
+  // 전부 attempt를 떠났거나 리셋되는 상태이므로, 거기 pending이 남아 있다는 것은 곧 "효과 기록을
+  // 잃어버릴 수 있는 state"라는 뜻이다 → 커밋과 load가 같은 검사 하나로 막는다.
+  if (exec.pendingOperations.length > 0) {
+    if (state !== "running" && state !== "cleaning") {
+      bad("미확정 typed operation은 running|cleaning에만 존재할 수 있다");
+    }
+    for (const p of exec.pendingOperations) {
+      // pending은 **자기 attempt/turn/계획에 묶여** 있어야 한다. 이 셋이 갈라지면 어떤 영수증이 어떤
+      // 효과를 닫는지 durable에서 판정할 수 없다(그리고 dispatch claim이 닫혀 있으면 정합화가 불가능하다).
+      if (p.attemptId !== exec.attemptId) bad(`pending operation ${p.operationId}이 현재 attempt의 것이 아니다`);
+      if (p.turnId !== exec.dispatchTurnId) bad(`pending operation ${p.operationId}의 turn이 열린 dispatch claim과 다르다`);
+      if (p.planDigest !== exec.dispatchPlanDigest) bad(`pending operation ${p.operationId}의 계획이 claim된 계획과 다르다`);
+    }
+  }
   return exec;
 }
 
@@ -747,6 +770,7 @@ export function validateEvent(raw: unknown): OrchestrationEvent {
     attemptId: o.attemptId === null ? null : assertSlug(o.attemptId, "event.attemptId"),
     turnId: o.turnId === null ? null : assertSlug(o.turnId, "event.turnId"),
     operationId: o.operationId === null ? null : assertSlug(o.operationId, "event.operationId"),
+    planDigest: o.planDigest === null ? null : assertSha256(o.planDigest, "event.planDigest"),
     marker: o.marker === null ? null : enumValue(o.marker, EVENT_MARKERS, "event.marker"),
     tokenDelta: o.tokenDelta === null ? null : boundedInt(o.tokenDelta, "event.tokenDelta", 0, LIMITS.maxAccountedTokens),
     elapsedMs: o.elapsedMs === null ? null : boundedInt(o.elapsedMs, "event.elapsedMs", 0, LIMITS.maxAccountedElapsedMs),

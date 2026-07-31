@@ -18,6 +18,7 @@
  */
 import {
   CONTROLLER_ACTIONS,
+  CONTROLLER_ACTION_DATA_KEYS,
   LIMITS,
   type ApprovedDependency,
   type ApprovedExecutable,
@@ -28,6 +29,7 @@ import {
   OrchestrationError,
   SHA256_PATTERN,
   SLUG_PATTERN,
+  type ValidatePlanData,
   assertSlug,
   assertTimestamp,
   codePointLength,
@@ -35,6 +37,7 @@ import {
   isSlug,
   normalizeWorkspacePath,
 } from "./orchestrationTypes.js";
+import { readOwnArray, readOwnData } from "./typedPlan.js";
 
 /**
  * 로드맵 §6의 기본 상위 specialist 7종 — **이 레포의 유일한 정본 registry**다.
@@ -134,14 +137,6 @@ export const WRITE_FILE_AUTHORITY_KEYS = ["authorityId", "kind", "path", "maxByt
  */
 export const RUN_PROCESS_AUTHORITY_KEYS = ["authorityId", "kind", "action", "data", "timeoutMs"] as const;
 
-/**
- * 데이터 인자 1개의 형태. **`-`로 시작할 수 없다** — 그것이 `--eval`·`--require`·`--experimental-*` 같은
- * 런타임 옵션과 데이터를 가르는 유일하게 단순하고 빈틈없는 규칙이다(고정 entrypoint가 argv[1]이므로
- * Node 옵션 자리는 애초에 없지만, entrypoint 자신의 파서까지 데이터로 닫아 둔다).
- */
-export const CONTROLLER_DATA_ARG_PATTERN = "^[^-\\u0000][^\\u0000]*$";
-const CONTROLLER_DATA_ARG_RE = new RegExp(CONTROLLER_DATA_ARG_PATTERN, "u");
-
 /** 구체적인 approved commit — 40자 소문자 hex만. 짧은 해시·브랜치·tag는 거부한다. */
 export const COMMIT_PATTERN = "^[0-9a-f]{40}$";
 const COMMIT_RE = new RegExp(COMMIT_PATTERN);
@@ -177,11 +172,31 @@ const DOMAIN_RE = new RegExp(DOMAIN_PATTERN);
 export const APPROVED_PATH_PATTERN = "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$";
 const APPROVED_PATH_RE = new RegExp(APPROVED_PATH_PATTERN);
 
+/**
+ * **호출자 소유 객체를 한 번에 평범한 데이터로 입양한다**(3A 3차 리비전 `C2`).
+ *
+ * 이전 판은 원본 객체를 그대로 들고 다니며 같은 property를 **여러 번** 읽었다 → 교대 getter가
+ * "검증한 `action`"과 "저장하는 `action`"을 다르게 만들 수 있었고(선언 enum 밖 값 반환), proxy trap이
+ * 던진 `OrchestrationError`가 그대로 나가 **호출자가 진단 taxonomy를 고를 수 있었다**.
+ *
+ * 지금은 `typedPlan.readOwnData`(이미 계획 경계에서 쓰는 정본)를 재사용해 **accessor·`Proxy`·계약 밖
+ * prototype·symbol key를 거부**하고 descriptor의 `value`만 한 번 읽는다 → 호출자 코드가 **실행되지 않는다**.
+ */
 function asObject(v: unknown, what: string): Record<string, unknown> {
-  if (typeof v !== "object" || v === null || Array.isArray(v)) {
-    throw new OrchestrationError("invalid_manifest", `${what}는 객체여야 한다`);
+  const read = readOwnData(v);
+  if (read === null) {
+    throw new OrchestrationError("invalid_manifest", `${what}는 accessor·proxy 없는 순수 데이터 객체여야 한다`);
   }
-  return v as Record<string, unknown>;
+  return read;
+}
+
+/** 같은 규칙의 배열 판(여분 property·accessor 인덱스·`Proxy`를 거부하고 항목을 한 번씩 옮긴다). */
+function asArray(v: unknown, what: string): unknown[] {
+  const read = readOwnArray(v);
+  if (read === null) {
+    throw new OrchestrationError("invalid_manifest", `${what}는 accessor·proxy 없는 순수 데이터 배열이어야 한다`);
+  }
+  return read;
 }
 
 function closedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
@@ -207,11 +222,11 @@ function normalizedList(
   normalize: (item: unknown, what: string) => string,
   minItems = 0,
 ): string[] {
-  if (!Array.isArray(raw)) throw new OrchestrationError("invalid_manifest", `${what}는 배열이어야 한다`);
-  if (raw.length < minItems) throw new OrchestrationError("invalid_manifest", `${what}는 최소 ${minItems}개가 필요하다`);
-  if (raw.length > max) throw new OrchestrationError("invalid_manifest", `${what}는 ${max}개 이하여야 한다`);
+  const items = asArray(raw, what);
+  if (items.length < minItems) throw new OrchestrationError("invalid_manifest", `${what}는 최소 ${minItems}개가 필요하다`);
+  if (items.length > max) throw new OrchestrationError("invalid_manifest", `${what}는 ${max}개 이하여야 한다`);
   const seen = new Set<string>();
-  for (const item of raw) {
+  for (const item of items) {
     const n = normalize(item, `${what} 항목`);
     if (seen.has(n)) throw new OrchestrationError("invalid_manifest", `${what}에 중복이 있다: ${n}`);
     seen.add(n);
@@ -362,35 +377,52 @@ function validateApprovedOperation(
       `${what}.action은 ${CONTROLLER_ACTIONS.join("|")} 중 하나여야 한다(임의 명령·script·module 지정자는 표현할 필드가 없다)`,
     );
   }
-  if (!Array.isArray(o.data)) throw new OrchestrationError("invalid_manifest", `${what}.data는 배열이어야 한다`);
-  if (o.data.length > LIMITS.maxOperationArgs) {
-    throw new OrchestrationError("invalid_manifest", `${what}.data는 ${LIMITS.maxOperationArgs}개 이하여야 한다`);
-  }
-  const data: string[] = [];
-  for (const a of o.data) {
-    // 데이터 인자도 **정확한 바이트**로 전달돼야 한다: 고립 surrogate는 spawn 경계에서 U+FFFD로 바뀌어
-    // "승인된 인자와 정확히 같은가"가 흉내가 된다. 그리고 `-`로 시작하는 항목은 **데이터가 아니라 옵션**이므로
-    // 거부한다 — `--eval`/`--require`/`--input-type` 계열이 데이터 자리로 새는 통로를 형태로 닫는다.
-    if (
-      typeof a !== "string" ||
-      a.length === 0 ||
-      a.includes("\0") ||
-      hasLoneSurrogate(a) ||
-      codePointLength(a) > LIMITS.maxOperationArgLength ||
-      !CONTROLLER_DATA_ARG_RE.test(a)
-    ) {
-      throw new OrchestrationError(
-        "operation_data_not_approved",
-        `${what}.data 항목은 NUL·고립 surrogate 없는 bounded 문자열이고 '-'로 시작할 수 없다`,
-      );
-    }
-    data.push(a);
-  }
+  const action = o.action as ControllerAction;
   const timeoutMs = boundedInt(o.timeoutMs, `${what}.timeoutMs`, 100, 3_600_000);
   if (timeoutMs > ctx.maxAttemptElapsedMs) {
     throw new OrchestrationError("invalid_manifest", `${what}.timeoutMs는 autopilotPolicy.maxAttemptElapsedMs 이하여야 한다`);
   }
-  return { authorityId, kind, action: o.action as ControllerAction, data, timeoutMs };
+  return { authorityId, kind, action, data: validateActionData(o.data, action, `${what}.data`, ctx), timeoutMs };
+}
+
+/**
+ * **action별 입력 계약**(3A 3차 리비전 B2 · 대장 `B-10`).
+ *
+ * 이전 판은 `data: string[]`(0..16 임의 문자열)이었다 → arity·경로 의미·소유권·읽기 범위를 **미래 launcher가
+ * 지어내야 했고**, 그래서 그 인터페이스는 과승인이거나 폐기 대상이었다. 지금은 action마다 **정확한 key 집합과
+ * 값의 의미**가 있다: `validate-plan`은 정확히 `{ planPath }` 하나이며 그 경로는 정규화된 workspace-relative
+ * 경로이고 승인된 `writableRoots` 안 · 그 task의 승인 ownership 안이어야 한다.
+ *
+ * 별도의 `readableRoots`를 새로 만들지 않았다: 읽기 범위를 **이미 승인된 쓰기 범위 안쪽으로** 좁히는 것이
+ * 더 적은 권한이고(fail closed) 승인 문서에 새 축을 열지 않는다.
+ */
+function validateActionData(
+  raw: unknown,
+  action: ControllerAction,
+  what: string,
+  ctx: { writableRoots: string[]; approvedOwnership: string[] | undefined },
+): ValidatePlanData {
+  const o = asObject(raw, what);
+  closedKeys(o, CONTROLLER_ACTION_DATA_KEYS[action], what);
+  // 경로는 **정확한 바이트**여야 한다: 고립 surrogate는 파일 시스템·spawn 경계에서 U+FFFD로 바뀌어
+  // "승인된 인자와 정확히 같은가"가 흉내가 된다. `normalizeWorkspacePath`가 그것까지 함께 거부한다.
+  let planPath: string;
+  try {
+    planPath = normalizeWorkspacePath(o.planPath, `${what}.planPath`);
+  } catch {
+    throw new OrchestrationError("operation_data_not_approved", `${what}.planPath는 정규화 가능한 workspace-relative 경로여야 한다`);
+  }
+  // 승인 문서에는 **이미 정규화된 형태**만 담긴다(같은 파일을 가리키는 두 표기가 승인에 남지 않는다).
+  if (o.planPath !== planPath || codePointLength(planPath) > LIMITS.maxPathLength) {
+    throw new OrchestrationError("operation_data_not_approved", `${what}.planPath는 이미 정규화된 bounded 경로여야 한다`);
+  }
+  if (!ctx.writableRoots.some((root) => pathWithin(planPath, root))) {
+    throw new OrchestrationError("operation_outside_writable_root", `${what}.planPath가 승인된 writableRoots 밖이다`);
+  }
+  if (ctx.approvedOwnership !== undefined && !ctx.approvedOwnership.some((own) => pathWithin(planPath, own))) {
+    throw new OrchestrationError("operation_not_owned", `${what}.planPath가 그 task의 승인된 ownership 밖이다`);
+  }
+  return { planPath };
 }
 
 function validateDependency(raw: unknown): ApprovedDependency {
@@ -461,14 +493,12 @@ export function validateApprovalManifest(raw: unknown): MilestoneApprovalManifes
     ownershipByTask[taskId] = paths;
   }
 
-  if (!Array.isArray(o.allowedDependencies)) {
-    throw new OrchestrationError("invalid_manifest", "manifest.allowedDependencies는 배열이어야 한다");
-  }
-  if (o.allowedDependencies.length > LIMITS.maxAllowedDependencies) {
+  const depsRaw = asArray(o.allowedDependencies, "manifest.allowedDependencies");
+  if (depsRaw.length > LIMITS.maxAllowedDependencies) {
     throw new OrchestrationError("invalid_manifest", `manifest.allowedDependencies는 ${LIMITS.maxAllowedDependencies}개 이하여야 한다`);
   }
   const allowedDependencies: ApprovedDependency[] = [];
-  for (const d of o.allowedDependencies) {
+  for (const d of depsRaw) {
     const dep = validateDependency(d);
     // 같은 이름이 두 버전으로 승인되면 "정확히 pin"이 무의미해진다.
     if (allowedDependencies.some((x) => x.name === dep.name)) {
@@ -495,9 +525,8 @@ export function validateApprovalManifest(raw: unknown): MilestoneApprovalManifes
   const operationAuthorityByTask: Record<string, ApprovedOperation[]> = {};
   for (const taskId of opTaskIds.sort()) {
     assertSlug(taskId, "manifest.operationAuthorityByTask key");
-    const list = opsRaw[taskId];
     const what = `manifest.operationAuthorityByTask[${taskId}]`;
-    if (!Array.isArray(list)) throw new OrchestrationError("invalid_manifest", `${what}는 배열이어야 한다`);
+    const list = asArray(opsRaw[taskId], what);
     if (list.length > LIMITS.maxOperationAuthorities) {
       throw new OrchestrationError("invalid_manifest", `${what}는 ${LIMITS.maxOperationAuthorities}개 이하여야 한다`);
     }

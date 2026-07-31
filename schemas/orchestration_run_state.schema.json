@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://solo-founder-harness/schemas/orchestration_run_state.schema.json",
   "title": "OrchestrationRunState",
-  "description": "V3 M4a/M4b/M4c/M5c — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4/§8.1). **schemaVersion은 \"2\"다**(M5c): v1 바이트는 마이그레이션·기본값 없이 state_pre_m5c_unsupported로 거부한다. message envelope 계약은 v1 그대로다(schemas/agent_message.schema.json). M5c가 더한 것: ⓐ 필수 accounting(run 단위 durable 토큰·경과 회계 — 재시작이 예산을 리셋하지 못한다, 대장 B-12) ⓑ 필수 task.execution(실행 lifecycle 메타데이터 — attempt·wall deadline·processLeaseMarker·terminalMarker·cleanupStatus·retry 예약·pendingResult·operation 영수증, 대장 B-11/B-13/C-18) ⓒ 필수 message.delivery(전달 재시도 메타데이터 — 실패는 수령하지 않고 재시도만 남긴다, 대장 C-12→B) ⓓ task 상태 11종(prepared/cleaning/retry_wait/paused/cancelled 추가; prepared|running|cleaning이 배타 자원·maxSessions를 점유한다) ⓔ 이벤트 종류·전이 사유 확장과 **닫힌 nullable 감사 필드**(actionId/attemptId/turnId/operationId/marker/tokenDelta/elapsedMs — 자유 형식 payload는 없다). M4c 서술도 그대로 유효하다: 필수 manifest(§8 승인 envelope — 없으면 state_pre_m4c_unsupported), message.routeToTaskId/acknowledgedAt(중앙이 정한 durable route — envelope에는 없다), messageType 10종, task.roleId의 7 specialist registry 소속 요구. M4b의 task.resourceClasses도 필수 필드다(같은 class를 요구하는 두 task는 동시에 자원을 점유하지 않는다; 없으면 state_pre_m4b_unsupported). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의의 핵심 동치(state/type/role/marker enum · required · bounds · 닫힌 key 집합)는 src/exec/orchestrationKernel.test.ts가 강제한다. events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript·PID/PGID/argv/env/provider session handle은 어떤 레벨에서도 담지 않는다(§3.2).",
+  "description": "V3 M4a/M4b/M4c/M5c — outputs/orchestration/<run-id>/run_state.json 계약(로드맵 §4/§8.1). **schemaVersion은 \"2\"다**(M5c): v1 바이트는 마이그레이션·기본값 없이 state_pre_m5c_unsupported로 거부한다. message envelope 계약은 v1 그대로다(schemas/agent_message.schema.json). M5c가 더한 것: ⓐ 필수 accounting(run 단위 durable 토큰·경과 회계 — 재시작이 예산을 리셋하지 못한다, 대장 B-12) ⓑ 필수 task.execution(실행 lifecycle 메타데이터 — attempt·wall deadline·processLeaseMarker·terminalMarker·cleanupStatus·retry 예약·pendingResult·operation 영수증, 대장 B-11/B-13/C-18) ⓒ 필수 message.delivery(전달 재시도 메타데이터 — 실패는 수령하지 않고 재시도만 남긴다, 대장 C-12→B) ⓓ task 상태 11종(prepared/cleaning/retry_wait/paused/cancelled 추가; prepared|running|cleaning이 배타 자원·maxSessions를 점유한다) ⓔ 이벤트 종류·전이 사유 확장과 **닫힌 nullable 감사 필드**(actionId/attemptId/turnId/operationId/planDigest/marker/tokenDelta/elapsedMs — 자유 형식 payload는 없다). M4c 서술도 그대로 유효하다: 필수 manifest(§8 승인 envelope — 없으면 state_pre_m4c_unsupported), message.routeToTaskId/acknowledgedAt(중앙이 정한 durable route — envelope에는 없다), messageType 10종, task.roleId의 7 specialist registry 소속 요구. M4b의 task.resourceClasses도 필수 필드다(같은 class를 요구하는 두 task는 동시에 자원을 점유하지 않는다; 없으면 state_pre_m4b_unsupported). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/orchestrationStore.ts의 validateRunState다(신규 검증 의존성 0). 두 정의가 **어긋나지 않는지**(state/type/role/marker enum · required · bounds · 닫힌 key 집합)는 src/exec/orchestrationKernel.test.ts가 구조 대조로 강제한다. 그 테스트는 draft-07 구현을 **실행하지 않으므로** 완전 동치를 주장하지 않는다 — 런타임이 더 엄격한 교차 필드 불변식(pending↔attempt/turn/plan digest 일치 · cleanup·state 정합성 · 경로 정규화 항등 · 고립 UTF-16 surrogate 거부)은 각 자리 description에 **런타임 전용**으로 적어 둔다(대장 C2). events.jsonl은 append-only 감사 이력(해시 체인), messages/<id>.md는 검증된 body 저장소, snapshot.md는 state에서 결정론적으로 재생성하는 파생물이다. 중앙 state가 운반하는 서술은 bounded summary뿐이고 raw artifact 본문·raw transcript·PID/PGID/argv/env/provider session handle은 어떤 레벨에서도 담지 않는다(§3.2).",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -258,14 +258,17 @@
       }
     },
     "operationReceipt": {
-      "description": "M5c — 집행한 typed operation 1건의 영수증. **내용(파일 본문·stdout·argv)은 담지 않는다** — operation 신원 · 경로 · 결과 hash · 안정 marker만 durable하다.",
+      "description": "M5c — 집행한 typed operation 1건의 영수증. **내용(파일 본문·stdout·argv)은 담지 않는다** — operation 신원 · 실행 신원 · 경로 · 결과 hash · 안정 marker만 durable하다. **M5c 3A 3차 리비전(A2)**: attemptId/turnId/planDigest가 필수로 추가됐다 — pending이 사라지고 dispatch claim이 닫힌 뒤에도 '어떤 attempt·turn·계획이 이 효과를 승인했는가'를 durable에서 재구성할 수 있어야 한다. 런타임은 이 셋을 **호출자가 아니라 durable pending 레코드에서** 채우고(구조적 영수증 입력 자체가 없다), marker/path/resultSha256/exitCode도 집행기가 낸 canonical 결과에서만 온다.",
       "type": "object",
       "additionalProperties": false,
-      "required": ["operationId", "kind", "authorityId", "path", "resultSha256", "exitCode", "marker", "at"],
+      "required": ["operationId", "kind", "authorityId", "attemptId", "turnId", "planDigest", "path", "resultSha256", "exitCode", "marker", "at"],
       "properties": {
         "operationId": { "$ref": "#/definitions/slug" },
         "kind": { "$ref": "#/definitions/operationKind" },
         "authorityId": { "$ref": "#/definitions/slug" },
+        "attemptId": { "$ref": "#/definitions/slug" },
+        "turnId": { "$ref": "#/definitions/slug" },
+        "planDigest": { "$ref": "#/definitions/sha256" },
         "path": {
           "description": "write_file이면 정규화된 workspace-relative 경로, run_process면 null.",
           "oneOf": [{ "$ref": "#/definitions/workspacePath" }, { "type": "null" }]
@@ -394,7 +397,7 @@
         "retryDeadlineAt": { "oneOf": [{ "$ref": "#/definitions/timestamp" }, { "type": "null" }] },
         "pendingResult": { "oneOf": [{ "$ref": "#/definitions/pendingResult" }, { "type": "null" }] },
         "pendingOperations": {
-          "description": "M5c 3A 2차 리비전 — 집행 직전에 durable하게 등록됐고 아직 영수증이 커밋되지 않은 operation(operationId 정렬·유일). 하나라도 남아 있으면 turn을 닫을 수도(chargeTurnUsage) task를 완료·차단할 수도 없다. 재시작한 controller는 이 목록으로 '효과는 났는데 결과가 없는' 구간을 정확히 하나의 방법으로 정합화한다.",
+          "description": "M5c 3A 2차 리비전 — 집행 직전에 durable하게 등록됐고 아직 영수증이 커밋되지 않은 operation(operationId 정렬·유일). 하나라도 남아 있으면 dispatch turn을 닫을 수도, attempt를 떠날 수도(preflight/pause/resume/settle) task를 완료·차단할 수도 없다. 재시작한 controller는 이 목록으로 '효과는 났는데 결과가 없는' 구간을 정확히 하나의 방법으로 정합화한다. **M5c 3A 3차 리비전(A3) 교차 불변식(런타임 전용 — draft-07으로 표현할 수 없다)**: 각 항목의 attemptId는 execution.attemptId와, turnId는 execution.dispatchTurnId와, planDigest는 execution.dispatchPlanDigest와 **정확히 같아야 한다**. 상태 제약(running|cleaning에서만 존재 가능)은 아래 allOf가 표현한다.",
           "type": "array",
           "maxItems": 8,
           "items": { "$ref": "#/definitions/pendingOperation" }
@@ -513,7 +516,22 @@
           "description": "M5c — 실행 lifecycle 메타데이터(필수). 이 필드가 없는 pre-M5c state는 마이그레이션하지 않고 state_pre_m5c_unsupported로 거부한다(기본값을 채우면 '정리할 프로세스가 없다'고 거짓 주장하게 된다).",
           "$ref": "#/definitions/taskExecution"
         }
-      }
+      },
+      "allOf": [
+        {
+          "description": "M5c 3A 3차 리비전(A3) — **미확정 typed operation은 활성 attempt(running|cleaning)에만 존재할 수 있다.** 그 밖의 상태는 전부 attempt를 떠났거나(paused/retry_wait/blocked/cancelled/completed) 아직 시작하지 않은(pending/ready/prepared/waiting_children) 상태이고, 그런 state에 pending이 남아 있다는 것은 곧 다음 preflight·resume이 효과 기록을 **조용히 지울 수 있다**는 뜻이다. 런타임(validateTaskExecution)이 같은 검사를 커밋과 load 양쪽에서 한다.",
+          "if": {
+            "properties": { "state": { "enum": ["running", "cleaning"] } },
+            "required": ["state"]
+          },
+          "then": true,
+          "else": {
+            "properties": {
+              "execution": { "properties": { "pendingOperations": { "maxItems": 0 } } }
+            }
+          }
+        }
+      ]
     },
     "message": {
       "type": "object",
@@ -594,7 +612,7 @@
       }
     },
     "event": {
-      "description": "events.jsonl 한 줄의 계약. prevHash는 직전 줄 텍스트의 SHA-256이며 첫 줄은 64개의 '0'이다. state.lastEventId/lastEventHash와 어긋나면 load에서 fail-closed. stateDigest는 커밋의 마지막 이벤트에만 있는 state 내용 해시로, load가 재계산해 대조한다 — 문법적으로 유효한 run_state.json 편집만으로 kernel 상태 전이를 우회할 수 없게 하는 durable binding이다(키 없는 digest이므로 state와 events.jsonl을 모두 일관되게 재작성하는 위조는 감사 대상으로 남는다). M5c가 더한 감사 필드는 **전부 닫힌 nullable 값**이며 자유 형식 payload가 없다: actionId(호출자가 준 멱등 action 신원 — 애매한 커밋 실패에서 '내 요청이 durable해졌는가'를 판정하는 근거, 대장 C-37) · attemptId · turnId · operationId · marker · tokenDelta · elapsedMs.",
+      "description": "events.jsonl 한 줄의 계약. prevHash는 직전 줄 텍스트의 SHA-256이며 첫 줄은 64개의 '0'이다. state.lastEventId/lastEventHash와 어긋나면 load에서 fail-closed. stateDigest는 커밋의 마지막 이벤트에만 있는 state 내용 해시로, load가 재계산해 대조한다 — 문법적으로 유효한 run_state.json 편집만으로 kernel 상태 전이를 우회할 수 없게 하는 durable binding이다(키 없는 digest이므로 state와 events.jsonl을 모두 일관되게 재작성하는 위조는 감사 대상으로 남는다). M5c가 더한 감사 필드는 **전부 닫힌 nullable 값**이며 자유 형식 payload가 없다: actionId(호출자가 준 멱등 action 신원 — 애매한 커밋 실패에서 '내 요청이 durable해졌는가'를 판정하는 근거, 대장 C-37) · attemptId · turnId · operationId · planDigest · marker · tokenDelta · elapsedMs.",
       "type": "object",
       "additionalProperties": false,
       "required": [
@@ -614,6 +632,7 @@
         "attemptId",
         "turnId",
         "operationId",
+        "planDigest",
         "marker",
         "tokenDelta",
         "elapsedMs"
@@ -691,6 +710,10 @@
         "attemptId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
         "turnId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
         "operationId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+        "planDigest": {
+          "description": "M5c 3A 3차 리비전(A2) — dispatch/operation event가 어떤 계획에 묶였는지(canonical digest). claim이 닫히고 pending이 사라진 뒤에도 감사 로그만으로 영수증↔계획 binding을 재구성할 수 있다.",
+          "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
+        },
         "marker": { "oneOf": [{ "$ref": "#/definitions/eventMarker" }, { "type": "null" }] },
         "tokenDelta": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 100000000 }, { "type": "null" }] },
         "elapsedMs": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 86400000 }, { "type": "null" }] }

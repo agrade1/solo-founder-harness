@@ -12,17 +12,17 @@
  *   durable 상태 변화는 전부 **효과 0**으로 거부된다.
  * - 권위는 **deny-by-default**다: 부재 · 다른 task · kind 불일치 · sibling 소유 · ownership 밖 · 부모/대상
  *   symlink · 비일반 파일 · 바이트 초과.
- * - 발행은 **경쟁을 예방한다**(3A 리비전 A3): 부재 대상은 `link(2)`로 덮어쓰지 않고, 교체는 preimage
- *   신원·내용을 발행 직전에 다시 확인하며, 부모·temp 경로가 교체되면 거부한다. 남의 바이트는 안 바뀐다.
- * - 실패 경로는 fd·temp를 남기지 않고 안정 코드로 접히며, `applied`는 **디렉터리 fsync 뒤에만** 나온다.
- * - 프로세스는 **명세만** 나온다(spawn 0) — 실행 파일·argv·timeout은 승인 레코드에서만 온다.
- * - JSON Schema와 런타임이 **동치**다(draft-07 maxLength = 코드 포인트 · 고립 surrogate 거부).
+ * - **발행은 예방 불가라서 존재하지 않는다**(3A 3차 리비전 A4): 신규 파일 발행은 `write_publish_unsupported`
+ *   이고 **파일 시스템 부작용이 0**이다(temp도 만들지 않는다). 기존 대상 교체는 `write_replace_unsupported`.
+ *   남는 것은 바이트를 만들지 않는 판정뿐이며 `already_applied`는 **디렉터리 fsync 뒤에만** 나온다.
+ * - 실패 경로는 fd를 남기지 않고 안정 코드로 접히며, 정리 미확인은 1차 오류에 **가려지지 않는다**.
+ * - 프로세스는 **opaque 일회용 권능만** 나온다(spawn 0) — 실행 파일·argv·digest는 노출되지 않는다.
+ * - JSON Schema와 런타임 계약이 **어긋나지 않는다**(구조 대조 — draft-07 구현은 실행하지 않는다).
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import {
-  chmodSync,
   closeSync,
   fstatSync,
   lstatSync,
@@ -33,7 +33,6 @@ import {
   renameSync,
   rmSync,
   symlinkSync,
-  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,7 +76,8 @@ import {
   WRITE_FILE_OPERATION_KEYS,
   __setPublicationSeamsForTest,
   applyWriteFile,
-  resolveProcessLaunchSpec,
+  isGenuineLaunchCapability,
+  resolveProcessLaunchCapability,
   resolveWriteFileAuthority,
   validateTypedExecutionPlan,
   type PublicationSeam,
@@ -165,7 +165,7 @@ const OPERATION_AUTHORITY = {
     { authorityId: "w-small", kind: "write_file", path: "docs/small.md", maxBytes: 8 },
     { authorityId: "w-nested", kind: "write_file", path: "docs/nested/a.md", maxBytes: 1024 },
     { authorityId: "w-linked", kind: "write_file", path: "src/linked/a.md", maxBytes: 1024 },
-    { authorityId: "p-node", kind: "run_process", action: "validate-plan", data: ["docs/plan.json"], timeoutMs: 5_000 },
+    { authorityId: "p-node", kind: "run_process", action: "validate-plan", data: { planPath: "docs/plan.json" }, timeoutMs: 5_000 },
   ],
   sibling: [{ authorityId: "w-sib", kind: "write_file", path: "docs/sib.md", maxBytes: 1024 }],
   // manifest.ownershipByTask에 **없는** child — 소유 판정은 dispatch 시점 durable ownership이 한다.
@@ -296,14 +296,33 @@ function planFor(
   };
 }
 
-/** kernel이 발급한 봉인 permit. **집행에 쓸 operation은 `permit.plan.operations`에서 꺼낸다.** */
-function permitFor(k: OrchestrationKernel, taskId: string, operations: unknown[], turnId = "turn-1"): OperationDispatchPermit {
-  return k.issueOperationDispatchPermit({ taskId, turnId, actionId: nextId("act"), plan: planFor(k, taskId, operations, turnId) });
+/**
+ * kernel이 발급한 봉인 permit. **집행에 쓸 operation은 `permit.plan.operations`에서 꺼낸다.**
+ *
+ * 3A 3차 리비전 A1 — 계약 순서가 **permit(claim) → 과금 → grant → 효과**이므로, 이 헬퍼가 claim 직후
+ * 그 turn을 과금한다(기본 0 토큰). 과금하지 않으면 grant·효과가 `budget_turn_unaccounted`로 막힌다는
+ * 것을 별도 테스트가 단정한다 — 여기서는 그 순서를 **정상 경로로** 밟는다.
+ */
+function permitFor(
+  k: OrchestrationKernel,
+  taskId: string,
+  operations: unknown[],
+  turnId = "turn-1",
+  usage: { inputTokens: number; outputTokens: number } = { inputTokens: 0, outputTokens: 0 },
+): OperationDispatchPermit {
+  const permit = k.issueOperationDispatchPermit({
+    taskId,
+    turnId,
+    actionId: nextId("act"),
+    plan: planFor(k, taskId, operations, turnId),
+  });
+  k.chargeTurnUsage({ taskId, turnId, actionId: nextId("act"), elapsedMs: 1, ...usage });
+  return permit;
 }
 
 /**
  * 집행 직전 durable 등록을 지나 **일회용 execution grant**를 받는다(3A 2차 리비전 A2).
- * 효과 진입점(`applyWriteFile`/`resolveProcessLaunchSpec`)은 permit이 아니라 이 grant를 요구한다.
+ * 효과 진입점(`applyWriteFile`/`resolveProcessLaunchCapability`)은 permit이 아니라 이 grant를 요구한다.
  */
 function grantFor(k: OrchestrationKernel, permit: OperationDispatchPermit, operationId: string): OperationExecutionGrant {
   return k.beginOperation({ permit, operationId, actionId: nextId("act") });
@@ -345,19 +364,19 @@ function bothPermit(f: Fixture): [TypedWriteFileOperation, OperationExecutionGra
   return [w, grantFor(f.kernel, permit, w.operationId), p, grantFor(f.kernel, permit, p.operationId)];
 }
 
-/** 임시 파일 잔재(operation 신원에서 파생된 접두사). 어떤 경로에서도 0이어야 한다. */
+/**
+ * 임시 파일 잔재. 3A 3차 리비전 A4로 **집행기가 temp를 만드는 경로 자체가 사라졌으므로** 이 값은
+ * 어떤 경로에서도 0이다(이전에는 "정리했다"를 확인하는 값이었고 지금은 "만들지 않았다"를 확인한다).
+ */
 function orphanTemps(dir: string): string[] {
   return readdirSync(dir).filter((f) => f.startsWith(".m5c-op-"));
 }
 
-/** 구조적 영수증 하나(호출자가 만들 수 있는 모양 그대로 — 그래서 위조 시도를 그대로 재현한다). */
-function rec(
-  op: TypedWriteFileOperation | TypedRunProcessOperation,
-  marker: OperationReceipt["marker"],
-  path: string | null = null,
-  resultSha256: string | null = null,
-): OperationReceipt {
-  return { operationId: op.operationId, kind: op.kind, authorityId: op.authorityId, path, resultSha256, exitCode: null, marker, at: "2026-07-30T00:00:00.000Z" };
+/** durable 영수증 1건을 durable state에서 읽는다(집행기 반환값이 아니라 **기록된 값**을 본다). */
+function receiptOf(k: OrchestrationKernel, taskId: string, operationId: string): OperationReceipt {
+  const r = k.getTask(taskId)!.execution.operationReceipts.find((x) => x.operationId === operationId);
+  assert.ok(r, `영수증 ${operationId}이 durable에 없다`);
+  return r;
 }
 
 /** 순수 계획 검증용 binding(집행 권위가 아니다). */
@@ -787,7 +806,9 @@ test("[M5c] 고립 UTF-16 surrogate 경로는 operation·output 어디서든 거
       validateApprovalManifest(
         manifestObject({
           operationAuthorityByTask: {
-            root: [{ authorityId: "p-x", kind: "run_process", action: "validate-plan", data: [`tag=${HIGH}`], timeoutMs: 1000 }],
+            root: [
+              { authorityId: "p-x", kind: "run_process", action: "validate-plan", data: { planPath: `docs/${HIGH}.json` }, timeoutMs: 1000 },
+            ],
           },
         }),
       ),
@@ -823,13 +844,12 @@ test("[M5c] 평범한/위조 permit·grant로는 쓰기도 프로세스 명세�
   for (const bad of forged) {
     // 효과 진입점은 **grant**를 요구하므로 위조·permit-만으로는 `dispatch_grant_invalid`다.
     assert.equal(codeOf(() => applyWriteFile(op, bad)), "dispatch_grant_invalid", JSON.stringify(bad) ?? "?");
-    assert.equal(codeOf(() => resolveProcessLaunchSpec(pop, bad)), "dispatch_grant_invalid");
-    // 순수 판정은 permit도 받으므로 위조는 `dispatch_permit_invalid`다.
+    // 순수 판정(권능 발급 포함)은 permit도 받으므로 위조는 `dispatch_permit_invalid`다.
+    assert.equal(codeOf(() => resolveProcessLaunchCapability(pop, bad)), "dispatch_permit_invalid");
     assert.equal(codeOf(() => resolveWriteFileAuthority(op, bad)), "dispatch_permit_invalid");
   }
   // **진짜 permit이라도 grant 없이는 효과가 없다**(집행 전 durable 등록 강제 — 3A 2차 리비전 A2).
   assert.equal(codeOf(() => applyWriteFile(op, permit)), "dispatch_grant_invalid");
-  assert.equal(codeOf(() => resolveProcessLaunchSpec(pop, permit)), "dispatch_grant_invalid");
   assert.deepEqual(readdirSync(join(f.ws, "docs")), [], "거부 경로가 파일을 남겼다");
   // permit·grant 발급기·factory는 export되지 않는다: 진짜 값은 kernel 인스턴스에서만 나온다.
   assert.equal(typeof (permit as { plan?: unknown }).plan, "object");
@@ -841,8 +861,9 @@ test("[M5c] 평범한/위조 permit·grant로는 쓰기도 프로세스 명세�
 test("[M5c] permit·grant에 묶이지 않은 operation은 집행되지 않는다(변조·합성·다른 계획)", () => {
   const f = fixture();
   startNow(f.kernel, "sibling");
-  const permitA = permitFor(f.kernel, "root", [writeOp()]);
-  const permitB = permitFor(f.kernel, "sibling", [writeOp({ operationId: "op-b", authorityId: "w-sib", path: "docs/sib.md" })]);
+  // turnId는 **run 전체에서 유일**하다(`accounting.chargedTurnIds`가 run 단위다) → task마다 다른 turn.
+  const permitA = permitFor(f.kernel, "root", [writeOp()], "turn-a");
+  const permitB = permitFor(f.kernel, "sibling", [writeOp({ operationId: "op-b", authorityId: "w-sib", path: "docs/sib.md" })], "turn-b");
   const opA = permitA.plan.operations[0] as TypedWriteFileOperation;
   const opB = permitB.plan.operations[0] as TypedWriteFileOperation;
   const grantA = grantFor(f.kernel, permitA, opA.operationId);
@@ -862,8 +883,8 @@ test("[M5c] permit·grant에 묶이지 않은 operation은 집행되지 않는�
   // 계획에 없는 operationId로는 grant 자체가 나오지 않는다.
   assert.equal(codeOf(() => f.kernel.beginOperation({ permit: permitA, operationId: "op-ghost", actionId: nextId("act") })), "dispatch_operation_unbound");
   assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
-  // 위 거부는 grant를 소진하지 않는다 — 진짜 짝은 그대로 집행된다.
-  assert.equal(applyWriteFile(opA, grantA).marker, "applied");
+  // 위 거부는 grant를 소진하지 않는다 — 진짜 짝은 그대로 집행 게이트를 지난다(발행은 A4로 fail closed).
+  assert.equal(codeOf(() => applyWriteFile(opA, grantA)), "write_publish_unsupported");
 });
 
 test("[M5c] permit 발급은 durable 신원·lifecycle을 요구한다(계획이 자칭하는 신원은 무의미하다)", () => {
@@ -915,11 +936,23 @@ test("[M5c] permit 발급은 durable 신원·lifecycle을 요구한다(계획이
   const claimed = after.tasks.find((t) => t.taskId === "root")!.execution;
   assert.equal(claimed.dispatchTurnId, "turn-1");
   assert.equal(typeof claimed.dispatchPlanDigest, "string");
-  // 같은 (turn, 계획)의 재발급은 멱등이다(재시작한 controller가 정합화할 수 있어야 한다).
+  // **정확히 같은 (turn, 계획)의 재발급은 durable 커밋 없이 멱등이다**(3A 3차 리비전 `C1`).
+  // 이전 판은 문서만 "멱등"이라 적고 매번 `dispatch_claimed`를 커밋했다 → 재시작 정합화 loop가 bounded
+  // revision·event 용량을 소모했다. 그 assertion(`rev + 1`)이 결함을 고정하고 있었으므로 **교체**했다.
   const rev = f.kernel.getState().revision;
-  f.kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), plan: good });
+  const events = () => readFileSync(f.kernel.paths.eventsFile, "utf8").trimEnd().split("\n").length;
+  const eventsBefore = events();
+  const again = f.kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), plan: good });
   assert.equal(f.kernel.getState().tasks.find((t) => t.taskId === "root")!.execution.dispatchTurnId, "turn-1");
-  assert.equal(f.kernel.getState().revision, rev + 1, "재발급도 claim 커밋을 남긴다(값은 그대로)");
+  assert.equal(f.kernel.getState().revision, rev, "정확히 같은 claim의 재발급이 revision을 올렸다");
+  assert.equal(events(), eventsBefore, "정확히 같은 claim의 재발급이 dispatch_claimed를 또 남겼다");
+  // 그래도 **새로 봉인된 permit**이 나온다(재시작한 controller가 정합화에 쓸 수 있어야 한다).
+  assert.equal(again.turnId, "turn-1");
+  assert.equal(again.attemptId, f.kernel.getTask("root")!.execution.attemptId);
+  // 반복해도 durable 사실은 그대로다(정합화 loop가 감사 로그를 채우지 않는다).
+  for (let i = 0; i < 3; i++) f.kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", plan: good });
+  assert.equal(f.kernel.getState().revision, rev);
+  assert.equal(events(), eventsBefore);
 });
 
 test("[M5c] A1: durable turn이 null인 동안에도 두 turn/계획이 함께 살아남지 못한다", () => {
@@ -929,8 +962,10 @@ test("[M5c] A1: durable turn이 null인 동안에도 두 turn/계획이 함께 �
   assert.equal(f.kernel.getTask("root")!.execution.turnId, null, "durable turn이 null인 상태에서 시작한다");
   assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, null);
 
-  const permit1 = permitFor(f.kernel, "root", [writeOp()], "turn-1");
-  // ⓐ 다른 turn은 permit을 받지 못한다.
+  // **아직 과금되지 않은 claim**(= 끝나지 않은 turn)을 잡는다.
+  const plan1 = planFor(f.kernel, "root", [writeOp()], "turn-1");
+  const permit1 = f.kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), plan: plan1 });
+  // ⓐ 끝나지 않은 claim이 있는 동안 다른 turn은 permit을 받지 못한다.
   assert.equal(
     codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-2" })], "turn-2")),
     "dispatch_identity_stale",
@@ -943,10 +978,13 @@ test("[M5c] A1: durable turn이 null인 동안에도 두 turn/계획이 함께 �
   // ⓒ durable claim은 정확히 하나다.
   const exec = f.kernel.getTask("root")!.execution;
   assert.equal(exec.dispatchTurnId, "turn-1");
-  // ⓓ claim된 계획만 집행된다.
-  const op1 = permit1.plan.operations[0] as TypedWriteFileOperation;
-  assert.equal(applyWriteFile(op1, grantFor(f.kernel, permit1, op1.operationId)).marker, "applied");
-  assert.deepEqual(readdirSync(join(f.ws, "docs")), ["out.md"]);
+  // ⓓ' 과금됐지만 **미확정 operation이 남은** claim도 다른 turn을 막는다(정합화가 먼저다).
+  f.kernel.chargeTurnUsage({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), inputTokens: 1, outputTokens: 0, elapsedMs: 1 });
+  const held = f.kernel.beginOperation({ permit: permit1, operationId: "op-1", actionId: nextId("act") });
+  assert.equal(
+    codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-4" })], "turn-3")),
+    "dispatch_identity_stale",
+  );
   // ⓔ claim된 turn 말고 다른 turn을 과금할 수 없다(durable turn 신원 갈아끼우기 차단).
   assert.equal(
     codeOf(() =>
@@ -954,6 +992,15 @@ test("[M5c] A1: durable turn이 null인 동안에도 두 turn/계획이 함께 �
     ),
     "turn_conflict",
   );
+  // ⓕ **끝난 claim**(과금 + 미확정 0)만 다음 turn에게 자리를 내준다.
+  f.kernel.failOperation({ grant: held, actionId: nextId("act"), marker: "denied" });
+  const permit2 = permitFor(f.kernel, "root", [writeOp({ operationId: "op-5" })], "turn-4");
+  assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-4");
+  // 그리고 낡은 claim의 grant·permit은 그 자리에서 죽는다.
+  assert.equal(codeOf(() => f.kernel.beginOperation({ permit: permit1, operationId: "op-1", actionId: nextId("act") })), "dispatch_identity_stale");
+  const op5 = permit2.plan.operations[0] as TypedWriteFileOperation;
+  assert.equal(codeOf(() => applyWriteFile(op5, grantFor(f.kernel, permit2, op5.operationId))), "write_publish_unsupported");
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
 });
 
 test("[M5c] A1: 공개 getState()를 monkey-patch해도 취소·정리된 task를 되살릴 수 없다", () => {
@@ -1000,55 +1047,50 @@ test("[M5c] lifecycle·attempt·turn이 어긋나면 발급된 permit도 효과 
   {
     const f = fixture();
     const lease = startNow(f.kernel, "sibling"); // sibling으로 attempt 순환을 만든다
-    const permit = permitFor(f.kernel, "sibling", [writeOp({ authorityId: "w-sib", path: "docs/sib.md" })]);
+    const permit = permitFor(f.kernel, "sibling", [writeOp({ authorityId: "w-sib", path: "docs/sib.md" })], "turn-s1");
     const op = permit.plan.operations[0] as TypedWriteFileOperation;
     const grant = grantFor(f.kernel, permit, op.operationId);
     const firstAttempt = permit.attemptId;
 
     f.kernel.recordTerminal({ taskId: "sibling", actionId: nextId("act"), marker: "worker_failed" });
     f.kernel.confirmCleanup({ taskId: "sibling", actionId: nextId("act"), leaseMarker: lease });
+    // **A3: 미확정 operation을 남긴 채 attempt를 떠날 수 없다** — 먼저 정합화한다(cleaning에서도 가능).
+    assert.equal(codeOf(() => f.kernel.settleCleanedAttempt({ taskId: "sibling", actionId: nextId("act") })), "operation_pending_unreconciled");
+    f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
     f.kernel.settleCleanedAttempt({ taskId: "sibling", actionId: nextId("act") });
     assert.equal(f.kernel.getTask("sibling")!.state, "retry_wait");
     startNow(f.kernel, "sibling");
     assert.equal(f.kernel.getTask("sibling")!.state, "running");
     assert.notEqual(f.kernel.getTask("sibling")!.execution.attemptId, firstAttempt);
 
-    assert.equal(codeOf(() => applyWriteFile(op, grant)), "dispatch_identity_stale");
-    // 낡은 attempt의 영수증 재생(replay)도 닫힌다: 집행 게이트를 지나지 못한 grant는 성공 marker를
-    // 만들 수 없고(`invalid_receipt`), 실패 marker로도 낡은 attempt에는 커밋되지 않는다.
-    assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: rec(op, "applied", "docs/sib.md", sha256("hello")) })), "invalid_receipt");
-    assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: rec(op, "failed") })), "dispatch_identity_stale");
+    // 낡은 attempt의 permit·grant·영수증 재생(replay)은 전부 닫힌다.
+    assert.equal(codeOf(() => resolveWriteFileAuthority(op, permit)), "dispatch_identity_stale");
+    assert.equal(codeOf(() => f.kernel.beginOperation({ permit, operationId: op.operationId, actionId: nextId("act") })), "dispatch_identity_stale");
+    assert.equal(codeOf(() => applyWriteFile(op, grant)), "dispatch_grant_spent");
+    assert.equal(
+      codeOf(() => f.kernel.recordOperationReceipt({ outcome: { ...grant, marker: "applied" }, actionId: nextId("act") })),
+      "invalid_receipt",
+    );
     assert.equal(lstatSync(join(f.ws, "docs/sib.md"), { throwIfNoEntry: false }), undefined);
   }
-  // ⓒ **claim된 turn이 과금으로 닫히면** 그 turn의 permit·grant는 그 자리에서 죽는다.
-  //    (1차 판은 `chargeTurnUsage`가 아무 turn이나 durable `turnId`에 밀어 넣을 수 있었다 — 3A 2차 A1.)
+  // ⓒ **과금은 turn을 닫지 않는다 — 미확정 operation이 0이 될 때 닫힌다**(3A 3차 리비전 A1).
+  //    이전 판은 "과금 = turn 닫기"였고 미확정이 있으면 아예 거부했으므로 계획을 만든 turn은 효과가 끝난
+  //    뒤에야 과금될 수 있었다 → 효과 게이트의 토큰 판정이 항상 한 turn 뒤처진 값을 봤다.
   {
     const f = fixture();
-    const permit = permitFor(f.kernel, "root", [writeOp()]); // turn-1 claim
+    const permit = permitFor(f.kernel, "root", [writeOp()], "turn-1", { inputTokens: 1, outputTokens: 1 }); // claim + 과금
     const op = permit.plan.operations[0] as TypedWriteFileOperation;
+    assert.deepEqual(f.kernel.getAccounting().chargedTurnIds, ["turn-1"], "grant 전에 그 turn이 과금돼 있어야 한다");
     const grant = grantFor(f.kernel, permit, op.operationId);
-    // 미확정 operation이 남아 있으면 turn을 닫을 수 없다(효과 누락 은폐 차단).
-    assert.equal(
-      codeOf(() =>
-        f.kernel.chargeTurnUsage({ taskId: "root", actionId: nextId("act"), turnId: "turn-1", inputTokens: 1, outputTokens: 1, elapsedMs: 10 }),
-      ),
-      "operation_pending_unreconciled",
-    );
-    const receipt = applyWriteFile(op, grant);
-    assert.equal(receipt.marker, "applied");
-    f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt });
-    f.kernel.chargeTurnUsage({
-      taskId: "root",
-      actionId: nextId("act"),
-      turnId: "turn-1",
-      inputTokens: 1,
-      outputTokens: 1,
-      elapsedMs: 10,
-    });
+    // 미확정 operation이 남아 있는 동안 claim은 **열려 있다**(그 계획의 정합화 경로가 살아 있어야 한다).
+    assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-1");
+    assert.equal(codeOf(() => applyWriteFile(op, grant)), "write_publish_unsupported");
+    f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
     const exec = f.kernel.getTask("root")!.execution;
     assert.equal(exec.turnId, "turn-1");
-    assert.equal(exec.dispatchTurnId, null, "과금이 dispatch turn을 닫지 않았다");
-    // 닫힌 turn은 다시 claim되지 않는다.
+    // claim은 **다음 turn이 요청할 때** 교체된다(지연 해제 — 그래야 정합화 경로가 죽지 않는다).
+    assert.equal(exec.dispatchTurnId, "turn-1");
+    // 과금이 끝난 turn을 **다른 계획으로 다시 열 수는 없다**.
     assert.equal(
       codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-again" })], "turn-1")),
       "turn_already_charged",
@@ -1056,8 +1098,26 @@ test("[M5c] lifecycle·attempt·turn이 어긋나면 발급된 permit도 효과 
     // 다음 turn은 정상적으로 열린다(같은 attempt 안에서 turn이 이어진다).
     const permit2 = permitFor(f.kernel, "root", [writeOp({ operationId: "op-t2", path: "docs/small.md", authorityId: "w-small", content: "x" })], "turn-2");
     const op2 = permit2.plan.operations[0] as TypedWriteFileOperation;
-    assert.equal(applyWriteFile(op2, grantFor(f.kernel, permit2, op2.operationId)).marker, "applied");
+    assert.equal(codeOf(() => applyWriteFile(op2, grantFor(f.kernel, permit2, op2.operationId))), "write_publish_unsupported");
   }
+  // ⓓ **과금하지 않은 turn은 grant도 효과도 얻지 못한다**(3A 3차 리비전 A1 — stale 예산 판정 차단).
+  {
+    const f = fixture();
+    const plan = planFor(f.kernel, "root", [writeOp()], "turn-1");
+    const permit = f.kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), plan });
+    assert.deepEqual(f.kernel.getAccounting().chargedTurnIds, []);
+    assert.equal(
+      codeOf(() => f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") })),
+      "budget_turn_unaccounted",
+    );
+    assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 0, "미과금 turn이 pending을 남겼다");
+    assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+    // 과금하면 그때부터 열린다.
+    f.kernel.chargeTurnUsage({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), inputTokens: 1, outputTokens: 0, elapsedMs: 1 });
+    const grant = f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") });
+    assert.equal(codeOf(() => applyWriteFile(permit.plan.operations[0] as TypedWriteFileOperation, grant)), "write_publish_unsupported");
+  }
+  assert.ok(DISPATCH_AUTHORITY_CODES.includes("budget_turn_unaccounted"));
 });
 
 test("[M5c] 만료·예산 deadline은 경계 등호에서 거부한다(로드맵 §8.1)", () => {
@@ -1070,7 +1130,7 @@ test("[M5c] 만료·예산 deadline은 경계 등호에서 거부한다(로드�
     const [op, grant, pop, pgrant] = bothPermit(f);
     assert.equal(f.kernel.getState().manifest.expiresAt, expiresAt);
     t.set(Date.parse(expiresAt) - 1);
-    assert.equal(codeOf(() => resolveProcessLaunchSpec(pop, pgrant)), "no-error", "만료 1ms 전은 통과해야 한다");
+    assert.equal(codeOf(() => resolveProcessLaunchCapability(pop, pgrant)), "no-error", "만료 1ms 전은 통과해야 한다");
     t.set(Date.parse(expiresAt)); // **등호**
     assert.equal(codeOf(() => applyWriteFile(op, grant)), "manifest_expired");
     assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
@@ -1097,21 +1157,23 @@ test("[M5c] 만료·예산 deadline은 경계 등호에서 거부한다(로드�
 });
 
 test("[M5c] A1: 토큰 등호·attempt wall 등호·no-progress 등호가 각각 효과를 막는다(파일 효과 0)", () => {
-  // ⓐ **토큰 예산 등호**: `tokensUsed === maxTokens`면 더 이상 효과가 없다(1차 판은 아예 보지 않았다).
+  // ⓐ **토큰 예산 등호 + 생산 turn의 사용량이 효과보다 먼저 반영된다**(3A 3차 리비전 A1).
+  //    이전 판은 그 turn을 과금하려면 먼저 pending을 닫아야 했으므로 **효과가 stale 총량으로 판정**됐다.
   {
     const f = fixture({ manifestOver: { maxTokens: 10 } });
-    const [op, grant] = writePermit(f);
-    const permitTurn = f.kernel.getTask("root")!.execution.dispatchTurnId!;
-    // 이 turn의 미확정 operation을 먼저 닫아야 turn을 과금할 수 있다(성공 누락 게이트).
-    f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: rec(op, "failed") });
-    f.kernel.chargeTurnUsage({ taskId: "root", actionId: nextId("act"), turnId: permitTurn, inputTokens: 6, outputTokens: 4, elapsedMs: 1 });
+    // 이 turn이 상한을 정확히 다 태웠다 → claim은 살아 있지만 효과는 나가지 않는다.
+    const permit = permitFor(f.kernel, "root", [writeOp()], "turn-1", { inputTokens: 6, outputTokens: 4 });
+    const op = permit.plan.operations[0] as TypedWriteFileOperation;
     assert.equal(f.kernel.getAccounting().tokensUsed, 10, "정확히 상한만큼 태웠다(등호)");
-    // 다음 turn은 열 수는 있지만 **효과 게이트**가 토큰 등호에서 막는다.
-    const permit2 = permitFor(f.kernel, "root", [writeOp({ operationId: "op-after" })], "turn-2");
-    const op2 = permit2.plan.operations[0] as TypedWriteFileOperation;
-    assert.equal(codeOf(() => grantFor(f.kernel, permit2, op2.operationId)), "budget_tokens_exhausted");
-    assert.equal(codeOf(() => applyWriteFile(op2, grantFor(f.kernel, permit2, op2.operationId))), "budget_tokens_exhausted");
+    assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-1", "과금이 claim을 조기에 닫았다");
+    assert.equal(codeOf(() => grantFor(f.kernel, permit, op.operationId)), "budget_tokens_exhausted");
     assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+    // 1 토큰이 남아 있으면 같은 자리가 열린다(게이트가 공허하지 않다는 대조군).
+    const g = fixture({ manifestOver: { maxTokens: 10 } });
+    const p2 = permitFor(g.kernel, "root", [writeOp()], "turn-1", { inputTokens: 6, outputTokens: 3 });
+    assert.equal(g.kernel.getAccounting().tokensUsed, 9);
+    const op2 = p2.plan.operations[0] as TypedWriteFileOperation;
+    assert.equal(codeOf(() => applyWriteFile(op2, grantFor(g.kernel, p2, op2.operationId))), "write_publish_unsupported");
   }
   // ⓑ **attempt wall deadline 등호**.
   {
@@ -1136,9 +1198,43 @@ test("[M5c] A1: 토큰 등호·attempt wall 등호·no-progress 등호가 각각
     t.set(Date.parse(started) + 5_000); // **등호**
     assert.equal(codeOf(() => applyWriteFile(op, grant)), "no_progress_exhausted");
     assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
-    // 인정되는 진행 신호가 시계를 되돌린다 → 다시 집행 가능.
-    f.kernel.recordProgress({ taskId: "root", actionId: nextId("act") });
-    assert.equal(applyWriteFile(op, grant).marker, "applied");
+    // **소진된 attempt는 늦은 진행으로 되살아나지 않는다**(3A 3차 리비전 A1). 이전 assertion은 정확히
+    // 그 부활을 **정상 동작으로 고정**하고 있었으므로 교체했다(완화가 아니라 강화 — WORKLOG에 전수 기록).
+    const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
+    const late = () =>
+      f.kernel.recordProgress({ taskId: "root", actionId: nextId("act"), leaseMarker: lease, event: { kind: "progress", seq: 2, step: "늦은 진행" } });
+    assert.equal(codeOf(late), "no_progress_exhausted", "늦은 진행이 소진된 창을 되살렸다");
+    assert.equal(codeOf(() => applyWriteFile(op, grant)), "no_progress_exhausted");
+    assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+  }
+  // ⓓ **경계 안의 진행만 시계를 되돌린다**(대조군 — 위 규칙이 공허하지 않다는 증거).
+  {
+    const t = steppableClock(T0);
+    const f = fixture({ manifestOver: { autopilotPolicy: { ...POLICY, maxNoProgressMs: 5_000 } }, clock: t.clock });
+    const [op, grant] = writePermit(f);
+    const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
+    const started = f.kernel.getTask("root")!.execution.phaseStartedAt!;
+    t.set(Date.parse(started) + 5_000 - 1); // 경계 **직전**
+    f.kernel.recordProgress({ taskId: "root", actionId: nextId("act"), leaseMarker: lease, event: { kind: "progress", seq: 1, step: "진행" } });
+    t.set(Date.parse(started) + 9_000); // 새 창 안(직전 진행 + 5s 미만)
+    assert.equal(codeOf(() => applyWriteFile(op, grant)), "write_publish_unsupported", "인정된 진행이 창을 되돌리지 못했다");
+  }
+  // ⓔ **진행 신호에도 provenance가 필요하다**: 남의 lease·heartbeat·구조 없는 이벤트는 시계를 못 만진다.
+  {
+    const f = fixture();
+    const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
+    const ok = { kind: "progress", seq: 1, step: "진행" };
+    const bad = (over: { event: unknown; leaseMarker?: string }): string =>
+      codeOf(() => f.kernel.recordProgress({ taskId: "root", actionId: nextId("act"), leaseMarker: lease, ...over }));
+    assert.equal(bad({ event: { kind: "heartbeat", seq: 1, step: "x" } }), "invalid_progress_event");
+    assert.equal(bad({ event: { kind: "progress", seq: 1 } }), "invalid_progress_event", "step 없는 이벤트가 통과했다");
+    assert.equal(bad({ event: { kind: "progress", seq: 1, step: "x", extra: 1 } }), "invalid_artifact_ref", "닫힌 key 집합이 아니다");
+    assert.equal(bad({ event: { kind: "progress", seq: -1, step: "x" } }), "invalid_progress_event");
+    assert.equal(bad({ event: { kind: "progress", seq: 1, step: "" } }), "invalid_progress_event");
+    assert.equal(bad({ event: null }), "invalid_artifact_ref");
+    assert.equal(bad({ leaseMarker: `lease.${"a".repeat(32)}`, event: ok }), "cleanup_lease_mismatch", "남의 lease가 통과했다");
+    // 진짜 lease + 진짜 progress 이벤트만 통과한다.
+    assert.equal(f.kernel.recordProgress({ taskId: "root", actionId: nextId("act"), leaseMarker: lease, event: ok }).execution.progressCount, 1);
   }
   for (const code of ["budget_tokens_exhausted", "attempt_wall_exhausted", "no_progress_exhausted"] as const) {
     assert.ok(DISPATCH_AUTHORITY_CODES.includes(code), code);
@@ -1163,7 +1259,7 @@ test("[M5c] 승인이 없거나 task·kind가 다르면 거부한다(deny-by-def
   // 다른 task의 authorityId(형제 소유 권위를 빌릴 수 없다).
   assert.equal(codeOf(() => applyWriteFile(sibOp as TypedWriteFileOperation, g(sibOp))), "operation_denied");
   // kind 불일치: write authority를 process로 쓰려 한다(그 반대도).
-  assert.equal(codeOf(() => resolveProcessLaunchSpec(kindOp as TypedRunProcessOperation, g(kindOp))), "operation_denied");
+  assert.equal(codeOf(() => resolveProcessLaunchCapability(kindOp as TypedRunProcessOperation, g(kindOp))), "operation_denied");
   assert.equal(codeOf(() => applyWriteFile(procOp as TypedWriteFileOperation, g(procOp))), "operation_denied");
   // 어떤 거부 경로도 파일을 만들지 않는다.
   assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
@@ -1208,8 +1304,9 @@ test("[M5c] 소유와 writableRoots는 dispatch 시점 durable 상태로 본다"
   ]);
   const childOk = childPermit.plan.operations[0] as TypedWriteFileOperation;
   const childBad = childPermit.plan.operations[1] as TypedWriteFileOperation;
-  const receipt = applyWriteFile(childOk, grantFor(f.kernel, childPermit, childOk.operationId));
-  assert.equal(receipt.marker, "applied");
+  writeFileSync(join(f.ws, "docs/child.md"), "hello");
+  const outcome = applyWriteFile(childOk, grantFor(f.kernel, childPermit, childOk.operationId));
+  assert.equal(outcome.marker, "already_applied");
   assert.equal(readFileSync(join(f.ws, "docs/child.md"), "utf8"), "hello");
   // ⓑ 승인은 있지만 child의 durable ownership 밖이면 거부다(형제 경로 침범 방지).
   assert.equal(
@@ -1239,28 +1336,42 @@ test("[M5c] 소유와 writableRoots는 dispatch 시점 durable 상태로 본다"
 
 // ── 6. write_file 집행 ──────────────────────────────────────────────────────
 
-test("[M5c] A3: 부재 대상은 원자적으로 발행되고 기존 경로 교체는 손대기 전에 거부된다", () => {
+test("[M5c] A4: 신규 발행 경로는 도달하지 않는다(예방 — 파일 시스템 부작용 0)", () => {
+  // **이전 판은 `link(2)`로 발행했고 그것이 3A 3차 리뷰 A4다**: 최종 부모 확인과 syscall 사이에 경쟁자가
+  // 승인된 부모 **이름**을 교체하면 커널이 그 교체본을 통해 경로를 해석해 **승인 범위 밖으로** 발행하고,
+  // 발행된 inode는 우리 temp와 같으므로 사후 검증은 통과하며 fsync는 엉뚱한 디렉터리에 걸렸다.
+  // Node 18/macOS에 디스크립터 상대 no-replace 발행이 없으므로 **경로 자체를 없앴다**(fail closed).
   const f = fixture();
   const [[op1, g1], [op2, g2]] = writeGrants(f, [
     { content: "첫 내용\n" },
-    { content: "둘째 내용\n", expectedBeforeSha256: sha256("첫 내용\n") },
+    { authorityId: "w-small", path: "docs/small.md", content: "x" },
   ]);
-  const first = applyWriteFile(op1, g1);
-  assert.equal(first.marker, "applied");
-  assert.equal(first.path, "docs/out.md");
-  assert.equal(first.resultSha256, sha256("첫 내용\n"));
-  assert.equal(first.exitCode, null);
-  assert.equal(Object.isFrozen(first), true);
-  assert.deepEqual(Object.keys(first).sort(), [...OPERATION_RECEIPT_KEYS].sort());
-  assert.equal(readFileSync(join(f.ws, "docs/out.md"), "utf8"), "첫 내용\n");
+  assert.equal(codeOf(() => applyWriteFile(op1, g1)), "write_publish_unsupported");
+  // **부작용 0**: 대상도 temp도 만들어지지 않는다(사후 탐지가 아니라 예방이라는 뜻이다).
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+  assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
+  // 경쟁자가 그 사이 무엇을 하든 우리가 만드는 바이트는 0이다.
+  const target = join(f.ws, "docs/out.md");
+  const code = withSeams({ publish: () => writeFileSync(target, "경쟁자 내용") }, () => codeOf(() => applyWriteFile(op2, g2)));
+  assert.equal(code, "write_publish_unsupported");
+  assert.equal(readFileSync(target, "utf8"), "경쟁자 내용", "경쟁자 바이트를 건드렸다");
+  assert.equal(lstatSync(join(f.ws, "docs/small.md"), { throwIfNoEntry: false }), undefined);
+  assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
+  assert.ok(TYPED_EXECUTION_CODES.includes("write_publish_unsupported"));
+});
 
-  // **교체는 예방 안전하게 만들 수 없다**(3A 2차 리비전 A3): Node 18에는 디스크립터 상대
-  // compare-and-publish가 없어 최종 pathname `rename(2)` 직전 창을 0으로 만들 수 없다.
-  // 그래서 사후 탐지가 아니라 **temp를 만들기도 전에** 안정 코드로 거부한다.
-  assert.equal(codeOf(() => applyWriteFile(op2, g2)), "write_replace_unsupported");
-  assert.equal(readFileSync(join(f.ws, "docs/out.md"), "utf8"), "첫 내용\n", "거부인데 바이트가 바뀌었다");
-  assert.deepEqual(orphanTemps(join(f.ws, "docs")), [], "거부 전에 temp가 만들어졌다");
+test("[M5c] A3: 기존 대상 교체도 손대기 전에 거부되고 경쟁자 바이트는 그대로다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "원래 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
+  const inoBefore = lstatSync(target).ino;
+  assert.equal(codeOf(() => applyWriteFile(op, grant)), "write_replace_unsupported");
+  assert.equal(readFileSync(target, "utf8"), "원래 내용", "거부인데 바이트가 바뀌었다");
+  assert.equal(lstatSync(target).ino, inoBefore);
   assert.deepEqual(readdirSync(join(f.ws, "docs")), ["out.md"]);
+  assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
+  assert.ok(TYPED_EXECUTION_CODES.includes("write_replace_unsupported"));
 });
 
 test("[M5c] 크래시 창 멱등: 이미 의도한 내용이면 already_applied이고 다시 쓰지 않는다", () => {
@@ -1273,6 +1384,9 @@ test("[M5c] 크래시 창 멱등: 이미 의도한 내용이면 already_applied�
   const again = applyWriteFile(...writePermit(f, { content: "hello" }));
   assert.equal(again.marker, "already_applied");
   assert.equal(again.resultSha256, sha256("hello"));
+  assert.equal(again.path, "docs/out.md");
+  assert.equal(again.exitCode, null);
+  assert.equal(Object.isFrozen(again), true, "outcome handle이 얼지 않았다");
   assert.equal(lstatSync(target).ino, inoBefore, "같은 바이트를 다시 써서 inode가 바뀌었다");
   assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
 });
@@ -1353,20 +1467,37 @@ test("[M5c] symlink·비일반 파일·바이트 초과·부모 부재는 집행
   }
 });
 
-test("[M5c] 영수증에는 내용이 들어가지 않는다", () => {
+test("[M5c] 영수증에는 내용이 들어가지 않고 실행 신원은 durable pending에서만 온다", () => {
   const f = fixture();
   const SENTINEL = "SENTINEL-SECRET-CONTENT-9f2a";
-  const receipt = applyWriteFile(...writePermit(f, { content: `${SENTINEL}\n` }));
-  assert.equal(JSON.stringify(receipt).includes(SENTINEL), false, "영수증에 파일 내용이 들어갔다");
+  writeFileSync(join(f.ws, "docs/out.md"), `${SENTINEL}\n`);
+  const permit = permitFor(f.kernel, "root", [writeOp({ content: `${SENTINEL}\n` })]);
+  const op = permit.plan.operations[0] as TypedWriteFileOperation;
+  const grant = grantFor(f.kernel, permit, op.operationId);
+  const outcome = applyWriteFile(op, grant);
+  assert.equal(outcome.marker, "already_applied");
+  assert.equal(JSON.stringify(outcome).includes(SENTINEL), false, "outcome handle에 파일 내용이 들어갔다");
+
+  // **durable 영수증은 집행기 canonical 결과 + pending 신원**으로만 만들어진다(3A 3차 리비전 A2).
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+  const receipt = receiptOf(f.kernel, "root", "op-1");
   assert.deepEqual(Object.keys(receipt).sort(), [...OPERATION_RECEIPT_KEYS].sort());
+  assert.equal(JSON.stringify(receipt).includes(SENTINEL), false, "영수증에 파일 내용이 들어갔다");
+  assert.equal(receipt.attemptId, f.kernel.getTask("root")!.execution.attemptId);
+  assert.equal(receipt.turnId, "turn-1");
+  assert.match(receipt.planDigest, /^[0-9a-f]{64}$/);
+  assert.equal(receipt.marker, "already_applied");
+  assert.equal(receipt.resultSha256, sha256(`${SENTINEL}\n`));
+
   // 거부 경로의 오류 메시지에도 내용·절대 경로가 없다.
+  const g = fixture();
   try {
-    applyWriteFile(...writePermit(f, { authorityId: "w-unknown", content: `${SENTINEL}\n` }));
+    applyWriteFile(...writePermit(g, { authorityId: "w-unknown", content: `${SENTINEL}\n` }));
     assert.fail("거부되지 않았다");
   } catch (e) {
     const message = String((e as Error).message);
     assert.equal(message.includes(SENTINEL), false, "오류 메시지에 파일 내용이 들어갔다");
-    assert.equal(message.includes(f.ws), false, "오류 메시지에 절대 경로가 들어갔다");
+    assert.equal(message.includes(g.ws), false, "오류 메시지에 절대 경로가 들어갔다");
   }
 });
 
@@ -1382,130 +1513,54 @@ function withSeams<T>(seams: Partial<Record<PublicationSeam, () => void>>, fn: (
   }
 }
 
-test("[M5c] 부재 대상은 경쟁적으로 생긴 파일을 덮어쓰지 않는다(원자적 no-replace 발행)", () => {
-  const f = fixture();
-  const target = join(f.ws, "docs/out.md");
-  const [op, permit] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: null });
-
-  // 발행 **직전에** 경쟁자가 같은 이름을 만든다 → `link(2)`는 EEXIST다.
-  const code = withSeams({ publish: () => writeFileSync(target, "경쟁자 내용") }, () => codeOf(() => applyWriteFile(op, permit)));
-  assert.equal(code, "write_failed");
-  assert.equal(readFileSync(target, "utf8"), "경쟁자 내용", "경쟁자의 바이트를 덮어썼다");
-  assert.deepEqual(orphanTemps(join(f.ws, "docs")), [], "temp 잔재가 남았다");
-});
-
-test("[M5c] A3: 기존 대상 교체는 temp를 만들기 전에 거부되고 경쟁자 바이트는 그대로다", () => {
-  // **예방**이 계약이다: 1차 판은 temp를 쓰고 `rename(2)` 직전 검사에 기대 사후 탐지를 했다 — 그 검사와
-  // syscall 사이의 창에서 경쟁자 바이트가 파괴될 수 있었다. 지금은 그 창에 도달하지 않는다.
-  const f = fixture();
-  const target = join(f.ws, "docs/out.md");
-  writeFileSync(target, "원래 내용");
-  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
-  const inoBefore = lstatSync(target).ino;
-
-  // 발행 단계 seam이 **아예 실행되지 않는다** — 거부가 그보다 앞이기 때문이다.
-  let publishSeamRan = false;
-  let tempSeamRan = false;
-  const code = withSeams(
-    { tempCreate: () => { tempSeamRan = true; }, publish: () => { publishSeamRan = true; } },
-    () => codeOf(() => applyWriteFile(op, grant)),
-  );
-  assert.equal(code, "write_replace_unsupported");
-  assert.equal(tempSeamRan, false, "거부 전에 temp 생성 단계에 도달했다");
-  assert.equal(publishSeamRan, false, "거부 전에 발행 단계에 도달했다");
-  assert.equal(readFileSync(target, "utf8"), "원래 내용", "경쟁자/기존 바이트가 바뀌었다");
-  assert.equal(lstatSync(target).ino, inoBefore);
-  assert.deepEqual(orphanTemps(join(f.ws, "docs")), [], "temp 잔재가 남았다");
-  assert.ok(TYPED_EXECUTION_CODES.includes("write_replace_unsupported"));
-});
-
-test("[M5c] 부모 디렉터리가 symlink로 교체되면 발행하지 않는다(workspace 밖으로 쓰지 않는다)", () => {
+test("[M5c] A4: 부모 이름이 교체돼도 승인 범위 밖으로 나가지 않는다(판정 단계 재확인)", () => {
   const outside = mkdtempSync(join(tmpdir(), "m5c-outside-"));
   workspaces.push(outside);
   const f = fixture();
   const docs = join(f.ws, "docs");
-  const [op, permit] = writePermit(f, { content: "우리 내용" });
+  const [op, grant] = writePermit(f, { content: "우리 내용" });
 
+  // 판정 재확인 **직전에** 부모 이름을 밖을 가리키는 symlink로 교체한다.
   const code = withSeams(
     {
       publish: () => {
-        // temp는 이미 진짜 docs/ 안에 있다. 이제 부모 **이름**을 밖을 가리키는 symlink로 바꾼다.
         rmSync(join(f.ws, "docs-real"), { recursive: true, force: true });
         renameSync(docs, join(f.ws, "docs-real"));
         symlinkSync(outside, docs);
       },
     },
-    () => codeOf(() => applyWriteFile(op, permit)),
+    () => codeOf(() => applyWriteFile(op, grant)),
   );
   assert.equal(code, "write_path_symlink");
   assert.deepEqual(readdirSync(outside), [], "workspace 밖에 파일이 생겼다");
   assert.equal(lstatSync(join(f.ws, "docs-real/out.md"), { throwIfNoEntry: false }), undefined, "대상이 발행됐다");
-  // **B1: 승인된 내용이 고아 plaintext temp로 남지 않는다.** 정리도 경로 이름으로만 할 수 있으므로
-  // (Node 18에 `unlinkat` 없음) 부모 **이름**이 교체된 이 경우에는 우리 temp를 지울 수 없다 — 남의 파일을
-  // 지우지 않는 쪽이 맞다. 대신 **우리가 들고 있는 fd로 `ftruncate(0)`** 해서 남는 파일이 비게 만든다.
-  const left = orphanTemps(join(f.ws, "docs-real"));
-  assert.equal(left.length, 1, "temp 처리 계약이 바뀌었다");
-  const leftPath = join(f.ws, "docs-real", left[0]);
-  assert.equal(readFileSync(leftPath, "utf8"), "", "승인된 내용이 고아 temp로 노출됐다");
-  assert.equal(lstatSync(leftPath).size, 0);
-  assert.equal(lstatSync(leftPath).mode & 0o777, 0o600);
-  // 이름이 operation 신원에서 파생돼 **안전하게 귀속**된다(정합화 sweep이 대조할 수 있다).
-  assert.match(left[0], /^\.m5c-op-[0-9a-f]{16}-[0-9a-f]{24}\.tmp$/);
+  // **고아 plaintext temp 문제가 사라졌다**(3A 3차 리비전 A4/B1): 만들 temp가 애초에 없으므로
+  // "부모 이름이 바뀌어 우리 temp를 지울 수 없다"는 상황 자체가 성립하지 않는다.
+  assert.deepEqual(orphanTemps(join(f.ws, "docs-real")), [], "집행기가 temp를 만들었다");
 });
 
-test("[M5c] temp 경로가 다른 파일로 교체되면 발행하지 않는다", () => {
-  const f = fixture();
-  const docs = join(f.ws, "docs");
-  const [op, grant] = writePermit(f, { content: "우리 내용" });
-  // 경쟁자가 소유한 temp 이름(우리 것과 신원이 다르다) — 발행 직전에 우리 temp 이름을 가로챈다.
-  let hijacked = false;
-  const code = withSeams(
-    {
-      publish: () => {
-        const ours = orphanTemps(docs)[0];
-        if (ours === undefined) return;
-        unlinkSync(join(docs, ours));
-        writeFileSync(join(docs, ours), "경쟁자 temp");
-        hijacked = true;
-      },
-    },
-    () => codeOf(() => applyWriteFile(op, grant)),
-  );
-  assert.equal(hijacked, true, "temp 가로채기가 실제로 일어나지 않았다");
-  assert.equal(code, "write_failed");
-  assert.equal(lstatSync(join(f.ws, "docs/out.md"), { throwIfNoEntry: false }), undefined, "대상이 발행됐다");
-  // **남의 temp는 지우지 않는다** — 신원이 우리 것이 아니기 때문이다.
-  const left = orphanTemps(docs);
-  assert.equal(left.length, 1);
-  assert.equal(readFileSync(join(docs, left[0]), "utf8"), "경쟁자 temp", "남의 temp를 지웠다");
-});
-
-test("[M5c] 모든 실패 경계가 안정 코드로 접히고 fd·temp를 남기지 않는다", () => {
-  const seams: PublicationSeam[] = ["parentWalk", "targetOpen", "tempCreate", "tempWrite", "tempVerify", "publish", "postVerify"];
+test("[M5c] 모든 실패 경계가 안정 코드로 접히고 fd·부작용을 남기지 않는다", () => {
+  const seams: PublicationSeam[] = ["parentWalk", "targetOpen", "publish"];
   for (const name of seams) {
     const f = fixture();
-    const [op, permit] = writePermit(f, { content: "우리 내용" });
+    const [op, grant] = writePermit(f, { content: "우리 내용" });
     const code = withSeams(
       {
         [name]: () => {
           throw new Error(`주입 실패: ${name}`);
         },
       },
-      () => codeOf(() => applyWriteFile(op, permit)),
+      () => codeOf(() => applyWriteFile(op, grant)),
     );
     assert.equal(code, "write_failed", name);
-    assert.deepEqual(orphanTemps(join(f.ws, "docs")), [], `${name}에서 temp가 남았다`);
-    // `postVerify`는 발행 뒤 단계이므로 대상이 남아 있을 수 있다 — 그 밖의 단계는 대상 자체가 없다.
-    const target = lstatSync(join(f.ws, "docs/out.md"), { throwIfNoEntry: false });
-    if (name !== "postVerify") assert.equal(target, undefined, `${name}에서 대상이 발행됐다`);
+    assert.deepEqual(readdirSync(join(f.ws, "docs")), [], `${name}에서 부작용이 남았다`);
   }
   // **호출자 hook이 production taxonomy를 고를 수 없다**(3A 2차 리뷰 `C1`).
-  // 이전에는 hook이 던진 `OrchestrationError`가 그대로 밖으로 나가 어떤 코드든 고를 수 있었다.
   const f = fixture();
   const [op, grant] = writePermit(f);
   const code = withSeams(
     {
-      tempWrite: () => {
+      targetOpen: () => {
         throw new OrchestrationError("already_applied", "호출자가 고른 코드");
       },
     },
@@ -1518,17 +1573,14 @@ test("[M5c] A4: fsync 실패 뒤 재시도는 fsync를 다시 시도하고, 계�
   // 1차 판은 재시도가 **fsync 없이** `already_applied`를 돌려줬다 → controller가 durable하지 않은
   // 디렉터리 엔트리를 "성공"으로 기록할 수 있었다(크래시 시 산출물 소실).
   const f = fixture();
-  const target = join(f.ws, "docs/out.md");
+  writeFileSync(join(f.ws, "docs/out.md"), "우리 내용");
   const [[op1, g1], [op2, g2], [op3, g3]] = writeGrants(f, [
     { content: "우리 내용" },
-    { content: "우리 내용" },
-    { content: "우리 내용" },
+    { content: "우리 내용", operationId: "op-2" },
+    { content: "우리 내용", operationId: "op-3" },
   ]);
   const failFsync = { dirFsync: () => { throw new Error("fsync 실패"); } };
-
   assert.equal(withSeams(failFsync, () => codeOf(() => applyWriteFile(op1, g1))), "write_durability_unconfirmed");
-  // 바이트는 발행됐다(계약대로).
-  assert.equal(readFileSync(target, "utf8"), "우리 내용");
 
   // **재시도는 fsync를 다시 지나야 한다**: 여전히 실패하면 성공이 아니다.
   let retryFsyncAttempts = 0;
@@ -1543,52 +1595,67 @@ test("[M5c] A4: fsync 실패 뒤 재시도는 fsync를 다시 시도하고, 계�
   assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
 });
 
-test("[M5c] B1: 실제 close/unlink 실패는 성공이 되지 않고 안정 코드로 올라온다", () => {
-  // ⓐ **진짜 unlink 실패**: 부모 디렉터리에서 쓰기 권한을 뺀다(주입 seam이 아니라 OS 오류다).
-  {
-    const f = fixture();
-    const docs = join(f.ws, "docs");
-    const [op, grant] = writePermit(f, { content: "우리 내용" });
-    let mode = 0;
-    const code = withSeams(
-      { postVerify: () => { mode = lstatSync(docs).mode & 0o777; chmodSync(docs, 0o500); } },
-      () => codeOf(() => applyWriteFile(op, grant)),
-    );
-    chmodSync(docs, mode);
-    assert.equal(code, "write_cleanup_unconfirmed", "정리 실패가 성공으로 삼켜졌다");
-    // 발행된 바이트는 그대로다(정리만 미확인) → 재시도는 already_applied로 수렴한다.
-    assert.equal(readFileSync(join(docs, "out.md"), "utf8"), "우리 내용");
-    assert.ok(TYPED_EXECUTION_CODES.includes("write_cleanup_unconfirmed"));
+/** 지금 열려 있는 fd 중 이 파일(dev,ino)을 가리키는 것을 밖에서 닫는다(진짜 EBADF를 만든다). */
+function closeForeignFdsFor(path: string): number {
+  const st = lstatSync(path);
+  let closed = 0;
+  for (let fd = 3; fd < 256; fd++) {
+    try {
+      const cur = fstatSync(fd);
+      if (cur.dev === st.dev && cur.ino === st.ino) {
+        closeSync(fd);
+        closed++;
+      }
+    } catch { /* 우리 것이 아니거나 이미 닫혔다 */ }
   }
-  // ⓑ **진짜 close 실패**: 집행기가 들고 있는 temp fd를 밖에서 먼저 닫으면 반납이 EBADF다.
-  //    fd는 번호로 찍는 것이 아니라 **(dev,ino)가 방금 발행된 파일과 같은 디스크립터**로 찾는다
-  //    (`link(2)` 뒤 temp와 대상은 같은 inode다). durability는 정상 확인되므로 **정리 실패만** 남는다.
+  return closed;
+}
+
+test("[M5c] B1: 정리(fd 반납) 실패는 성공이 되지 않고, 1차 오류에 가려지지도 않는다", () => {
+  // ⓐ **판정은 성공인데 정리가 실패**한다 → 성공 영수증을 내지 않는다.
   {
     const f = fixture();
-    const docs = join(f.ws, "docs");
+    const target = join(f.ws, "docs/out.md");
+    writeFileSync(target, "우리 내용");
     const [op, grant] = writePermit(f, { content: "우리 내용" });
     let closed = 0;
     const code = withSeams(
-      {
-        postVerify: () => {
-          const published = lstatSync(join(docs, "out.md"));
-          for (let fd = 3; fd < 256; fd++) {
-            try {
-              const st = fstatSync(fd);
-              if (st.isFile() && st.dev === published.dev && st.ino === published.ino) {
-                closeSync(fd);
-                closed++;
-              }
-            } catch { /* 우리 것이 아니거나 이미 닫혔다 */ }
-          }
-        },
-      },
+      { dirFsync: () => { closed = closeForeignFdsFor(target); } },
       () => codeOf(() => applyWriteFile(op, grant)),
     );
-    assert.equal(closed, 1, "집행기의 temp fd를 찾지 못했다(테스트 전제가 깨졌다)");
-    assert.equal(code, "write_cleanup_unconfirmed", "close 실패가 성공으로 삼켜졌다");
-    // 발행된 바이트는 그대로다 — 정리만 미확인이다.
-    assert.equal(readFileSync(join(docs, "out.md"), "utf8"), "우리 내용");
+    assert.equal(closed, 1, "집행기의 대상 fd를 찾지 못했다(테스트 전제가 깨졌다)");
+    assert.equal(code, "write_cleanup_unconfirmed", "정리 실패가 성공으로 삼켜졌다");
+    assert.equal(readFileSync(target, "utf8"), "우리 내용", "판정이 바이트를 건드렸다");
+    assert.ok(TYPED_EXECUTION_CODES.includes("write_cleanup_unconfirmed"));
+  }
+  // ⓑ **1차 오류 + 정리 실패가 동시에** 나면 정리 미확인이 이기고 1차 코드를 메시지에 싣는다
+  //    (3A 3차 리비전 B1 — 이전 판은 1차 예외가 정리 실패를 완전히 가렸다).
+  {
+    const f = fixture();
+    const target = join(f.ws, "docs/out.md");
+    writeFileSync(target, "우리 내용");
+    const [op, grant] = writePermit(f, { content: "우리 내용" });
+    let message = "";
+    const code = withSeams(
+      {
+        dirFsync: () => {
+          closeForeignFdsFor(target);
+          throw new Error("fsync 실패");
+        },
+      },
+      () => {
+        try {
+          applyWriteFile(op, grant);
+          return "no-error";
+        } catch (e) {
+          message = String((e as Error).message);
+          return (e as OrchestrationError).code;
+        }
+      },
+    );
+    assert.equal(code, "write_cleanup_unconfirmed", "1차 오류가 정리 미확인을 가렸다");
+    assert.match(message, /write_durability_unconfirmed/, "1차 안정 코드를 잃어버렸다");
+    assert.equal(message.includes(f.ws), false, "메시지에 절대 경로가 들어갔다");
   }
 });
 
@@ -1596,98 +1663,119 @@ test("[M5c] B1: 실제 close/unlink 실패는 성공이 되지 않고 안정 코
 
 test("[M5c] A2: 위조·재생·치환·재사용 영수증과 '효과 없는 성공'이 전부 fail closed다", () => {
   const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "우리 내용");
   const [op, grant] = writePermit(f, { content: "우리 내용" });
-  const receipt = applyWriteFile(op, grant);
-  assert.equal(receipt.marker, "applied");
+  const outcome = applyWriteFile(op, grant);
+  assert.equal(outcome.marker, "already_applied");
 
-  // ⓐ **구조적 위조**: grant 없이 영수증만 만들어 낼 통로가 없다.
-  for (const forged of [null, undefined, {}, { ...grant }, Object.freeze({ ...grant }), new Proxy(grant, {})]) {
+  // ⓐ **구조적 위조**: 집행기가 낸 handle이 아니면 영수증이 되지 않는다(3A 3차 리비전 A2 — 이전 판은
+  //    호출자가 만든 영수증 객체를 그대로 받았다). 전개 사본·freeze·proxy도 등록부 조회에서 걸린다.
+  for (const forged of [null, undefined, {}, { ...outcome }, Object.freeze({ ...outcome }), new Proxy(outcome, {}), grant]) {
     assert.equal(
-      codeOf(() => f.kernel.recordOperationReceipt({ grant: forged, actionId: nextId("act"), receipt })),
-      "dispatch_grant_invalid",
-    );
-  }
-  // ⓑ **operation 치환**: grant에 묶인 operation과 다른 신원의 영수증은 거부다.
-  for (const swap of [{ operationId: "op-other" }, { authorityId: "w-small" }, { kind: "run_process" as const }]) {
-    assert.equal(
-      codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: { ...receipt, ...swap } })),
+      codeOf(() => f.kernel.recordOperationReceipt({ outcome: forged, actionId: nextId("act") })),
       "invalid_receipt",
     );
   }
-  // ⓒ 진짜 짝은 정확히 한 번 커밋된다.
-  const task = f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt });
-  assert.equal(task.execution.operationReceipts.length, 1);
-  assert.equal(task.execution.operationReceipts[0].marker, "applied");
-  assert.equal(task.execution.pendingOperations.length, 0, "영수증이 pending을 닫지 않았다");
-  // 커밋 시각은 **kernel clock**이다(호출자 시각을 durable로 쓰지 않는다).
-  assert.notEqual(task.execution.operationReceipts[0].at, receipt.at);
+  // ⓑ **결과 치환**: handle의 필드를 바꿔 넣을 통로가 없다 — 값은 얼어 있고 사본은 등록부 밖이다.
+  assert.throws(() => {
+    (outcome as unknown as { marker: string }).marker = "applied";
+  }, TypeError);
+  assert.equal(outcome.marker, "already_applied");
 
-  // ⓓ **grant 재사용**: 같은 grant로 두 번 커밋할 수 없다.
-  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt })), "dispatch_grant_spent");
-  // ⓔ **중복 집행**: 소진된 grant로는 효과도 낼 수 없다.
+  // ⓒ 진짜 handle은 정확히 한 번 커밋되고, durable 값은 **집행기 canonical 결과 + pending 신원**이다.
+  const task = f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+  assert.equal(task.execution.operationReceipts.length, 1);
+  assert.equal(task.execution.operationReceipts[0].marker, "already_applied");
+  assert.equal(task.execution.operationReceipts[0].resultSha256, sha256("우리 내용"));
+  assert.equal(task.execution.pendingOperations.length, 0, "영수증이 pending을 닫지 않았다");
+  // 커밋 시각은 **kernel clock**이다(호출자 시각을 durable로 쓰는 필드가 애초에 없다).
+  assert.match(task.execution.operationReceipts[0].at, /^2026-/);
+
+  // ⓓ **재사용**: 같은 handle로 두 번 커밋할 수 없다.
+  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") })), "dispatch_grant_spent");
+  // ⓔ **중복 집행**: 소진된 grant로는 효과도 실패 종결도 낼 수 없다.
   assert.equal(codeOf(() => applyWriteFile(op, grant)), "dispatch_grant_spent");
-  // ⓕ 이미 기록된 operation은 다시 열 수 없다.
-  const permit = f.kernel.getTask("root")!.execution.dispatchTurnId;
-  assert.equal(permit, "turn-1");
-  assert.equal(readFileSync(join(f.ws, "docs/out.md"), "utf8"), "우리 내용");
+  assert.equal(codeOf(() => f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" })), "dispatch_grant_spent");
+  assert.equal(readFileSync(target, "utf8"), "우리 내용");
 });
 
-test("[M5c] A2: 영수증이 커밋된 뒤에는 살아 있던 두 번째 grant로도 다시 집행할 수 없다", () => {
-  // 이 테스트가 감시하는 seam은 효과 게이트의 **durable pending 레코드 확인**이다(`requirePendingOperation`).
-  // 그 확인을 지우면 permit·attempt·turn이 전부 유효한 채로 **같은 operation을 두 번 집행**할 수 있다.
+test("[M5c] A2: 같은 pending 신원에는 살아 있는 grant가 하나뿐이다(live/live 중복 집행 차단)", () => {
+  // **이전 판의 진짜 결함**: 같은 pending operation을 다시 열면 **독립적으로 살아 있는** grant가 또 나왔고
+  // 둘 다 소진할 수 있었다(비멱등 프로세스 효과라면 두 번 실행). 이전 테스트는 첫 영수증을 커밋한
+  // **뒤에** 두 번째 grant를 썼기 때문에 그 live/live 경쟁을 재현하지 못했다 — 그래서 교체했다.
   const f = fixture();
+  writeFileSync(join(f.ws, "docs/out.md"), "우리 내용");
   const permit = permitFor(f.kernel, "root", [writeOp({ content: "우리 내용" })]);
   const op = permit.plan.operations[0] as TypedWriteFileOperation;
   const g1 = grantFor(f.kernel, permit, op.operationId);
-  const g2 = grantFor(f.kernel, permit, op.operationId); // 정합화용 두 번째 grant(같은 pending 레코드)
+  const g2 = grantFor(f.kernel, permit, op.operationId); // 재시작 정합화가 같은 operation을 다시 연다
   assert.notEqual(g1, g2);
   assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 1, "pending이 중복 등록됐다");
 
-  const receipt = applyWriteFile(op, g1);
-  assert.equal(receipt.marker, "applied");
-  f.kernel.recordOperationReceipt({ grant: g1, actionId: nextId("act"), receipt });
-  assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 0);
-
-  // **아직 소진되지 않은** g2다: permit·attempt·turn·계획이 전부 유효하다. 막는 것은 pending 확인뿐이다.
-  assert.equal(codeOf(() => applyWriteFile(op, g2)), "dispatch_operation_unregistered");
-  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ grant: g2, actionId: nextId("act"), receipt })), "invalid_receipt");
+  // **영수증 커밋 전에** 둘 다 쓰려고 해 본다 — g1은 발급 시점에 폐기됐고 g2만 살아 있다.
+  assert.equal(codeOf(() => applyWriteFile(op, g1)), "dispatch_grant_spent", "폐기된 grant가 아직 집행된다");
+  assert.equal(codeOf(() => f.kernel.failOperation({ grant: g1, actionId: nextId("act"), marker: "failed" })), "dispatch_grant_spent");
+  const outcome = applyWriteFile(op, g2);
+  assert.equal(outcome.marker, "already_applied");
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
   assert.deepEqual(f.kernel.getTask("root")!.execution.operationReceipts.map((r) => r.operationId), ["op-1"]);
+  assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 0);
+  // 영수증 뒤에는 어떤 경로로도 다시 열리지 않는다.
+  assert.equal(
+    codeOf(() => f.kernel.beginOperation({ permit, operationId: op.operationId, actionId: nextId("act") })),
+    "operation_already_recorded",
+  );
 });
 
 test("[M5c] A2: 집행 게이트를 지나지 않은 grant는 성공 marker를 만들어낼 수 없다", () => {
   const f = fixture();
-  const [op, grant] = writePermit(f, { content: "우리 내용" });
-  // 효과를 **한 번도 시도하지 않은** grant로 `applied`를 주장한다 → 거부.
-  for (const marker of ["applied", "already_applied", "write_conflict"] as const) {
-    assert.equal(
-      codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: rec(op, marker, "docs/out.md", sha256("우리 내용")) })),
-      "invalid_receipt",
-      marker,
-    );
-  }
+  const [, grant] = writePermit(f, { content: "우리 내용" });
+  // 효과를 **한 번도 시도하지 않은** grant에는 outcome handle이 아예 없다 → 성공을 주장할 통로가 없다.
+  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ outcome: grant, actionId: nextId("act") })), "invalid_receipt");
   assert.equal(lstatSync(join(f.ws, "docs/out.md"), { throwIfNoEntry: false }), undefined, "거부 경로가 파일을 만들었다");
-  // 실패 marker로는 닫을 수 있다(집행을 포기한 operation의 정합화 경로).
-  const task = f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: rec(op, "denied") });
+  // 실패 종결로도 성공 marker를 만들 수 없다(닫힌 enum).
+  assert.equal(
+    codeOf(() => f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "already_applied" as never })),
+    "invalid_enum",
+  );
+  const task = f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "denied" });
   assert.equal(task.execution.pendingOperations.length, 0);
   assert.equal(task.execution.operationReceipts[0].marker, "denied");
+  assert.equal(task.execution.operationReceipts[0].turnId, "turn-1");
+  assert.equal(task.execution.operationReceipts[0].resultSha256, null);
 });
 
-test("[M5c] A2: 효과가 났는데 결과 전이가 없으면 turn도 task도 닫히지 않는다", () => {
+test("[M5c] A2: 집행이 던진 grant는 성공으로 닫히지 않는다(진입은 일회용이다)", () => {
   const f = fixture();
   const [op, grant] = writePermit(f, { content: "우리 내용" });
-  assert.equal(applyWriteFile(op, grant).marker, "applied");
+  // 집행이 예외로 끝났다(발행 fail-closed) → outcome handle이 만들어지지 않았다.
+  assert.equal(codeOf(() => applyWriteFile(op, grant)), "write_publish_unsupported");
+  // 같은 grant로 다시 들어갈 수 없다.
+  assert.equal(codeOf(() => applyWriteFile(op, grant)), "dispatch_grant_spent");
+  // 남은 정합화 경로는 실패 종결뿐이다.
+  const task = f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
+  assert.equal(task.execution.operationReceipts[0].marker, "failed");
+  assert.equal(task.execution.pendingOperations.length, 0);
+});
+
+test("[M5c] A2/A3: 효과가 났는데 결과 전이가 없으면 attempt를 떠날 수 없다", () => {
+  const f = fixture();
+  writeFileSync(join(f.ws, "docs/out.md"), "우리 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용" });
+  assert.equal(applyWriteFile(op, grant).marker, "already_applied");
   const pending = f.kernel.getTask("root")!.execution.pendingOperations;
   assert.equal(pending.length, 1, "집행 전 durable 등록이 없다");
   assert.deepEqual(
     { operationId: pending[0].operationId, kind: pending[0].kind, turnId: pending[0].turnId, attemptId: pending[0].attemptId },
     { operationId: "op-1", kind: "write_file", turnId: "turn-1", attemptId: f.kernel.getTask("root")!.execution.attemptId },
   );
-  // turn을 닫을 수 없다.
+  // 다음 turn을 열 수 없다(끝나지 않은 claim이 살아 있다).
   assert.equal(
-    codeOf(() => f.kernel.chargeTurnUsage({ taskId: "root", actionId: nextId("act"), turnId: "turn-1", inputTokens: 1, outputTokens: 0, elapsedMs: 1 })),
-    "operation_pending_unreconciled",
+    codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-next" })], "turn-2")),
+    "dispatch_identity_stale",
   );
-  // task를 완료로 올릴 수도 없다(정리를 확인해도).
+  // ── A3: attempt를 **떠나거나 리셋하는** 전이가 전부 막힌다(그 전이들이 pending을 지운다) ──
   const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
   f.kernel.recordTerminal({
     taskId: "root",
@@ -1696,6 +1784,11 @@ test("[M5c] A2: 효과가 났는데 결과 전이가 없으면 turn도 task도 �
     pendingResult: { summary: "요약", outputs: [{ path: "docs/out.md", role: "output" }] },
   });
   f.kernel.confirmCleanup({ taskId: "root", actionId: nextId("act"), leaseMarker: lease });
+  assert.equal(codeOf(() => f.kernel.settleCleanedAttempt({ taskId: "root", actionId: nextId("act") })), "operation_pending_unreconciled");
+  assert.equal(
+    codeOf(() => f.kernel.pauseTask({ taskId: "root", actionId: nextId("act"), pauseReason: "operator_requested" })),
+    "operation_pending_unreconciled",
+  );
   assert.equal(
     codeOf(() =>
       f.kernel.completeTaskWithArtifacts({
@@ -1721,26 +1814,67 @@ test("[M5c] A2: 효과가 났는데 결과 전이가 없으면 turn도 task도 �
     ),
     "operation_pending_unreconciled",
   );
+  assert.equal(f.kernel.getTask("root")!.state, "cleaning");
+  assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 1, "막힌 전이가 pending을 지웠다");
+});
+
+test("[M5c] A3: 영수증 정합화는 만료·deadline·cleaning 뒤에도 가능하다(safety-only)", () => {
+  // **이전 판의 결함**: 영수증 커밋이 전진 게이트(`requireDispatchableTask`)를 지났으므로 만료·예산·
+  // wall·no-progress를 넘기거나 `cleaning`으로 내려간 뒤에는 **정합화 자체가 불가능**했다 →
+  // 그 pending은 어떤 전이로도 닫히지 않는 미아가 되고 다음 preflight·resume이 조용히 지웠다.
+  const expiresAt = "2026-07-30T00:10:00.000Z";
+  const t = steppableClock(T0);
+  const f = fixture({ manifestOver: { expiresAt, autopilotPolicy: { ...POLICY, maxNoProgressMs: 900_000 } }, clock: t.clock });
+  writeFileSync(join(f.ws, "docs/out.md"), "우리 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용" });
+  const outcome = applyWriteFile(op, grant);
+  assert.equal(outcome.marker, "already_applied");
+
+  // ⓐ `cleaning`으로 내려간다(취소는 safety-only라 만료 뒤에도 지난다).
+  const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
+  f.kernel.requestCancel({ taskId: "root", actionId: nextId("act") });
+  assert.equal(f.kernel.getTask("root")!.state, "cleaning");
+  // ⓑ 만료 이후로 시계를 옮긴다 — 전진 작업은 전부 닫힌다.
+  t.set(Date.parse(expiresAt) + 60_000);
+  assert.equal(codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-x" })], "turn-2")), "manifest_expired");
+  // ⓒ **그래도 영수증은 커밋된다**(그것이 A3의 요구다).
+  const task = f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+  assert.equal(task.execution.pendingOperations.length, 0, "만료·cleaning에서 정합화가 막혔다");
+  assert.equal(task.execution.operationReceipts[0].marker, "already_applied");
+  assert.equal(task.execution.operationReceipts[0].turnId, "turn-1");
+  // ⓓ 정합화가 끝났으므로 이제 attempt를 떠날 수 있다.
+  f.kernel.confirmCleanup({ taskId: "root", actionId: nextId("act"), leaseMarker: lease });
+  f.kernel.settleCleanedAttempt({ taskId: "root", actionId: nextId("act") });
+  assert.equal(f.kernel.getTask("root")!.state, "cancelled");
+  // ⓔ 재시작해도 durable 사실은 같다(fail-closed load 검증을 지난다).
+  const reopened = OrchestrationKernel.open({ workspaceRoot: f.ws, runId: RUN_ID, clock: t.clock });
+  assert.deepEqual(reopened.getTask("root")!.execution.operationReceipts.map((r) => r.marker), ["already_applied"]);
 });
 
 test("[M5c] A2: 등록·발행·영수증 사이에서 재시작해도 중복 손상 없이 하나로 수렴한다", () => {
   const ws = makeWorkspace();
-  const open = () => OrchestrationKernel.open({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0) });
+  // 재시작해도 **시계는 단조**여야 한다(3A 3차 리비전 A1의 시계 역행 게이트) → 하나의 clock을 공유한다.
+  const clock = clockFrom(T0);
+  const open = () => OrchestrationKernel.open({ workspaceRoot: ws, runId: RUN_ID, clock });
   const k0 = OrchestrationKernel.create({
     workspaceRoot: ws,
     runId: RUN_ID,
     milestoneId: MILESTONE,
     manifest: manifestObject(),
-    clock: clockFrom(T0),
+    clock,
   });
   k0.createRootTask(seed("root", ["docs", "src"]));
   startNow(k0, "root");
   const plan = planFor(k0, "root", [writeOp({ content: "우리 내용" })]);
+  // 크래시 창의 전제: 바이트는 이미 발행돼 있고 영수증만 없다(발행 자체는 A4로 fail closed다).
+  writeFileSync(join(ws, "docs/out.md"), "우리 내용");
+  const ino0 = lstatSync(join(ws, "docs/out.md")).ino;
 
-  // ① 등록만 하고 죽는다(효과 전).
+  // ① 등록만 하고 죽는다(정합화 전).
   const p0 = k0.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), plan });
+  k0.chargeTurnUsage({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), inputTokens: 1, outputTokens: 1, elapsedMs: 1 });
   k0.beginOperation({ permit: p0, operationId: "op-1", actionId: nextId("act") });
-  assert.equal(lstatSync(join(ws, "docs/out.md"), { throwIfNoEntry: false }), undefined);
+  assert.equal(lstatSync(join(ws, "docs/out.md")).ino, ino0);
 
   // ② 재시작: durable pending이 그대로 보인다 → 같은 (turn, 계획)을 다시 열어 정합화한다.
   const k1 = open();
@@ -1753,7 +1887,7 @@ test("[M5c] A2: 등록·발행·영수증 사이에서 재시작해도 중복 �
   const g1 = k1.beginOperation({ permit: p1, operationId: "op-1", actionId: nextId("act") });
   assert.equal(k1.getTask("root")!.execution.pendingOperations.length, 1, "정합화가 pending을 중복 등록했다");
   const r1 = applyWriteFile(p1.plan.operations[0] as TypedWriteFileOperation, g1);
-  assert.equal(r1.marker, "applied");
+  assert.equal(r1.marker, "already_applied");
   const ino = lstatSync(join(ws, "docs/out.md")).ino;
 
   // ③ 영수증 커밋 **직전에** 다시 죽는다 → 또 재시작해 같은 operation을 다시 연다.
@@ -1765,15 +1899,21 @@ test("[M5c] A2: 등록·발행·영수증 사이에서 재시작해도 중복 �
   // **중복 손상 없음**: 같은 바이트를 다시 쓰지 않았다(inode 불변).
   assert.equal(r2.marker, "already_applied");
   assert.equal(lstatSync(join(ws, "docs/out.md")).ino, ino);
-  const task = k2.recordOperationReceipt({ grant: g2, actionId: nextId("act"), receipt: r2 });
+  const task = k2.recordOperationReceipt({ outcome: r2, actionId: nextId("act") });
 
   // ④ 정확히 하나의 결과로 수렴한다.
   assert.equal(task.execution.pendingOperations.length, 0);
   assert.deepEqual(task.execution.operationReceipts.map((r) => r.operationId), ["op-1"]);
   assert.equal(task.execution.operationReceipts[0].marker, "already_applied");
-  // ⑤ 그리고 이제 turn을 닫을 수 있다.
-  k2.chargeTurnUsage({ taskId: "root", actionId: nextId("act"), turnId: "turn-1", inputTokens: 1, outputTokens: 1, elapsedMs: 1 });
-  assert.equal(k2.getTask("root")!.execution.dispatchTurnId, null);
+  // ⑤ 그리고 이제 다음 turn이 열린다(끝난 claim이 교체된다 — 과금은 이미 turn 시작 때 끝났다).
+  const p3 = k2.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId: "turn-2",
+    actionId: nextId("act"),
+    plan: { ...plan, turnId: "turn-2", operations: [] },
+  });
+  assert.equal(p3.turnId, "turn-2");
+  assert.equal(k2.getTask("root")!.execution.dispatchTurnId, "turn-2");
   // ⑥ 재시작한 kernel이 다시 열어도 durable 사실은 같다(거짓 성공 없음).
   assert.deepEqual(open().getTask("root")!.execution.operationReceipts.map((r) => r.marker), ["already_applied"]);
   assert.deepEqual(orphanTemps(join(ws, "docs")), []);
@@ -1782,20 +1922,26 @@ test("[M5c] A2: 등록·발행·영수증 사이에서 재시작해도 중복 �
 test("[M5c] 적대적 객체·proxy·accessor는 lifecycle을 우회하거나 오류 taxonomy를 고를 수 없다", () => {
   const f = fixture();
   const [op, grant] = writePermit(f, { content: "우리 내용" });
-  const throwing = { get operationId(): string { throw new OrchestrationError("already_applied", "내가 고른 코드"); } };
-  // ⓐ 던지는 getter가 taxonomy를 고르지 못한다.
-  assert.equal(
-    codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: throwing as unknown as OperationReceipt })),
-    "invalid_artifact_ref",
-  );
+  // ⓐ 던지는 getter를 **영수증 자리에 넣을 통로 자체가 없다**(3A 3차 리비전 A2): outcome handle은
+  //    등록부 조회 하나로 판정되고 호출자 property를 읽지 않으므로 taxonomy를 고를 수 없다.
+  const throwing = { get marker(): string { throw new OrchestrationError("already_applied", "내가 고른 코드"); } };
+  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ outcome: throwing, actionId: nextId("act") })), "invalid_receipt");
   // ⓑ `ownKeys` trap을 쓰는 Proxy도 마찬가지다.
   const trapped = new Proxy({} as Record<string, unknown>, {
     ownKeys() {
       throw new OrchestrationError("applied", "내가 고른 코드");
     },
   });
+  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ outcome: trapped, actionId: nextId("act") })), "invalid_receipt");
+  // 진행 신호 자리의 적대적 이벤트도 안정 코드로 접힌다(같은 규칙의 다른 진입점).
+  const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
+  const throwingEvent = new Proxy({} as Record<string, unknown>, {
+    ownKeys() {
+      throw new OrchestrationError("no_progress_exhausted", "내가 고른 코드");
+    },
+  });
   assert.equal(
-    codeOf(() => f.kernel.recordOperationReceipt({ grant, actionId: nextId("act"), receipt: trapped as unknown as OperationReceipt })),
+    codeOf(() => f.kernel.recordProgress({ taskId: "root", actionId: nextId("act"), leaseMarker: lease, event: throwingEvent })),
     "invalid_artifact_ref",
   );
   // ⓒ permit/grant 자리에 넣은 적대적 객체도 lifecycle을 열지 못한다.
@@ -1826,49 +1972,58 @@ test("[M5c] 적대적 객체·proxy·accessor는 lifecycle을 우회하거나 �
 
 // ── 8. run_process 명세 (spawn 0) ───────────────────────────────────────────
 
-test("[M5c] 프로세스 실행 명세는 승인 레코드·durable 신원에서만 나오고 동결되며 아무것도 띄우지 않는다", () => {
+test("[M5c] B2: 실행 권능은 opaque·일회용이고 실행 대상을 노출하지 않으며 아무것도 띄우지 않는다", () => {
+  // **이전 판은 공개 구조적 `ProcessLaunchSpec`이었다**(3A 3차 리뷰 B2): 실행 파일 경로·digest·파생
+  // argv가 전부 필드로 노출돼 ⓐ 호출자가 같은 모양의 객체를 **직접 만들 수** 있었고 ⓑ 취소·만료·attempt
+  // 교체 **이후에 재생**할 수 있었다. 지금 돌려주는 것은 감사용 신원뿐인 등록부 연결 값이다.
   const f = fixture();
   const [op, grant] = processPermit(f);
-  const spec = resolveProcessLaunchSpec(op, grant);
-  assert.deepEqual({ ...spec, args: [...spec.args] }, {
+  const cap = resolveProcessLaunchCapability(op, grant);
+  assert.deepEqual({ ...cap }, {
     operationId: "op-2",
     authorityId: "p-node",
     runId: RUN_ID,
     taskId: "root",
-    attemptId: grant.attemptId,
+    attemptId: f.kernel.getTask("root")!.execution.attemptId,
     turnId: "turn-1",
-    executable: NODE_PATH,
-    sha256: "e".repeat(64),
-    entrypoint: ENTRYPOINT_PATH,
-    entrypointSha256: "9".repeat(64),
-    action: "validate-plan",
-    // **argv는 파생된다**: [고정 entrypoint, 닫힌 action, ...데이터]. 승인 문서에 argv 필드가 없다.
-    args: [ENTRYPOINT_PATH, "validate-plan", "docs/plan.json"],
-    timeoutMs: 5_000,
   });
-  assert.equal(Object.isFrozen(spec), true);
-  assert.equal(Object.isFrozen(spec.args), true);
-  // 명세에는 callback·환경·cwd·shell이 **없다**(있으면 그 자체가 권한이다).
-  assert.deepEqual(Object.keys(spec).sort(), [
-    "action",
-    "args",
-    "attemptId",
-    "authorityId",
-    "entrypoint",
-    "entrypointSha256",
-    "executable",
-    "operationId",
-    "runId",
-    "sha256",
-    "taskId",
-    "timeoutMs",
-    "turnId",
-  ]);
-  for (const v of Object.values(spec)) assert.notEqual(typeof v, "function");
+  assert.equal(Object.isFrozen(cap), true);
+  // **실행 대상·argv·digest·timeout은 표면에 없다** — 미래 launcher만 모듈 사설 레코드로 소비한다.
+  for (const key of ["executable", "sha256", "entrypoint", "entrypointSha256", "action", "args", "timeoutMs", "data", "planPath"]) {
+    assert.equal(key in cap, false, `실행 명세가 다시 노출됐다: ${key}`);
+  }
+  for (const v of Object.values(cap)) assert.notEqual(typeof v, "function");
+  // 권위는 **등록부 연결**에서만 나온다: 전개 사본·수제 객체·proxy는 진짜 권능이 아니다.
+  assert.equal(isGenuineLaunchCapability(cap), true);
+  for (const forged of [{ ...cap }, Object.freeze({ ...cap }), new Proxy(cap, {}), {}, null]) {
+    assert.equal(isGenuineLaunchCapability(forged), false, JSON.stringify(forged) ?? "?");
+  }
   // 승인된 node·entrypoint 경로는 이 테스트 환경에 **존재하지 않는다** — 그래도 성공한다 = spawn이 없다.
   assert.equal(lstatSync(NODE_PATH, { throwIfNoEntry: false }), undefined);
   assert.equal(lstatSync(ENTRYPOINT_PATH, { throwIfNoEntry: false }), undefined);
   assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+});
+
+test("[M5c] B2: 권능 발급은 효과가 아니다 — run_process pending은 성공으로 닫히지 않는다", () => {
+  // **3A 3차 리뷰 A2의 정확한 지적**: 이전 판은 아무것도 spawn하지 않으면서 grant를 `executing`으로
+  // 올렸고, 그것만으로 호출자가 만든 `applied` 영수증이 수락됐다. 지금 권능 발급은 **순수 판정**이므로
+  // grant는 손대지 않고, launcher가 없는 이 슬라이스에서 `run_process`는 실패로만 닫힌다.
+  const f = fixture();
+  const [op, grant] = processPermit(f);
+  resolveProcessLaunchCapability(op, grant); // grant를 소진하지 않는다
+  resolveProcessLaunchCapability(op, grant); // 몇 번이든 순수 판정이다
+  assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 1);
+  // 성공을 만들 통로가 없다.
+  assert.equal(codeOf(() => f.kernel.recordOperationReceipt({ outcome: grant, actionId: nextId("act") })), "invalid_receipt");
+  const task = f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "denied" });
+  assert.equal(task.execution.operationReceipts[0].kind, "run_process");
+  assert.equal(task.execution.operationReceipts[0].marker, "denied");
+  assert.equal(task.execution.operationReceipts[0].exitCode, null);
+  // lifecycle이 죽으면 권능도 나오지 않는다(재생 차단 — 권능은 발급 시점 durable 상태에 묶인다).
+  const g = fixture();
+  const [op2, grant2] = processPermit(g);
+  g.kernel.requestCancel({ taskId: "root", actionId: nextId("act") });
+  assert.equal(codeOf(() => resolveProcessLaunchCapability(op2, grant2)), "dispatch_task_not_running");
 });
 
 test("[M5c] B-10: run_process는 --eval·--require·임의 script/module·action 주입을 표현할 수 없다", () => {
@@ -1876,15 +2031,21 @@ test("[M5c] B-10: run_process는 --eval·--require·임의 script/module·action
     codeOf(() =>
       validateApprovalManifest(
         manifestObject({
-          operationAuthorityByTask: { root: [{ authorityId: "p-x", kind: "run_process", action: "validate-plan", data: [], timeoutMs: 1000, ...over }] },
+          operationAuthorityByTask: {
+            root: [{ authorityId: "p-x", kind: "run_process", action: "validate-plan", data: { planPath: "docs/p.json" }, timeoutMs: 1000, ...over }],
+          },
         }),
       ),
     );
 
-  // ⓐ **코드 권위 인자는 데이터 자리에 들어갈 수 없다**(`-`로 시작하는 항목은 데이터가 아니다).
+  // ⓐ **코드 권위 인자는 데이터 자리에 들어갈 수 없다**: `data`는 이제 임의 문자열 배열이 아니라
+  //    `{planPath}` 하나이고, 옵션 문자열은 승인된 경로 범위 밖이라 거부된다(3A 3차 리비전 B2).
   for (const arg of ["--eval", "-e", "--require", "-r", "--input-type=module", "--experimental-vm-modules", "--import"]) {
-    assert.equal(bad({ data: [arg] }), "operation_data_not_approved", arg);
+    assert.equal(bad({ data: { planPath: arg } }), "operation_outside_writable_root", arg);
   }
+  assert.equal(bad({ data: ["docs/p.json"] }), "invalid_manifest", "배열 data가 아직 통과한다");
+  assert.equal(bad({ data: { planPath: "docs/p.json", extra: "x" } }), "invalid_manifest");
+  assert.equal(bad({ data: {} }), "invalid_manifest");
   // ⓑ 임의 script/module 경로도 실행 대상이 되지 못한다: 실행 대상 필드 자체가 없다.
   for (const key of ["executable", "args", "entrypoint", "module", "script", "shell", "env", "cwd", "network", "remote"]) {
     assert.equal(RUN_PROCESS_AUTHORITY_KEYS.includes(key as never), false, key);
@@ -1896,26 +2057,29 @@ test("[M5c] B-10: run_process는 --eval·--require·임의 script/module·action
     assert.equal(bad({ action }), "operation_action_not_approved", String(action));
   }
   assert.deepEqual([...CONTROLLER_ACTIONS], ["validate-plan"], "action 목록이 승인 없이 늘었다");
-  // ⓓ NUL·고립 surrogate·상한 초과 데이터도 거부다(정확한 바이트 왕복 보존).
-  assert.equal(bad({ data: ["a\0b"] }), "operation_data_not_approved");
-  assert.equal(bad({ data: ["\ud800"] }), "operation_data_not_approved");
-  assert.equal(bad({ data: ["x".repeat(257)] }), "operation_data_not_approved");
-  assert.equal(bad({ data: Array.from({ length: 17 }, (_, i) => `d${i}`) }), "invalid_manifest");
+  // ⓓ NUL·고립 surrogate·절대 경로·traversal·미정규화도 거부다(정확한 바이트 왕복 + 승인 범위).
+  assert.equal(bad({ data: { planPath: "a\0b" } }), "operation_data_not_approved");
+  assert.equal(bad({ data: { planPath: "docs/\ud800.json" } }), "operation_data_not_approved");
+  assert.equal(bad({ data: { planPath: "/etc/passwd" } }), "operation_data_not_approved");
+  assert.equal(bad({ data: { planPath: "../evil.json" } }), "operation_data_not_approved");
+  assert.equal(bad({ data: { planPath: "docs/./p.json" } }), "operation_data_not_approved");
+  assert.equal(bad({ data: { planPath: "x".repeat(600) } }), "operation_data_not_approved");
   // ⓔ **고정 entrypoint는 manifest 하나에서만 온다**: 없으면 v1로 보고 fail closed다.
   const { controllerEntrypoint: _drop, ...noEntry } = EXECUTION_AUTHORITY;
   assert.equal(
     codeOf(() => validateApprovalManifest(manifestObject({ executionAuthority: noEntry }))),
     "manifest_pre_m5c_unsupported",
   );
-  // ⓕ digest는 실행 경계가 다시 확인할 수 있도록 명세에 실린다(경로 drift = 다른 digest).
-  const f = fixture();
-  const [op, grant] = processPermit(f);
-  const spec = resolveProcessLaunchSpec(op, grant);
-  assert.equal(spec.entrypointSha256, EXECUTION_AUTHORITY.controllerEntrypoint.sha256);
-  assert.equal(spec.sha256, EXECUTION_AUTHORITY.node.sha256);
-  // ⓖ **이 리비전 전체의 spawn 수는 0이다**: 승인된 실행 파일이 존재하지도 않는데 명세가 나온다.
-  assert.equal(lstatSync(spec.executable, { throwIfNoEntry: false }), undefined);
-  assert.equal(lstatSync(spec.entrypoint, { throwIfNoEntry: false }), undefined);
+  // ⓕ 승인된 digest는 manifest에만 있고 **권능 표면에는 없다**(미래 launcher가 spawn 직전에 재검증한다).
+  const m = validateApprovalManifest(manifestObject());
+  assert.equal(m.executionAuthority.controllerEntrypoint.sha256, EXECUTION_AUTHORITY.controllerEntrypoint.sha256);
+  assert.equal(m.executionAuthority.node.sha256, EXECUTION_AUTHORITY.node.sha256);
+  // ⓖ **이 리비전 전체의 spawn 수는 0이다**: 승인된 실행 파일이 존재하지도 않는데 권능이 나온다.
+  const f2 = fixture();
+  const [pop, pgrant] = processPermit(f2);
+  assert.equal(isGenuineLaunchCapability(resolveProcessLaunchCapability(pop, pgrant)), true);
+  assert.equal(lstatSync(m.executionAuthority.node.path, { throwIfNoEntry: false }), undefined);
+  assert.equal(lstatSync(m.executionAuthority.controllerEntrypoint.path, { throwIfNoEntry: false }), undefined);
 });
 
 // ── 9. schema ↔ runtime 동치 ────────────────────────────────────────────────

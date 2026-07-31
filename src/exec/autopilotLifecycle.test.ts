@@ -182,9 +182,17 @@ function startNow(k: OrchestrationKernel, taskId: string): string {
   return leaseMarker;
 }
 
+/**
+ * 인정되는 진행 신호 1건. 3A 3차 리비전 A1로 **attempt lease + worker `progress` 이벤트**가 필수다
+ * (heartbeat·구조 없는 호출은 no-progress 시계를 되돌리지 못한다).
+ */
+function progress(k: OrchestrationKernel, taskId: string, leaseMarker: string, seq = 1): void {
+  k.recordProgress({ taskId, actionId: nextAction(), leaseMarker, event: { kind: "progress", seq, step: "step" } });
+}
+
 /** running → cleaning → cleanup 확인. 완료·차단 수락 자격을 만든다. */
 function cleanTo(k: OrchestrationKernel, taskId: string, leaseMarker: string, marker: AutopilotMarker = "turn_completed"): void {
-  k.recordProgress({ taskId, actionId: nextAction() });
+  progress(k, taskId, leaseMarker);
   k.recordTerminal({
     taskId,
     actionId: nextAction(),
@@ -439,7 +447,7 @@ test("[M5c] running task는 완료·차단될 수 없다 — recordTerminal로 c
 test("[M5c] cleanup 미확인 상태에서는 완료가 거부된다(cleanup_unconfirmed) — 자원도 계속 붙잡는다", () => {
   const { k } = bootRoot();
   const lease = startNow(k, "root");
-  k.recordProgress({ taskId: "root", actionId: nextAction() });
+  progress(k, "root", lease);
   k.recordTerminal({ taskId: "root", actionId: nextAction(), marker: "turn_completed", pendingResult: { summary: "ok", outputs: [] } });
   assert.equal(k.getTask("root")!.state, "cleaning");
   assert.ok(holdsResources(k.getTask("root")!.state), "cleaning은 자원을 붙잡는다");
@@ -466,8 +474,8 @@ test("[M5c] cleanup 미확인 상태에서는 완료가 거부된다(cleanup_unc
 
 test("[M5c] 정리 영수증은 그 attempt의 lease와 일치해야 한다(cleanup_lease_mismatch)", () => {
   const { k } = bootRoot();
-  startNow(k, "root");
-  k.recordProgress({ taskId: "root", actionId: nextAction() });
+  const lease = startNow(k, "root");
+  progress(k, "root", lease);
   k.recordTerminal({ taskId: "root", actionId: nextAction(), marker: "process_failed" });
   assert.equal(
     codeOf(() => k.confirmCleanup({ taskId: "root", actionId: nextAction(), leaseMarker: nextLease() })),
@@ -739,7 +747,17 @@ test("[M5c] 만료 후: 전진은 닫히고 safety-only reducer만 통과한다(
   const expired = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(after) });
 
   // ── 전진은 전부 거부된다 ──
-  assert.equal(codeOf(() => expired.recordProgress({ taskId: "root", actionId: nextAction() })), "manifest_expired");
+  assert.equal(
+    codeOf(() =>
+      expired.recordProgress({
+        taskId: "root",
+        actionId: nextAction(),
+        leaseMarker: lease,
+        event: { kind: "progress", seq: 1, step: "step" },
+      }),
+    ),
+    "manifest_expired",
+  );
   assert.equal(codeOf(() => expired.resumeTask({ taskId: "root", actionId: nextAction() })), "manifest_expired");
   assert.equal(
     codeOf(() => expired.registerArtifact({ taskId: "root", path: "docs/a.md", role: "output" })),
@@ -862,7 +880,9 @@ test("[M5c] 공유 정규화 계약이 고립 UTF-16 surrogate 경로를 거부�
       validateApprovalManifest(
         manifestFor(["root"], {
           operationAuthorityByTask: {
-            root: [{ authorityId: "p", kind: "run_process", action: "validate-plan", data: [`x=${LOW}`], timeoutMs: 1_000 }],
+            root: [
+              { authorityId: "p", kind: "run_process", action: "validate-plan", data: { planPath: `src/${LOW}.json` }, timeoutMs: 1_000 },
+            ],
           },
         }),
       ),
@@ -890,7 +910,7 @@ test("[M5c] operation 권위는 승인에 있을 때만 존재한다(부재 = ha
       operationAuthorityByTask: {
         root: [
           { authorityId: "w1", kind: "write_file", path: "src/out.txt", maxBytes: 1024 },
-          { authorityId: "p1", kind: "run_process", action: "validate-plan", data: ["src/plan.json"], timeoutMs: 5_000 },
+          { authorityId: "p1", kind: "run_process", action: "validate-plan", data: { planPath: "src/plan.json" }, timeoutMs: 5_000 },
         ],
       },
     }),
@@ -932,14 +952,54 @@ test("[M5c] typed operation 권위는 승인 범위·승인된 실행 파일 밖
   );
   // shell 문자열·미상 key는 표현할 수 없다(닫힌 key 집합)
   assert.equal(
-    bad([{ authorityId: "p", kind: "run_process", action: "validate-plan", data: [], timeoutMs: 1_000, shell: true }]),
+    bad([
+      { authorityId: "p", kind: "run_process", action: "validate-plan", data: { planPath: "src/p.json" }, timeoutMs: 1_000, shell: true },
+    ]),
     "invalid_manifest",
   );
-  // 코드 권위 인자는 데이터 자리에도 들어갈 수 없다(`-` 시작 거부).
+  // **3A 3차 리비전 B2 — action별 입력 계약**: `data`는 이제 임의 문자열 배열이 아니라 정확한 key 집합의
+  // 객체다. 배열·여분 key·누락·비경로 값은 전부 승인될 수 없고, 코드 권위 인자(`--eval`)는 애초에
+  // 담을 자리가 없다(그것을 `planPath`에 넣어도 정규화된 workspace 경로가 아니라 거부된다).
+  const withData = (data: unknown): string =>
+    bad([{ authorityId: "p", kind: "run_process", action: "validate-plan", data, timeoutMs: 1_000 }]);
+  assert.equal(withData(["src/p.json"]), "invalid_manifest", "배열 data가 아직 통과한다");
+  assert.equal(withData({}), "invalid_manifest", "필수 planPath 누락이 통과한다");
+  assert.equal(withData({ planPath: "src/p.json", extra: "x" }), "invalid_manifest", "여분 key가 통과한다");
+  // `--eval`은 이제 **경로 값**으로만 표현될 수 있고, 그러면 승인 범위 판정에서 걸린다(argv 자리가 없다).
+  assert.equal(withData({ planPath: "--eval" }), "operation_outside_writable_root");
+  assert.equal(withData({ planPath: "/etc/passwd" }), "operation_data_not_approved", "절대 경로가 통과한다");
+  assert.equal(withData({ planPath: "../escape.json" }), "operation_data_not_approved", "traversal이 통과한다");
+  assert.equal(withData({ planPath: "src/./p.json" }), "operation_data_not_approved", "미정규화 경로가 통과한다");
+  assert.equal(withData({ planPath: "etc/p.json" }), "operation_outside_writable_root", "승인 범위 밖 읽기가 통과한다");
+  // ownership을 좁히면 읽기 경로도 그 범위 안이어야 한다(읽기를 승인된 쓰기 범위 안쪽으로 좁힌다).
   assert.equal(
-    bad([{ authorityId: "p", kind: "run_process", action: "validate-plan", data: ["--eval"], timeoutMs: 1_000 }]),
-    "operation_data_not_approved",
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestFor(["root"], {
+          ownershipByTask: { root: ["src"] },
+          operationAuthorityByTask: {
+            root: [{ authorityId: "p", kind: "run_process", action: "validate-plan", data: { planPath: "docs/p.json" }, timeoutMs: 1_000 }],
+          },
+        }),
+      ),
+    ),
+    "operation_not_owned",
   );
+  // 정확히 하나의 정규화된 소유 경로만 승인되고, 입양된 값은 그 경로 그대로다(공허하지 않다는 증거).
+  const okOps = validateApprovalManifest(
+    manifestFor(["root"], {
+      operationAuthorityByTask: {
+        root: [{ authorityId: "p", kind: "run_process", action: "validate-plan", data: { planPath: "src/p.json" }, timeoutMs: 1_000 }],
+      },
+    }),
+  ).operationAuthorityByTask.root[0];
+  assert.deepEqual(okOps, {
+    authorityId: "p",
+    kind: "run_process",
+    action: "validate-plan",
+    data: { planPath: "src/p.json" },
+    timeoutMs: 1_000,
+  });
   assert.equal(bad([{ authorityId: "x", kind: "network_fetch", url: "https://example.com" }]), "invalid_manifest");
   // 바이트 상한을 넘는 승인은 없다
   assert.equal(

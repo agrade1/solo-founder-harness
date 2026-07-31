@@ -28,6 +28,7 @@ import {
   CENTRAL_MESSAGE_TYPES,
   CLEANUP_STATUSES,
   CONTROLLER_ACTIONS,
+  CONTROLLER_ACTION_DATA_KEYS,
   DELIVERY_MARKERS,
   EVENT_TYPES,
   LIMITS,
@@ -60,7 +61,6 @@ import {
   COMMAND_PATTERN,
   COMMIT_PATTERN,
   DEPENDENCY_KEYS,
-  CONTROLLER_DATA_ARG_PATTERN,
   RUN_PROCESS_AUTHORITY_KEYS,
   WRITE_FILE_AUTHORITY_KEYS,
   DEPENDENCY_NAME_PATTERN,
@@ -1543,6 +1543,7 @@ function twoBodyCommit(
     attemptId: null,
     turnId: null,
     operationId: null,
+    planDigest: null,
     marker: null,
     tokenDelta: null,
     elapsedMs: null,
@@ -2464,6 +2465,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "createRootTask",
     "failCleanup",
     "failDeliveryAttempt",
+    // M5c 3A 3차 리비전 A2 — 집행하지 않았거나 실패한 operation을 `denied`/`failed`로만 닫는 좁은 전이.
+    // 성공 marker를 만드는 통로는 `executeUnderGrant` 하나뿐이므로 여기서는 성공이 나오지 않는다.
+    "failOperation",
     "getAccounting",
     "getArtifact",
     "getManifest",
@@ -4253,13 +4257,24 @@ test("[M4c] milestone_approval_manifest.schema.json이 runtime 계약과 동치�
   assert.deepEqual(Object.keys(rp.properties).sort(), [...RUN_PROCESS_AUTHORITY_KEYS].sort());
   assert.equal(rp.additionalProperties, false);
   assert.equal(rp.properties.kind.const, "run_process");
-  // M5c 3A 2차 리비전(`B-10`) — 승인 문서에 실행 파일·argv 필드가 **없다**. 닫힌 action + 데이터 전용 인자뿐.
+  // M5c 3A 2차 리비전(`B-10`) — 승인 문서에 실행 파일·argv 필드가 **없다**. 닫힌 action + action별 입력뿐.
   assert.deepEqual(rp.properties.action.enum, [...CONTROLLER_ACTIONS]);
-  assert.equal(rp.properties.data.maxItems, LIMITS.maxOperationArgs);
-  assert.equal(rp.properties.data.items.maxLength, LIMITS.maxOperationArgLength);
-  assert.equal(rp.properties.data.items.pattern, CONTROLLER_DATA_ARG_PATTERN);
   assert.equal(rp.properties.executable, undefined, "실행 파일 선택 필드가 되살아났다");
   assert.equal(rp.properties.args, undefined, "임의 argv 필드가 되살아났다");
+  // **3A 3차 리비전 B2 — action별 입력 계약**: `data`는 임의 문자열 배열이 아니라 닫힌 key 집합 객체다.
+  assert.deepEqual(
+    rp.properties.data.oneOf.map((x: any) => x.$ref),
+    ["#/definitions/validatePlanData"],
+    "action별 data 계약이 열렸다(임의 배열로 되돌아갔다)",
+  );
+  for (const action of CONTROLLER_ACTIONS) {
+    const def = s.definitions[`${action.replace(/-(.)/g, (_m: string, c: string) => c.toUpperCase())}Data`];
+    assert.ok(def, `${action}의 data 정의가 없다`);
+    assert.deepEqual(def.required, [...CONTROLLER_ACTION_DATA_KEYS[action]]);
+    assert.deepEqual(Object.keys(def.properties).sort(), [...CONTROLLER_ACTION_DATA_KEYS[action]].sort());
+    assert.equal(def.additionalProperties, false);
+  }
+  assert.equal(s.definitions.validatePlanData.properties.planPath.$ref, "#/definitions/workspacePath");
   assert.equal(rp.properties.timeoutMs.minimum, 100);
   assert.equal(rp.properties.timeoutMs.maximum, 3_600_000);
   // 고정 controller entrypoint는 `executionAuthority`에만 있고 승인된 실행 파일과 같은 형태다.

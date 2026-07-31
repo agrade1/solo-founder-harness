@@ -561,6 +561,14 @@ export interface OperationReceipt {
   operationId: string;
   kind: ApprovedOperationKind;
   authorityId: string;
+  /**
+   * **이 영수증이 닫은 pending 레코드의 실행 신원**(3A 3차 리비전 A2). 이전 판은 pending이 사라지고 dispatch
+   * claim이 닫히면 "어떤 attempt·turn·계획이 이 효과를 승인했는가"를 durable에서 **재구성할 수 없었다**.
+   */
+  attemptId: string;
+  turnId: string;
+  /** 그 turn이 durable하게 claim한 계획의 canonical digest. */
+  planDigest: string;
   /** `write_file`이면 정규화된 workspace-relative 경로, `run_process`면 null. */
   path: string | null;
   /** `write_file`이면 결과 내용 sha256, `run_process`면 null. */
@@ -730,7 +738,7 @@ export interface ApprovedExecutable {
  */
 export type ApprovedOperation =
   | { authorityId: string; kind: "write_file"; path: string; maxBytes: number }
-  | { authorityId: string; kind: "run_process"; action: ControllerAction; data: string[]; timeoutMs: number };
+  | { authorityId: string; kind: "run_process"; action: "validate-plan"; data: ValidatePlanData; timeoutMs: number };
 
 /**
  * **고정 controller entrypoint가 받아들이는 닫힌 action 집합**(3A 2차 리비전 B2 · 대장 `B-10`).
@@ -739,6 +747,27 @@ export type ApprovedOperation =
  */
 export const CONTROLLER_ACTIONS = ["validate-plan"] as const;
 export type ControllerAction = (typeof CONTROLLER_ACTIONS)[number];
+
+/**
+ * **`validate-plan`의 action 전용 입력**(3A 3차 리비전 B2 · 대장 `B-10`).
+ *
+ * 이전 판은 `data: string[]`(0..16 임의 문자열)이었다 → arity·의미·경로 범위·읽기 권한을 **미래 controller가
+ * 지어내야 했고**, 그래서 그 인터페이스는 과승인이거나 폐기 대상이었다. 지금은 action마다 **정확한 key 집합**이
+ * 있고 값의 의미가 계약에 적혀 있다.
+ *
+ * `planPath`는 **정규화된 workspace-relative 경로**이고 승인 시점에 ⓐ `writableRoots` 안 ⓑ 그 task의 승인
+ * ownership 안(manifest에 있으면)임을 함께 본다. 이 action은 그 파일을 **읽기만** 한다 — 별도의 readableRoots를
+ * 새로 만들지 않고 **이미 승인된 쓰기 범위 안쪽으로 읽기도 좁힌다**(더 좁은 쪽이 fail closed다).
+ */
+export interface ValidatePlanData {
+  /** 검증할 계획 파일의 정규화된 workspace-relative 경로(읽기 전용 · 승인 범위 안). */
+  planPath: string;
+}
+
+/** action별 `data` key 집합(닫혀 있다 — 여기 없는 key는 승인 문서에 담길 수 없다). */
+export const CONTROLLER_ACTION_DATA_KEYS: Record<ControllerAction, readonly string[]> = {
+  "validate-plan": ["planPath"],
+};
 
 /**
  * autopilot 실행 정책(V3 M5c). 전부 bounded이고 **조용한 기본값이 없다** — manifest에 없으면 거부다.
@@ -908,6 +937,11 @@ export interface OrchestrationEvent {
   attemptId: string | null;
   turnId: string | null;
   operationId: string | null;
+  /**
+   * M5c 3A 3차 리비전 — dispatch/operation event가 **어떤 계획**에 묶였는지(canonical digest).
+   * claim이 닫히고 pending이 사라진 뒤에도 감사 로그만으로 영수증↔계획 binding을 재구성할 수 있다.
+   */
+  planDigest: string | null;
   marker: string | null;
   tokenDelta: number | null;
   elapsedMs: number | null;
@@ -919,6 +953,7 @@ export const EMPTY_EVENT_AUDIT = Object.freeze({
   attemptId: null,
   turnId: null,
   operationId: null,
+  planDigest: null,
   marker: null,
   tokenDelta: null,
   elapsedMs: null,

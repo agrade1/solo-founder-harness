@@ -13,9 +13,15 @@
  *
  * 이 모듈이 하는 것:
  * 1. `resolveWriteFileAuthority()` — 승인 레코드 대조(deny-by-default · 파일 시스템 무접촉).
- * 2. `applyWriteFile()` — 승인된 **실제 파일 쓰기**(원자적 · 부재 대상은 **덮어쓰지 않는** `link(2)` 발행 ·
- *    교체는 preimage 신원·내용 재확인 후 `rename(2)` · 디렉터리 fsync까지 확인한 뒤에만 `applied`).
- * 3. `resolveProcessLaunchSpec()` — 승인 레코드에서만 나오는 **데이터 전용** 실행 명세. **spawn하지 않는다.**
+ * 2. `applyWriteFile()` — 승인된 typed 쓰기의 **판정과 정합화**. 3A 3차 리비전 A4에서 **발행(신규 파일
+ *    생성)은 fail closed**가 됐다: Node 18/macOS에는 디스크립터 상대 no-replace 발행 primitive
+ *    (`linkat`/`renameat2`)가 없어 최종 pathname syscall이 **교체된 부모를 통해 승인 범위 밖으로**
+ *    발행될 수 있고, 그 창은 사후 검증·재확인·lock 파일로 닫히지 않기 때문이다. 남은 것은 **바이트를
+ *    만들지 않는** 경로뿐이다: 이미 의도한 내용이면 `already_applied`(부모 fsync 확인 뒤) · preimage
+ *    불일치면 `write_conflict` · 기존 대상 교체는 `write_replace_unsupported` · 신규 발행은
+ *    `write_publish_unsupported`.
+ * 3. `resolveProcessLaunchCapability()` — 승인 레코드에서만 나오는 **opaque 일회용 실행 권능**.
+ *    **spawn하지 않고**, 실행 대상·argv·digest를 밖으로 드러내지도 않는다(3A 3차 리비전 B2).
  *
  * 계획의 닫힌 validator와 계약 상수는 `typedPlan.ts`에 있다(순수 모듈 — offline worker가 파일 시스템
  * 권위를 transitive하게 끌어오지 않도록 갈라 두었다). 호환을 위해 여기서 그대로 재수출한다.
@@ -26,37 +32,28 @@
  * **오류·영수증에 내용은 담지 않는다.** 계획 본문 · 파일 내용 · prompt · stdout/stderr · argv · secret ·
  * 핸들 · 절대 경로는 오류 메시지에도 영수증에도 로그에도 들어가지 않는다 — 필드 이름과 규칙만 적는다.
  */
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
   fstatSync,
   fsyncSync,
-  ftruncateSync,
-  linkSync,
   lstatSync,
   openSync,
   readSync,
   realpathSync,
-  unlinkSync,
-  writeSync,
   type Stats,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import {
-  LIMITS,
-  OrchestrationError,
-  type ApprovedOperation,
-  type ControllerAction,
-  type OperationReceipt,
-} from "./orchestrationTypes.js";
+import { LIMITS, OrchestrationError, type ApprovedOperation, type ControllerAction } from "./orchestrationTypes.js";
 import { pathWithin, approvedOperationFor } from "./approvalManifest.js";
 import { sha256Hex } from "./orchestrationStore.js";
 import {
   DISPATCH_AUTHORITY_CODES,
-  consumeExecutionGrant,
+  executeUnderGrant,
   readDispatchAuthority,
   type DispatchAuthority,
+  type OperationOutcome,
 } from "./orchestrationKernel.js";
 import type { TypedWriteFileOperation, TypedRunProcessOperation } from "./typedPlan.js";
 
@@ -76,7 +73,12 @@ export {
   validateTypedExecutionPlan,
 } from "./typedPlan.js";
 export type { PlanBinding, TypedRunProcessOperation, TypedWriteFileOperation } from "./typedPlan.js";
-export type { DispatchAuthority, OperationDispatchPermit, OperationExecutionGrant } from "./orchestrationKernel.js";
+export type {
+  DispatchAuthority,
+  OperationDispatchPermit,
+  OperationExecutionGrant,
+  OperationOutcome,
+} from "./orchestrationKernel.js";
 
 /**
  * 이 모듈이 낼 수 있는 **안정 오류 코드 전부**(닫힌 목록 — 대장 `C-33`과 같은 취지).
@@ -105,9 +107,24 @@ export const TYPED_EXECUTION_CODES = [
    * **기존 경로 교체는 예방 안전하게 만들 수 없어 거부한다**(3A 2차 리비전 A3).
    * Node 18에는 디스크립터 상대 compare-and-publish(`renameat2`/`RENAME_EXCHANGE`)가 없어 최종 pathname
    * `rename(2)` 직전 창을 0으로 만들 수 없다 → 경쟁자 바이트 파괴·승인 부모 밖 발행이 **가능하다**.
-   * 그래서 **temp를 만들기도 전에** 거부한다: 발행은 부재 대상 `link(2)` no-replace만 남는다.
+   * 그래서 **판정 단계에서** 거부한다.
    */
   "write_replace_unsupported",
+  /**
+   * **신규 파일 발행도 예방 안전하게 만들 수 없어 거부한다**(3A 3차 리비전 A4).
+   *
+   * `link(2)`는 두 **pathname**을 받는다. 최종 부모 신원 확인과 syscall 사이에 같은 사용자 권한의 경쟁자가
+   * 승인된 부모를 rename하고 그 이름을 다른 디렉터리·symlink로 바꾸면, 커널은 **그 교체본을 통해** 경로를
+   * 해석해 승인 범위 **밖으로** 바이트를 발행한다. 발행된 inode는 우리 temp와 같으므로 사후 inode 검증은
+   * 통과하고, fsync는 **엉뚱한 디렉터리 fd**에 걸린다 → 사후 검증·재확인·lock 파일·토큰 화면 어느 것도
+   * 이 창을 닫지 못한다.
+   *
+   * Node 18/macOS 내장에는 디스크립터 상대 no-replace 발행(`linkat(AT_FDCWD 대체)`)이 없고, 이 세션은
+   * 신규 런타임 의존성·네이티브 helper·자식 프로세스를 만들 수 없다. 그래서 **fail closed**다:
+   * 안전하게 증명할 수 없는 발행 경로는 **시도하지 않는다**(temp도 만들지 않는다).
+   * 남는 안전 경로는 바이트를 만들지 않는 판정·정합화뿐이다.
+   */
+  "write_publish_unsupported",
   /**
    * 바이트는 발행됐지만 **요구된 durability를 확인하지 못했다**(디렉터리 fsync 실패).
    * `applied` 영수증을 주지 않는다. 재시도는 **부모 fsync에 성공해야만** `already_applied`가 되고,
@@ -179,69 +196,82 @@ export function resolveWriteFileAuthority(
 }
 
 /**
- * **데이터 전용 실행 명세**(V3 M5c · 3A 2차 리비전 B2로 `B-10`을 닫는 면).
+ * **opaque 일회용 실행 권능**(3A 3차 리비전 B2로 `B-10`의 launch 면을 닫는다).
  *
- * 1차 판은 "승인된 Node 경로 + 승인된 argv 배열"이었다 → 승인 문서가 `--eval`·`--require`·임의 script 경로를
- * argv에 담을 수 있었으므로 **승인된 Node 하나가 곧 임의 로컬 코드 권위**였다. 지금 이 명세가 표현할 수 있는
- * 것은 단 하나다: **digest로 고정된 controller entrypoint를, 닫힌 action 하나와 데이터 전용 인자로 실행한다.**
+ * 이전 판은 `ProcessLaunchSpec`이라는 **공개 구조적 인터페이스**였다: 실행 파일 경로 · digest ·
+ * 파생 argv가 전부 필드로 노출됐고, 그래서 ⓐ 호출자가 같은 모양의 객체를 **직접 만들 수** 있었으며
+ * ⓑ 한 번 받은 명세를 취소·만료·attempt 교체 **이후에 재생**할 수 있었다. 미래 launcher가 그 명세를
+ * 그대로 믿으면 그 둘이 곧 로컬 실행 권위가 된다.
  *
- * - `executable`/`entrypoint`는 `manifest.executionAuthority`에서만 오고 operation 레코드가 고를 수 없다.
- * - `args`는 **여기서 파생**된다: `[entrypoint, action, ...data]`. 호출자·계획·승인 레코드 어디에도
- *   argv를 직접 적는 필드가 없다. argv[1]이 절대 경로 script이므로 Node 옵션 자리 자체가 없다.
- * - `sha256`/`entrypointSha256`은 spawn 직전 `executionBoundary.verifyApprovedExecutable` 재검증용이다.
- * - callback · 환경 · cwd · shell · 파일 시스템 객체 · provider 핸들은 **필드가 없다**.
- * - 실행 신원(run/task/attempt/turn)을 담으므로 launcher가 명세를 **다른 attempt에 재사용할 수 없다**.
+ * 지금 돌려주는 값은 **감사용 신원만** 담은 동결 객체이고, 실행 대상(node 경로·entrypoint·digest·
+ * timeout·action data)은 **이 모듈 사설 레코드에만** 있다. 권위는 등록부 연결에서만 나오므로 전개
+ * 사본(`{...cap}`)·수제 객체·`Proxy`는 아무것도 얻지 못한다.
  *
- * 실제 launcher는 managed process slice가 되며 **이 모듈은 아무것도 spawn하지 않는다.**
+ * **이 세션은 launcher를 만들지 않는다(spawn 0).** 미래 launcher가 지켜야 하는 계약은 명시적이다:
+ * ① 이 권능을 **한 번** 소비하고 ② 소비 시점에 **현재 durable 상태를 다시 읽고**
+ * ③ spawn 직전에 node·entrypoint **두 파일의 digest를 모두** 재검증한다
+ * (`executionBoundary.verifyApprovedExecutable`). 그 소비 함수는 launcher 슬라이스가 소유한다 —
+ * 여기서 미리 열지 않는다(열어 두는 순간 그것이 곧 공개 실행 권위다).
  */
-export interface ProcessLaunchSpec {
+export interface ProcessLaunchCapability {
   readonly operationId: string;
   readonly authorityId: string;
   readonly runId: string;
   readonly taskId: string;
   readonly attemptId: string;
   readonly turnId: string;
-  /** 승인된 절대 경로(= `executionAuthority.node.path`). 런타임 선택 통로가 없다. */
-  readonly executable: string;
-  /** spawn 직전 재검증에 쓰는 승인 digest(`executionBoundary.verifyApprovedExecutable`). */
-  readonly sha256: string;
-  /** 고정 controller entrypoint 절대 경로(= `executionAuthority.controllerEntrypoint.path`). */
-  readonly entrypoint: string;
-  /** entrypoint의 승인 digest — spawn 직전에도 내용까지 대조한다. */
-  readonly entrypointSha256: string;
-  /** 닫힌 action enum 값. */
-  readonly action: ControllerAction;
-  /** 파생 argv `[entrypoint, action, ...data]` — 이 배열을 만드는 다른 통로가 없다. */
-  readonly args: readonly string[];
-  readonly timeoutMs: number;
 }
 
+/** 권능 뒤에 숨은 실제 실행 명세(모듈 사설 — 밖으로 나가는 통로가 없다). */
+interface LaunchRecord {
+  executable: string;
+  sha256: string;
+  entrypoint: string;
+  entrypointSha256: string;
+  action: ControllerAction;
+  planPath: string;
+  timeoutMs: number;
+  spent: boolean;
+}
+
+const GENUINE_LAUNCH_CAPABILITIES = new WeakMap<object, LaunchRecord>();
+
 /**
- * `run_process` 권위 해석. **spawn하지 않는다** — 동결된 명세 데이터만 돌려준다.
- * 명세 발급도 효과이므로 **일회용 execution grant**를 소비하고 현재 durable 권위를 다시 읽는다
- * (만료·토큰·예산·attempt wall·no-progress·lifecycle·attempt/turn 포함).
+ * `run_process` 권위 해석. **spawn하지 않고 grant도 소비하지 않는다**(3A 3차 리비전 A2):
+ * 아무것도 실행하지 않는 계획 단계가 "집행했다"는 상태를 만들면 그것만으로 성공 영수증이 나왔다.
+ * 지금 이 함수는 **순수 판정**이며(`readDispatchAuthority`), 그래서 `run_process` pending은
+ * 실제 launcher가 생기기 전까지 `failOperation(denied|failed)`으로만 닫힌다 — **성공을 만들 통로가 없다.**
  */
-export function resolveProcessLaunchSpec(op: TypedRunProcessOperation, grant: unknown): ProcessLaunchSpec {
-  const auth = consumeExecutionGrant(grant, op);
+export function resolveProcessLaunchCapability(op: TypedRunProcessOperation, handle: unknown): ProcessLaunchCapability {
+  const auth = readDispatchAuthority(handle, op);
   const approved = resolveApprovedOperation(op, auth);
   if (approved.kind !== "run_process") throw denied("승인 레코드의 kind와 다르다");
   const node = auth.manifest.executionAuthority.node;
   const entry = auth.manifest.executionAuthority.controllerEntrypoint;
-  return Object.freeze({
+  const capability: ProcessLaunchCapability = Object.freeze({
     operationId: op.operationId,
     authorityId: op.authorityId,
     runId: auth.runId,
     taskId: auth.taskId,
     attemptId: auth.attemptId,
     turnId: auth.turnId,
+  });
+  GENUINE_LAUNCH_CAPABILITIES.set(capability, {
     executable: node.path,
     sha256: node.sha256,
     entrypoint: entry.path,
     entrypointSha256: entry.sha256,
     action: approved.action,
-    args: Object.freeze([entry.path, approved.action, ...approved.data]),
+    planPath: approved.data.planPath,
     timeoutMs: approved.timeoutMs,
+    spent: false,
   });
+  return capability;
+}
+
+/** 이 모듈이 발급한 진짜 실행 권능인가(테스트·감사용 판정 — 실행 명세는 돌려주지 않는다). */
+export function isGenuineLaunchCapability(v: unknown): boolean {
+  return typeof v === "object" && v !== null && GENUINE_LAUNCH_CAPABILITIES.has(v);
 }
 
 // ── write_file 집행 ─────────────────────────────────────────────────────────
@@ -286,20 +316,15 @@ function requireNoFollow(): void {
  * **결정론적 race·fault 테스트 seam**(모듈 사설 · 테스트 전용).
  *
  * 이것이 **권위가 될 수 없는 이유**: 콜백은 **인자를 받지 않고 반환값도 무시된다**. 권위 판정
- * (`readDispatchAuthority` → 승인 레코드 대조)은 **모든 seam보다 먼저** 끝나고, 발행 직전 신원 확인은
+ * (`readDispatchAuthority` → 승인 레코드 대조)은 **모든 seam보다 먼저** 끝나고, 판정 직전 신원 확인은
  * seam **뒤에** 다시 돈다. 즉 seam으로 할 수 있는 것은 "파일 시스템을 흔들거나 던지는 것"뿐이고,
- * 그때 이 모듈은 반드시 안정 코드로 거부하며 fd·temp를 남기지 않는다 — 그것이 테스트가 증명하는 것이다.
+ * 그때 이 모듈은 반드시 안정 코드로 거부하며 fd를 남기지 않는다 — 그것이 테스트가 증명하는 것이다.
  * ponytail: 결정론적 경쟁 재현에는 이 방법밖에 없다. 실제 병렬 프로세스로 바꿀 이유가 생기면 그때 바꾼다.
+ *
+ * 3A 3차 리비전 A4로 발행 경로가 사라지면서 temp 관련 seam(`tempCreate`/`tempWrite`/`tempVerify`/
+ * `postVerify`)도 함께 사라졌다 — 그 단계가 **존재하지 않는다**는 것이 지금의 계약이다.
  */
-export type PublicationSeam =
-  | "parentWalk"
-  | "targetOpen"
-  | "tempCreate"
-  | "tempWrite"
-  | "tempVerify"
-  | "publish"
-  | "postVerify"
-  | "dirFsync";
+export type PublicationSeam = "parentWalk" | "targetOpen" | "publish" | "dirFsync";
 
 let SEAMS: Partial<Record<PublicationSeam, () => void>> = {};
 
@@ -399,89 +424,95 @@ function walkParents(workspaceRoot: string, relPath: string): ParentWalk {
   return { parent: cur, target: join(cur, segments[segments.length - 1]), parentIdent };
 }
 
-function receipt(
-  op: TypedWriteFileOperation | TypedRunProcessOperation,
-  marker: OperationReceipt["marker"],
-  path: string | null,
-  resultSha256: string | null,
-  at: string,
-): OperationReceipt {
-  return Object.freeze({
-    operationId: op.operationId,
-    kind: op.kind,
-    authorityId: op.authorityId,
-    path,
-    resultSha256,
-    exitCode: null,
-    marker,
-    at,
+type EffectMarker = "applied" | "already_applied" | "write_conflict" | "denied" | "failed";
+
+interface EffectResult {
+  marker: EffectMarker;
+  path: string | null;
+  resultSha256: string | null;
+  exitCode: number | null;
+}
+
+/** 집행기가 낸 결과 1건(내용은 담지 않는다 — marker·경로·결과 hash만). */
+function outcome(marker: EffectMarker, path: string | null, resultSha256: string | null): EffectResult {
+  return { marker, path, resultSha256, exitCode: null };
+}
+
+/**
+ * **승인된 typed 파일 쓰기 1건을 판정·정합화한다.**
+ *
+ * 순서가 계약이다:
+ * 1. **일회용 execution grant → 현재 durable 권위**(만료·토큰·**과금된 turn**·예산 deadline·attempt wall·
+ *    no-progress·lifecycle·attempt/turn·claim된 계획·preflight·manifest 정본). grant는 여기서 **소진된다**.
+ * 2. 권위 해석(deny-by-default) → 정확한 경로 · dispatch 시점 ownership · writableRoots.
+ * 3. 바이트 상한 = `min(승인 maxBytes, LIMITS.maxWriteBytes)`.
+ * 4. no-follow 경로 walk(symlink·비일반 파일 거부) + 부모 디렉터리 신원을 **열린 fd로 고정**.
+ * 5. 대상 preimage를 **열어 둔 fd 하나로** 확정(경로 재오픈 없음) → 판정 직전 부모 신원 **재확인**.
+ * 6. **크래시 창 멱등**: 현재 내용이 의도한 내용과 같으면 `already_applied`(**부모 fsync 성공 뒤에만** — A4).
+ * 7. preimage 불일치는 **쓰지 않고** `write_conflict`.
+ * 8. 대상이 있고 내용이 다르면 `write_replace_unsupported`(3A 2차 A3).
+ * 9. **대상이 없으면 `write_publish_unsupported`**(3A 3차 A4) — 예방 안전한 발행 primitive가 없어 아예
+ *    시도하지 않는다. temp를 만들지 않으므로 고아 plaintext·unlink durability 문제도 함께 **사라진다**.
+ *
+ * **왜 발행이 사라졌는가(정직)**: `link(2)`/`rename(2)`는 pathname을 받고, 최종 부모 확인과 syscall 사이에
+ * 같은 사용자 경쟁자가 승인된 부모 **이름**을 교체하면 커널이 그 교체본을 통해 경로를 해석한다 →
+ * 승인 범위 밖 발행 + 엉뚱한 디렉터리 fsync. 발행된 inode는 우리 temp와 같으므로 **사후 검증은 통과한다**.
+ * Node 18/macOS 내장에는 디스크립터 상대 no-replace 발행(`linkat`)이 없다.
+ * `process.chdir(parent)` + basename `link`로 cwd를 디렉터리 참조처럼 쓰는 방법은 **평가했고 채택하지
+ * 않았다**: 프로세스 전역 상태이며 worker thread에서 던지고, managed launcher가 자식을 띄우는 순간 자식
+ * cwd까지 오염시킨다. 승인된 helper·의존성·자식 프로세스 없이 안전을 **증명할 수 없으므로 fail closed**다.
+ *
+ * 돌려주는 것은 kernel이 봉인한 **opaque outcome handle**이다 — 호출자가 marker·경로·hash를 바꿔 넣을 수 없다.
+ */
+export function applyWriteFile(op: TypedWriteFileOperation, grant: unknown): Readonly<OperationOutcome> {
+  return executeUnderGrant(grant, op, (auth) => {
+    const approved = resolveWriteAuthority(op, auth);
+    const bytes = Buffer.from(op.content, "utf8");
+    const bound = Math.min(approved.maxBytes, LIMITS.maxWriteBytes);
+    if (bytes.byteLength > bound) {
+      throw new OrchestrationError("write_bytes_exceeded", "본문이 승인된 바이트 상한을 넘는다");
+    }
+    requireNoFollow();
+    // 정리 상태는 `finally`가 마지막에 적으므로 **호출자 쪽 holder**로 받는다 —
+    // `finally` 안에서 반환값을 바꾸면 원래 예외를 삼키게 되기 때문이다.
+    const status = { cleanupFailed: false };
+    let result: EffectResult;
+    try {
+      result = judge(auth, op, sha256Hex(bytes), status);
+    } catch (e) {
+      // **1차 오류가 정리 미확인을 가리지 않는다**(3A 3차 리비전 B1): 둘 다 있으면 정리 미확인이 이기고
+      // 1차 안정 **코드**만 메시지에 싣는다(경로·내용은 담지 않는다).
+      if (status.cleanupFailed) throw cleanupUnconfirmed(e instanceof OrchestrationError ? e.code : "non_orchestration");
+      throw e;
+    }
+    if (status.cleanupFailed) throw cleanupUnconfirmed(null);
+    return result;
   });
 }
 
-/**
- * **승인된 typed 파일 쓰기 1건을 집행한다.**
- *
- * 순서가 계약이다:
- * 1. **일회용 execution grant → 현재 durable 권위**(만료·토큰·예산 deadline·attempt wall·no-progress·
- *    lifecycle·attempt/turn·claim된 계획·preflight·manifest 정본). grant는 여기서 **소진된다**.
- * 2. 권위 해석(deny-by-default) → 정확한 경로 · dispatch 시점 ownership · writableRoots.
- * 3. 바이트 상한 = `min(승인 maxBytes, LIMITS.maxWriteBytes)`.
- * 4. no-follow 경로 walk(symlink·비일반 파일 거부) + 부모 디렉터리 신원 고정.
- * 5. **크래시 창 멱등**: 현재 내용 digest가 의도한 내용 digest와 같으면 영수증이 durable하지 않았어도
- *    `already_applied`다(같은 바이트를 두 번 쓰지 않는다). 단 **부모 fsync에 성공한 뒤에만** 그렇다(A4).
- * 6. 그 밖의 preimage 불일치는 **쓰지 않고** `write_conflict`.
- * 7. **대상이 이미 있으면 여기서 끝난다**(A3): 예방 안전한 교체 원자성이 Node 18 내장으로 불가능하므로
- *    temp를 만들기 **전에** `write_replace_unsupported`로 거부한다.
- * 8. 부재 대상만: 같은 디렉터리의 **배타 생성된 우리 temp**에 쓰고 → 같은 fd로 바이트·digest 재확인 →
- *    발행 직전 부모·temp 신원 **재확인** → `link(2)`(**덮어쓰지 않는다**).
- * 9. 발행 후 대상 신원 확인 → **디렉터리 fsync** → **fd 반납·temp 정리 확인**까지 성공해야 `applied`다.
- *
- * 돌려주는 것은 닫힌 `OperationReceipt` 모양의 동결 값뿐이다 — **내용은 담지 않는다.**
- */
-export function applyWriteFile(op: TypedWriteFileOperation, grant: unknown): OperationReceipt {
-  const auth = consumeExecutionGrant(grant, op);
-  const approved = resolveWriteAuthority(op, auth);
-
-  const bytes = Buffer.from(op.content, "utf8");
-  const bound = Math.min(approved.maxBytes, LIMITS.maxWriteBytes);
-  if (bytes.byteLength > bound) {
-    throw new OrchestrationError("write_bytes_exceeded", "본문이 승인된 바이트 상한을 넘는다");
-  }
-  requireNoFollow();
-  // 정리 상태는 `finally`가 마지막에 적으므로 **호출자 쪽 holder**로 받는다 —
-  // `finally` 안에서 반환값을 바꾸면 원래 예외를 삼키게 되기 때문이다.
-  const status = { cleanupFailed: false };
-  const result = publish(auth, op, bytes, sha256Hex(bytes), status);
-  if (status.cleanupFailed) {
-    throw new OrchestrationError(
-      "write_cleanup_unconfirmed",
-      "판정은 끝났지만 fd 반납 또는 소유 temp 정리를 확인하지 못했다(성공 영수증을 내지 않는다)",
-    );
-  }
-  return result;
+function cleanupUnconfirmed(primaryCode: string | null): OrchestrationError {
+  return new OrchestrationError(
+    "write_cleanup_unconfirmed",
+    primaryCode === null
+      ? "판정은 끝났지만 fd 반납을 확인하지 못했다(성공 영수증을 내지 않는다)"
+      : `판정이 ${primaryCode}로 실패했고 fd 반납도 확인하지 못했다(정리 미확인이 우선한다)`,
+  );
 }
 
 /**
- * 발행 트랜잭션 하나. **모든 자원 정리는 `finally` 하나에 모여 있다** — 어떤 단계가 실패해도
- * 열린 fd는 전부 닫히고 **이 호출이 만든 temp만** 사라진다(남의 파일은 신원이 다르므로 건드리지 않는다).
- * OS 오류는 전부 안정 코드로 접으며 경로·내용을 메시지에 담지 않는다.
+ * 판정 트랜잭션 하나. **바이트를 만들지 않는다** — 여는 것은 부모 디렉터리 fd와 (있으면) 대상 fd뿐이고
+ * 모든 자원 반납은 `finally` 하나에 모여 있다. OS 오류는 전부 안정 코드로 접으며 경로·내용을 담지 않는다.
  *
- * **정리 실패는 성공이 되지 않는다**(3A 2차 리비전 B1): close·unlink 실패를 모아 두고, 판정이
- * 성공이었으면 `write_cleanup_unconfirmed`로 바꾼다. 그리고 temp 이름으로 지울 수 없는 경우
- * (부모 **이름**이 적대적으로 교체됨 — Node 18에 `unlinkat`이 없다)에는 **우리가 들고 있는 fd로
- * `ftruncate(0)`** 해서 승인된 내용이 고아 파일로 노출되지 않게 한다.
+ * **정리(= fd 반납) 실패는 성공이 되지 않는다**(3A 2차·3차 리비전 B1). temp를 만드는 경로가 사라졌으므로
+ * **소유 잔재도 0**이다 — unlink durability · 고아 plaintext · truncate 폴백 문제는 남길 파일이 없어 성립하지 않는다.
  */
-function publish(
+function judge(
   auth: DispatchAuthority,
   op: TypedWriteFileOperation,
-  bytes: Buffer,
   intended: string,
   status: { cleanupFailed: boolean },
-): OperationReceipt {
+): EffectResult {
   const fds: number[] = [];
-  let temp: string | null = null;
-  let tempIdent: Ident | null = null;
-  let tempFdForTruncate: number | null = null;
   try {
     seam("parentWalk");
     const walk = walkParents(auth.workspaceRoot, op.path);
@@ -516,9 +547,20 @@ function publish(
       if (!sameIdent(identOf(st), identOf(seen))) throw writeFailed("대상이 판정 중에 다른 파일로 바뀌었다");
       if (st.size > MAX_PREIMAGE_BYTES) {
         // preimage를 판정할 수 없다 → 조용히 덮어쓰지 않는다(fail closed).
-        return receipt(op, "write_conflict", op.path, null, auth.nowIso);
+        return outcome("write_conflict", op.path, null);
       }
       before = digestOfFd(targetFd, st.size);
+    }
+
+    // **판정을 내기 직전에 부모 신원을 다시 본다**(3A 3차 리비전 A4). 대상 조회는 pathname을 지나므로,
+    // 이 재확인이 없으면 "승인된 부모 안에서 봤다"는 판정 자체가 교체된 디렉터리에 대한 것일 수 있다.
+    seam("publish");
+    const again = walkParents(auth.workspaceRoot, op.path);
+    if (again.parent !== walk.parent || !sameIdent(again.parentIdent, walk.parentIdent)) {
+      throw writeFailed("부모 디렉터리가 판정 중에 교체됐다");
+    }
+    if (!sameIdent(identOf(fstatSync(dirFd)), walk.parentIdent)) {
+      throw writeFailed("부모 디렉터리 신원이 판정 중에 바뀌었다");
     }
 
     // 크래시 창: 이미 의도한 바이트가 있다 → 다시 쓰지 않는다(DECISIONS 2026-07-30 결정 1).
@@ -526,103 +568,32 @@ function publish(
     // 디렉터리 엔트리는 아직 durable하지 않고, "다시 보니 있더라"는 durability의 증거가 아니다.
     if (before === intended) {
       confirmDirDurability(dirFd);
-      return receipt(op, "already_applied", op.path, intended, auth.nowIso);
+      return outcome("already_applied", op.path, intended);
     }
     // 기대한 preimage가 아니다 → 한 바이트도 쓰지 않는다.
     if (op.expectedBeforeSha256 === null ? before !== null : before !== op.expectedBeforeSha256) {
-      return receipt(op, "write_conflict", op.path, null, auth.nowIso);
+      return outcome("write_conflict", op.path, null);
     }
-    // **여기서 교체는 끝난다**(3A 2차 리비전 A3). 대상이 이미 있고 내용이 의도와 다르면 발행은 최종
-    // pathname `rename(2)`이어야 하는데, Node 18에는 디스크립터 상대 compare-and-publish가 없어 확인과
-    // 발행 사이 창을 0으로 만들 수 없다 → 경쟁자 바이트 파괴와 승인 부모 밖 발행이 **가능하다**.
-    // 그래서 사후 탐지가 아니라 **temp를 만들기도 전에** 거부한다(예방). 네이티브 의존성은 만들지 않는다.
+    // **교체는 여기서 끝난다**(3A 2차 리비전 A3): 최종 pathname `rename(2)` 직전 창을 0으로 만들 수 없다.
     if (targetExists) {
       throw new OrchestrationError(
         "write_replace_unsupported",
-        "기존 경로 교체는 예방 안전한 원자성을 보장할 수 없어 거부한다(부재 대상 no-replace 발행만 지원한다)",
+        "기존 경로 교체는 예방 안전한 원자성을 보장할 수 없어 거부한다",
       );
     }
+    // **신규 발행도 여기서 끝난다**(3A 3차 리비전 A4): 최종 `link(2)`도 pathname이므로 부모 교체 경쟁을
+    // 예방할 수 없고, 사후 inode 검증은 그 창을 닫지 못한다(발행된 inode는 우리 것이 맞기 때문이다).
+    // temp를 만들기 **전에** 끝나므로 파일 시스템 부작용이 **0**이다 — 테스트가 그것을 단정한다.
+    throw new OrchestrationError(
+      "write_publish_unsupported",
+      "부재 대상 발행은 디스크립터 상대 no-replace primitive 없이 예방 안전하게 만들 수 없어 거부한다",
+    );
 
     // ── 우리 temp를 배타 생성해 정확한 바이트를 쓴다.
-    seam("tempCreate");
-    const candidate = join(walk.parent, `${tempPrefix(auth, op)}${randomBytes(12).toString("hex")}.tmp`);
-    let tempFd: number;
-    try {
-      // `O_RDWR` — **같은 fd로 쓰고 그 fd로 다시 읽어 확인한다**(경로 재오픈 없음 → 확인한 inode와
-      // 발행되는 inode가 갈라지지 않는다). 그래서 읽기 권한이 필요하다.
-      tempFd = openSync(candidate, fsConstants.O_RDWR | fsConstants.O_CREAT | fsConstants.O_EXCL | O_NOFOLLOW, 0o600);
-    } catch {
-      throw writeFailed("배타 temp를 만들 수 없다");
-    }
-    fds.push(tempFd);
-    temp = candidate;
-    tempIdent = identOf(fstatSync(tempFd));
-    tempFdForTruncate = tempFd;
-
-    seam("tempWrite");
-    let off = 0;
-    while (off < bytes.byteLength) {
-      const n = writeSync(tempFd, bytes, off, bytes.byteLength - off, off);
-      if (n <= 0) throw writeFailed("temp에 끝까지 쓰지 못했다");
-      off += n;
-    }
-    fsyncSync(tempFd);
-
-    seam("tempVerify");
-    const wrote = fstatSync(tempFd);
-    if (wrote.size !== bytes.byteLength) throw writeFailed("temp 크기가 의도와 다르다");
-    if (!sameIdent(identOf(wrote), tempIdent)) throw writeFailed("temp fd가 다른 파일을 가리킨다");
-    // **확인 fd를 닫지 않고** 발행까지 들고 간다 — 확인한 inode와 발행되는 inode가 갈라지지 않는다.
-    if (digestOfFd(tempFd, wrote.size) !== intended) throw writeFailed("temp 내용이 의도와 다르다");
-
-    // ── 발행 직전 재확인. 여기까지의 모든 판정은 **이름이 아니라 신원**으로 다시 본다.
-    seam("publish");
-    const again = walkParents(auth.workspaceRoot, op.path);
-    if (again.parent !== walk.parent || !sameIdent(again.parentIdent, walk.parentIdent)) {
-      throw writeFailed("부모 디렉터리가 발행 직전에 교체됐다");
-    }
-    if (!sameIdent(identOf(fstatSync(dirFd)), walk.parentIdent)) {
-      throw writeFailed("부모 디렉터리 신원이 발행 직전에 바뀌었다");
-    }
-    const tempNow = lstatOrNull(temp);
-    if (tempNow === null || tempNow.isSymbolicLink() || !tempNow.isFile() || !sameIdent(identOf(tempNow), tempIdent)) {
-      throw writeFailed("temp 경로가 이 호출이 만든 파일을 더 이상 가리키지 않는다");
-    }
-
-    // **부재 대상은 덮어쓰지 않는 원자적 발행**: `link(2)`는 대상이 있으면 `EEXIST`다(Node 18+).
-    // 그래서 경쟁적으로 만들어진 파일을 이 경로가 삼키는 일이 없다. (교체 갈래는 위에서 이미 끝났다.)
-    try {
-      linkSync(temp, walk.target);
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (code === "EEXIST") throw writeFailed("발행 직전에 대상이 생겼다(덮어쓰지 않는다)");
-      throw writeFailed("대상 이름을 만들 수 없다");
-    }
-    // **발행 뒤에는 truncate 폴백을 쓰지 않는다**: temp fd와 발행된 대상은 **같은 inode**이므로
-    // 여기서 자르면 승인된 산출물 자체가 0바이트가 된다. 이후 정리는 이름 unlink만 시도하고,
-    // 실패하면 성공 대신 `write_cleanup_unconfirmed`다(재시도는 already_applied로 수렴한다).
-    tempFdForTruncate = null;
-
-    seam("postVerify");
-    const after = lstatOrNull(walk.target);
-    if (after === null || after.isSymbolicLink() || !after.isFile() || !sameIdent(identOf(after), tempIdent)) {
-      throw writeFailed("발행된 대상이 이 호출이 만든 파일이 아니다");
-    }
-
-    // **디렉터리 fsync까지 성공해야 `applied`다.** 실패하면 바이트는 발행됐지만 durability를 확인하지
-    // 못했으므로 영수증을 주지 않는다 — 재시도는 fsync에 **성공해야만** `already_applied`가 된다.
-    confirmDirDurability(dirFd);
-    // 발행이 durable해진 뒤에야 temp **이름**을 정리한다(같은 inode라 내용은 대상에 남는다).
-    // `temp`는 여기서도 비우지 않는다 — 실제 unlink 성공 여부는 `finally`가 확인하고, 실패하면
-    // 성공 영수증 대신 `write_cleanup_unconfirmed`가 된다(3A 2차 리비전 B1).
-    return receipt(op, "applied", op.path, intended, auth.nowIso);
   } catch (e) {
     // OS·seam 오류는 **닫힌 안정 코드**로 접는다(경로·내용을 담지 않는다).
     throw e instanceof OrchestrationError ? e : writeFailed("집행 중 파일 시스템 오류가 났다");
   } finally {
-    if (temp !== null && tempIdent !== null && !removeOwnedTemp(temp, tempIdent, tempFdForTruncate)) {
-      status.cleanupFailed = true;
-    }
     for (const fd of fds) {
       try {
         closeSync(fd);
@@ -648,48 +619,4 @@ function confirmDirDurability(dirFd: number): void {
       "디렉터리 durability를 확인하지 못했다(재시도도 fsync에 성공해야 already_applied가 된다)",
     );
   }
-}
-
-/**
- * temp 이름 접두사 — **operation 신원에서 결정론적으로 파생**한다(3A 2차 리비전 B1).
- * 남는 잔재가 생겨도 "어느 run/task/attempt/turn/operation의 것인가"를 durable pending 레코드만으로
- * 계산해 대조할 수 있다(안전한 귀속). 뒤에 붙는 난수는 재시도가 자기 이름에 막히지 않게 한다.
- */
-function tempPrefix(auth: DispatchAuthority, op: TypedWriteFileOperation): string {
-  const tag = createHash("sha256")
-    .update(JSON.stringify([auth.runId, auth.taskId, auth.attemptId, auth.turnId, op.operationId]))
-    .digest("hex")
-    .slice(0, 16);
-  return `.m5c-op-${tag}-`;
-}
-
-/**
- * **이 호출이 만든 temp만** 지운다(신원이 다르면 남의 파일이므로 건드리지 않는다).
- * 정리를 확인했으면 `true`.
- *
- * ponytail: 정리도 **경로 이름**으로만 할 수 있다(Node 18에는 `unlinkat`이 없다). 발행 도중 **부모
- * 디렉터리 이름 자체가 교체된** 적대적 경우에는 이 경로가 더 이상 우리 temp를 가리키지 않으므로
- * **아무것도 지우지 않는다** — 남의 파일을 지우는 것보다 낫다. 대신 우리가 들고 있는 **fd로
- * `ftruncate(0)`** 해서 남는 파일이 승인된 내용을 담지 않게 만든다(3A 2차 리뷰 B1의 "고아 plaintext
- * temp" 지적). 남는 것은 0바이트 · 0600 · 미참조 · 미발행 파일이고 이름이 operation에 귀속된다.
- * 어느 쪽도 확인하지 못하면 `false`이고 호출자는 성공 영수증을 내지 않는다.
- */
-function removeOwnedTemp(temp: string, ours: Ident, fd: number | null): boolean {
-  try {
-    const st = lstatOrNull(temp);
-    if (st && !st.isSymbolicLink() && st.isFile() && sameIdent(identOf(st), ours)) {
-      unlinkSync(temp);
-      return true;
-    }
-  } catch {
-    /* 아래 truncate 폴백으로 내려간다 — 삼키지 않는다 */
-  }
-  if (fd === null) return false;
-  try {
-    // fd는 우리가 배타 생성한 그 inode를 가리킨다 — 남의 파일을 자를 수 없다.
-    ftruncateSync(fd, 0);
-  } catch {
-    return false;
-  }
-  return false;
 }
