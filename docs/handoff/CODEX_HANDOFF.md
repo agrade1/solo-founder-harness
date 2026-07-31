@@ -3,7 +3,47 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-31 — V3 **M5c task 3A 5차 리비전 · 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건 닫음 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-31 — V3 **M5c task 3A 6차 리비전 · 독립 재리뷰 `REVISE A=1·B=2·C=3`의 A 1건 닫음 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `e88c1ca` ·
+  코드 커밋 **`12fbf08`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 **미상속** ·
+  재개 아님 · subagent/병렬 writer 0). Ponytail **level `full`**. 원격 push/PR/merge · 네트워크 · MCP ·
+  패키지 설치 · 의존성/lockfile 변경 · live provider 추론 · secret · deploy · DB · production ·
+  live billing · **프로세스 spawn 0** · amend/rebase/reset/merge/stash 0 · **테스트 완화·삭제·skip 0**.
+- **M5c도 M5도 승인 대상이 아니고 self-approved도 아니다.** 입력 권위는
+  `/private/tmp/m5c-task3a-revision5-codex-review-output.txt`(범위 `7d3f547..e88c1ca` ·
+  판정 `REVISE — A=1, B=2, C=3`).
+- **변경 파일(4)**: `src/exec/orchestrationKernel.ts` · `src/exec/orchestrationStore.ts` ·
+  `src/exec/typedExecution.test.ts` · `schemas/orchestration_run_state.schema.json`.
+  `typedExecution.ts` · `stableController.ts` · managed process/controller · trusted Git · reviewer ·
+  CLI · legacy exec/mission · `scripts/*` · package/lock · tracked `dist` · `AGENTS.md`/`CLAUDE.md`
+  **전부 무변경**.
+- **이번 A(유일)**: `issueOperationDispatchPermit()`이 대상 task의 claim과 run 전역 `chargedTurnIds`만
+  봐서 **두 running task가 둘 다 genuine permit으로 같은 turn ID를 claim**할 수 있었다. ① A가 turn `X`
+  claim ② B도 `X` claim ③ B가 genuine charge ④ A의 genuine charge는 `turn_already_charged` ⑤ A는
+  task-local 과금 증거가 없어 `dispatchTurnSettled(A)`가 영구히 false → claim을 정산도 교체도 못 하는
+  **영구 교착**. 원인은 **과금 namespace(run 전역) ↔ claim namespace(task-local) 폭 불일치**다.
+  수정: `assertTurnClaimableBy()`가 발급 전 경로와 커밋 draft **양쪽**에서 `turn_conflict`로 fail
+  closed하고(재발급 경로 포함), `assertUniqueDispatchClaims()`가 `assertReferentialIntegrity()`에 들어가
+  **커밋과 load가 같은 불변식**을 본다 → 손으로 만든 중복 live claim state는 `open()`에서 `invalid_state`.
+  보존: 정확 `(turnId, planDigest)` 멱등 재발급 revision/event 0 · 끝난 claim lazy replacement ·
+  claim 없는 turn의 safety-only bare 회계(`B-12`) · genuine dispatch charging · task-local settlement.
+- **검증 실측**: `npx tsc --noEmit` 0 error · focused 5파일(`typedExecution` · `orchestrationKernel` ·
+  `autopilotLifecycle` · `executionBoundary` · `offlinePlanWorker`) **225/225 pass · fail 0** ·
+  mutation(충돌 검사 3곳 제거 → 신규 테스트 2건 red, 원복 후 225/225 재확인).
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
+  build/dist · M5d. 최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
+- **열린 미래 게이트**: `B-F1`(managed launcher 첫 소비자·첫 spawn 전) · `B-16`(첫 real typed-write
+  산출물 배선 전, 늦어도 M5c 통합) · `C-1`(발행 seam export — **위험 서술 정정**: ambient fs 권한 코드가
+  hook 안에서 승인 대상을 만들면 canonical `already_applied`가 나올 수 있다. "성공을 만들 수 없다"는
+  과대였다. 여전히 진짜 grant + 승인 경로/내용이 필요하다 · M5d handoff 전) · `C2`(draft-07 실검증 ·
+  M5d 계약 handoff 전). 열린 **A는 없지만 독립 재리뷰 전 self-approve 금지**.
+- **알려진 red**: `stableController.test.ts` — 이번 변경으로 건드리지 않았다(다음 DAG task 범위).
+- **다음 작업**: **현재 Task 3A로 Codex 작업을 중단한다.** 사용자가 도구를 바꾸므로 다음 DAG task
+  (`StableController` 재작성/배선 → managed process supervisor → trusted Git → `autopilot` CLI)는
+  **착수하지 않는다. 이후는 사용자 별도 지시를 따른다.**
+
+## 이전 상태 (2026-07-31 — V3 **M5c task 3A 5차 리비전 · 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건 닫음 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `7d3f547` ·
   코드 커밋 **`de59348`**. fresh Claude Opus 5 단일 세션(CLI `2.1.220` · 모델 `claude-opus-5` · 이전
@@ -75,7 +115,9 @@
   M5d handoff 전) · `C2`(draft-07 실검증 · M5d 전). 열린 **A는 없지만 독립 재리뷰 전 self-approve 금지**.
 - **다음 DAG task(미착수)**: `StableController` 재작성 + (permit → 권위 과금 → grant → **표시 → 재확인** →
   효과 → 영수증) 배선 → managed process supervisor(+자손 정리) → trusted Git → `autopilot` CLI.
-  그 task부터 사용자의 `fable5` 모델 선택이 적용된다.
+  (**정정**: 이 자리에 있던 "그 task부터 `fable5` 모델을 쓴다"는 문구는 사용자 의도의 오기였다.
+  사용자는 **도구를 바꿀 것이며 현재 Task 3A가 끝나면 Codex는 이후 작업을 시작하지 않는다** —
+  다음 작업은 사용자 별도 지시를 따른다.)
 
 ## 이전 상태 (2026-07-31 — V3 **M5c task 3A 4차 리비전 · 그 시점 기록 · 위 절이 A1~A3를 다시 열어 정정하고 A 2건을 더 찾았다**)
 

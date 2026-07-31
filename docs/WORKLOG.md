@@ -1,5 +1,62 @@
 # WORKLOG.md
 
+## 2026-07-31 (V3 **M5c task 3A 6차 리비전 — 독립 재리뷰 `REVISE A=1·B=2·C=3`의 A 1건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`e88c1ca55170370c8e24e111fcf8ea06bc1e845c` · 코드 커밋 `12fbf08`. **새 fresh Claude Opus 5 단일
+세션**(이전 작성자 transcript·자기평가 **미상속** · subagent·병렬 writer 0 · 재개 아님).
+Ponytail SessionStart hook **level `full`**. amend/rebase/reset/merge/stash · 원격 push/PR/merge ·
+네트워크 · `gh` · MCP · 패키지 설치 · 의존성/lockfile 변경 · live 추론 · secret · deploy · DB ·
+production · live billing · **프로세스 spawn 0**. 유일한 untracked 항목은 supervisor의
+`node_modules` symlink이며 손대지 않았다(stage 0). **테스트 완화·삭제·skip 0**(추가만 2건).
+
+**입력 권위**: `/private/tmp/m5c-task3a-revision5-codex-review-output.txt` — 독립 fresh Codex
+`gpt-5.6-sol` xhigh read-only 재리뷰(범위 `7d3f547d6d47ec9f0cefa8904c8e45a52d80cab0..e88c1ca`),
+판정 **`REVISE — A=1, B=2, C=3`**.
+
+**정직한 판정: 이 리비전도 M5c 완료가 아니고 M5 완료도 아니다.** managed process supervisor·자손 정리 ·
+trusted Git · **`StableController` 재작성/배선** · managed launcher · 첫 spawn · 구조화 리뷰 검증 ·
+`autopilot` CLI · legacy 비활성화 · build/dist · M5d는 **여전히 미구현**이다. **다음 DAG task는
+착수하지 않았다.** **self-approve하지 않는다.**
+
+### 직전 문서의 과대주장 정정
+
+| 직전 주장(HEAD `e88c1ca`) | 실제(6차 독립 리뷰) | 이번 조치 |
+|---|---|---|
+| "A1 fixed — 남이 claim한 turn을 선점할 수 없다" | **bare 회계 공격만 닫혔다.** `issueOperationDispatchPermit()`은 대상 task의 claim과 run 전역 `chargedTurnIds`만 봤으므로 **두 running task가 둘 다 genuine permit으로** 같은 turn ID를 claim할 수 있었다. 5차 A1 테스트는 `chargeTurnUsage` 공격만 검증했다 | permit 발급 커밋에서 **run-wide live-claim uniqueness**를 강제하고, 같은 불변식을 store load에도 넣었다. genuine 충돌 회귀 테스트 2건 추가 |
+| `C-1`(발행 seam) "성공을 만들 수 없다 / 임의 콜백 공개 API 없다" | **과대다.** 같은 프로세스에서 ambient fs 권한을 가진 코드가 `parentWalk` hook 안에서 승인 대상을 의도한 바이트로 만들면 뒤따르는 hash 비교가 canonical `already_applied`를 낸다. 다만 진짜 grant + 승인 경로/내용이 여전히 필요하므로 위조 권위 우회는 아니다 | A가 아니므로 코드는 그대로 두고 **대장의 확률·영향·증거·기한(M5d handoff 전)** 을 정정했다 |
+| pending 재발급 조건 "attemptedAt null + running + 만료/예산 게이트" | **여전히 과대.** 토큰 예산·attempt wall·no-progress·durable 신원·권위 과금 증거·preflight drift·claim 유일성까지 **모든 전진·권위 게이트**를 지나야 한다 | schema `pendingOperations.description`을 정확히 고쳤다 |
+| "다음 task부터 `fable5` 모델" | **사용자 의도의 오기.** 사용자는 도구를 바꿀 것이며 **현재 Task 3A가 끝나면 Codex는 이후 작업을 전혀 시작하지 않는다** | 해당 문구를 전 문서에서 정정했다(WORKLOG 2건 · CONTEXT_SUMMARY 3건 · handoff 1건) |
+
+### 이번 A(유일) — 두 task가 같은 run-global turn ID를 claim
+
+- **원인**: 과금 namespace는 run 전역(`accounting.chargedTurnIds`)인데 claim namespace는 task-local이었다.
+- **공격 순서**: ① task A가 turn `X` claim ② task B도 `X`를 genuine permit으로 claim ③ B가 genuine charge
+  ④ A의 genuine charge는 run 전역 중복 때문에 `turn_already_charged` ⑤ A는 task-local 과금 증거
+  (`chargedPlanDigest`)를 얻지 못해 `dispatchTurnSettled(A)`가 영구히 false → claim을 정산도 교체도 못 하는
+  **영구 교착**(양쪽 회계 부패 + run/DAG liveness).
+- **수정**: `assertTurnClaimableBy(state, taskId, turnId)`가 그 turn을 claim한 **다른 task**를 찾으면
+  `turn_conflict`로 fail closed한다. 발급 전 경로(재발급 포함)와 **커밋 draft** 양쪽에서 돈다.
+  `assertUniqueDispatchClaims()`를 `assertReferentialIntegrity()`에 넣어 **커밋과 store load가 같은
+  불변식**을 본다 → 손으로 만든 중복 live claim state는 `open()`에서 `invalid_state`.
+- **보존**: 정확한 `(turnId, planDigest)` 멱등 재발급 revision/event 0 · 끝난 claim의 lazy replacement ·
+  claim 없는 turn의 safety-only bare 회계(`B-12`) · genuine dispatch charging · task-local settlement ·
+  5차 A1~A5 폐쇄 전부.
+- **검증**: `npx tsc --noEmit` 0 error · focused 5파일 **225/225 pass · fail 0** ·
+  mutation(충돌 검사 3곳 제거 → 신규 테스트 2건 red, 원복 후 225/225 재확인).
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
+  build/dist · M5d.
+- **남은 B/C**: `B-F1`(첫 capability 소비자·첫 spawn 전) · `B-16`(첫 real typed-write 발행/배선 전,
+  늦어도 M5c 통합) · `C-1`(발행 seam export 정리, M5d handoff 전 — 위 정정) · `C2`(draft-07 실검증,
+  M5d 계약 handoff 전).
+- **다음 작업**: **현재 Task 3A로 중단한다.** 다음 DAG task 미착수 · 이후는 사용자 별도 지시.
+
+### 커밋(6차)
+
+| 해시 | 내용 |
+|---|---|
+| `12fbf08` | A1 폐쇄(claim 유일성 커밋+load) · 회귀 2건 · schema C2 문구 정정 |
+
 ## 2026-07-31 (V3 **M5c task 3A 5차 리비전 — 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
@@ -297,8 +354,9 @@ controller가 아직 `startScheduledBatch()`를 부른다. **다음 DAG task 범
 
 `StableController` 재작성·배선 · managed process supervisor + 자손 정리(`B-13`/`C-18`) ·
 trusted Git(`C-26`) · 구조화 리뷰 검증(`C-19`/`C-35`) · `autopilot` CLI · legacy `exec`/`mission`
-비활성화 · build/dist · **첫 spawn** · M5d · live. 사용자의 `fable5` 모델 선택은 **다음 task부터**
-적용된다(이 리비전은 레포 규칙대로 fresh Claude Code Opus 5로 진행했다).
+비활성화 · build/dist · **첫 spawn** · M5d · live. (**정정 — 6차 리비전**: 이 자리의 `fable5` 모델
+문구는 사용자 의도의 오기였다. 사용자는 도구를 바꿀 것이며 **현재 Task 3A 마감 후 Codex는 이후 작업을
+시작하지 않는다** — 이후는 사용자 별도 지시.) 이 리비전은 레포 규칙대로 fresh Claude Code Opus 5로 진행했다.
 
 **열린 게이트**: `B-16`(typed write 신규 발행 fail closed — 첫 typed-write 산출물 배선 전) ·
 **신규 `B-F1`**(managed launcher 첫 소비자 전: 1회 소비 · 살아 있는 pending/grant · durable 재독 ·
@@ -473,8 +531,9 @@ stress · live · 반복(3회) · build/dist · `stableController.test.ts`(다�
 ### 다음 DAG task는 시작하지 않았다
 
 `StableController` 재작성/배선 · managed process supervisor/launcher · trusted Git 연동 · 첫 spawn ·
-M5d · live 실행 — **하나도 시작하지 않았다.** 사용자의 `fable5` 모델 선택은 **다음 task부터** 적용되며
-이 세션은 기존 레포 규칙대로 fresh Claude Code Opus 5였다.
+M5d · live 실행 — **하나도 시작하지 않았다.** (**정정 — 6차 리비전**: 이 자리의 `fable5` 모델 문구는
+사용자 의도의 오기였다. 사용자는 도구를 바꿀 것이며 **현재 Task 3A 마감 후 Codex는 이후 작업을 시작하지
+않는다** — 이후는 사용자 별도 지시.) 이 세션은 기존 레포 규칙대로 fresh Claude Code Opus 5였다.
 
 ---
 

@@ -1,5 +1,20 @@
 # DECISIONS.md
 
+## 2026-07-31 (V3 M5c task 3A **6차 리비전** — **claim namespace는 과금 namespace와 같은 폭이다**)
+
+- **결정 — turn ID의 durable claim은 run 전역에서 유일하다(task-local이 아니다).** 과금 중복 판정
+  (`accounting.chargedTurnIds`)이 run 전역인데 claim은 task-local이어서, 두 running task가 **둘 다 진짜
+  permit으로** 같은 turn ID를 claim할 수 있었다 → 먼저 과금한 쪽이 다른 쪽의 genuine charge를 영구히
+  막고(`turn_already_charged`) 막힌 쪽은 task-local 과금 증거가 없어 claim을 정산도 교체도 못 하는
+  **영구 교착**이었다. 대안 둘: ⓐ 과금 key를 `(taskId, turnId)`로 **task-scoped화** — durable 형식과
+  기존 `chargedTurnIds` 계약·load 불변식·상한 계산이 전부 바뀌고 마이그레이션이 필요하다 ⓑ **채택**:
+  claim 쪽을 좁힌다. 두 namespace를 같은 폭(run 전역)으로 맞추면 durable 형식 변경 0이고, 정합성 위반은
+  **커밋(`assertTurnClaimableBy`)과 load(`assertUniqueDispatchClaims`) 두 곳에서 같은 불변식**으로
+  잡힌다. **대가**: 서로 다른 task가 우연히 같은 turn ID 문자열을 쓰면 뒤에 온 쪽이 `turn_conflict`로
+  거부된다 — provider/controller가 turn ID를 run 안에서 유일하게 발급해야 한다는 요구가 명시적으로
+  생긴다(그 요구는 과금 namespace 때문에 **이미 암묵적으로 존재**했고, 지금은 조용한 교착 대신 즉시
+  fail closed로 드러난다).
+
 ## 2026-07-31 (V3 M5c task 3A **5차 리비전** — **효과 코드는 권위 경계 안에 살고, handle은 발급자를 떠나지 않는다**)
 
 - **결정 1 — 집행기를 별도 파일에서 kernel 모듈 안으로 옮기고 그 파일을 삭제했다.** 4차 판은 런타임 순환을
