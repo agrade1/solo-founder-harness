@@ -2,7 +2,54 @@
 
 최종 갱신: 2026-07-31
 
-## 최신 (2026-07-31 — **V3 M5c task 3A 3차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 + C 3건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-31 — **V3 M5c task 3A 4차 리비전: 독립 재리뷰 `REVISE A/P1=3`의 A 3건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `20530b0` ·
+  코드 커밋 **`5ec0a57`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 미상속 · 재개
+  아님) · Ponytail **full**. 입력 권위:
+  `/private/tmp/m5c-task3a-revision3-codex-review-output.txt`(Codex `gpt-5.6-sol` xhigh read-only ·
+  세션 `019fb648-ae3a-7252-ada5-e23edd37770a` · 범위 `2956ffc..20530b0`).
+- **닫은 것**
+  - **A1** 과금을 **권위 없는 `chargeTurnUsage`**(claim 없는 turn만 · 만료·재시작 회계 유지)와
+    **권위 있는 `chargeDispatchTurnUsage({permit,…})`**(durable `execution.chargedPlanDigest`를 남긴다)로
+    갈랐다. 효과 게이트가 run 전역 `chargedTurnIds`가 아니라 **이 task의** `turnId`+`chargedPlanDigest`를
+    claim된 turn/계획/attempt와 함께 본다 → claim 없는 sibling의 0 토큰 과금이 남의 효과를 승인하지 못한다.
+    진행은 `startPreparedTask()`가 발급하는 **brand된 worker 채널 + 단조 seq**로만(복사한 lease·구조
+    사본·재생·역순·sibling 거부). `assertClockSane`이 `now < state.updatedAt`도 거부한다(safety-only 포함).
+  - **A2** 공개 `executeUnderGrant(grant, op, 임의콜백)` **삭제** → kind별 고정 진입점
+    `executeWriteFileOperation` + 고정 집행기 `writeFileEffect.judgeWriteFile`(신규 파일 · kernel을
+    **타입으로만** import해 순환 0 · 신규 의존성 0). 집행 경계 진입을 **효과보다 먼저** durable에 적고
+    (`PendingOperation.attemptedAt`), 그 뒤에는 재발급도 `failOperation`도 거부한다.
+  - **A3** 신규 `reconcileUncertainOperation()` — **kernel handle 0**, durable 신원 8종 전수 대조,
+    marker는 durable 진실에서 파생(`attemptedAt` 있으면 `outcome_unknown`, 없으면 `failed`),
+    path/hash/exit는 항상 null. safety-only라 만료·deadline·`running`/`cleaning` 어디서나 열려 있고
+    정합화 뒤 cleanup·settle이 정상 진행된다.
+  - **C-1** `dispatchTurnId` 서술을 lazy replacement로 · pending schema의 없는 재시작 경로 주장 정정 ·
+    schema 대조 테스트 4종 이름을 "구조적으로 일치한다"로(draft-07 validator는 **여전히 미추가**).
+  - **`C-42` 폐기(closed)** — 유예가 아니라 A1ⓑ가 그대로 구현했다.
+- **정정한 과대주장**: 직전 블록의 `A1`(bare run-global turn ID 승인 · 복사 가능한 lease · seq 비단조 ·
+  safety-only 시계 역행) · `A2`(임의 콜백의 효과 없는 성공 · 효과 뒤 재발급 · 부분 효과 뒤 평범한 실패) ·
+  `A3`(WeakMap handle 의존 → 재시작 뒤 영구 미아). 표는 WORKLOG 최상단.
+- **여전히 유효한 폐쇄**: A4(발행 fail closed) · B1(정리 우선) · B2(spawn 0 계약) · C1(멱등 재발급) ·
+  C2(적대적 manifest 단일 입양) — 4차 리뷰가 재확인했고 이번에 건드리지 않았다.
+- **열린 미래 게이트**: **`B-16`**(typed write 신규 발행 fail closed — 첫 typed-write 산출물 배선 전) ·
+  **신규 `B-F1`**(managed launcher 첫 소비자 전: 1회 소비 · 살아 있는 pending/grant · durable 재독 ·
+  spawn 직전 node/entrypoint digest 재검증).
+- **안 끝난 것(M5c의 남은 핵심)**: **`StableController` 재작성·배선**(다음 DAG task) · managed process
+  supervisor + 자손 정리(`B-13`/`C-18`) · trusted Git(`C-26`) · 구조화 리뷰 검증(`C-19`/`C-35`) ·
+  `autopilot` CLI · legacy `exec`/`mission` 비활성화 · build/dist · M5d.
+- **검증(실측)**: `npx tsc --noEmit` 0 error · 파일 단독 `typedExecution` **56/56** ·
+  `autopilotLifecycle` **28/28** · `orchestrationKernel` **103/103** · `executionBoundary` **20/20** ·
+  `offlinePlanWorker` **10/10**(동시 합계 **217/217**) · `m4a` **32/32** · `m4b` **45/45** ·
+  `m4c` **80/80** · `git diff --check` clean · mutation **7종** 전부 red 확인 후 원복
+  (`git status --short` = `?? node_modules` 한 줄 · 잔재 grep 0).
+- **알려진 red**: `stableController.test.ts` **3 pass / 55 fail**(이번 변경 전후 동일 · 다음 DAG task 범위 ·
+  측정만 하고 수정하지 않았다).
+- **미실행**: `npm test` · `test:core` · `test:exec` · 전체 acceptance · stress · live · 반복 · build/dist.
+- **다음 DAG task는 시작하지 않았다**: controller 재작성·배선 · managed launcher · trusted Git · 첫 spawn ·
+  M5d · live. 사용자의 `fable5` 모델 선택은 **다음 task부터** 적용된다.
+
+## 이전 (2026-07-31 — **V3 M5c task 3A 3차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 + C 3건 닫음** · 그 시점 기록 — 위 4차 블록이 A1~A3를 다시 열어 정정했다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `2956ffc` ·
   코드 커밋 **`d4a6596`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 미상속 · 재개

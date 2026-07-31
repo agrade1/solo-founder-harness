@@ -1,6 +1,52 @@
 # DECISIONS.md
 
-## 2026-07-31 (V3 M5c task 3A **3차 리비전** — **예방할 수 없으면 발행하지 않는다. 회계는 효과보다 먼저다. 결과는 집행기만 낸다**)
+## 2026-07-31 (V3 M5c task 3A **4차 리비전** — **권위는 자기 것이어야 하고, 집행기는 고정이며, 불확실은 불확실로 남는다**)
+
+- **결정 1 — 과금 진입점을 둘로 갈랐다(권위 있는 것 / 없는 것).** 3차 판은 효과 승인을 run 전역
+  `accounting.chargedTurnIds`에 그 turn ID가 **있는지**로 판정했다. 그런데 `chargeTurnUsage`는
+  `{taskId, turnId, 카운트}`를 호출자가 전부 골랐으므로, **claim이 없는 sibling task**가 생산 task의
+  bare turn ID를 0 토큰으로 과금해 남의 효과를 승인할 수 있었다. 대안 셋: ⓐ 게이트만 per-task로 옮기기 —
+  공격은 닫히지만 "과금 자체가 권위에 묶여야 한다"는 요구를 만족하지 못하고 근거가 세 함수에 흩어진다
+  ⓑ `chargeTurnUsage`를 **permit 필수**로 바꾸기 — 가장 단순하지만 **만료·재시작 뒤 회계가 불가능해진다**
+  (permit은 전진 게이트를 지나야 나온다) → `B-12`("이미 태운 자원을 적는 일을 막으면 만료가 곧 회계
+  누락이다")를 깬다 ⓒ **채택**: 두 진입점. `chargeTurnUsage`는 claim이 **없는** turn만 과금하고 권위
+  증거를 남기지 않으며(만료·재시작 회계 유지), 신규 `chargeDispatchTurnUsage({permit,…})`만 신원을
+  permit에서 가져와 durable `execution.chargedPlanDigest`를 남긴다. 효과 게이트는 그 증거 + 이 task의
+  `turnId`를 claim된 turn/계획/attempt와 함께 본다. **대가**: 공개 API가 하나 늘었다. **얻는 것**:
+  "누가 무엇을 근거로 이 효과를 승인했는가"가 durable 필드 하나로 읽힌다.
+- **결정 2 — `updatedAt`을 공용 시계 게이트에 넣었다(safety-only 포함).** safety-only 커밋은 만료
+  뒤에도 지나야 하지만 **시간을 되돌릴 권리는 없다**. 3차 판은 `#mutate`가 `draft.updatedAt = now`로
+  덮어썼고 공용 검사는 run 시작 시각만 봤으므로, 회계·정리·취소·pause 커밋 하나로 durable 시각을 뒤로
+  돌린 뒤 과거 시각이 효과 게이트의 단조 판정을 통과할 수 있었다(wall·no-progress 창 재개방).
+  이제 `now < state.updatedAt`이면 **모든 mutation**이 `clock_invalid`다. **대가(정직)**: 시계가 어긋난
+  두 writer 환경에서는 늦은 쪽이 아무것도 커밋하지 못한다 — fail-closed 쪽을 택했다. 테스트 fixture도
+  진짜 시계처럼 단조로 고쳤다(이전 fixture는 kernel 재개 시 tick을 0으로 되돌려 **역행을 흉내 내고
+  있었다**).
+- **결정 3 — 임의 콜백 집행 표면을 삭제하고 kind별 고정 집행기로 갔다.** 3차 판의
+  `executeUnderGrant(grant, op, 임의콜백)`은 "효과는 이 함수 안에서 일어난다"고 적었지만 실제로는
+  **호출자가 넘긴 아무 함수의 반환값**을 canonical 성공으로 굳혔다 → 아무것도 하지 않는 콜백이 진짜
+  `applied` 영수증을 만들 수 있었다. 이름 변경·barrel 제외·`@internal`은 리뷰가 명시적으로 배제했다.
+  그래서 kernel이 집행기를 **직접** 부르게 했는데, 집행기가 있던 `typedExecution.ts`는 kernel을 런타임
+  import하므로 그대로 두면 ESM 순환(그리고 top-level `const`의 TDZ)이 된다. **채택**: 파일 시스템 판정만
+  신규 `src/exec/writeFileEffect.ts`로 갈랐다 — 그 모듈은 kernel을 **`import type`으로만** 참조하므로
+  방출 그래프가 한 방향이다. 신규 의존성·네이티브 helper **0**. `run_process`에는 성공 집행기를
+  **만들지 않았다**(만드는 순간 그것이 곧 공개 실행 권위다).
+- **결정 4 — 불확실한 효과는 "실패"로 지우지 않는다.** 집행 경계 진입을 **효과보다 먼저** durable에
+  적고(`PendingOperation.attemptedAt`), 그 뒤에는 ⓐ 새 grant를 발급하지 않고 ⓑ `failOperation`도
+  거부한다. 부분 외부 효과 뒤의 예외를 평범한 `failed` 영수증으로 닫으면 durable 기록이 "아무 일도
+  없었다"고 거짓말하기 때문이다. 남은 종결은 `outcome_unknown` 하나이고, 그 marker는 성공도 실패도
+  단정하지 않는다. **대가**: operation마다 커밋이 하나 늘었다(safety-only `operation_attempted`).
+  그 커밋을 safety-only로 둔 이유는 만료·deadline이 **불확실성의 기록 자체**를 막으면 안 되기 때문이다.
+- **결정 5 — 재시작 정합화는 durable 신원만 요구한다(handle 0).** permit·grant·outcome은 프로세스
+  메모리 `WeakMap`이므로 재시작하면 사라진다. 3차 판은 그 사실을 문서에 적지 않았고, `cleaning`이나
+  만료된 `running`의 pending은 새 permit도(발급은 `running`+전진 게이트를 요구한다) 옛 handle도 없어
+  **영구 미아**였다. 신규 `reconcileUncertainOperation()`은 handle을 하나도 요구하지 않는 대신
+  durable 신원 8종을 전수 대조하고, **marker를 호출자가 고를 수 없게** durable 진실에서 파생한다
+  (`attemptedAt !== null` → `outcome_unknown` · `null` → `failed`). 경로·hash·exit code는 항상 `null`이다.
+  **주장하지 않는 것**: 이 경로는 "외부 효과가 일어나지 않았다"를 증명하지 않는다 — 그것을 증명할 수
+  없다는 사실을 durable에 적는 것이 이 경로의 전부다.
+
+## 2026-07-31 (V3 M5c task 3A **3차 리비전** — **예방할 수 없으면 발행하지 않는다. 회계는 효과보다 먼저다. 결과는 집행기만 낸다** · 그 시점 기록 — 위 4차 리비전이 결정 2·3을 정정한다)
 
 - **결정 1 — 신규 파일 발행을 fail closed로 만들었다(기능 축소를 감수했다).** `link(2)`/`rename(2)`는
   pathname을 받는다. 최종 부모 신원 확인과 syscall 사이에 같은 사용자 경쟁자가 승인된 부모 **이름**을

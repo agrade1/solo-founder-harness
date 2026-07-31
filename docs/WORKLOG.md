@@ -1,6 +1,180 @@
 # WORKLOG.md
 
-## 2026-07-31 (V3 **M5c task 3A 3차 리비전 — 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 + C 3건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-31 (V3 **M5c task 3A 4차 리비전 — 독립 재리뷰 `REVISE A/P1=3`의 A 3건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+
+같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
+`20530b0038266b66b2f83cbc36bf7f358dab1c55` · 코드 커밋 `5ec0a57`. **새 fresh Claude Opus 5
+단일 세션**(이전 작성자 transcript·자기평가 **미상속** · subagent·병렬 writer 0 · 재개 세션 아님).
+Ponytail SKILL.md **level `full`** 적용 —
+`/Users/jihun/.claude/plugins/cache/ponytail/ponytail/4.8.4/skills/ponytail/SKILL.md`
+(SessionStart hook이 전문을 주입했고 `Skill(ponytail:ponytail, full)`로 다시 확인했다. 그 경로는
+allowed working directory 밖이라 `Read`/`ls`는 권한으로 막혔고, skill 호출이 전문을 돌려주었다).
+amend/rebase/reset/merge · 원격 push/PR/merge · 네트워크 · `gh` · MCP · 패키지 설치 ·
+의존성/lockfile 변경 · live Codex/Claude 추론 · secret · deploy · DB · production · live billing ·
+**프로세스 spawn 0**. 유일한 untracked 항목은 supervisor가 제공한 `node_modules` symlink이며 손대지 않았다
+(stage 0). **테스트 완화·삭제 0**(교체한 assertion 2건은 아래 §"교체한 assertion 전수"에 기록했다).
+
+**입력 권위**: `/private/tmp/m5c-task3a-revision3-codex-review-output.txt` — 독립 fresh Codex
+`gpt-5.6-sol` xhigh read-only 재리뷰(세션 `019fb648-ae3a-7252-ada5-e23edd37770a` ·
+범위 `2956ffcf01551de97ac123420190c466893b5829..20530b0`), 판정
+**`REVISE — A/P1 = 3; 현행 A4/B1/B2/C1/C2 closed; 미래 B-F1·B-16 유지`**.
+
+**정직한 판정: 이 리비전도 M5c 완료가 아니다.** managed process supervisor·자손 정리 · trusted Git ·
+**`StableController` 재작성/배선** · 구조화 리뷰 검증 · `autopilot` CLI · legacy 비활성화 · build/dist ·
+M5d는 **여전히 미구현**이다. **self-approve하지 않는다.**
+
+### 직전 문서의 과대주장 정정
+
+| 직전 주장(HEAD `20530b0`) | 실제(4차 독립 리뷰) | 이번 조치 |
+|---|---|---|
+| "A1 fixed — 순서를 계약으로 만들었다(permit → 과금 → grant → 효과)" | **순서만 맞았다.** 효과 승인 근거가 **run 전역 bare turn ID**(`accounting.chargedTurnIds`)였고 `chargeTurnUsage`는 `{taskId, turnId, 카운트}`를 호출자가 골랐다 → **claim 없는 sibling이 생산 task의 turn을 0 토큰으로 과금해 남의 효과를 승인**할 수 있었다. 진행 자격은 `getTask()`로 그대로 읽히는 **durable lease**였고 `seq`는 모양만 봤다(재생·역순 통과). 공용 시계 검사가 `state.updatedAt`을 보지 않아 **safety-only 커밋이 durable 시각을 되돌려** wall/no-progress 창을 다시 열 수 있었다 | 과금을 권위 없는 것과 **permit 기반 권위 있는 것**으로 갈랐고, 효과 게이트를 **이 task의** `turnId`+`chargedPlanDigest`로 옮겼다. 진행은 kernel 발급 **brand 채널 + 단조 seq**로만. `assertClockSane`에 `updatedAt` 추가 |
+| "A2 fixed — 위조·재생·치환·중복 집행 불가" | **부분적으로만 사실.** 공개 `executeUnderGrant(grant, op, 임의콜백)`이 **아무 효과도 내지 않는 콜백**의 반환값을 진짜 `applied`로 굳혔고, 첫 효과 뒤 영수증 커밋 전 **재발급**으로 두 번째 효과가 가능했으며, 부분 효과 뒤 예외를 `failOperation`이 **평범한 실패로 지웠다** | 임의 콜백 표면 **삭제** → kind별 고정 진입점 + 고정 집행기. 집행 경계 진입을 **효과보다 먼저** durable에 적고(`attemptedAt`), 표시 뒤에는 재발급·평범한 실패 종결 둘 다 거부 |
+| "A3 fixed — 영수증 정합화는 만료·deadline·cleaning 뒤에도 가능하다" | **같은 프로세스에서만 사실이었다.** permit·grant·outcome이 전부 프로세스 메모리 `WeakMap`이라 **재시작하면** `cleaning`/만료된 `running` pending은 새 permit도 옛 handle도 없어 **영구 미아**였고 attempt 이탈 전이가 영구 stall이었다 | 신규 `reconcileUncertainOperation()` — handle 0, durable 신원 8종 전수 대조, marker는 durable 진실에서 파생, **성공을 만들 입력 없음** |
+| "`C-42`는 유예(C)" | **유예가 아니라 이번에 구현으로 닫혔다** | 대장에서 `C-42`를 폐기(closed)로 표시 |
+| schema/문서 3곳 | `dispatchTurnId` 서술이 "과금이 claim을 지운다"였고, pending schema가 **없는** 재시작 경로를 주장했으며, schema 테스트 이름이 "동치"라 draft-07 실행처럼 읽혔다 | 셋 다 정정(아래 C-1) |
+
+### 커밋
+
+| 해시 | 내용 |
+|---|---|
+| `5ec0a57` | 코드·schema·테스트 (A1~A3 · C-1 문서/schema 정정 · M4 fixture clock) |
+| (이 문서 커밋) | 진행/handoff 문서 + 로드맵 §9.1 대장 |
+
+### 변경 파일 (신규 1 · 변경 11)
+
+- **신규** `src/exec/writeFileEffect.ts` — `write_file`의 **고정 집행기**(권위 해석 + 파일 시스템 판정 +
+  테스트 seam). kernel을 **`import type`으로만** 참조하므로 방출된 런타임 그래프는
+  `kernel → writeFileEffect` 한 방향이다(임의 콜백을 지우면서 순환이 생기지 않게 하는 유일한 이유).
+- `src/exec/orchestrationKernel.ts` — `chargeDispatchTurnUsage` 신설 · `chargeTurnUsage` 권위 분리 ·
+  효과 게이트를 per-task 증거로 이동 · `assertClockSane`에 `updatedAt` · brand된 worker 진행 채널
+  (`startPreparedTask` 반환 변경 `{task, progress}`) · `executeUnderGrant` **삭제** →
+  `executeWriteFileOperation` · `#markOperationAttempted` · `assertNotAttempted` ·
+  `reconcileUncertainOperation` · `genuinePermit`/`killLiveGrant`.
+- `src/exec/typedExecution.ts` — 공개 facade로 축소(파일 시스템 판정을 `writeFileEffect.ts`로 이관 ·
+  `applyWriteFile`은 kernel 고정 진입점의 얇은 이름).
+- `src/exec/orchestrationTypes.ts` — `chargedPlanDigest` · `PendingOperation.attemptedAt` ·
+  `operation_attempted` event(+safety-only) · `outcome_unknown` marker · `dispatchTurnId` 서술 정정.
+- `src/exec/orchestrationStore.ts` — 위 세 필드의 closed key·검증·교차 불변식 ·
+  `OPERATION_RECEIPT_MARKERS`에 `outcome_unknown`.
+- `schemas/orchestration_run_state.schema.json` — 같은 계약 반영 + 서술 정정 2건.
+- `src/exec/typedExecution.test.ts` · `src/exec/autopilotLifecycle.test.ts` ·
+  `src/exec/orchestrationKernel.test.ts` — 계약 변경 반영 + 신규 공격 테스트.
+- `scripts/m4a|m4b|m4c-offline-acceptance.mjs` — `makeClock` tick을 **프로세스 전역 단조**로
+  (이전 fixture는 kernel 재개 시 시각을 0으로 되돌려 **시계 역행 자체를 흉내 내고 있었다**).
+
+**손대지 않은 것**: `stableController.ts`(+테스트 — **열지도 않았다**) · managed process · trusted Git ·
+reviewer · CLI · legacy `exec`/`mission` · `orchestrationStore` 발행 내부 · `executionBoundary.ts` ·
+`typedPlan.ts` · `offlinePlanWorker.ts` · `approvalManifest.ts` · package/lock · tracked `dist/**` ·
+`AGENTS.md`/`CLAUDE.md`. 두 번째 scheduler·대안 controller·신규 런타임/dev 의존성 **0**.
+
+### A 해소 (3/3)
+
+- **A1 — 생산 turn 회계와 진행 권위를 실제 권위에 묶었다.**
+  ⓐ **과금 두 갈래**: `chargeTurnUsage`(권위 없음)는 claim이 열려 있으면 `turn_conflict`이고
+  `execution.chargedPlanDigest`를 **남기지 않는다** — 만료·재시작 뒤 "이미 태운 자원을 적는 일"은
+  그대로 가능하다(`B-12` 유지). 신규 `chargeDispatchTurnUsage({permit,…})`만 신원을 **kernel 발급
+  permit**에서 가져오고 `chargedPlanDigest`를 남긴다. 효과 게이트는 run 전역 목록이 아니라 **이 task의**
+  `execution.turnId` + `chargedPlanDigest`를 claim된 `dispatchTurnId`/`dispatchPlanDigest`/`attemptId`와
+  **함께** 본다 → 과금은 run/task/attempt/turn/계획 전부에 묶인다. store가
+  `chargedPlanDigest !== null → turnId !== null`을 load에서도 본다(손편집 차단).
+  ⓑ **진행은 brand된 worker 채널로만.** `startPreparedTask()`가 시작을 커밋한 그 순간 채널 하나를
+  발급하고(모듈 사설 `WeakMap`), 사용할 때마다 현재 durable run/task/attempt/lease를 다시 대조하며,
+  `seq`는 **성공한 커밋에 대해 엄격 증가**여야 한다. 복사한 lease · 구조 사본 · `Proxy` · 재생 · 역순 ·
+  sibling 채널이 전부 거부되고, 늦은 진행은 소진된 창을 되살리지 못한다(등호 규칙 유지).
+  ⓒ **시계 역행은 모든 mutation에서 거부된다.** `assertClockSane`이 `now < state.updatedAt`도 본다 —
+  `#mutate` 하나를 전진·safety-only가 모두 지나므로 우회로가 없다.
+- **A2 — 성공 provenance와 pending당 효과 1회.**
+  ⓐ **임의 콜백 표면 삭제.** `executeUnderGrant(grant, op, effect)`를 지우고
+  `executeWriteFileOperation(grant, op)` 하나만 남겼다. 그 안에서 부르는 집행기는 정적으로 고정된
+  `writeFileEffect.judgeWriteFile`이고, `run_process`에는 성공 집행기가 **아예 없다**.
+  두 모듈의 export를 전수 훑어 "3번째 콜백 인자를 받는 함수 0"을 테스트가 단정한다.
+  ⓑ **집행 경계 진입을 효과보다 먼저 durable에 적는다**(`PendingOperation.attemptedAt` +
+  safety-only `operation_attempted`). 표시된 pending은 `beginOperation`이 재발급하지 않고
+  (`operation_attempt_uncertain`) `failOperation`도 거부한다 → `effect(g1) → 재발급 → effect(g2)`와
+  "부분 효과 뒤 예외를 평범한 실패로 지우기"가 둘 다 닫혔다.
+- **A3 — 재시작이 durable pending을 영구 미아로 만들지 않는다.**
+  신규 `reconcileUncertainOperation()`은 **kernel 발급 handle을 하나도 요구하지 않는다**.
+  `run/task/attempt/turn/plan/operation/kind/authority` 8종을 durable pending과 전수 대조하고
+  (불일치는 pending·영수증·revision을 하나도 건드리지 않는다), marker는 **호출자 입력이 아니라
+  durable 진실에서 파생**된다(`attemptedAt !== null` → `outcome_unknown` · `null` → `failed`).
+  path·resultSha256·exitCode는 항상 `null`이며 "외부 효과가 일어나지 않았다"고 단정하지 않는다.
+  safety-only라 만료·예산 deadline·`running`/`cleaning` 어디서나 열려 있고, 정합화가 끝나면 같은
+  pending 신원의 살아 있는 grant를 폐기하며 cleanup·settle이 정상 진행된다.
+
+### 인접 문서·schema 정정 (C-1)
+
+- `TaskExecution.dispatchTurnId`(코드·schema): "과금이 claim을 지운다" → **lazy replacement**
+  (과금은 claim을 유지하고, 끝난 claim만 다음 turn의 permit 요청이 교체한다).
+- pending schema: **존재하지 않는** 재시작 정합화 경로 주장을 지우고 실제 2종을 적었다
+  (같은 프로세스 handle + `attemptedAt === null` → 멱등 재집행 / 그 밖 전부 → safety-only 정합화).
+- schema 대조 테스트 4종 이름을 **"key·enum·상한이 구조적으로 일치한다"**로 바꾸고 헤더에
+  "draft-07 validator를 실행하지 않는다"를 명시했다. **draft-07 구현은 여전히 추가하지 않았다.**
+
+### 교체한 assertion 전수 (완화 아님 — 전부 강화)
+
+| 파일 | 이전 assertion | 왜 교체했나 | 지금 |
+|---|---|---|---|
+| `typedExecution.test.ts` "A2: 집행이 던진 grant…" | `failOperation(failed)`가 pending을 닫는다 | **부분 외부 효과 뒤 예외를 평범한 실패로 지우는 동작을 정상으로 고정**하고 있었다(리뷰 A-2) | `failed`·`denied` 둘 다 `operation_attempt_uncertain` · 재발급도 거부 · `outcome_unknown` 정합화만 |
+| `typedExecution.test.ts` "A2: 등록·발행·영수증 사이에서 재시작…" ③ | attempted pending을 재시작 뒤 **다시 집행**해 `already_applied`로 수렴 | **집행 경계에 들어간 pending의 재집행을 정상으로 고정**하고 있었다(리뷰 A-2) | 재발급 거부 + durable 신원만으로 `outcome_unknown` 수렴(바이트 inode 불변 확인 유지) |
+
+### 검증 (실측 · 이 세션이 실제로 실행한 것)
+
+| 명령 | 결과 |
+|---|---|
+| `npx tsc --noEmit` | 0 error |
+| `npx tsx --test src/exec/typedExecution.test.ts` | **56/56** |
+| `npx tsx --test src/exec/autopilotLifecycle.test.ts` | **28/28** |
+| `npx tsx --test src/exec/orchestrationKernel.test.ts` | **103/103** |
+| `npx tsx --test src/exec/executionBoundary.test.ts` | **20/20** |
+| `npx tsx --test src/exec/offlinePlanWorker.test.ts` | **10/10** |
+| 위 5개 파일 **한 번에** | **217/217** |
+| `node scripts/m4a-offline-acceptance.mjs` | **PASS=32 FAIL=0** |
+| `node scripts/m4b-offline-acceptance.mjs` | **PASS=45 FAIL=0** |
+| `node scripts/m4c-offline-acceptance.mjs` | **PASS=80 FAIL=0** |
+| `git diff --check` / `git diff --cached --check` | clean |
+
+**알려진 red(실측 · 이번 변경 전후 동일)**: `stableController.test.ts` **3 pass / 55 fail** —
+controller가 아직 `startScheduledBatch()`를 부른다. **다음 DAG task 범위**이며 이 세션은 그 파일을
+**수정하지 않았다**(측정만 했다).
+
+### mutation 7종 (전부 red 확인 후 정확히 원복)
+
+| # | 주입 | 기대(=실제) |
+|---|---|---|
+| 1 | 효과 게이트를 run 전역 `chargedTurnIds.includes(turnId)`로 되돌림 | `A1: 생산 turn 과금은 kernel 발급 권위에만…` **1 fail** |
+| 2 | `assertClockSane`에서 `now < state.updatedAt` 제거 | `A1: 시계 역행은 safety-only 커밋에서도 거부된다` **1 fail** |
+| 3 | `recordProgress`의 단조 `seq` 검사 무력화 | `A1: 진행은 brand된 단조 worker 채널로만…` **1 fail** |
+| 4 | `executeWriteFileOperation`에서 `rec.markAttempted()` 제거 | **5 fail**(A2 2종 · A3 2종 · 재시작 수렴) |
+| 5 | `beginOperation` 재발급 경로의 `assertNotAttempted` 제거 | **3 fail**(A2 2종 · 재시작 수렴) |
+| 6 | `reconcileUncertainOperation`의 kind·authority 대조 제거 | `A3: 재시작 뒤 cleaning pending…` **1 fail** |
+| 7 | `failOperation`의 durable attempted 확인 제거 | `A2: 집행이 던진 grant…` **1 fail** |
+
+원복 증거: 7건 모두 `git checkout -- src/exec/orchestrationKernel.ts`로 되돌린 뒤
+`git status --short` = `?? node_modules` **한 줄뿐**(추적 파일 변경 0) ·
+`grep -rn "MUTATION-[1-7]" src schemas scripts` **0건** · `npx tsc --noEmit` 0 error ·
+5개 파일 합계 **217/217** 재확인.
+
+### 미실행 (정직)
+
+`npm test` · `npm run test:exec` · `npm run test:core` · 전체 `acceptance.sh` · stress ·
+`acceptance:stress:m3d2` · live runner · 반복(3회) · build/dist · 실제 Claude/Codex 추론 · MCP · push.
+**최종 전체 suite 1회는 M5 최종 handoff에 예약**돼 있다(지시대로 이 세션에서 돌리지 않았다).
+`stableController.test.ts`는 red 수치 확인 목적으로만 실행했고 **수정하지 않았다**.
+
+### 남은 것 / 다음 DAG task (이 세션은 **시작하지 않았다**)
+
+`StableController` 재작성·배선 · managed process supervisor + 자손 정리(`B-13`/`C-18`) ·
+trusted Git(`C-26`) · 구조화 리뷰 검증(`C-19`/`C-35`) · `autopilot` CLI · legacy `exec`/`mission`
+비활성화 · build/dist · **첫 spawn** · M5d · live. 사용자의 `fable5` 모델 선택은 **다음 task부터**
+적용된다(이 리비전은 레포 규칙대로 fresh Claude Code Opus 5로 진행했다).
+
+**열린 게이트**: `B-16`(typed write 신규 발행 fail closed — 첫 typed-write 산출물 배선 전) ·
+**신규 `B-F1`**(managed launcher 첫 소비자 전: 1회 소비 · 살아 있는 pending/grant · durable 재독 ·
+spawn 직전 node/entrypoint digest 재검증). 상세는 로드맵 §9.1 4차 리비전 절.
+
+---
+
+## 2026-07-31 (V3 **M5c task 3A 3차 리비전 — 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 + C 3건을 닫았다** · **그 시점 기록** — 위 4차 리비전 블록이 A1~A3를 다시 열어 정정했다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `2956ffcf01551de97ac123420190c466893b5829` · 종료 HEAD 아래 커밋 표 참조. **새 fresh Claude Opus 5

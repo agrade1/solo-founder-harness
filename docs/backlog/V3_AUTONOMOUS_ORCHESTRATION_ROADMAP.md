@@ -1816,7 +1816,49 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### M5c task 3A **3차 리비전**(독립 재리뷰 `REVISE A=4·B=2·C=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+##### M5c task 3A **4차 리비전**(독립 재리뷰 `REVISE A/P1=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+
+> **범위 경고**: 이 리비전은 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰
+> (`2956ffc..20530b0` · 세션 `019fb648-ae3a-7252-ada5-e23edd37770a` ·
+> `/private/tmp/m5c-task3a-revision3-codex-review-output.txt` · 판정
+> **`REVISE — A/P1 = 3; A4/B1/B2/C1/C2 closed; future B-F1·B-16 remain`**)의 **A 3건**을 닫고
+> 인접 문서·schema 정정(C-1)을 했다. **M5c 완료 선언이 아니다.** managed process supervisor·자손 정리 ·
+> trusted Git · **`StableController` 재작성/배선** · 구조화 리뷰 검증 · `autopilot` CLI ·
+> legacy 비활성화 · build/dist · M5d는 **미구현·미실행**이다. 프로세스 spawn 0 · 네트워크 0 ·
+> 신규 런타임/dev 의존성 0 · package·lockfile 변경 0. 코드 커밋 `5ec0a57`(시작 HEAD `20530b0`).
+> 증거·미실행 목록의 정본은 `docs/WORKLOG.md` 최상단 블록이다. 이 세션은 **self-approve하지 않는다.**
+>
+> **직전 절(3차 리비전)의 과대주장을 정정한다.** 아래 "3차 리비전" 절의 `A1`~`A3` 행은 **fixed로 적혔지만
+> 재리뷰가 셋 다 PARTIAL — blocking으로 되돌렸다**:
+> ⓐ `A1 fixed`는 **효과 승인을 run 전역 bare turn ID(`accounting.chargedTurnIds`)로** 했고
+> `chargeTurnUsage`가 `{taskId, turnId, 카운트}`를 호출자 선택으로 받았다 → **claim 없는 sibling이
+> 생산 task의 turn을 0 토큰으로 과금해 남의 효과를 승인**할 수 있었다. 진행 provenance도 `getTask()`가
+> 그대로 돌려주는 **durable lease**였고 seq는 모양만 봤다(재생·역순 통과). 공용 시계 검사가
+> `state.updatedAt`을 보지 않아 **safety-only 커밋이 durable 시각을 뒤로 돌릴 수 있었다**.
+> ⓑ `A2 fixed`는 **`executeUnderGrant(grant, op, 임의콜백)`을 공개**했으므로 아무 효과도 내지 않는
+> 콜백이 진짜 `applied` 영수증을 만들 수 있었고, 첫 효과 뒤 영수증 커밋 전에 grant를 재발급해 **두 번째
+> 효과**를 낼 수 있었으며, 부분 외부 효과 뒤의 예외를 `failOperation`이 **평범한 실패로 지웠다**.
+> ⓒ `A3 fixed`는 정합화를 **프로세스 메모리 `WeakMap` handle**에 묶어 두었다 → 재시작 뒤
+> `cleaning`/만료된 `running` pending은 새 permit도 옛 handle도 없어 **영구 미아**였다.
+> 그 절은 dated history로 보존하고 **현행 판정은 이 절이다.**
+>
+> **여전히 열린 미래 게이트**: `B-16`(typed write 신규 발행 fail closed — 첫 typed-write 산출물 배선 전) ·
+> **신규 `B-F1`**(managed launcher 첫 소비자 전). 아래 표에 등록한다.
+
+| id | 분류 | 항목 | 상태 | 근거·증거 |
+|---|---|---|---|---|
+| A1 | **A (P1) → fixed** | 생산 turn 회계와 진행 권위가 묶여 있지 않았다: ⓐ 효과 게이트가 **run 전역 bare turn ID**로 승인했고 `chargeTurnUsage`가 caller-selected `{task, turn, 카운트}`를 받았다(claim 없는 sibling이 0 토큰으로 남의 효과 승인) ⓑ 진행 자격이 `getTask()`로 읽히는 durable lease였고 seq 단조성이 없었다 ⓒ 공용 시계 검사가 `state.updatedAt`을 보지 않아 safety-only 커밋이 시각을 되돌려 wall/no-progress 창을 다시 열 수 있었다 | **fixed (2026-07-31, `5ec0a57`)** | ⓐ **과금을 둘로 갈랐다**: `chargeTurnUsage`(권위 없음 — claim이 열려 있으면 `turn_conflict`, `chargedPlanDigest`를 남기지 않는다 · 만료·재시작 뒤 회계는 그대로 가능 → `B-12` 유지)와 신규 `chargeDispatchTurnUsage({permit,…})`(권위 있음 — 신원이 **kernel 발급 permit**에서 나오고 durable `execution.chargedPlanDigest`를 남긴다). 효과 게이트는 이제 **이 task의** `execution.turnId` + `chargedPlanDigest`를 claim된 `dispatchTurnId`/`dispatchPlanDigest`/`attemptId`와 **함께** 본다 → run/task/attempt/turn/계획 전부에 묶인 과금만 효과를 승인한다. store가 `chargedPlanDigest !== null → turnId !== null` 교차 불변식을 load에서도 본다. ⓑ 진행은 `startPreparedTask()`가 발급하는 **brand된 worker 채널**(모듈 사설 `WeakMap` · run/task/attempt/lease 재대조 · **엄격 증가 seq**)로만 들어온다 — 복사한 lease·구조 사본·`Proxy`·재생·역순·sibling 권위 전부 거부, 늦은 진행은 소진된 창을 되살리지 못한다. ⓒ `assertClockSane`이 `now < state.updatedAt`도 거부한다(`#mutate` 하나를 모든 경로가 지나므로 전진·safety-only 공통). 증거: `A1: 생산 turn 과금은 kernel 발급 권위에만…`(sibling 0 토큰 공격 재현) · `A1: 손으로 심은 chargedPlanDigest는 load에서 거부된다` · `A1: 진행은 brand된 단조 worker 채널로만…` · `A1: 시계 역행은 safety-only 커밋에서도 거부된다`(창이 그대로 소진됨) + mutation 3종(MUTATION-1/2/3) |
+| A2 | **A (P1) → fixed** | ⓐ 공개 `executeUnderGrant(grant, op, 임의콜백)`이 호출자 반환값을 canonical 성공으로 굳혔다(**효과 없는 성공**) ⓑ 첫 효과 뒤 영수증 커밋 전에 grant를 재발급하면 **두 번째 효과**가 가능했다 ⓒ 부분 외부 효과 뒤의 예외를 `failOperation`이 평범한 실패로 지웠다 | **fixed (2026-07-31, `5ec0a57`)** | ⓐ **임의 콜백 표면 삭제.** grant를 소비해 canonical 성공을 만드는 통로는 operation kind별 고정 진입점 `executeWriteFileOperation(grant, op)` 하나이고, 그 안에서 부르는 집행기도 정적으로 고정된 `writeFileEffect.judgeWriteFile`이다. `run_process`에는 그런 진입점이 **아예 없다**(권능 발급은 순수 판정 · spawn 0). 런타임 순환을 피하려고 파일 시스템 판정을 신규 `src/exec/writeFileEffect.ts`로 갈랐다 — 그 모듈은 kernel을 **`import type`으로만** 참조하므로 방출된 그래프는 `kernel → writeFileEffect` 한 방향이다(**신규 의존성·네이티브 helper 0**). ⓑⓒ **집행 경계 진입을 효과보다 먼저 durable에 적는다**: `PendingOperation.attemptedAt` + safety-only `operation_attempted` event. 표시된 pending은 `beginOperation`이 재발급하지 않고(`operation_attempt_uncertain`) `failOperation`도 거부한다 → `effect(g1) → 재발급 → effect(g2)`와 "부분 효과 뒤 예외 지우기"가 둘 다 닫혔다. 증거: `A2: 임의 콜백으로 성공을 만드는 공개 표면이 존재하지 않는다`(두 모듈 export 전수 + 인자 수) · `A2: 집행이 던진 grant는 성공으로도 '평범한 실패'로도 닫히지 않는다` · `A2: effect(g1) → 재발급 → effect(g2)…` + mutation 3종(MUTATION-4/5/7) |
+| A3 | **A (P1) → fixed** | permit·grant·outcome이 전부 프로세스 메모리 `WeakMap`이라, 재시작 뒤 `cleaning` pending은 새 permit을 받을 수 없고(발급은 `running` 요구) 만료·deadline을 넘긴 `running`도 마찬가지이며 옛 handle이 없어 영수증·실패 API 어느 쪽도 부를 수 없었다 → **영구 미아 + attempt 이탈 전이 영구 stall** | **fixed (2026-07-31, `5ec0a57`)** | 신규 `reconcileUncertainOperation({runId, taskId, attemptId, turnId, planDigest, operationId, kind, authorityId, actionId})` — **kernel 발급 handle을 하나도 요구하지 않는다**. durable pending 레코드와 8개 신원을 전수 대조하고(하나라도 어긋나면 거부 · 거부는 pending·영수증·revision을 건드리지 않는다), marker는 **호출자 입력이 아니라 durable 진실에서 파생**된다(`attemptedAt !== null` → `outcome_unknown`, `null` → `failed`). path·resultSha256·exitCode는 항상 `null`이고 "외부 효과가 일어나지 않았다"고 단정하지 않는다. **성공을 만들 입력이 시그니처에 없다.** safety-only라 만료·예산 deadline·`running`/`cleaning` 어디서나 열려 있고, 정합화 뒤 같은 pending 신원의 살아 있는 grant를 그 자리에서 폐기하며, cleanup·settle이 정상 진행된다. 증거: `A3: 재시작 뒤 cleaning pending을…`(새 kernel · 신원 8종 불일치 전수 거부 · settle까지 · 재재시작 동일) · `A3: 만료·deadline을 넘긴 running pending도…` · `A3: 집행 경계에 들어가지 않은 pending은 재시작 뒤 failed로…` + mutation(MUTATION-6) |
+| **신규 `B-F1`** | **B (P1)** | **managed launcher 첫 소비자가 현재 권능을 그대로 실행 권위로 믿으면 안 된다** — 지금 `resolveProcessLaunchCapability`는 순수 minting이라 반복 발급되고 사설 `spent` 필드에 소비자가 없다 | **open (2026-07-31 최초 등록)** | 현재 도달 확률: **0**(소비자도 spawn 경로도 없다). 미래 확률: **확실**(소비자가 생기는 순간). 영향 반경: 로컬 프로세스 실행. 유예 비용: **높음**(launcher 통합 뒤에는 재작업). 수정 공수: 중. **요구**: ① 권능을 **정확히 한 번** 소비 ② 소비 시점에 살아 있는 pending/grant 요구 ③ durable 상태 **재독** ④ spawn **직전에** node·entrypoint 두 digest 재검증. **기한/트리거: 첫 capability 소비자 또는 첫 spawn 전.** 담당: managed-launcher 구현자. 증거: 4차 독립 리뷰 B-F1 · `typedExecution.ts` `resolveProcessLaunchCapability`/`LaunchRecord.spent` |
+| `B-16` | B (P1) | typed write가 **새 파일을 만들지 못한다**(A4 fail-closed의 직접 결과) | **open — 변화 없음(정직 유지)** | 이 리비전은 발행 경로를 다시 열지 않았다(지시대로 신규 의존성·helper 0). 기한/트리거·담당·증거는 3차 리비전 절의 `B-16` 행 그대로다 |
+| ~~`C-42`~~ | C (P2) → **폐기(해소됨)** | 진행 provenance를 kernel brand 스트림 채널로 승격 | **closed (2026-07-31, `5ec0a57`) — 유예가 아니라 구현으로 닫혔다** | 위 A1ⓑ가 이 항목을 그대로 구현했다(brand된 채널 + 단조 seq + attempt/lease 재대조). 3차 리비전 절의 `C-42` 행은 dated history로 남기고 **이 절이 현행**이다 |
+| `C-1`(schema·문서 정직성) | C (P3) → **fixed(주장 정정)** | `dispatchTurnId` 서술이 "과금이 claim을 지운다"였고(코드·schema), pending schema가 **존재하지 않는** 재시작 정합화 경로를 주장했으며, schema 대조 테스트 이름이 "동치"라 draft-07 validator를 실행한 것처럼 읽혔다 | **fixed (2026-07-31, `5ec0a57`) — draft-07 validator는 여전히 미추가** | ⓐ `orchestrationTypes.TaskExecution.dispatchTurnId`와 schema description을 **lazy replacement**로 고쳤다(과금은 claim을 지우지 않는다 · 끝난 claim만 다음 turn의 permit 요청이 교체한다). ⓑ pending schema가 실제 경로 2종을 정확히 적는다(같은 프로세스 handle + `attemptedAt === null` → 멱등 재집행 / 그 밖 전부 → `reconcileUncertainOperation` safety-only). ⓒ schema 대조 테스트 4종의 이름을 **"key·enum·상한이 구조적으로 일치한다"**로 바꾸고 헤더에 "draft-07 validator를 실행하지 않는다"를 명시했다. 구 `C2`(draft-07 실검증)는 **기한 그대로 open** |
+| `A4` `B1` `B2`=`B-10` `C1`(재발급 멱등) `C2`(적대적 manifest) | — | 3차 리비전이 닫은 항목 | **closed 유지 — 재리뷰가 재확인했다** | A4: pathname 기반 발행·생성 syscall 0(정적 검사) · B1: temp·unlink·truncate 경로 부재, 정리 실패가 1차 오류를 이긴다 · B2: action 계약 닫힘·정규화·root/ownership 결합·opaque 권능(spawn 0) · C1: 정확한 재발급이 커밋 없이 멱등 · C2: descriptor 기반 단일 입양. 이 리비전은 넷 다 건드리지 않았다 |
+| `B-7` `B-9` `B-11` `B-12` `B-13` `C-12→B` | B (P1) | live 게이트와 lifecycle 잔여 | **open — 변화 없음** | 이 리비전은 live 실행 0이고 controller·프로세스 계층을 건드리지 않았다. `stableController.test.ts`는 **3 pass / 55 fail**(이번 변경 전후 동일 실측 · 다음 DAG task 범위) |
+| `C-18` `C-19` `C-26` `C-29` `C-30` `C-31` `C-33` `C-34` `C-35` `C-36` `C-37` `C-38` `C-39` `C-5` | C | 이 리비전이 손대지 않은 나머지 | **변화 없음** | 프로세스 감독자 · 리뷰 검증 · trusted Git · outcome 단일 출처 · seam provenance · store 발행 내부는 이 리비전의 소유 범위 밖이었다 |
+
+##### M5c task 3A **3차 리비전**(독립 재리뷰 `REVISE A=4·B=2·C=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 그 시점 기록 · 위 절이 이를 정정한다**)
 
 > **범위 경고**: 이 리비전은 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰
 > (`16cdc87..2956ffc` · 세션 `019fb5fb-89ec-7e40-90a9-4a4e7e66d3c2` ·
