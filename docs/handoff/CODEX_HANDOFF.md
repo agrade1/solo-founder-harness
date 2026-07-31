@@ -3,7 +3,61 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-30 — V3 **M5c task 3A 2차 리비전 · 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 닫음 · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-07-31 — V3 **M5c task 3A 3차 리비전 · 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 + C 3건 닫음 · M5c 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `2956ffc` ·
+  코드 커밋 **`d4a6596`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 **미상속** ·
+  재개 아님 · subagent/병렬 writer 0). Ponytail **level `full`**. 원격 push/PR/merge · 네트워크 · MCP ·
+  패키지 설치 · 의존성/lockfile 변경 · live provider 추론 · secret · **프로세스 spawn 0**.
+  amend/rebase/reset/stash 0 · **테스트 완화·삭제 0**(교체 assertion 전수는 WORKLOG).
+- **M5c는 여전히 승인 대상이 아니고 self-approved도 아니다.** 입력 권위는
+  `/private/tmp/m5c-task3a-revision2-codex-review-output.txt`(세션 `019fb5fb-89ec-7e40-90a9-4a4e7e66d3c2`).
+- **변경 파일(신규 0 · 변경 10)**: `orchestrationKernel.ts`(+테스트) · `typedExecution.ts`(+테스트) ·
+  `approvalManifest.ts` · `orchestrationTypes.ts` · `orchestrationStore.ts` · 두 schema ·
+  `autopilotLifecycle.test.ts`. `stableController.ts`(+테스트 — **열지 않았다**) · managed process ·
+  trusted Git · reviewer · CLI · legacy exec/mission · store 발행 내부 · `executionBoundary.ts`(+테스트) ·
+  `typedPlan.ts` · `offlinePlanWorker.ts` · `scripts/m4*-offline-acceptance.mjs` · package/lock ·
+  tracked `dist` **전부 무변경**. 두 번째 scheduler·대안 controller·신규 런타임/dev 의존성 **0**.
+- **계약 요지(리뷰어가 확인할 것)**
+  - **A1** 순서가 계약이다: **permit(claim) → `chargeTurnUsage` → `beginOperation`(grant) → 효과**.
+    효과 게이트가 `accounting.chargedTurnIds.includes(turnId)`를 요구한다(신규
+    `budget_turn_unaccounted`) → 토큰 판정이 한 turn 뒤처질 수 없다. **과금은 claim을 닫지 않는다** —
+    끝난 claim(과금 + 미확정 0)만 다음 turn의 permit 요청이 교체한다(지연 해제). `recordProgress`는
+    소진된 no-progress/wall 창을 되살리지 못하고 attempt `processLeaseMarker` + worker
+    `{kind:"progress",seq,step}` 닫힌 읽기를 요구한다. 전진 시각은 `state.updatedAt`에 대해 단조다.
+  - **A2** durable pending 신원당 **live grant 1개**(새 발급이 이전 것 폐기). `consumeExecutionGrant`
+    export **삭제** → `executeUnderGrant(grant, op, effect)`(진입 일회용 · 정상 반환 시에만 canonical
+    결과를 굳혀 **opaque handle**). `recordOperationReceipt({outcome, actionId})`는 저장된 값을 적고
+    호출자 필드를 채택하지 않는다. 미시도·실패는 신규 `failOperation({grant, marker: denied|failed})`.
+    영수증·event에 attemptId·turnId·**planDigest**가 durable하다.
+  - **A3** 영수증 정합화는 **safety-only**(`requireReconcilableTask` — `running|cleaning`, 만료·예산·
+    wall·no-progress·drift 미검사, 신원 전수 확인). attempt를 떠나거나 리셋하는 전이
+    (preflight/pause/resume/settle)는 pending이 있으면 전부 거부. 런타임·schema 불변식으로 pending을
+    attempt/turn/planDigest에 묶고 그 밖의 state에서 금지.
+  - **A4** **신규 발행은 `write_publish_unsupported`로 fail closed**(temp도 만들지 않는다).
+    `process.chdir` 우회는 평가 후 채택하지 않았다(전역 상태·worker thread·자식 cwd 오염).
+    → **`applyWriteFile`은 새 파일을 만들지 못한다**(대장 신규 `B-16`).
+  - **B1** temp 소멸로 unlink/truncate durability·고아 plaintext가 성립하지 않는다. fd 반납 실패는
+    `write_cleanup_unconfirmed`이고 1차 오류와 동시에 나면 **정리 미확인이 이긴다**(1차 코드는 메시지에).
+  - **B2=`B-10`** `data: string[]` → action별 `{planPath}`(정규화 항등·surrogate·상한·writableRoots·
+    ownership). 공개 `ProcessLaunchSpec` **삭제** → opaque `ProcessLaunchCapability`(실행 대상·argv·
+    digest **비노출**). 권능 발급은 순수 판정 → spawn 없는 계획이 성공을 만들 수 없다. **spawn 0.**
+  - **C1/C2/C3** 멱등 재발급(커밋 0) · manifest 단일 입양(accessor·proxy 거부) · schema 주장 정정
+    (**draft-07 validator는 추가하지 않았다** — 지시대로).
+- **검증 실측**: `npx tsc --noEmit` 0 error · 파일 단독 `typedExecution` **47/47** ·
+  `autopilotLifecycle` **28/28** · `orchestrationKernel` **103/103** · `executionBoundary` **20/20** ·
+  `offlinePlanWorker` **10/10**(동시 합계 **208/208**) · `m4a` **32/32** · `m4b` **45/45** ·
+  `m4c` **80/80** · `git diff --check` clean · mutation **6종** 전부 red 확인 후 원복(세 파일 SHA-256
+  바이트 일치 · `if (false &&` 잔재 grep 0).
+- **알려진 red**: `stableController.test.ts` — **이 세션은 실행하지도 열지도 않았다**(다음 DAG task 범위).
+  직전 세션 실측은 3 pass / 55 fail이었고 이번 계약 변경으로 **더 늘었을 것으로 예상**한다(미측정).
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
+  build/dist · M5d. 최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
+- **다음 DAG task**: `StableController` 재작성 + (permit → 과금 → grant → 효과 → 영수증) 배선 →
+  managed process supervisor(+자손 정리) → trusted Git → `autopilot` CLI. 그 task부터 사용자의
+  `fable5` 모델 선택이 적용된다.
+
+## 이전 상태 (2026-07-30 — V3 **M5c task 3A 2차 리비전 · 그 시점 기록 · 위 절이 이를 정정한다**)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `16cdc87` ·
   코드 커밋 **`cecc529`** · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·

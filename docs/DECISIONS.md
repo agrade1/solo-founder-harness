@@ -1,5 +1,44 @@
 # DECISIONS.md
 
+## 2026-07-31 (V3 M5c task 3A **3차 리비전** — **예방할 수 없으면 발행하지 않는다. 회계는 효과보다 먼저다. 결과는 집행기만 낸다**)
+
+- **결정 1 — 신규 파일 발행을 fail closed로 만들었다(기능 축소를 감수했다).** `link(2)`/`rename(2)`는
+  pathname을 받는다. 최종 부모 신원 확인과 syscall 사이에 같은 사용자 경쟁자가 승인된 부모 **이름**을
+  교체하면 커널이 그 교체본을 통해 경로를 해석해 **승인 범위 밖으로** 바이트를 발행하고, 발행된 inode는
+  우리 temp와 같으므로 **사후 검증은 통과하며**, fsync는 엉뚱한 디렉터리 fd에 걸린다. Node 18/macOS
+  내장에는 디스크립터 상대 no-replace 발행(`linkat`)이 없다. 대안 셋을 검토했다: ⓐ 사후 검증 강화 —
+  창을 닫지 못한다(리뷰가 명시적으로 배제했다) ⓑ `process.chdir(parent)` + basename `link` — cwd는
+  커널이 잡은 디렉터리 참조이므로 **경쟁을 실제로 닫지만**, 프로세스 전역 상태이고 worker thread에서
+  던지며 managed launcher가 자식을 띄우는 순간 **자식 cwd까지 오염**시킨다 → 안전을 증명할 수 없다
+  ⓒ 네이티브 helper/의존성 — 이 세션의 권한 밖(사람 승인 대상)이다. 그래서 **발행 경로를 제거**했다.
+  **대가는 크다**: `applyWriteFile`은 이제 새 파일을 만들지 못하고 판정·정합화만 한다(`already_applied`·
+  `write_conflict`·`write_replace_unsupported`·`write_publish_unsupported`). 그 기능 공백은 대장
+  **`B-16`**(기한: typed write로 실제 산출물을 만드는 첫 배선 전)으로 남겼다. **얻는 것**: 승인 범위
+  밖 발행이 **도달 불가능**하고, temp가 없으므로 고아 plaintext·unlink durability 문제도 함께 소멸한다.
+- **결정 2 — 회계와 turn 닫기를 분리했다(2차 리비전 결정 2의 정정).** 2차 판은 "turn을 닫는 지점은
+  과금"이었다. 그런데 그러면 **생산 turn은 효과가 끝난 뒤에야 과금될 수 있고**, 효과 게이트의 토큰 판정이
+  항상 한 turn 뒤처진 총량을 본다 → 승인 상한을 넘겨 쓸 수 있다. 지금 순서는 **permit(claim) → 과금 →
+  grant → 효과**이고 효과 게이트가 `chargedTurnIds.includes(turnId)`를 요구한다. 과금은 claim을 닫지
+  않는다(닫으면 바로 그 계획의 grant가 죽는다) — **끝난 claim**(과금 + 미확정 0)만 다음 turn의 permit
+  요청이 교체하는 **지연 해제**다. 대안이었던 "닫을 시점을 durable에 미리 적기"(계획의 operation 수를
+  저장)는 채택하지 않았다: 계획의 일부만 집행하기로 한 turn이 **교착**된다.
+- **결정 3 — 성공 결과는 집행기만 만든다.** `consumeExecutionGrant`(게이트 통과)와 결과 주장이 갈라져
+  있던 것이 위조의 근원이었다: 아무것도 spawn하지 않아도 grant를 `executing`으로 올리면 호출자가 만든
+  `applied` 영수증이 수락됐다. 지금은 효과가 `executeUnderGrant(grant, op, effect)` **안에서** 일어나고,
+  `effect`가 정상 반환한 값만 grant 안에 canonical 결과로 굳어 opaque handle이 된다. 영수증은 그 handle만
+  받고 **저장된 값**을 적는다. **주장하지 않는 범위(정직)**: 진짜 grant를 쥔 같은 프로세스 코드는
+  거짓말하는 `effect`를 넘길 수 있다 — 그러나 진짜 grant는 진짜 permit → `beginOperation` 커밋을 지나야
+  나오므로 그 코드는 이미 승인된 dispatch 경로 안이다.
+- **결정 4 — 영수증 정합화는 safety-only다.** 이미 일어난 효과를 durable에 적는 일을 만료·예산·
+  deadline·`cleaning`으로 막으면 그 pending은 **어떤 전이로도 닫히지 않는 미아**가 되고 다음 preflight·
+  resume이 조용히 지운다. 그래서 정합화는 로드맵 §8.1의 safety-only 예외에 속한다(전진 0 · 신원은 전수
+  확인). 짝이 되는 규칙: attempt를 떠나거나 리셋하는 전이는 pending이 있으면 전부 거부한다.
+- **결정 5 — 승인 문서의 `run_process` 입력은 action별 계약이다.** `data: string[]`은 arity·경로 의미·
+  소유권·읽기 범위를 **미래 launcher가 지어내야 하는** 인터페이스였다(과승인이거나 폐기 대상). 지금
+  `validate-plan`은 정확히 `{planPath}`이고 승인 시점에 정규화 항등·`writableRoots`·task ownership까지
+  본다. **읽기 전용 action이지만 새 `readableRoots` 축을 열지 않았다** — 이미 승인된 쓰기 범위 안쪽으로
+  읽기를 좁히는 쪽이 더 적은 권한이고 승인 문서에 새 축을 만들지 않는다.
+
 ## 2026-07-30 (V3 M5c task 3A **2차 리비전** — **권위는 durable claim + 일회용 grant이고, 예방할 수 없는 발행은 거부한다**)
 
 - **결정 1 — permit 발급은 순수 판정이 아니라 커밋이다.** 1차 판의 permit은 state를 바꾸지 않았다. 그래서

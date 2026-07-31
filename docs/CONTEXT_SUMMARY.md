@@ -1,8 +1,57 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-30
+최종 갱신: 2026-07-31
 
-## 최신 (2026-07-30 — **V3 M5c task 3A 2차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-31 — **V3 M5c task 3A 3차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 + C 3건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `2956ffc` ·
+  코드 커밋 **`d4a6596`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 미상속 · 재개
+  아님) · Ponytail **full**. 입력 권위:
+  `/private/tmp/m5c-task3a-revision2-codex-review-output.txt`(Codex `gpt-5.6-sol` xhigh read-only ·
+  세션 `019fb5fb-89ec-7e40-90a9-4a4e7e66d3c2` · 범위 `16cdc87..2956ffc`).
+- **닫은 것**
+  - **A1** 순서를 계약으로: **permit(claim) → `chargeTurnUsage` → grant → 효과**. 효과 게이트가
+    `chargedTurnIds`를 요구한다(신규 `budget_turn_unaccounted`) → 토큰 판정이 stale일 수 없다.
+    과금은 claim을 닫지 않고, **끝난 claim**(과금 + 미확정 0)만 다음 turn이 교체한다(지연 해제).
+    `recordProgress`는 소진된 창을 되살리지 못하고 attempt lease + worker `progress` 이벤트를 요구한다.
+    전진 시각은 `state.updatedAt`에 대해 단조여야 한다.
+  - **A2** durable pending 신원당 **살아 있는 grant 1개**(새 발급이 이전 것 폐기 → live/live 중복 불가).
+    `consumeExecutionGrant` 삭제 → `executeUnderGrant(grant, op, effect)`(진입 일회용 · 정상 반환 시에만
+    canonical 결과를 굳혀 **opaque handle**). `recordOperationReceipt({outcome})`가 저장된 값을 적고,
+    미시도·실패는 신규 `failOperation(denied|failed)`로만 닫힌다. 영수증·event에 attempt/turn/planDigest.
+  - **A3** 영수증 정합화가 **safety-only**(만료·deadline·`cleaning` 뒤에도 가능 · 신원 전수 확인).
+    attempt를 떠나거나 리셋하는 전이는 pending이 있으면 전부 거부. 런타임·schema 불변식으로 pending을
+    attempt/turn/plan digest에 묶고 그 밖의 state에서 금지.
+  - **A4** **신규 발행 fail closed**(`write_publish_unsupported`) — pathname `link(2)`의 부모 교체 경쟁을
+    예방할 수 없고 Node 18/macOS에 디스크립터 상대 primitive가 없다. `process.chdir` 우회는 평가 후
+    **채택하지 않았다**. temp를 만들지 않으므로 부작용 0.
+  - **B1** temp 소멸로 unlink/truncate durability·고아 plaintext가 성립하지 않는다. fd 반납 실패는
+    `write_cleanup_unconfirmed`이고 **1차 오류에 가려지지 않는다**(복합 처리).
+  - **B2=`B-10`** action별 입력 계약(`data: string[]` → `{planPath}` + 정규화·소유·범위 검사) ·
+    공개 `ProcessLaunchSpec` 삭제 → opaque `ProcessLaunchCapability`(실행 대상·argv·digest 비노출) ·
+    권능 발급은 순수 판정이라 **spawn 없는 계획이 성공을 만들 수 없다**. **spawn 0 유지.**
+  - **C1** 같은 (turn,계획) 재발급이 durable 커밋 없이 멱등 · **C2** manifest validator 단일 입양
+    (accessor·proxy 거부) · **C3** schema 과대주장 정정 + 낡은 서술 수정(draft-07 validator는 **미추가**).
+- **정정한 과대주장**: 직전 블록의 `A1`(생산 turn 과금이 효과 뒤 · 늦은 진행 부활 · 시계 역행) ·
+  `A2`(live/live grant · 구조적 영수증 · spawn 없는 성공) · `A3`(신규 발행 창은 열려 있었다) ·
+  `B1`(unlink/truncate durability · 1차 오류 은폐) · `B-10`("게이트 해제"는 과장). 표는 WORKLOG 최상단.
+- **이번 리비전이 만든 기능 공백(정직)**: `applyWriteFile`이 **새 파일을 만들지 못한다** → 대장 신규
+  **`B-16`**(기한: typed write로 실제 산출물을 만드는 첫 배선 전). 신규 **`C-42`**(진행 provenance를
+  kernel brand 스트림 채널로 승격 — controller 배선 task).
+- **안 끝난 것(M5c의 남은 핵심)**: **`StableController` 재작성·배선**(다음 DAG task) · managed process
+  supervisor + 자손 정리(`B-13`/`C-18`) · trusted Git(`C-26`) · 구조화 리뷰 검증(`C-19`/`C-35`) ·
+  `autopilot` CLI · legacy `exec`/`mission` 비활성화 · build/dist · M5d.
+- **검증(실측)**: `npx tsc --noEmit` 0 error · 파일 단독 `typedExecution` **47/47** ·
+  `autopilotLifecycle` **28/28** · `orchestrationKernel` **103/103** · `executionBoundary` **20/20** ·
+  `offlinePlanWorker` **10/10**(동시 합계 **208/208**) · `m4a` **32/32** · `m4b` **45/45** ·
+  `m4c` **80/80** · `git diff --check` clean · mutation **6종** 전부 red 확인 후 원복(세 파일 SHA-256
+  바이트 일치 · 잔재 grep 0).
+- **미실행**: `npm test` · `test:core` · 전체 acceptance · `test:exec` · stress · live · 반복 · build/dist ·
+  `stableController.test.ts`(**이 세션은 그 파일을 열지 않았다** — 다음 DAG task 범위).
+- **다음 DAG task는 시작하지 않았다**: controller 재작성·배선 · managed launcher · trusted Git · 첫 spawn ·
+  M5d · live. 사용자의 `fable5` 모델 선택은 **다음 task부터** 적용된다.
+
+## 이전 (2026-07-30 — **V3 M5c task 3A 2차 리비전: 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건 닫음. M5c는 여전히 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `16cdc87` ·
   코드 커밋 **`cecc529`** · stack base `81554cf`. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·
