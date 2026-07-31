@@ -756,8 +756,10 @@ test("[M5c] 만료 후: 전진은 닫히고 safety-only reducer만 통과한다(
   const expired = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(after) });
 
   // ── 전진은 전부 거부된다 ──
-  // 진행 채널은 이 attempt를 시작한 kernel 인스턴스가 발급한 것이고 durable state를 다시 읽으므로,
-  // 재시작한 `expired` 인스턴스에 넘겨도 만료 게이트가 먼저 닫는다(3A 4차 리비전 A1).
+  // **직전 판의 assertion을 교체했다**(3A 5차 리비전 A2 — 완화가 아니라 강화). 이전 assertion은 다른
+  // kernel 인스턴스가 발급한 진행 채널을 `expired` 인스턴스가 **만료 게이트까지 받아들이는 것**을 정상
+  // 동작으로 고정하고 있었다. 프로세스 메모리 handle은 인스턴스 경계를 조용히 넘지 않는다 →
+  // 이제는 **더 이른 자리에서** `invalid_progress_channel`로 거부된다.
   assert.equal(
     codeOf(() =>
       expired.recordProgress({
@@ -766,6 +768,12 @@ test("[M5c] 만료 후: 전진은 닫히고 safety-only reducer만 통과한다(
         event: { kind: "progress", seq: 1, step: "step" },
       }),
     ),
+    "invalid_progress_channel",
+  );
+  // 그리고 만료된 인스턴스는 **자기 채널을 새로 발급받을 수도 없다**(채널 발급은 전진 작업이다) →
+  // "만료 뒤 진행 신호로 no-progress 시계를 되돌릴 수 없다"는 원래 사실이 그대로 유지된다.
+  assert.equal(
+    codeOf(() => expired.startPreparedTask({ taskId: "root", actionId: nextAction(), leaseMarker: lease })),
     "manifest_expired",
   );
   assert.equal(codeOf(() => expired.resumeTask({ taskId: "root", actionId: nextAction() })), "manifest_expired");

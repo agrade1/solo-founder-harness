@@ -553,6 +553,17 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     seenPending.add(p.operationId);
     return p;
   });
+  // **모든 pending은 닫을 자리(영수증 slot)를 갖고 있어야 한다**(M5c 3A 5차 리비전 A5). operation은 turn
+  // 단위, 영수증은 attempt 단위로 상한이 있으므로 이 교차 불변식이 없으면 영수증 용량이 소진된 attempt에
+  // pending이 남을 수 있고, 그 pending은 영수증 커밋도 handle-free 정합화도 상한에서 거부되는데
+  // attempt 이탈 전이는 전부 pending 0을 요구한다 → **영구 미아**다. 커밋(`beginOperation`의 예약)과
+  // load가 같은 불변식 하나를 지난다.
+  if (receipts.length + pendingOperations.length > LIMITS.maxOperationReceipts) {
+    throw new OrchestrationError(
+      "invalid_state",
+      `operationReceipts + pendingOperations는 ${LIMITS.maxOperationReceipts}건 이하여야 한다(닫을 수 없는 pending 금지)`,
+    );
+  }
 
   const exec: TaskExecution = {
     attemptNo: boundedInt(o.attemptNo, "task.execution.attemptNo", 0, LIMITS.maxTaskAttempts),

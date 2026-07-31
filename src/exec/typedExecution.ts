@@ -11,11 +11,13 @@
  * **kernel이 발급한 봉인 permit/grant**만 받고, 효과·명세 발급 **직전마다**
  * `orchestrationKernel.readDispatchAuthority()`로 **현재 durable 상태**를 다시 읽는다.
  *
- * **집행기는 고정이다(3A 4차 리비전 A2).** 이전 판은 kernel이 `executeUnderGrant(grant, op, 임의콜백)`을
- * 공개했으므로 **아무 효과도 내지 않는 콜백**으로 진짜 `applied` 영수증을 만들 수 있었다. 지금 grant를
- * 소비해 canonical 성공을 만드는 통로는 kernel의 **operation kind별 고정 진입점**
- * (`executeWriteFileOperation`)뿐이고, 그 안에서 부르는 집행기도 고정(`writeFileEffect.judgeWriteFile`)이다.
- * **임의 콜백을 받는 공개 API는 존재하지 않는다.**
+ * **집행기는 고정이고 kernel 모듈 안에 있다(3A 4차 리비전 A2 · 5차 리비전 A3).** 4차 판은 파일 시스템
+ * 판정을 별도 `src/exec/writeFileEffect.ts`에 두고 `judgeWriteFile(auth, op)`를 **export**했으므로,
+ * 그 모듈을 직접 import하면 **위조한 구조적 `DispatchAuthority`** 하나로 파일을 열어 hash하고 디렉터리를
+ * fsync하고 성공 marker까지 받을 수 있었다(진짜 permit·과금·현재 durable 상태 확인 0). 그래서 그 파일을
+ * **없앴다**: 효과 함수는 이제 grant 등록부와 같은 모듈의 **사설 함수**이고, 유일한 진입점은 진짜 grant를
+ * 요구하는 `orchestrationKernel.executeWriteFileOperation`이다.
+ * **임의 콜백을 받는 공개 API도, 위조 authority로 도달하는 집행기도 존재하지 않는다.**
  *
  * 이 모듈이 하는 것:
  * 1. `resolveWriteFileAuthority()` — 승인 레코드 대조(deny-by-default · 파일 시스템 무접촉).
@@ -24,9 +26,8 @@
  * 3. `resolveProcessLaunchCapability()` — 승인 레코드에서만 나오는 **opaque 일회용 실행 권능**.
  *    **spawn하지 않고**, 실행 대상·argv·digest를 밖으로 드러내지도 않는다(3A 3차 리비전 B2).
  *
- * 계획의 닫힌 validator와 계약 상수는 `typedPlan.ts`에 있고, `write_file`의 파일 시스템 판정은
- * `writeFileEffect.ts`에 있다(kernel이 런타임 순환 없이 고정 집행기를 부를 수 있도록 갈라 두었다).
- * 호환을 위해 둘 다 여기서 그대로 재수출한다.
+ * 계획의 닫힌 validator와 계약 상수는 `typedPlan.ts`에 있고, `write_file`의 파일 시스템 판정과 순수 권위
+ * 해석은 `orchestrationKernel.ts`에 있다. 호환을 위해 둘 다 여기서 그대로 재수출한다.
  *
  * 이 모듈이 **하지 않는** 것: 프로세스 spawn · shell · PATH 조회 · 환경 상속 · git · 네트워크 ·
  * dependency 설치 · provider 호출 · 디렉터리 생성 · symlink 추적. 표현할 타입도 통로도 없다.
@@ -37,11 +38,13 @@
 import { type ControllerAction, OrchestrationError } from "./orchestrationTypes.js";
 import {
   DISPATCH_AUTHORITY_CODES,
+  WRITE_EFFECT_CODES,
   executeWriteFileOperation,
   readDispatchAuthority,
+  resolveApprovedOperation,
+  resolveWriteAuthority,
   type OperationOutcome,
 } from "./orchestrationKernel.js";
-import { WRITE_EFFECT_CODES, resolveApprovedOperation, resolveWriteAuthority } from "./writeFileEffect.js";
 import type { TypedWriteFileOperation, TypedRunProcessOperation } from "./typedPlan.js";
 import type { ApprovedOperation } from "./orchestrationTypes.js";
 
@@ -61,9 +64,9 @@ export {
   validateTypedExecutionPlan,
 } from "./typedPlan.js";
 export type { PlanBinding, TypedRunProcessOperation, TypedWriteFileOperation } from "./typedPlan.js";
-// 파일 시스템 판정의 테스트 seam은 집행기 모듈이 정본이다(같은 이름으로 재수출한다).
-export { __setPublicationSeamsForTest } from "./writeFileEffect.js";
-export type { PublicationSeam } from "./writeFileEffect.js";
+// 파일 시스템 판정의 테스트 seam은 kernel 모듈이 정본이다(같은 이름으로 재수출한다).
+export { __setPublicationSeamsForTest } from "./orchestrationKernel.js";
+export type { PublicationSeam } from "./orchestrationKernel.js";
 export type {
   DispatchAuthority,
   OperationDispatchPermit,
@@ -76,13 +79,13 @@ export type {
  * 호출자(worker·계획 작성자)가 **고를 수 없다**: getter/proxy가 던진 `OrchestrationError`까지 전부
  * `plan_invalid`로 접힌다(`typedPlan.ts` — 대장 `C-38`을 그 seam에서 닫는다).
  * permit 검증 단계의 코드는 `orchestrationKernel.DISPATCH_AUTHORITY_CODES`가 정본이고,
- * `write_file` 집행 단계의 코드는 `writeFileEffect.WRITE_EFFECT_CODES`가 정본이다.
+ * `write_file` 집행 단계의 코드는 `orchestrationKernel.WRITE_EFFECT_CODES`가 정본이다.
  */
 export const TYPED_EXECUTION_CODES = [
   /** 계획이 계약 밖이다(미상 key · 타입 · 상한 · binding 불일치 · accessor/proxy 포함). */
   "plan_invalid",
   /**
-   * 집행 단계의 닫힌 코드(정본은 `writeFileEffect.ts`):
+   * 집행 단계의 닫힌 코드(정본은 `orchestrationKernel.ts`):
    * - `operation_denied` — 이 task의 이 authorityId가 승인되지 않았거나 kind가 승인 레코드와 다르다.
    * - `operation_not_owned` / `operation_outside_writable_root` — 승인은 있으나 durable 범위 밖이다.
    * - `write_bytes_exceeded` — 본문이 `min(승인 maxBytes, LIMITS.maxWriteBytes)`를 넘는다.
@@ -206,8 +209,10 @@ export function isGenuineLaunchCapability(v: unknown): boolean {
  * 1. 일회용 grant → 현재 durable 권위 재확인(만료·토큰·**권위로 과금된 생산 turn**·예산 deadline·
  *    attempt wall·no-progress·lifecycle·attempt/turn·claim된 계획·preflight·manifest 정본).
  * 2. **durable pending을 `attemptedAt`으로 표시**(외부 효과가 일어났을 수 있다는 사실을 먼저 적는다).
- * 3. 고정 집행기 `writeFileEffect.judgeWriteFile()`를 **정확히 한 번** 부른다.
- * 4. 정상 반환값만 canonical 결과로 굳혀 **opaque outcome handle**을 돌려준다 —
+ * 3. **표시 커밋 이후에 권위를 다시 전수 확인한다**(3A 5차 리비전 A4 — 그 커밋은 safety-only라 deadline을
+ *    보지 않으므로, 커밋 도중 만료·예산·wall·no-progress 경계를 지났으면 여기서 fail closed다).
+ * 4. kernel 사설 고정 집행기를 **정확히 한 번** 부른다(직접 import로 도달할 통로가 없다 — 5차 A3).
+ * 5. 정상 반환값만 canonical 결과로 굳혀 **opaque outcome handle**을 돌려준다 —
  *    호출자가 marker·경로·hash를 바꿔 넣을 수 없다.
  */
 export function applyWriteFile(op: TypedWriteFileOperation, grant: unknown): Readonly<OperationOutcome> {

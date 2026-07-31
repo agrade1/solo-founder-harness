@@ -51,6 +51,7 @@ import {
   ORCHESTRATOR_ID,
   hasLoneSurrogate,
   type OperationReceipt,
+  type PendingOperation,
 } from "./orchestrationTypes.js";
 import type { AgentMessageType } from "./orchestrationTypes.js";
 import { OPERATION_RECEIPT_KEYS } from "./orchestrationStore.js";
@@ -1153,47 +1154,86 @@ test("[M5c] lifecycle·attempt·turn이 어긋나면 발급된 permit도 효과 
   assert.ok(DISPATCH_AUTHORITY_CODES.includes("budget_turn_unaccounted"));
 });
 
-test("[M5c] A1: 생산 turn 과금은 kernel 발급 권위에만 묶인다(sibling·bare turn ID는 효과를 승인하지 못한다)", () => {
-  // **이전 판의 진짜 결함**(독립 리뷰 A-1): 효과 게이트가 run 전역 `accounting.chargedTurnIds`에
-  // 그 turn ID가 **있기만 하면** 통과시켰고 `chargeTurnUsage`는 `{taskId, turnId, 카운트}`를 호출자가
-  // 전부 골랐다 → claim이 없는 sibling이 생산 task의 turn ID를 **0 토큰**으로 과금해 남의 효과를
-  // 승인할 수 있었다. 이 테스트가 정확히 그 공격을 재현한다.
+test("[M5c] A1: bare 회계는 남이 claim한 생산 turn을 선점·정산할 수 없다(회계 부패·거짓 정산 차단)", () => {
+  // **4차 판의 진짜 결함**(독립 리뷰 A-1): `chargeTurnUsage`가 caller-selected `{taskId, turnId}`를 받고
+  // 중복 namespace가 run 전역이었으므로, claim이 없는 sibling이 **생산 task가 claim한 turn ID**를 0 토큰으로
+  // 과금할 수 있었다. `chargedPlanDigest` 덕분에 효과가 직접 승인되지는 않았지만 두 가지가 부패했다:
+  //   ① 생산 task의 **진짜 사용량이 영구히 과금 불가**가 된다(`turn_already_charged`) → 예산 집행이 그
+  //      turn을 아예 세지 못한다.
+  //   ② `dispatchTurnSettled`가 run 전역 turn ID를 정산 권위로 봤으므로, 그 **거짓 정산** 위에서 다음
+  //      turn이 claim을 교체할 수 있었다.
+  // **직전 판의 assertion(ⓐ 통과 · ⓒ "남의 과금은 DoS일 뿐 우회가 아니다")은 바로 그 부패를 정상 동작으로
+  // 고정하고 있었으므로 교체했다**(완화가 아니라 강화 — 전수 기록은 WORKLOG).
   const f = fixture();
   startNow(f.kernel, "sibling");
   const plan = planFor(f.kernel, "root", [writeOp()], "turn-1");
   const permit = f.kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-1", actionId: nextId("act"), plan });
+  const accBefore = f.kernel.getAccounting();
+  const revBefore = f.kernel.getState().revision;
+  const bare = (taskId: string, turnId: string): string =>
+    codeOf(() =>
+      f.kernel.chargeTurnUsage({ taskId, turnId, actionId: nextId("act"), inputTokens: 0, outputTokens: 0, elapsedMs: 0 }),
+    );
 
-  // ⓐ sibling이 **자기 이름으로** 같은 bare turn ID를 0 토큰 과금한다(claim이 없으므로 통과한다).
-  f.kernel.chargeTurnUsage({
-    taskId: "sibling",
-    turnId: "turn-1",
-    actionId: nextId("act"),
-    inputTokens: 0,
-    outputTokens: 0,
-    elapsedMs: 0,
-  });
-  assert.deepEqual(f.kernel.getAccounting().chargedTurnIds, ["turn-1"], "run 전역 목록에는 들어간다");
-  // ⓑ **그래도 생산 task의 효과는 열리지 않는다** — 증거가 이 task의 것이 아니기 때문이다.
+  // ⓐ **선점 공격은 커밋 전에 거부된다**: 남이 claim한 turn은 bare 회계 대상이 아니다(자기 이름이든
+  //    생산 task 이름이든 같다).
+  assert.equal(bare("sibling", "turn-1"), "turn_conflict", "sibling이 남의 claim된 turn을 선점했다");
+  assert.equal(bare("root", "turn-1"), "turn_conflict");
+  assert.deepEqual(f.kernel.getAccounting(), accBefore, "거부된 bare 회계가 durable 회계를 바꿨다");
+  assert.equal(f.kernel.getState().revision, revBefore, "거부된 bare 회계가 커밋됐다");
+  assert.deepEqual(f.kernel.getAccounting().chargedTurnIds, [], "bare 회계가 turn ID를 예약했다");
+
+  // ⓑ **거짓 정산도 성립하지 않는다**: 이 task의 진짜 과금 증거가 없으면 claim은 교체되지 않는다
+  //    (정산 권위가 run 전역 turn ID 집합이 아니라 task-local 증거이기 때문이다).
+  assert.equal(f.kernel.getTask("root")!.execution.chargedPlanDigest, null);
   assert.equal(
-    codeOf(() => f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") })),
-    "budget_turn_unaccounted",
+    codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-t2" })], "turn-2")),
+    "dispatch_identity_stale",
   );
-  assert.equal(f.kernel.getTask("root")!.execution.chargedPlanDigest, null, "남의 과금이 권위 증거를 남겼다");
-  assert.equal(f.kernel.getTask("sibling")!.execution.chargedPlanDigest, null, "권위 없는 과금이 증거를 남겼다");
+  assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-1", "claim이 거짓 정산으로 교체됐다");
+
+  // ⓒ **진짜 생산자의 과금은 그대로 성공한다**(선점당하지 않았으므로 멱등 규칙에 걸리지 않는다).
+  f.kernel.chargeDispatchTurnUsage({ permit, actionId: nextId("act"), inputTokens: 7, outputTokens: 5, elapsedMs: 3 });
+  assert.equal(f.kernel.getAccounting().tokensUsed, 12, "생산 turn의 진짜 사용량이 회계에 없다");
+  {
+    const exec = f.kernel.getTask("root")!.execution;
+    assert.equal(exec.turnId, "turn-1");
+    assert.equal(exec.chargedPlanDigest, exec.dispatchPlanDigest, "권위 증거가 claim된 계획과 다르다");
+  }
+  // 그리고 이제 효과 경로가 열린다(위 거부들이 생산자를 막지 않았다는 대조군).
+  const grant = f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") });
+
+  // ⓓ **미확정 operation이 0이 될 때까지 claim은 교체되지 않는다**(과금만으로는 정산이 아니다).
+  assert.equal(
+    codeOf(() => permitFor(f.kernel, "root", [writeOp({ operationId: "op-t3" })], "turn-3")),
+    "dispatch_identity_stale",
+  );
+  f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
+  // 진짜 과금 + 미확정 0 → 이제 다음 turn이 claim을 교체한다.
+  const next = permitFor(
+    f.kernel,
+    "root",
+    [writeOp({ operationId: "op-t3", path: "docs/small.md", authorityId: "w-small", content: "x" })],
+    "turn-3",
+  );
+  assert.equal(next.turnId, "turn-3");
+  assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-3");
   assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
 
-  // ⓒ 그리고 이 turn은 이미 sibling이 태워 버렸으므로 권위 과금도 멱등 규칙에 걸린다 → **fail closed**.
-  //    (그 turn으로는 어떤 효과도 나가지 않는다. 새 turn을 열어야 한다 — 남의 과금은 DoS일 뿐 우회가 아니다.)
-  assert.equal(
-    codeOf(() => f.kernel.chargeDispatchTurnUsage({ permit, actionId: nextId("act"), inputTokens: 1, outputTokens: 1, elapsedMs: 1 })),
-    "turn_already_charged",
-  );
-  assert.equal(
-    codeOf(() => f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") })),
-    "budget_turn_unaccounted",
-  );
+  // ⓔ **claim이 없는 turn의 bare 회계는 그대로 가능하다**(대장 `B-12` — 만료·재시작 뒤 이미 태운 자원
+  //    기록을 막지 않는다). sibling은 자기 turn을 자유롭게 과금한다.
+  f.kernel.chargeTurnUsage({
+    taskId: "sibling",
+    turnId: "turn-sib",
+    actionId: nextId("act"),
+    inputTokens: 4,
+    outputTokens: 0,
+    elapsedMs: 1,
+  });
+  assert.ok(f.kernel.getAccounting().chargedTurnIds.includes("turn-sib"));
+  assert.equal(f.kernel.getTask("sibling")!.execution.chargedPlanDigest, null, "권위 없는 과금이 증거를 남겼다");
 
-  // ⓓ 위조·평범한 객체 permit으로는 권위 과금 자체가 불가능하다.
+  // ⓕ 위조·평범한 객체 permit으로는 권위 과금 자체가 불가능하다.
   for (const forged of [null, undefined, {}, { ...permit }, new Proxy(permit, {})]) {
     assert.equal(
       codeOf(() => f.kernel.chargeDispatchTurnUsage({ permit: forged, actionId: nextId("act"), inputTokens: 1, outputTokens: 0, elapsedMs: 1 })),
@@ -1202,7 +1242,7 @@ test("[M5c] A1: 생산 turn 과금은 kernel 발급 권위에만 묶인다(sibli
   }
   assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
 
-  // ⓔ **claim 위에서 권위 없는 과금**은 turn이 아직 안 태워졌어도 불가능하다(permit을 요구한다).
+  // ⓖ **claim 위에서 권위 없는 과금**은 turn이 아직 안 태워졌어도 불가능하다(permit을 요구한다).
   {
     const g = fixture();
     const p = g.kernel.issueOperationDispatchPermit({
@@ -2349,6 +2389,449 @@ test("[M5c] A2: 임의 콜백으로 성공을 만드는 공개 표면이 존재�
   assert.equal("executeRunProcessOperation" in kernelModule, false);
   assert.equal(typeof kernelModule.executeWriteFileOperation, "function");
   assert.equal((kernelModule.executeWriteFileOperation as (...a: unknown[]) => unknown).length, 2);
+});
+
+// ── 7d. 직접 import 우회 · 발급 인스턴스 격리 (3A 5차 리비전 A3/A2) ────────────
+
+/**
+ * **위조한 구조적 `DispatchAuthority`**. 4차 판의 `writeFileEffect.judgeWriteFile(auth, op)`가 정확히 이
+ * 모양을 받았으므로, 그 모듈을 직접 import하면 진짜 permit·과금·durable 상태 확인 **없이** 파일을 열어
+ * hash하고 디렉터리를 fsync하고 성공 marker까지 받을 수 있었다(독립 리뷰 A-3).
+ */
+function forgedAuthority(ws: string): Record<string, unknown> {
+  return {
+    workspaceRoot: ws,
+    manifest: validateApprovalManifest(manifestObject()),
+    runId: RUN_ID,
+    taskId: "root",
+    attemptId: "att-forged",
+    turnId: "turn-forged",
+    ownership: ["docs", "src"],
+    nowIso: "2026-07-30T00:00:00.000Z",
+  };
+}
+
+test("[M5c] A3: 위조 authority로 파일 시스템 효과에 도달하는 import 표면이 없다(집행기 모듈 자체가 없다)", async () => {
+  // **4차 판의 진짜 결함**: 집행기가 별도 파일에서 export돼 있었고 `DispatchAuthority`는 평범한 구조적
+  // interface였다. 패키지는 `dist` 전체를 exports map 없이 배포하므로 "내부 파일"·이름·주석·barrel 누락·
+  // TypeScript 가시성은 경계가 아니었다. 그래서 **파일을 없앴다**(이름 변경·`@internal`이 아니다).
+  // 정적 specifier로 쓰면 **타입 검사가 먼저** 실패하므로(모듈이 없다) 런타임 판정을 하지 못한다 →
+  // 여기서 보는 것은 "그 경로가 런타임에도 해석되지 않는다"이므로 specifier를 `string`으로 넓힌다.
+  const helperPath: string = "./writeFileEffect.js";
+  await assert.rejects(
+    () => import(helperPath),
+    (e: NodeJS.ErrnoException) => e.code === "ERR_MODULE_NOT_FOUND",
+    "집행기 helper 모듈이 다시 import 가능해졌다",
+  );
+
+  // 남은 두 모듈의 **모든 함수 export**를 위조 authority로 두 인자 순서 모두 호출해도
+  // ⓐ 성공 marker가 나오지 않고 ⓑ 파일 시스템이 바뀌지 않는다.
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  // 우회가 성공했다면 **`already_applied` + 디렉터리 fsync**가 나올 조건을 만들어 둔다(공허하지 않은 관문).
+  writeFileSync(target, "hello");
+  const before = { ino: lstatSync(target).ino, bytes: readFileSync(target, "utf8"), dir: readdirSync(join(f.ws, "docs")) };
+  const forged = forgedAuthority(f.ws);
+  const op = { ...writeOp(), content: "hello" } as unknown as TypedWriteFileOperation;
+  const kernelModule = (await import("./orchestrationKernel.js")) as unknown as Record<string, unknown>;
+  const typedModule = (await import("./typedExecution.js")) as unknown as Record<string, unknown>;
+  const successMarkers = ["applied", "already_applied", "write_conflict"];
+  // seam setter도 sweep 대상이므로 호출 뒤 반드시 원복한다(테스트 사이에 상태가 새지 않는다).
+  const restoreSeams = __setPublicationSeamsForTest({});
+  try {
+    for (const [modName, mod] of [["kernel", kernelModule], ["facade", typedModule]] as const) {
+      for (const [name, value] of Object.entries(mod)) {
+        if (typeof value !== "function") continue;
+        if (Object.getOwnPropertyDescriptor(value, "prototype")?.writable === false) continue; // class 제외
+        for (const args of [[forged, op], [op, forged]]) {
+          let out: unknown;
+          try {
+            out = (value as (...a: unknown[]) => unknown)(...args);
+          } catch {
+            continue; // fail closed = 정답
+          }
+          const marker = typeof out === "object" && out !== null ? (out as Record<string, unknown>).marker : undefined;
+          assert.equal(
+            typeof marker === "string" && successMarkers.includes(marker),
+            false,
+            `${modName}.${name}이 위조 authority로 집행 결과를 냈다`,
+          );
+        }
+      }
+    }
+  } finally {
+    restoreSeams();
+  }
+  assert.equal(lstatSync(target).ino, before.ino, "위조 authority가 대상 파일을 바꿨다");
+  assert.equal(readFileSync(target, "utf8"), before.bytes);
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), before.dir, "위조 authority가 디렉터리를 바꿨다");
+  // 진짜 경로는 그대로 열려 있다(대조군): 같은 내용이므로 `already_applied`가 나온다.
+  const [realOp, grant] = writePermit(f, { content: "hello" });
+  assert.equal(applyWriteFile(realOp, grant).marker, "already_applied");
+});
+
+/**
+ * **durable ID가 바이트 단위로 같은 두 번째 workspace**(3A 5차 리비전 A2). run/task/attempt/turn/plan/
+ * operation id를 전부 고정하므로, 발급 인스턴스에 묶이지 않은 handle이라면 서로 통해 버린다.
+ */
+function twinRun(): { ws: string; kernel: OrchestrationKernel; progress: WorkerProgressChannel; clock: () => Date } {
+  const ws = makeWorkspace();
+  const clock = clockFrom(T0);
+  const kernel = OrchestrationKernel.create({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: manifestObject(),
+    clock,
+  });
+  kernel.createRootTask(seed("root", ["docs", "src"]));
+  const batch = kernel.planRunnableBatch();
+  kernel.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: "act-twin-preflight",
+    decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: "att-twin" })),
+  });
+  const started = kernel.startPreparedTask({
+    taskId: "root",
+    actionId: "act-twin-start",
+    leaseMarker: `lease.${"a".repeat(32)}`,
+  });
+  return { ws, kernel, progress: started.progress, clock };
+}
+
+/** 고정 turn/plan으로 claim → 권위 과금 → pending 등록까지 지난 twin 하나. */
+function twinPermit(t: { kernel: OrchestrationKernel }): {
+  permit: OperationDispatchPermit;
+  op: TypedWriteFileOperation;
+  grant: OperationExecutionGrant;
+} {
+  const permit = t.kernel.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId: "turn-twin",
+    actionId: "act-twin-claim",
+    plan: planFor(t.kernel, "root", [writeOp({ content: "쌍둥이 내용" })], "turn-twin"),
+  });
+  t.kernel.chargeDispatchTurnUsage({ permit, actionId: "act-twin-charge", inputTokens: 1, outputTokens: 1, elapsedMs: 1 });
+  const grant = t.kernel.beginOperation({ permit, operationId: "op-1", actionId: "act-twin-begin" });
+  return { permit, op: permit.plan.operations[0] as TypedWriteFileOperation, grant };
+}
+
+test("[M5c] A2: 진짜 handle은 발급 kernel 인스턴스에만 통한다(같은 durable ID의 두 workspace 교차 공격)", () => {
+  // **4차 판의 진짜 결함**(독립 리뷰 A-2): permit/grant/outcome/채널 등록부가 모듈 전역이고 수신 메서드는
+  // "이 모듈이 발급했는가"만 봤다 → durable ID가 같은 두 workspace가 서로 과금·pending 등록·attempted
+  // 표시·영수증 커밋을 하고 live grant key까지 서로 죽일 수 있었다. 평범한 durable 문자열 ID는 발급자
+  // 신원이 아니다.
+  const A = twinRun();
+  const B = twinRun();
+  const a = twinPermit(A);
+  const b = twinPermit(B);
+  // 전제: 두 run의 durable 신원이 **바이트 단위로 같다**(공격이 성립할 조건 자체를 단정한다).
+  assert.deepEqual(
+    [a.permit.runId, a.permit.taskId, a.permit.attemptId, a.permit.turnId, a.op.operationId],
+    [b.permit.runId, b.permit.taskId, b.permit.attemptId, b.permit.turnId, b.op.operationId],
+  );
+  assert.equal(
+    A.kernel.getTask("root")!.execution.dispatchPlanDigest,
+    B.kernel.getTask("root")!.execution.dispatchPlanDigest,
+    "두 workspace의 계획 digest가 다르면 이 테스트는 공격을 재현하지 못한다",
+  );
+  assert.notEqual(A.ws, B.ws);
+
+  // ⓐ **교차 과금 거부**(B의 회계는 A의 permit으로 움직이지 않는다).
+  const accB = B.kernel.getAccounting();
+  assert.equal(
+    codeOf(() =>
+      B.kernel.chargeDispatchTurnUsage({ permit: a.permit, actionId: nextId("act"), inputTokens: 99, outputTokens: 99, elapsedMs: 9 }),
+    ),
+    "dispatch_permit_invalid",
+  );
+  assert.deepEqual(B.kernel.getAccounting(), accB, "형제 kernel의 permit이 회계를 움직였다");
+
+  // ⓑ **교차 pending 등록 거부**.
+  assert.equal(
+    codeOf(() => B.kernel.beginOperation({ permit: a.permit, operationId: "op-2", actionId: nextId("act") })),
+    "dispatch_permit_invalid",
+  );
+  assert.deepEqual(B.kernel.getTask("root")!.execution.pendingOperations.map((p) => p.operationId), ["op-1"]);
+
+  // ⓒ **교차 실패 종결 거부**.
+  assert.equal(codeOf(() => B.kernel.failOperation({ grant: a.grant, actionId: nextId("act"), marker: "failed" })), "dispatch_grant_invalid");
+
+  // ⓓ **live key 충돌 없음**: B의 grant 발급이 A의 살아 있는 grant를 소비하지 못한다(같은 pendingKey).
+  //    (4차 판은 모듈 전역 `Map`이라 B가 A의 grant를 `consumed`로 만들었다 → 여기서 `dispatch_grant_spent`.)
+  writeFileSync(join(A.ws, "docs/out.md"), "쌍둥이 내용");
+  const outcomeA = applyWriteFile(a.op, a.grant);
+  assert.equal(outcomeA.marker, "already_applied");
+
+  // ⓔ **집행 클로저는 발급 kernel의 state만 만진다**: A의 pending만 attempted가 됐다.
+  assert.notEqual(A.kernel.getTask("root")!.execution.pendingOperations[0].attemptedAt, null);
+  assert.equal(B.kernel.getTask("root")!.execution.pendingOperations[0].attemptedAt, null, "형제 kernel의 pending이 표시됐다");
+
+  // ⓕ **교차 영수증 커밋 거부** → 그리고 발급 kernel에서는 정상 커밋된다(같은 handle · 같은 durable 신원).
+  assert.equal(codeOf(() => B.kernel.recordOperationReceipt({ outcome: outcomeA, actionId: nextId("act") })), "invalid_receipt");
+  assert.equal(B.kernel.getTask("root")!.execution.operationReceipts.length, 0, "형제 kernel에 영수증이 생겼다");
+  const committed = A.kernel.recordOperationReceipt({ outcome: outcomeA, actionId: nextId("act") });
+  assert.deepEqual(committed.execution.operationReceipts.map((r) => r.marker), ["already_applied"]);
+
+  // ⓖ **교차 진행 채널 거부** → 발급 kernel에서는 정상 기록된다.
+  const progressEvent = { kind: "progress", seq: 1, step: "진행" };
+  assert.equal(
+    codeOf(() => B.kernel.recordProgress({ channel: A.progress, actionId: nextId("act"), event: progressEvent })),
+    "invalid_progress_channel",
+  );
+  assert.equal(B.kernel.getTask("root")!.execution.progressCount, 0, "형제 채널이 남의 시계를 되돌렸다");
+  assert.equal(
+    A.kernel.recordProgress({ channel: A.progress, actionId: nextId("act"), event: progressEvent }).execution.progressCount,
+    1,
+  );
+
+  // ⓗ B의 pending은 **자기 handle로만** 닫힌다(교차 거부가 B를 미아로 만들지 않았다).
+  assert.equal(B.kernel.failOperation({ grant: b.grant, actionId: nextId("act"), marker: "failed" }).execution.pendingOperations.length, 0);
+  assert.deepEqual(readdirSync(join(B.ws, "docs")), [], "B에서 파일 효과가 났다");
+});
+
+test("[M5c] A2: 같은 workspace의 두 번째 인스턴스도 남이다 — 권위는 durable 경로로만 넘어간다", () => {
+  // **명시적 결정**(DECISIONS 2026-07-31): 프로세스 메모리 handle은 kernel 인스턴스 경계를 조용히 넘지
+  // 않는다. 재열기의 정합화는 durable 경로 둘로만 한다 — `attemptedAt === null`이면 같은 (turn, 계획)의
+  // **커밋 없는 permit 재발급**, 그 밖이면 handle을 요구하지 않는 `reconcileUncertainOperation()`이다.
+  const A = twinRun();
+  const a = twinPermit(A);
+  const second = OrchestrationKernel.open({ workspaceRoot: A.ws, runId: RUN_ID, clock: A.clock });
+
+  // ⓐ 첫 인스턴스의 handle은 두 번째 인스턴스에서 전부 거부된다.
+  assert.equal(
+    codeOf(() => second.chargeDispatchTurnUsage({ permit: a.permit, actionId: nextId("act"), inputTokens: 1, outputTokens: 0, elapsedMs: 1 })),
+    "dispatch_permit_invalid",
+  );
+  assert.equal(
+    codeOf(() => second.beginOperation({ permit: a.permit, operationId: "op-1", actionId: nextId("act") })),
+    "dispatch_permit_invalid",
+  );
+  assert.equal(codeOf(() => second.failOperation({ grant: a.grant, actionId: nextId("act"), marker: "failed" })), "dispatch_grant_invalid");
+  assert.equal(
+    codeOf(() => second.recordProgress({ channel: A.progress, actionId: nextId("act"), event: { kind: "progress", seq: 1, step: "x" } })),
+    "invalid_progress_channel",
+  );
+  assert.equal(A.kernel.getTask("root")!.execution.pendingOperations[0].attemptedAt, null, "거부가 durable 상태를 바꿨다");
+
+  // ⓑ **durable 경로는 열려 있다**: 아직 집행 경계에 들어가지 않았으므로 두 번째 인스턴스가 같은
+  //    (turn, 계획)의 permit을 **커밋 없이** 다시 받아 자기 grant로 진행한다(미아가 되지 않는다).
+  const rev = second.getState().revision;
+  const reissued = second.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId: "turn-twin",
+    actionId: nextId("act"),
+    plan: planFor(second, "root", [writeOp({ content: "쌍둥이 내용" })], "turn-twin"),
+  });
+  assert.equal(second.getState().revision, rev, "정확한 재발급이 커밋을 만들었다");
+  const ownGrant = second.beginOperation({ permit: reissued, operationId: "op-1", actionId: nextId("act") });
+  assert.equal(second.failOperation({ grant: ownGrant, actionId: nextId("act"), marker: "failed" }).execution.pendingOperations.length, 0);
+  assert.deepEqual(readdirSync(join(A.ws, "docs")), []);
+});
+
+// ── 7e. 표시 이후 권위 재확인 (3A 5차 리비전 A4) ──────────────────────────────
+
+/**
+ * `attemptedAt` 커밋 **도중** 경계를 넘는 시계. 표시가 durable해진 뒤부터 `crossed`를 돌려주므로
+ * 첫 판정과 표시 커밋은 `base`에서 통과하고, **집행기 진입 직전의 두 번째 판정**만 경계에서 판정된다.
+ */
+function crossingClock(base: number, at: { crossed: number | null; attempted: () => boolean }): () => Date {
+  return () => new Date(at.crossed !== null && at.attempted() ? at.crossed : base);
+}
+
+test("[M5c] A4: 표시 커밋 도중 deadline을 넘으면 집행기에 들어가지 않는다(등호 4종 · 파일 효과 0)", () => {
+  // **4차 판의 진짜 결함**(독립 리뷰 A-4): `executeWriteFileOperation`은 권위를 한 번 읽고, 그 사이에
+  // **deadline을 의도적으로 보지 않는** safety-only `attemptedAt` 커밋을 하고, 그 **옛 판정**으로 집행기에
+  // 들어갔다 → 첫 시계 읽기에서 유효했던 deadline이 커밋 도중 지나도 효과가 그대로 나갔다. 이전 테스트는
+  // **정지한 시계**로 등호를 봤을 뿐이라 두 판정 사이의 통과를 재현하지 못했다.
+  const cases = [
+    {
+      label: "manifest 만료",
+      code: "manifest_expired",
+      manifestOver: {
+        expiresAt: new Date(T0 + 600_000).toISOString(),
+        autopilotPolicy: { ...POLICY, maxNoProgressMs: 900_000, maxAttemptElapsedMs: 900_000 },
+      },
+      deadlineOf: (k: OrchestrationKernel) => Date.parse(k.getState().manifest.expiresAt),
+    },
+    {
+      label: "예산 deadline",
+      code: "budget_elapsed_exhausted",
+      // `maxAttemptElapsedMs <= maxElapsedMs`가 manifest 불변식이므로 셋을 같은 값으로 둔다 →
+      // 세 deadline이 같은 밀리초에 겹치고, 판정 순서(만료 → 예산 → … → wall → no-progress)에 따라
+      // **예산 deadline**이 그 자리를 잡는다.
+      manifestOver: {
+        maxElapsedMs: 120_000,
+        autopilotPolicy: { ...POLICY, maxNoProgressMs: 120_000, maxAttemptElapsedMs: 120_000 },
+      },
+      deadlineOf: (k: OrchestrationKernel) => Date.parse(k.getState().accounting.budgetDeadlineAt),
+    },
+    {
+      label: "attempt wall deadline",
+      code: "attempt_wall_exhausted",
+      manifestOver: { autopilotPolicy: { ...POLICY, maxAttemptElapsedMs: 30_000, maxNoProgressMs: 900_000 } },
+      deadlineOf: (k: OrchestrationKernel) => Date.parse(k.getTask("root")!.execution.wallDeadlineAt!),
+    },
+    {
+      label: "no-progress deadline",
+      code: "no_progress_exhausted",
+      manifestOver: { autopilotPolicy: { ...POLICY, maxNoProgressMs: 5_000, maxAttemptElapsedMs: 600_000 } },
+      deadlineOf: (k: OrchestrationKernel) => Date.parse(k.getTask("root")!.execution.phaseStartedAt!) + 5_000,
+    },
+  ] as const;
+
+  for (const c of cases) {
+    // `offset === -1`은 대조군(경계 1ms 전 → 집행 성공), `0`은 **등호**(→ 효과 0).
+    for (const offset of [-1, 0]) {
+      const at: { crossed: number | null; attempted: () => boolean } = { crossed: null, attempted: () => false };
+      const f = fixture({ manifestOver: { ...c.manifestOver }, clock: crossingClock(T0, at) });
+      at.attempted = () => f.kernel.getTask("root")!.execution.pendingOperations.some((p) => p.attemptedAt !== null);
+      // 우회가 성공했다면 **진짜 성공(`already_applied`)** 이 나올 조건을 만든다(공허하지 않은 관문).
+      writeFileSync(join(f.ws, "docs/out.md"), "우리 내용");
+      const [op, grant] = writePermit(f, { content: "우리 내용" });
+      at.crossed = c.deadlineOf(f.kernel) + offset;
+      const label = `${c.label} offset=${offset}`;
+
+      if (offset === -1) {
+        assert.equal(applyWriteFile(op, grant).marker, "already_applied", `${label}: 경계 1ms 전이 막혔다`);
+        continue;
+      }
+      // **등호**: 표시는 durable해졌지만 집행기에는 들어가지 않는다.
+      assert.equal(codeOf(() => applyWriteFile(op, grant)), c.code, label);
+      const exec = f.kernel.getTask("root")!.execution;
+      assert.equal(exec.operationReceipts.length, 0, `${label}: 거짓 성공 영수증이 생겼다`);
+      const pending = exec.pendingOperations[0];
+      assert.notEqual(pending.attemptedAt, null, `${label}: 불확실 구간이 durable하지 않다`);
+      // 보수적으로 "시도됐을 수 있다"로 남는다 → 평범한 실패·재발급으로 닫히지 않는다.
+      assert.equal(
+        codeOf(() => f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" })),
+        "operation_attempt_uncertain",
+        label,
+      );
+      // 아래 두 확인은 **deadline과 무관한 이유**로 닫혀 있음을 본다 → 경계를 되돌린다. 시각을 뒤로 미는
+      // 것이 아니다: 표시 커밋은 `attempted()`가 아직 false일 때 일어났으므로 durable `updatedAt`은
+      // `base` 그대로다(시계 단조 게이트를 위반하지 않는다).
+      at.crossed = null;
+      const permit2 = f.kernel.issueOperationDispatchPermit({
+        taskId: "root",
+        turnId: "turn-1",
+        actionId: nextId("act"),
+        plan: planFor(f.kernel, "root", [writeOp({ content: "우리 내용" })], "turn-1"),
+      });
+      assert.equal(
+        codeOf(() => f.kernel.beginOperation({ permit: permit2, operationId: "op-1", actionId: nextId("act") })),
+        "operation_attempt_uncertain",
+        `${label}: 표시된 pending이 다시 열렸다`,
+      );
+      // 정직한 나중 정합화만 남는다.
+      const task = f.kernel.reconcileUncertainOperation({
+        runId: RUN_ID,
+        taskId: "root",
+        attemptId: pending.attemptId,
+        turnId: pending.turnId,
+        planDigest: pending.planDigest,
+        operationId: pending.operationId,
+        kind: pending.kind,
+        authorityId: pending.authorityId,
+        actionId: nextId("act"),
+      });
+      const receipt = task.execution.operationReceipts[0];
+      assert.equal(receipt.marker, "outcome_unknown", label);
+      assert.deepEqual([receipt.path, receipt.resultSha256, receipt.exitCode], [null, null, null], label);
+      // 파일은 그대로다(효과 0 — 바이트도 목록도 바뀌지 않았다).
+      assert.equal(readFileSync(join(f.ws, "docs/out.md"), "utf8"), "우리 내용", label);
+      assert.deepEqual(readdirSync(join(f.ws, "docs")), ["out.md"], label);
+    }
+  }
+});
+
+// ── 7f. 영수증 용량 예약 (3A 5차 리비전 A5) ───────────────────────────────────
+
+test("[M5c] A5: 영수증 용량을 먼저 예약한다 — 닫을 수 없는 pending은 열리지 않는다(다중 turn 경계)", () => {
+  // **4차 판의 진짜 결함**(독립 리뷰 A-5): operation은 turn 단위(64), 영수증은 attempt 단위(64) 상한인데
+  // `beginOperation`은 **동시 pending 용량만** 봤다 → 같은 attempt의 뒤 turn이 영수증 64건 위에서 65번째
+  // operation을 열 수 있었고, 영수증 커밋도 handle-free 정합화도 상한에서 거부되는데 attempt 이탈 전이는
+  // 전부 pending 0을 요구하므로 그 pending은 **어떤 경로로도 닫히지 않는 영구 미아**였다.
+  const cap = LIMITS.maxOperationReceipts;
+  // 이 테스트는 durable 커밋을 128건 넘게 쌓으므로 **정지한 시계**를 쓴다(1초씩 전진하는 시계라면
+  // no-progress·wall deadline이 먼저 걸려서 보려는 경계에 도달하지 못한다).
+  const f = fixture({ clock: steppableClock(T0).clock });
+  // ── turn-1: 영수증을 `cap - 1`건까지 채운다(한 자리 남긴다).
+  const permit1 = permitFor(
+    f.kernel,
+    "root",
+    Array.from({ length: cap }, (_, i) => writeOp({ operationId: `op-a${i}` })),
+    "turn-1",
+  );
+  for (let i = 0; i < cap - 1; i++) {
+    const grant = f.kernel.beginOperation({ permit: permit1, operationId: `op-a${i}`, actionId: nextId("act") });
+    f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
+  }
+  assert.equal(f.kernel.getTask("root")!.execution.operationReceipts.length, cap - 1);
+
+  // ── ⓐ **`cap - 1`건 + pending 1건은 여전히 정합화된다**(마지막 자리는 예약돼 있다).
+  f.kernel.beginOperation({ permit: permit1, operationId: `op-a${cap - 1}`, actionId: nextId("act") });
+  const p = f.kernel.getTask("root")!.execution.pendingOperations[0];
+  const reconciled = f.kernel.reconcileUncertainOperation({
+    runId: RUN_ID,
+    taskId: "root",
+    attemptId: p.attemptId,
+    turnId: p.turnId,
+    planDigest: p.planDigest,
+    operationId: p.operationId,
+    kind: p.kind,
+    authorityId: p.authorityId,
+    actionId: nextId("act"),
+  });
+  assert.equal(reconciled.execution.operationReceipts.length, cap);
+  assert.equal(reconciled.execution.pendingOperations.length, 0);
+
+  // ── ⓑ **다음 turn의 operation 65는 열리지 않는다** — pending·event·revision **전부 변화 0**으로 거부된다.
+  const permit2 = permitFor(f.kernel, "root", [writeOp({ operationId: "op-over" })], "turn-2");
+  const revBefore = f.kernel.getState().revision;
+  const eventsBefore = readFileSync(f.kernel.paths.eventsFile, "utf8").length;
+  assert.equal(
+    codeOf(() => f.kernel.beginOperation({ permit: permit2, operationId: "op-over", actionId: nextId("act") })),
+    "operation_limit_exceeded",
+  );
+  assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 0, "거부가 pending을 남겼다");
+  assert.equal(f.kernel.getState().revision, revBefore, "거부가 revision을 올렸다");
+  assert.equal(readFileSync(f.kernel.paths.eventsFile, "utf8").length, eventsBefore, "거부가 event를 남겼다");
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), [], "거부 경로가 파일 효과를 냈다");
+
+  // ── ⓒ 미아가 없으므로 attempt를 정상적으로 떠난다(cleanup → settle).
+  const lease = f.kernel.getTask("root")!.execution.processLeaseMarker!;
+  f.kernel.recordTerminal({ taskId: "root", actionId: nextId("act"), marker: "worker_failed" });
+  f.kernel.confirmCleanup({ taskId: "root", actionId: nextId("act"), leaseMarker: lease });
+  assert.equal(f.kernel.settleCleanedAttempt({ taskId: "root", actionId: nextId("act") }).state, "retry_wait");
+});
+
+test("[M5c] A5: 상한을 넘긴 pending+영수증 조합은 load에서 거부된다(손으로 만든 미아 금지)", () => {
+  const f = fixture();
+  const permit = permitFor(f.kernel, "root", [writeOp()], "turn-1");
+  f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") });
+  const raw = JSON.parse(readFileSync(f.kernel.paths.stateFile, "utf8")) as {
+    tasks: Array<{ taskId: string; execution: { pendingOperations: PendingOperation[]; operationReceipts: unknown[] } }>;
+  };
+  const root = raw.tasks.find((t) => t.taskId === "root")!;
+  const p = root.execution.pendingOperations[0];
+  // pending 1건 + 영수증 `cap`건 = 상한 초과 → 그 pending은 어떤 경로로도 닫히지 않는다.
+  root.execution.operationReceipts = Array.from({ length: LIMITS.maxOperationReceipts }, (_, i) => ({
+    operationId: `op-r${i}`,
+    kind: p.kind,
+    authorityId: p.authorityId,
+    attemptId: p.attemptId,
+    turnId: p.turnId,
+    planDigest: p.planDigest,
+    path: null,
+    resultSha256: null,
+    exitCode: null,
+    marker: "failed",
+    at: p.beganAt,
+  }));
+  writeFileSync(f.kernel.paths.stateFile, JSON.stringify(raw, null, 2), "utf8");
+  // state 검증이 event binding보다 **먼저** 돌므로 판정은 결정론적이다.
+  assert.equal(codeOf(() => OrchestrationKernel.open({ workspaceRoot: f.ws, runId: RUN_ID })), "invalid_state");
 });
 
 test("[M5c] A2: 등록·발행·영수증 사이에서 재시작해도 중복 손상 없이 하나로 수렴한다", () => {
