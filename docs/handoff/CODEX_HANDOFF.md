@@ -43,8 +43,8 @@
     도달하는 import 표면이 **없다**. 남은 export는 부수 효과 0인 순수 판정
     (`resolveApprovedOperation`/`resolveWriteAuthority` — 호출자 manifest를 되비추기만 한다) ·
     `WRITE_EFFECT_CODES` · 테스트 seam. `typedExecution.ts`는 kernel에서 재수출만 한다(순환 0).
-  - **A4(표시 이후 재확인)** 순서가 `진입 자격 → `attemptedAt` 표시 커밋 → 일회용 소진 → **권위 전수
-    재확인** → 고정 집행기`다. 표시 커밋은 safety-only라 deadline을 보지 않으므로, 그 사이에 만료·예산
+  - **A4(표시 이후 재확인)** 순서가 진입 자격 → `attemptedAt` 표시 커밋 → 일회용 소진 → **권위 전수
+    재확인** → 고정 집행기다. 표시 커밋은 safety-only라 deadline을 보지 않으므로, 그 사이에 만료·예산
     deadline·attempt wall·no-progress 경계를 지나면 **집행기에 들어가지 않는다**(파일 효과 0 · 영수증 0).
     그 pending은 보수적으로 attempted로 남아 재발급(`operation_attempt_uncertain`)·평범한 실패가 모두
     거부되고 `reconcileUncertainOperation`의 `outcome_unknown`으로만 닫힌다.

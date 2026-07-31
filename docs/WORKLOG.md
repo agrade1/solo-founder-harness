@@ -478,7 +478,7 @@ M5d · live 실행 — **하나도 시작하지 않았다.** 사용자의 `fable
 
 ---
 
-## 2026-07-30 (V3 **M5c task 3A 2차 리비전 — 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-30 (V3 **M5c task 3A 2차 리비전 — 독립 재리뷰 `REVISE A=4·B=2·C=3`의 A 4건 + B 2건을 닫았다. M5c는 여전히 미완료다** · 그 시점 기록 — 현행은 맨 위 블록이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `16cdc87dc6e407357e1847459708d4825ba49f70` · 종료 HEAD **아래 커밋 표 참조**. **새 fresh Claude Opus 5
@@ -947,7 +947,7 @@ process supervisor·자손 정리) · trusted Git · `StableController` 재작�
   managed process와 controller 통합이 리뷰될 때까지 게이트는 열려 있다. **실제 Claude/Codex는
   여전히 부재·비활성**이다.
 
-## 2026-07-30 (V3 **M5c green-recovery slice — v2 계약 schema 정본화 + kernel/M4 검증면 이관. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-30 (V3 **M5c green-recovery slice — v2 계약 schema 정본화 + kernel/M4 검증면 이관. M5c는 여전히 미완료다** · 그 시점 기록 — 현행은 맨 위 블록이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `23d663c`(아래 블록의 끝 지점) · stack base `81554cf`. **새 fresh Claude Opus 5 단일 세션**(이전 세션

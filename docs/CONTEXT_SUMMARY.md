@@ -292,7 +292,7 @@
 - 다음 세션의 첫 작업: controller 재작성 전에 **kernel 테스트·M4 acceptance fixture 마이그레이션**을 끝내
   green을 회복한 뒤 나머지 slice로 간다.
 
-## 이전 (2026-07-30 — **V3 M5b 7차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=12) 대응 · 독립 8차 리뷰 대기** · 이 블록이 가장 최신이다)
+## 이전 (2026-07-30 — **V3 M5b 7차 리비전: 독립 Codex 재리뷰(REVISE, A/P1=2 · B=7 · C=12) 대응 · 독립 8차 리뷰 대기** · 그 시점 기록 — 현행은 맨 위 블록이다)
 
 - **위치**: worktree `/private/tmp/solo-founder-harness-m5b` · branch `work/m5b-stable-controller`.
   base = 승인된 M5a HEAD `409dee2`. 시작 HEAD `ff5e035` 위에 **7차 리비전 커밋** — code/tests/dist/schema
