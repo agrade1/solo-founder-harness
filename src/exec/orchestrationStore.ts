@@ -945,6 +945,7 @@ export function assertReferentialIntegrity(state: OrchestrationRunState): void {
 
   assertNoDependencyCycle(state.tasks);
   assertExclusiveResourceClaims(state.tasks);
+  assertUniqueDispatchClaims(state.tasks);
   assertManifestOwnership(state);
   assertSessionLimit(state);
 
@@ -1073,6 +1074,32 @@ export function assertExclusiveResourceClaims(tasks: OrchestrationTask[]): void 
       }
       holder.set(r, t.taskId);
     }
+  }
+}
+
+/**
+ * **turn ID는 run 전역에서 유일하게 claim된다**(3A 6차 리비전 A1).
+ *
+ * 과금 namespace(`accounting.chargedTurnIds`)가 run 전역인데 claim은 task-local이었다 → task A가 turn X를
+ * claim한 상태에서 task B도 같은 X를 genuine permit으로 claim할 수 있었고, B가 먼저 과금하면 A의 진짜
+ * 과금이 `turn_already_charged`로 영구히 막혀 A의 claim은 다시는 정산되지 못했다(교착).
+ * claim namespace를 과금 namespace와 같은 폭으로 맞춘다: **한 turn ID는 한 task만 claim한다.**
+ *
+ * kernel 커밋과 디스크 load 양쪽이 이 검사를 지나므로 손으로 만든 중복 claim state도 `open()`에서 거부된다.
+ */
+export function assertUniqueDispatchClaims(tasks: OrchestrationTask[]): void {
+  const holder = new Map<string, string>();
+  for (const t of tasks) {
+    const turnId = t.execution.dispatchTurnId;
+    if (turnId === null) continue;
+    const other = holder.get(turnId);
+    if (other !== undefined) {
+      throw new OrchestrationError(
+        "invalid_state",
+        `dispatch turn '${turnId}'을 task 둘이 동시에 claim한다: ${other}, ${t.taskId}`,
+      );
+    }
+    holder.set(turnId, t.taskId);
   }
 }
 

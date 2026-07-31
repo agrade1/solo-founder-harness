@@ -54,7 +54,7 @@ import {
   type PendingOperation,
 } from "./orchestrationTypes.js";
 import type { AgentMessageType } from "./orchestrationTypes.js";
-import { OPERATION_RECEIPT_KEYS } from "./orchestrationStore.js";
+import { OPERATION_RECEIPT_KEYS, validateRunState } from "./orchestrationStore.js";
 import { RUN_PROCESS_AUTHORITY_KEYS, WRITE_FILE_AUTHORITY_KEYS, validateApprovalManifest } from "./approvalManifest.js";
 import {
   DISPATCH_AUTHORITY_CODES,
@@ -1272,6 +1272,115 @@ test("[M5c] A1: bare 회계는 남이 claim한 생산 turn을 선점·정산할 
     assert.equal(exec.chargedPlanDigest, exec.dispatchPlanDigest, "권위 증거가 claim된 계획과 다르다");
     assert.ok(g.kernel.beginOperation({ permit: p, operationId: "op-1", actionId: nextId("act") }));
   }
+});
+
+test("[M5c] A1(6차): 두 task가 같은 turn ID를 claim할 수 없다(과금 namespace = claim namespace)", () => {
+  // **5차 판의 남은 결함**(독립 리뷰 6차 A1): `issueOperationDispatchPermit()`이 대상 task의 claim과 run
+  // 전역 `chargedTurnIds`만 봤다 → 두 running task가 **둘 다 genuine permit으로** 같은 turn ID를 claim할 수
+  // 있었다. B가 먼저 과금하면 A의 진짜 과금은 `turn_already_charged`로 영구히 막히고, A는 task-local 과금
+  // 증거를 얻지 못해 claim을 정산도 교체도 하지 못한다 → A는 그 attempt 안에서 영구 교착이다.
+  // 5차 A1 테스트는 bare 회계 공격만 봤고 **두 genuine claim의 충돌**은 보지 않았다.
+  const f = fixture();
+  startNow(f.kernel, "sibling");
+  const permit = f.kernel.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId: "turn-1",
+    actionId: nextId("act"),
+    plan: planFor(f.kernel, "root", [writeOp()], "turn-1"),
+  });
+  const accBefore = f.kernel.getAccounting();
+  const revBefore = f.kernel.getState().revision;
+  const eventsBefore = readFileSync(f.kernel.paths.eventsFile, "utf8");
+
+  // ⓐ **두 번째 genuine claim은 커밋 전에 거부된다.**
+  assert.equal(
+    codeOf(() =>
+      f.kernel.issueOperationDispatchPermit({
+        taskId: "sibling",
+        turnId: "turn-1",
+        actionId: nextId("act"),
+        plan: planFor(f.kernel, "sibling", [writeOp({ authorityId: "w-sib", path: "docs/sib.md" })], "turn-1"),
+      }),
+    ),
+    "turn_conflict",
+  );
+  assert.equal(f.kernel.getState().revision, revBefore, "거부된 claim이 커밋됐다");
+  assert.deepEqual(f.kernel.getAccounting(), accBefore, "거부된 claim이 회계를 바꿨다");
+  assert.equal(readFileSync(f.kernel.paths.eventsFile, "utf8"), eventsBefore, "거부된 claim이 event를 남겼다");
+  assert.equal(f.kernel.getTask("sibling")!.execution.dispatchTurnId, null, "sibling이 남의 turn을 claim했다");
+  assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-1");
+
+  // ⓑ **정확히 같은 (turn, 계획)의 재발급은 그대로 멱등이다**(revision·event 0).
+  const again = f.kernel.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId: "turn-1",
+    actionId: nextId("act"),
+    plan: planFor(f.kernel, "root", [writeOp()], "turn-1"),
+  });
+  assert.equal(again.turnId, "turn-1");
+  assert.equal(f.kernel.getState().revision, revBefore, "멱등 재발급이 커밋됐다");
+  assert.equal(readFileSync(f.kernel.paths.eventsFile, "utf8"), eventsBefore);
+
+  // ⓒ **대조군**: 진짜 claim 보유자의 과금·집행·정산은 전부 정상 진행된다(거부가 생산자를 막지 않는다).
+  f.kernel.chargeDispatchTurnUsage({ permit, actionId: nextId("act"), inputTokens: 3, outputTokens: 2, elapsedMs: 1 });
+  assert.equal(f.kernel.getAccounting().tokensUsed, 5);
+  const grant = f.kernel.beginOperation({ permit, operationId: "op-1", actionId: nextId("act") });
+  f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
+  // 정산된 claim은 다음 turn이 교체하고, 그제서야 그 turn ID가 풀린다(그러나 turn-1은 이미 과금돼 닫혔다).
+  const next = permitFor(
+    f.kernel,
+    "root",
+    [writeOp({ operationId: "op-t2", path: "docs/small.md", authorityId: "w-small", content: "x" })],
+    "turn-2",
+  );
+  assert.equal(f.kernel.getTask("root")!.execution.dispatchTurnId, "turn-2");
+  // sibling은 **자기 turn**을 자유롭게 claim한다(막는 것은 충돌뿐이다).
+  assert.ok(
+    f.kernel.issueOperationDispatchPermit({
+      taskId: "sibling",
+      turnId: "turn-sib",
+      actionId: nextId("act"),
+      plan: planFor(f.kernel, "sibling", [writeOp({ authorityId: "w-sib", path: "docs/sib.md" })], "turn-sib"),
+    }),
+  );
+  // 그리고 root의 turn-2도 sibling에게 뺏기지 않는다.
+  assert.equal(
+    codeOf(() =>
+      f.kernel.issueOperationDispatchPermit({
+        taskId: "sibling",
+        turnId: next.turnId,
+        actionId: nextId("act"),
+        plan: planFor(f.kernel, "sibling", [writeOp({ authorityId: "w-sib", path: "docs/sib.md" })], next.turnId),
+      }),
+    ),
+    "turn_conflict",
+  );
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+});
+
+test("[M5c] A1(6차): 손으로 만든 중복 live claim state는 load에서 거부된다", () => {
+  const f = fixture();
+  startNow(f.kernel, "sibling");
+  f.kernel.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId: "turn-1",
+    actionId: nextId("act"),
+    plan: planFor(f.kernel, "root", [writeOp()], "turn-1"),
+  });
+  const raw = JSON.parse(readFileSync(f.kernel.paths.stateFile, "utf8")) as {
+    tasks: Array<{ taskId: string; execution: Record<string, unknown> }>;
+  };
+  const root = raw.tasks.find((t) => t.taskId === "root")!;
+  const sibling = raw.tasks.find((t) => t.taskId === "sibling")!;
+  assert.equal(root.execution.dispatchTurnId, "turn-1");
+  sibling.execution.dispatchTurnId = root.execution.dispatchTurnId;
+  sibling.execution.dispatchPlanDigest = root.execution.dispatchPlanDigest;
+  // 교차 불변식 자체가 이 state를 거부한다(digest 체인에 가려지지 않는 직접 단정).
+  assert.equal(codeOf(() => validateRunState(raw)), "invalid_state");
+  writeFileSync(f.kernel.paths.stateFile, JSON.stringify(raw, null, 2), "utf8");
+  // 커밋과 load가 같은 불변식 하나를 지난다 → 편집된 state는 열리지 않는다.
+  const code = codeOf(() => OrchestrationKernel.open({ workspaceRoot: f.ws, runId: RUN_ID }));
+  assert.ok(["state_event_binding_mismatch", "invalid_state"].includes(code), `예상 밖 코드: ${code}`);
 });
 
 test("[M5c] A1: 손으로 심은 chargedPlanDigest는 load에서 거부된다(state 편집으로 효과를 승인할 수 없다)", () => {

@@ -804,6 +804,27 @@ function dispatchTurnSettled(task: OrchestrationTask): boolean {
   );
 }
 
+/**
+ * **turn ID는 run 전역에서 한 task만 claim한다**(3A 6차 리비전 A1).
+ *
+ * 5차 판은 대상 task의 claim과 run 전역 `accounting.chargedTurnIds`만 봤다 → task A가 turn X를 claim한
+ * 상태에서 task B도 같은 X를 genuine permit으로 claim할 수 있었고(둘 다 진짜 permit), B가 먼저 과금하면
+ * A의 진짜 과금이 `turn_already_charged`로 막혀 A는 task-local 과금 증거를 영영 얻지 못한다 →
+ * `dispatchTurnSettled(A)`는 영구히 false, A의 claim은 교체도 정산도 되지 않는다(task·run 교착).
+ * 과금 namespace가 run 전역이므로 **claim namespace도 run 전역**이어야 한다. 여기서 fail closed한다.
+ *
+ * (끝난 남의 claim은 여기 오기 전에 `turn_already_charged`로 걸린다 — 정산은 과금을 뜻하기 때문이다.)
+ */
+function assertTurnClaimableBy(state: OrchestrationRunState, taskId: string, turnId: string): void {
+  const other = state.tasks.find((t) => t.taskId !== taskId && t.execution.dispatchTurnId === turnId);
+  if (other !== undefined) {
+    throw new OrchestrationError(
+      "turn_conflict",
+      `turn ${turnId}은 이미 task ${other.taskId}가 durable하게 claim했다 — 두 task가 같은 turn을 claim할 수 없다`,
+    );
+  }
+}
+
 /** durable pending 레코드가 이 grant의 신원과 정확히 맞는가(낡은 attempt·다른 turn·다른 계획 거부). */
 function requirePendingOperation(
   task: OrchestrationTask,
@@ -2611,6 +2632,8 @@ export class OrchestrationKernel {
     // 이전 판은 문서만 "멱등"이라 적고 매번 `dispatch_claimed`를 커밋했다 → 재시작 정합화 loop가
     // 같은 claim을 반복 기록해 bounded revision·event 용량을 소모했다. 값이 이미 그 값이면 커밋할 것이 없다.
     const reissue = pre.execution.dispatchTurnId === turnId && pre.execution.dispatchPlanDigest === planDigest;
+    // **다른 task가 이 turn을 claim했으면 재발급도 fail closed다**(3A 6차 리비전 A1).
+    assertTurnClaimableBy(this.#state, taskId, turnId);
     if (!reissue) {
       this.#mutate((draft, now) => {
         const task = requireTask(draft, taskId);
@@ -2631,6 +2654,8 @@ export class OrchestrationKernel {
         if (task.execution.preflightDigest !== preflightDigest(draft, task)) {
           throw new OrchestrationError("preflight_drift", `task ${taskId}의 봉인된 preflight가 준비 이후에 바뀌었다`);
         }
+        // **claim namespace = 과금 namespace**(3A 6차 리비전 A1): 커밋 직전 draft에서 다시 본다.
+        assertTurnClaimableBy(draft, taskId, turnId);
         // **경쟁 turn·경쟁 계획은 fail closed다.** 다른 turn으로 넘어가는 것은 **끝난 claim**
         // (= 과금됐고 미확정 operation 0)일 때만 허용된다 — 그때 이 커밋이 claim을 교체한다(A1).
         if (task.execution.dispatchTurnId !== null && task.execution.dispatchTurnId !== turnId) {
