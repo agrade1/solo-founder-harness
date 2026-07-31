@@ -1,6 +1,6 @@
 # WORKLOG.md
 
-## 2026-07-31 (V3 **M5c task 3A 6차 리비전 — 독립 재리뷰 `REVISE A=1·B=2·C=3`의 A 1건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-31 (V3 **M5c task 3A — 독립 재리뷰 `APPROVE — A=0, B=2, C=3`. Task 3A 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `e88c1ca55170370c8e24e111fcf8ea06bc1e845c` · 코드 커밋 `12fbf08`. **새 fresh Claude Opus 5 단일
@@ -14,19 +14,24 @@ production · live billing · **프로세스 spawn 0**. 유일한 untracked 항�
 `gpt-5.6-sol` xhigh read-only 재리뷰(범위 `7d3f547d6d47ec9f0cefa8904c8e45a52d80cab0..e88c1ca`),
 판정 **`REVISE — A=1, B=2, C=3`**.
 
-**정직한 판정: 이 리비전도 M5c 완료가 아니고 M5 완료도 아니다.** managed process supervisor·자손 정리 ·
+**최종 독립 권위**: `/private/tmp/m5c-task3a-revision6-codex-review-output.txt` — fresh Codex
+`gpt-5.6-sol` xhigh read-only(세션 `019fb6d4-cad0-7232-bd2e-a33ca1390362` · 범위
+`e88c1ca55170370c8e24e111fcf8ea06bc1e845c..e0043eff55f4520c899a728e30658f3d2b336ab1`),
+판정 **`APPROVE — A=0, B=2, C=3`**. 정적 검토만 했고 테스트·빌드는 실행하지 않았다.
+
+**정직한 판정: Task 3A는 독립 승인으로 완료됐지만 M5c 완료가 아니고 M5 완료도 아니다.** managed process supervisor·자손 정리 ·
 trusted Git · **`StableController` 재작성/배선** · managed launcher · 첫 spawn · 구조화 리뷰 검증 ·
 `autopilot` CLI · legacy 비활성화 · build/dist · M5d는 **여전히 미구현**이다. **다음 DAG task는
-착수하지 않았다.** **self-approve하지 않는다.**
+착수하지 않았다.**
 
 ### 직전 문서의 과대주장 정정
 
 | 직전 주장(HEAD `e88c1ca`) | 실제(6차 독립 리뷰) | 이번 조치 |
 |---|---|---|
 | "A1 fixed — 남이 claim한 turn을 선점할 수 없다" | **bare 회계 공격만 닫혔다.** `issueOperationDispatchPermit()`은 대상 task의 claim과 run 전역 `chargedTurnIds`만 봤으므로 **두 running task가 둘 다 genuine permit으로** 같은 turn ID를 claim할 수 있었다. 5차 A1 테스트는 `chargeTurnUsage` 공격만 검증했다 | permit 발급 커밋에서 **run-wide live-claim uniqueness**를 강제하고, 같은 불변식을 store load에도 넣었다. genuine 충돌 회귀 테스트 2건 추가 |
-| `C-1`(발행 seam) "성공을 만들 수 없다 / 임의 콜백 공개 API 없다" | **과대다.** 같은 프로세스에서 ambient fs 권한을 가진 코드가 `parentWalk` hook 안에서 승인 대상을 의도한 바이트로 만들면 뒤따르는 hash 비교가 canonical `already_applied`를 낸다. 다만 진짜 grant + 승인 경로/내용이 여전히 필요하므로 위조 권위 우회는 아니다 | A가 아니므로 코드는 그대로 두고 **대장의 확률·영향·증거·기한(M5d handoff 전)** 을 정정했다 |
+| `C-1`(발행 seam) "성공을 만들 수 없다 / 임의 콜백 공개 API 없다" | **과대다.** 같은 프로세스에서 ambient fs 권한을 가진 코드가 `parentWalk` hook 안에서 승인 대상을 의도한 바이트로 만들면 뒤따르는 hash 비교가 canonical `already_applied`를 낸다. 다만 진짜 grant + 승인 경로/내용이 여전히 필요하므로 위조 권위 우회는 아니다 | 대장의 확률·영향·증거·기한(M5d handoff 전)을 정정했고, 최종 독립 리뷰 뒤 source/facade 주석도 같은 사실로 바로잡았다. shipped seam export 자체는 `C-1`로 open |
 | pending 재발급 조건 "attemptedAt null + running + 만료/예산 게이트" | **여전히 과대.** 토큰 예산·attempt wall·no-progress·durable 신원·권위 과금 증거·preflight drift·claim 유일성까지 **모든 전진·권위 게이트**를 지나야 한다 | schema `pendingOperations.description`을 정확히 고쳤다 |
-| "다음 task부터 `fable5` 모델" | **사용자 의도의 오기.** 사용자는 도구를 바꿀 것이며 **현재 Task 3A가 끝나면 Codex는 이후 작업을 전혀 시작하지 않는다** | 해당 문구를 전 문서에서 정정했다(WORKLOG 2건 · CONTEXT_SUMMARY 3건 · handoff 1건) |
+| "다음 task부터 `fable5` 모델" | **사용자 의도의 오기.** 사용자는 도구를 바꿀 것이며 **현재 Task 3A가 끝나면 Codex는 이후 작업을 전혀 시작하지 않는다** | 최종 독립 리뷰가 찾은 과거 handoff 2곳까지 전부 제거·폐기 문구로 정정했다 |
 
 ### 이번 A(유일) — 두 task가 같은 run-global turn ID를 claim
 
@@ -42,7 +47,8 @@ trusted Git · **`StableController` 재작성/배선** · managed launcher · �
 - **보존**: 정확한 `(turnId, planDigest)` 멱등 재발급 revision/event 0 · 끝난 claim의 lazy replacement ·
   claim 없는 turn의 safety-only bare 회계(`B-12`) · genuine dispatch charging · task-local settlement ·
   5차 A1~A5 폐쇄 전부.
-- **검증**: `npx tsc --noEmit` 0 error · focused 5파일 **225/225 pass · fail 0** ·
+- **검증**: 구현 세션과 supervisor 재실행 모두 `npx tsc --noEmit` 0 error · focused 5파일
+  **225/225 pass · fail 0** ·
   mutation(충돌 검사 3곳 제거 → 신규 테스트 2건 red, 원복 후 225/225 재확인).
 - **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
   build/dist · M5d.
@@ -56,8 +62,9 @@ trusted Git · **`StableController` 재작성/배선** · managed launcher · �
 | 해시 | 내용 |
 |---|---|
 | `12fbf08` | A1 폐쇄(claim 유일성 커밋+load) · 회귀 2건 · schema C2 문구 정정 |
+| `e0043ef` | 6차 문서 기록 · C-1/C2 과대주장 정정 |
 
-## 2026-07-31 (V3 **M5c task 3A 5차 리비전 — 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건을 닫았다. M5c는 여전히 미완료다** · 이 블록이 가장 최신이다)
+## 2026-07-31 (V3 **M5c task 3A 5차 리비전 — 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건을 닫았다. M5c는 여전히 미완료다** · 위 최신 블록이 이 기록을 대체한다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD
 `7d3f547d6d47ec9f0cefa8904c8e45a52d80cab0` · 코드 커밋 `de59348`. **새 fresh Claude Opus 5 단일

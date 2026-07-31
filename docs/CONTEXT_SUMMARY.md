@@ -2,12 +2,15 @@
 
 최종 갱신: 2026-07-31
 
-## 최신 (2026-07-31 — **V3 M5c task 3A 6차 리비전: 독립 재리뷰 `REVISE A=1·B=2·C=3`의 A 1건 닫음. M5c·M5 모두 여전히 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-07-31 — **V3 M5c task 3A 독립 승인 `APPROVE — A=0, B=2, C=3`. Task 3A 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `e88c1ca` ·
   코드 커밋 **`12fbf08`**. fresh Claude Opus 5 단일 세션(이전 transcript·자기평가 미상속 · 재개 아님) ·
   Ponytail **full**. 입력 권위: `/private/tmp/m5c-task3a-revision5-codex-review-output.txt`
   (Codex `gpt-5.6-sol` xhigh read-only · 범위 `7d3f547..e88c1ca` · `REVISE — A=1, B=2, C=3`).
+- **최종 독립 승인**: `/private/tmp/m5c-task3a-revision6-codex-review-output.txt` · fresh Codex
+  `gpt-5.6-sol` xhigh read-only · 세션 `019fb6d4-cad0-7232-bd2e-a33ca1390362` · 범위
+  `e88c1ca..e0043ef` · **`APPROVE — A=0, B=2, C=3`**. Task 3A만 완료이며 M5c/M5는 미완료다.
 - **닫은 것 — A1(유일)**: `issueOperationDispatchPermit()`이 대상 task의 claim과 run 전역
   `chargedTurnIds`만 봐서 **두 running task가 둘 다 genuine permit으로 같은 turn ID를 claim**할 수 있었다
   (B가 먼저 과금 → A의 genuine charge가 `turn_already_charged` → A는 task-local 과금 증거를 못 얻어
@@ -17,13 +20,15 @@
   본다(중복 live claim state는 `open()`에서 `invalid_state`). 멱등 재발급 0-event · lazy replacement ·
   safety-only bare 회계 · genuine charging · task-local settlement 전부 보존.
 - **문서 정정**: `C-1` 발행 seam은 "성공을 만들 수 없다"가 **과대**였다(ambient fs 권한 코드가 hook 안에서
-  승인 대상을 만들면 canonical `already_applied` 가능 — 대장의 확률·영향·증거·기한 M5d handoff 전으로 정정).
+  승인 대상을 만들면 canonical `already_applied` 가능 — 대장의 확률·영향·증거·기한 M5d handoff 전과
+  source/facade 주석을 정정).
   pending 재발급 조건도 **모든 전진·권위 게이트**(토큰/wall/no-progress/신원/과금/preflight/claim 유일성)로
   schema를 고쳤다. `C2`(draft-07 실검증)는 기한과 함께 open.
-- **검증**: `npx tsc --noEmit` 0 error · focused 5파일 **225/225 pass · fail 0** · mutation(충돌 검사
+- **검증**: 구현 세션과 supervisor 재실행 모두 `npx tsc --noEmit` 0 error · focused 5파일
+  **225/225 pass · fail 0** · mutation(충돌 검사
   3곳 제거 → 신규 2건 red · 원복 후 재확인). **미실행**: `npm test` · 전체 acceptance · stress · 반복 ·
   live · build/dist(전체 suite 1회는 M5 handoff 게이트).
-- **여전히 열린 것**: `B-F1` · `B-16` · `C-1` · `C2`. 열린 A 없음(단 **독립 재리뷰 전 self-approve 금지**).
+- **여전히 열린 것**: `B-F1` · `B-16` · `C-1` · `C2`. 열린 A 없음.
 - **다음 작업**: **현재 Task 3A로 Codex 작업을 중단한다.** 다음 DAG task 미착수 · 이후는 사용자 별도 지시.
 
 ## (그 시점 기록) 2026-07-31 — **V3 M5c task 3A 5차 리비전: 독립 재리뷰 `REVISE A=5·B=2·C=3`의 A 5건 닫음** · 위 블록이 A1을 정정한다

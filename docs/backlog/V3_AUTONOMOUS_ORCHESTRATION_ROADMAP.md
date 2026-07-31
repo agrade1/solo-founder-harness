@@ -1816,7 +1816,7 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### M5c task 3A **6차 리비전**(독립 재리뷰 `REVISE A=1·B=2·C=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 이 절이 현행이다**)
+##### M5c task 3A **6차 리비전** 대장 갱신 (2026-07-31 — **독립 재리뷰 `APPROVE — A=0, B=2, C=3` · Task 3A 완료 · M5c/M5 미완료 · 이 절이 현행이다**)
 
 > **범위 경고**: 이 리비전은 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰
 > (`7d3f547..e88c1ca` · `/private/tmp/m5c-task3a-revision5-codex-review-output.txt` ·
@@ -1825,7 +1825,11 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 > **`StableController` 재작성/배선** · managed launcher · 첫 spawn · 구조화 리뷰 검증 ·
 > `autopilot` CLI · legacy 비활성화 · build/dist · M5d는 **미구현·미실행**이다.
 > 프로세스 spawn 0 · 네트워크 0 · 신규 런타임/dev 의존성 0 · package·lockfile 변경 0 · live 실행 0 ·
-> **다음 DAG task 착수 0**. 코드 커밋 `12fbf08`(시작 HEAD `e88c1ca`). 이 세션은 **self-approve하지 않는다.**
+> **다음 DAG task 착수 0**. 코드 커밋 `12fbf08`(시작 HEAD `e88c1ca`).
+> 최종 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰
+> (`e88c1ca..e0043ef` · 세션 `019fb6d4-cad0-7232-bd2e-a33ca1390362` ·
+> `/private/tmp/m5c-task3a-revision6-codex-review-output.txt`)가
+> **`APPROVE — A=0, B=2, C=3`**으로 Task 3A를 승인했다. M5c/M5 전체 승인은 아니다.
 >
 > **직전 절(5차 리비전)의 `A1` 폐쇄는 불완전했다.** 5차는 **bare 회계 공격**만 닫았고, 두 running task가
 > **둘 다 genuine permit으로** 같은 run-global turn ID를 claim하는 경로는 그대로였다. 그 절의 `A1` 행은
@@ -1843,6 +1847,7 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | `C-1`(발행 seam export) | C (P2) | shipped 발행 seam setter가 임의 closure를 받고 대상 검사 **이전에** 부른다 | **open — 위험 서술 정정(이번 리비전의 필수 코드 수정 아님)** | **직전 기록의 "성공을 만들 수 없다 / 임의 콜백 공개 API가 없다"는 과대였다**(6차 리뷰 C1). 같은 프로세스에서 ambient 파일 권한을 가진 코드가 `parentWalk` hook 안에서 **승인된 대상 파일을 의도한 바이트로 직접 만들면**, 뒤따르는 hash 비교가 canonical `already_applied`를 돌려줄 수 있다 → 결과는 "실패만 만든다"가 아니라 **canonical 성공 영수증**이다. 다만 이것은 여전히 **진짜 grant + 승인된 경로/내용**을 요구하므로 위조 권위 우회를 되살리지는 않는다. 심각도 **C/P2**. 확률 **낮음**(같은 프로세스 · ambient fs 권한 코드). 영향 반경: in-process operation 1건과 그 canonical 영수증. 유예 비용 **낮음** · 수정 공수 **낮음**(shipped export 정리 슬라이스). **기한: shipped export 정리, 늦어도 M5d handoff.** 담당: typed-execution 유지 담당. 증거: 6차 리뷰 C1 · `orchestrationKernel.ts` seam setter/`parentWalk`/hash 비교 경로. **C 단독으로 리비전 루프를 다시 돌리지 않는다.** |
 | `C-1`(pending schema 서술) | C (P3) → **fixed(2차 정정)** | 5차의 정정도 **여전히 과대**였다: pending 재발급 조건을 `attemptedAt === null` + `running` + "만료/예산 게이트"로만 적었다 | **fixed (2026-07-31, `12fbf08`)** | 실제로는 `issueOperationDispatchPermit()`/`beginOperation()`의 **모든 전진·권위 게이트**를 지나야 한다: run 만료·예산 deadline·**토큰 예산·attempt wall·no-progress·durable attempt/turn/계획 신원·그 turn의 권위 있는 과금 증거(`budget_turn_unaccounted`)·preflight drift·claim 유일성**. schema `pendingOperations.description`을 그대로 고쳤다 |
 | `C2`(draft-07 실검증) | C (P3) | draft-07 구현으로 적대적 행렬을 실제 검증하지 않았다(구조 대조만) | **open — 변화 없음(트리거 유지)** | 이번에도 validator를 넣지 않았다(신규 의존성 0). **기한: 외부 provider/worker에 schema를 넘기기 전, 늦어도 M5d 계약 handoff.** 담당: schema 유지 담당 |
+| `C3`(잘못된 `fable5` 지시 잔존) | C (P3) → **fixed** | 최신 절은 중단을 지시했지만 과거 handoff 2곳에 "다음 task부터 fable5" 문구가 남아 후속 작업의 모델/착수 판단을 오염시킬 수 있었다 | **fixed (2026-07-31, Task 3A 최종 handoff)** | 두 잔존 문구를 모두 폐기 문구로 교체했다. 현행 지시는 **Task 3A 뒤 Codex 중단, 이후는 사용자 별도 지시**다. 증거: 최종 독립 리뷰 C3 · `docs/handoff/CODEX_HANDOFF.md` 전수 검색 |
 | A2~A5(5차) · 발행 fail closed · cleanup 우선 · spawn 0 · 정확 재발급 · 단조 진행/시계 · 적대적 manifest · durable uncertain 정합화 | — | 5차까지 닫은 항목 | **closed 유지 — 독립 6차 리뷰가 재확인** | 6차 리뷰 "Other closure checks" 절 · 이 리비전은 해당 경로를 바꾸지 않았고 focused 225/225 통과. **테스트 삭제·완화·skip 0** |
 
 ##### M5c task 3A **5차 리비전**(독립 재리뷰 `REVISE A=5·B=2·C=3`) 대장 갱신 (2026-07-31 — **M5c 미완료 상태의 부분 갱신 · 그 시점 기록 · 위 절이 `A1`을 정정한다**)
@@ -2955,4 +2960,3 @@ M5 live acceptance가 통과하면 M6부터는 `autopilot`이 위 전달을 대�
   확대하지 않는다.
   <https://learn.chatgpt.com/docs/agent-approvals-security.md>
   <https://learn.chatgpt.com/docs/sandboxing/auto-review.md>
-

@@ -17,7 +17,9 @@
  * fsync하고 성공 marker까지 받을 수 있었다(진짜 permit·과금·현재 durable 상태 확인 0). 그래서 그 파일을
  * **없앴다**: 효과 함수는 이제 grant 등록부와 같은 모듈의 **사설 함수**이고, 유일한 진입점은 진짜 grant를
  * 요구하는 `orchestrationKernel.executeWriteFileOperation`이다.
- * **임의 콜백을 받는 공개 API도, 위조 authority로 도달하는 집행기도 존재하지 않는다.**
+ * 호출자 콜백의 **반환값을 canonical 결과로 채택하는 집행 API**도, 위조 authority로 도달하는 집행기도
+ * 존재하지 않는다. 단, kernel이 재수출하는 shipped 테스트 seam은 임의 closure를 받으며 ambient 파일
+ * 권한 코드가 canonical 판정을 유도할 수 있다(대장 `C-1` — 진짜 grant·승인 경로/내용은 계속 필요).
  *
  * 이 모듈이 하는 것:
  * 1. `resolveWriteFileAuthority()` — 승인 레코드 대조(deny-by-default · 파일 시스템 무접촉).

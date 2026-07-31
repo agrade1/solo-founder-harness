@@ -1114,15 +1114,17 @@ function requireNoFollow(): void {
 /**
  * **결정론적 race·fault 테스트 seam**(테스트 전용).
  *
- * 이것이 **권위가 될 수 없는 이유**: 콜백은 **인자를 받지 않고 반환값도 무시된다**. 권위 판정
+ * 이것이 **새 권위를 만들 수 없는 이유**: 콜백은 **인자를 받지 않고 반환값도 무시된다**. 권위 판정
  * (`readDispatchAuthority` → 승인 레코드 대조)은 **모든 seam보다 먼저** 끝나고, 판정 직전 신원 확인은
- * seam **뒤에** 다시 돈다. 즉 seam으로 할 수 있는 것은 "파일 시스템을 흔들거나 던지는 것"뿐이고,
- * 그때 이 모듈은 반드시 안정 코드로 거부하며 fd를 남기지 않는다 — 그것이 테스트가 증명하는 것이다.
+ * seam **뒤에** 다시 돈다. 다만 같은 프로세스에서 이미 ambient 파일 시스템 권한을 가진 코드는 hook
+ * 안에서 승인 대상을 의도한 바이트로 만들 수 있고, 뒤따르는 hash 판정이 canonical `already_applied`를
+ * 낼 수 있다. 그래도 진짜 grant와 승인된 경로·내용은 계속 필요하므로 위조 권위 우회는 아니다.
  * ponytail: 결정론적 경쟁 재현에는 이 방법밖에 없다. 실제 병렬 프로세스로 바꿀 이유가 생기면 그때 바꾼다.
  *
- * **남아 있는 표면(정직)**: setter가 shipped export이므로 같은 프로세스의 코드가 성공할 판정을 실패로
- * 바꿀 수 있다(**성공을 만들 수는 없다** — hook이 던진 것은 전부 `write_failed`다). 대장 `C-1`(발행 seam
- * export) open 유지.
+ * **남아 있는 표면(정직)**: setter가 shipped export이므로 같은 프로세스의 ambient 권한 코드가 판정을
+ * 실패로 바꾸거나 위 조건의 canonical 성공을 유도할 수 있다. hook이 **던진 오류**는 전부
+ * `write_failed`로 정규화되지만 hook의 파일 시스템 변경까지 failure-only인 것은 아니다.
+ * 대장 `C-1`(발행 seam export) open 유지.
  */
 export type PublicationSeam = "parentWalk" | "targetOpen" | "publish" | "dirFsync";
 
