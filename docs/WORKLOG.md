@@ -1,5 +1,54 @@
 # WORKLOG.md
 
+## 2026-08-03 (V3 **M5c task 3B — StableController M5c 배선 · 독립 리뷰 `APPROVE — A=0, B=1, C=1`. Task 3B 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `8dd05f9` ·
+  코드 커밋 **`9a34c5d`** (단일). 구현은 **fresh Claude Opus 5 worker 1개**(이전 작성자 transcript·
+  자기평가 미상속 · 병렬 writer 0). 중앙 오케스트레이터는 별도 Opus 5 세션이며 구현하지 않았다.
+- **변경 파일(2)**: `src/exec/stableController.ts` · `src/exec/stableController.test.ts`.
+  kernel · store · typedExecution · approvalManifest · schemas · `scripts/*` · package/lock ·
+  tracked `dist` · `AGENTS.md`/`CLAUDE.md` · docs **전부 무변경**(중앙 재검증: `git diff --name-only
+  8dd05f9..9a34c5d` = 2파일, package/lock diff 0줄).
+- **한 일**: 55건 red의 원인이던 pre-M5c v1 manifest fixture를 M5c manifest
+  (`autopilotPolicy` + `operationAuthorityByTask` + `executionAuthority`)로 교체하고, controller를
+  M5c 계약에 배선했다. `scheduleReady`+`startScheduledBatch` → `planRunnableBatch` →
+  `commitPreflightBatch`(전부 `prepared`) → `startPreparedTask`(sync gate와 `provider.start()` **사이
+  동기 호출**, await 창 0) → `beginDeliveryAttempt` → `recordTerminal` → `confirmCleanup` →
+  `completeTaskWithArtifacts`. `startScheduledBatch()`는 무조건 `preflight_required`를 던지는
+  우회 차단 stub로만 남았다. per-attempt `lease.<32hex>`(`node:crypto`) · `#actionId(kind)` 추가.
+- **typed operation dispatch 0**: 이 bridge는 read-only이며 permit → charge → grant → 효과 → 영수증
+  체인에 **진입하지 않는다**. `B-16` 미개봉 · **spawn 0**(`B-F1` 미개봉) · 신규 의존성 0
+  (stdlib `node:crypto`만).
+- **교체 assertion 9건 전수**(삭제·skip·완화 0 · grep `skip/todo/only` 0건)
+  1~3. artifact 실패 3계열 — 기대 state `"running"` → `"cleaning"` (실패 지점이 `confirmCleanup` 뒤
+     `completeTaskWithArtifacts`로 이동). 핵심 assertion(결과 메시지 없음 · durable artifact 없음 ·
+     미완료)은 **무변경**.
+  4~7. 예산 소진 sibling · A4 start 창 · handoff throw · run-lock — `"running"` → `"prepared"`.
+     프로세스/lease 없이 `running`으로 올라가지 않는다는 **더 강한** 불변식을 고정한다.
+  8. multi-output 성공 revision `before + 2` → `before + 5`(preflight/start/terminal/cleanup/complete).
+     **정확 등호 유지** — per-artifact 등록 회귀는 8이 되어 여전히 잡힌다.
+  9. 빈 manifest 기대 코드 `invalid_manifest` → `manifest_pre_m5c_unsupported`. `assert.throws` 유지.
+  - A1 monkey-patch/getter/위조 테스트는 커버 메서드 집합이 **8종 → 11종으로 확대**됐다(강화).
+- **fixture-only 변경**: `maxAttemptElapsedMs = min(default, maxElapsedMs)` · `maxElapsedMs: 1 → 1_000`
+  (validator 하한 1000ms · 1s/호출 시계라 첫 게이트에서 여전히 `budget_elapsed_exhausted`) ·
+  kernel 시계 초→ms(추가 lifecycle 커밋이 무관한 테스트의 durable deadline을 선점하지 않게).
+  독립 리뷰가 **경계 테스트 무력화 없음**을 확인했다.
+- **검증 실측(중앙 재실행 · 리뷰어 재실행 · 구현 세션 3자 일치)**: `npx tsc --noEmit` exit 0 ·
+  `stableController.test.ts` **58/58 pass · fail 0**(이전 3 pass / 55 fail) · 회귀 5파일
+  (`orchestrationKernel`·`typedExecution`·`autopilotLifecycle`·`executionBoundary`·`offlinePlanWorker`)
+  **225/225 pass · fail 0** · `git status --short` = `?? node_modules` 한 줄.
+- **mutation 2종**: `confirmCleanup()` 제거 → 40 pass / 18 fail · `beginDeliveryAttempt()` 제거 →
+  56 pass / 2 fail. 각각 원복 후 58/58 재확인, mutation marker 잔존 0.
+- **독립 리뷰**: fresh Fable 5 **read-only**(구현 worker transcript·자기평가 미전달) · 범위
+  `8dd05f9..9a34c5d` · 판정 **`APPROVE — A=0, B=1, C=1`**. 리뷰어는 정적 검토에 더해
+  위 3종 테스트와 `git diff --name-only`·package/lock diff·skip grep을 **직접 실행**했다.
+- **신규 유예**: `B-13`(전달 실패 시 `failDeliveryAttempt` 미호출 → `activeAttemptId` 잔존) ·
+  `C-39`(`startedIds` 변수명 오도). 상세는 roadmap §9.1.
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
+  build/dist. 최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
+- **다음 DAG task(미착수)**: managed process supervisor(+자손 정리 — **`B-F1` 개봉 필요**) →
+  trusted Git → `autopilot` CLI.
+
 ## 2026-07-31 (V3 **M5c task 3A — 독립 재리뷰 `APPROVE — A=0, B=2, C=3`. Task 3A 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 같은 worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD

@@ -1,8 +1,28 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-07-31
+최종 갱신: 2026-08-03
 
-## 최신 (2026-07-31 — **V3 M5c task 3A 독립 승인 `APPROVE — A=0, B=2, C=3`. Task 3A 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-03 — **V3 M5c task 3B 독립 리뷰 `APPROVE — A=0, B=1, C=1`. Task 3B 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · `work/m5c-autopilot` · 시작 `8dd05f9` ·
+  코드 커밋 `9a34c5d`. 구현은 fresh Opus 5 worker 1개, 리뷰는 fresh Fable 5 read-only.
+  중앙 오케스트레이터(Opus 5)는 계획·검증·문서만 하고 구현하지 않았다.
+- **Task 3B**: `StableController`를 M5c 계약에 배선했다 — `planRunnableBatch` →
+  `commitPreflightBatch`(전부 `prepared`) → `startPreparedTask`(await 창 0) →
+  `beginDeliveryAttempt` → `recordTerminal` → `confirmCleanup` → `completeTaskWithArtifacts`.
+  `startScheduledBatch()`는 `preflight_required` 던지는 stub만 남았다.
+- **변경 파일 2개뿐**: `stableController.ts` · `stableController.test.ts`. kernel/schema/package/docs
+  무변경 · **spawn 0** · 신규 의존성 0 · 테스트 삭제·완화·skip 0(교체 assertion 9건 전수는 WORKLOG).
+- **실측**: `tsc --noEmit` exit 0 · `stableController` **58/58**(이전 3/55) · 회귀 5파일 **225/225** ·
+  mutation 2종 red 확인 후 원복. 중앙·리뷰어·구현 세션 3자 수치 일치.
+- **열린 A는 없다.** 열린 게이트: `B-F1`(첫 spawn 전) · `B-16`(첫 real typed-write 배선 전) ·
+  `B-11`/`B-12`(무인 advance·재시작 회계) · **신규 `B-13`**(전달 실패 시 `activeAttemptId` 잔존) ·
+  `C-1` · `C2` · **신규 `C-39`**.
+- **미실행**: `npm test` · acceptance 전체 · stress · live · 반복 3회 · build/dist(M5 최종 handoff 예약).
+- **다음 DAG task(미착수)**: managed process supervisor(+자손 정리 · `B-F1` 개봉 필요) →
+  trusted Git → `autopilot` CLI.
+
+## 이전 (2026-07-31 — **V3 M5c task 3A 독립 승인 `APPROVE — A=0, B=2, C=3`. Task 3A 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `e88c1ca` ·
   코드 커밋 **`12fbf08`**. fresh Claude Opus 5 단일 세션(이전 transcript·자기평가 미상속 · 재개 아님) ·

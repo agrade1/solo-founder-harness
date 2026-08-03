@@ -1816,6 +1816,25 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5c task 3B 대장 갱신 (2026-08-03 — **독립 리뷰 `APPROVE — A=0, B=1, C=1` · Task 3B 완료 · M5c/M5 미완료 · 이 절이 현행이다**)
+
+> 범위 `8dd05f9..9a34c5d` · fresh Fable 5 read-only 독립 리뷰(구현 worker transcript 미전달).
+> 리뷰어는 정적 검토 + `stableController` 58/58 · 회귀 225/225 · `tsc --noEmit` exit 0 ·
+> `git diff --name-only`/package·lock diff/skip grep을 **직접 실행**했다. 열린 **A는 0건**이다.
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-13` | B (P1) | **전달 turn이 실패하면 `failDeliveryAttempt()`를 부르지 않아 `activeAttemptId`가 durable에 남는다.** `beginDeliveryAttempt()`는 `provider.send()` 전에 커밋되는데 send가 던지면 예외가 바깥 catch로 빠져 attempt를 닫지 않고 `nextAttemptAt`도 잡지 않는다 | 중 — 전달 실패가 나는 모든 run | 미정산 delivery attempt 1건이 durable에 잔존. **교착은 아니다** — `beginDeliveryAttempt`(`orchestrationKernel.ts:3091~3137`)는 기존 `activeAttemptId`를 거부하지 않고 덮어쓰며 `attempts < maxDeliveryAttempts`와 deadline만 본다. `acknowledgeDelivery`(:2041)도 active attempt만 요구해 충족된다 → 후속 retry 경로가 마이그레이션 없이 복구 가능 | 낮음 — 지금은 무인 advance가 없어 사람이 run을 다시 만든다 | 소~중(실패 경로에 `failDeliveryAttempt` + backoff 배선) | **M5c autopilot(무인 advance) 착수 전** — 기존 `C-12→B` 게이트와 같은 trigger이며 이 행이 durable shape 잔존이라는 새 국면을 추가한다 | M5c autopilot 구현 세션 | Task 3B 독립 리뷰 F-1(STATIC · kernel 코드 확인 · 복구 경로는 추론이며 미실행) · `stableController.ts` 전달 루프 · `orchestrationKernel.ts:3091`·`:2041` | open |
+| `C-39` | C (P3) | `stableController.ts:785` `const startedIds = plannedIds` — 그 시점 task는 `prepared`일 뿐인데 이름이 `started`이고, outcome 루프와 blocked 반환이 그대로 재사용한다. 동작은 정확하고 가독성 위험만 있다 | 낮음 | 후속 세션의 오독 | 낮음 | 소(변수명) | 없음(bounded backlog) — 늦어도 autopilot CLI 착수 전 | 후속 M5c 세션 | Task 3B 독립 리뷰 F-2(STATIC) | open |
+
+> **재확인만 하고 새 항목으로 열지 않은 것**: `B-11`(무인 advance 전 per-task preflight — Task 3B가
+> `running` 승격을 없애 오히려 좁혔다) · `B-12`(재시작 예산 회계 — controller 토큰/경과 예산은 여전히
+> in-memory 카운터이고, kernel의 durable `budget_elapsed_exhausted`가 커밋 시점에 별도로 걸린다.
+> 리뷰 판정: 표면이 늘지 않았고 기존 게이트 그대로) · `B-F1`(**미개봉 · spawn 0 유지**) ·
+> `B-16`(**미개봉 · typed operation dispatch 0**) · `C-1` · `C2`.
+> 실패 task가 `prepared`/`running`/`cleaning`에 남는 것은 **fail-closed**(조용한 전진 0 · 중복 외부
+> 효과 0 · 데이터 손실 0)이며 `B-11`/`B-13` 배선으로 복구 가능하다 — 교착이 아니라 유예다.
+
 ##### M5c task 3A **6차 리비전** 대장 갱신 (2026-07-31 — **독립 재리뷰 `APPROVE — A=0, B=2, C=3` · Task 3A 완료 · M5c/M5 미완료 · 이 절이 현행이다**)
 
 > **범위 경고**: 이 리비전은 독립 fresh Codex `gpt-5.6-sol` xhigh read-only 재리뷰

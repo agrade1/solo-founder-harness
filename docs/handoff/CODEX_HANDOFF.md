@@ -3,7 +3,48 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-07-31 — V3 **M5c task 3A 독립 승인 `APPROVE — A=0, B=2, C=3` · Task 3A 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-08-03 — V3 **M5c task 3B 독립 리뷰 `APPROVE — A=0, B=1, C=1` · Task 3B 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `8dd05f9` ·
+  코드 커밋 **`9a34c5d`**(단일). 구현은 **fresh Claude Opus 5 worker 1개**(이전 작성자 transcript·
+  자기평가 미상속 · 재개 아님 · 병렬 writer 0). **중앙 오케스트레이터는 별도 Opus 5 세션이며 구현·
+  리뷰를 하지 않았다.** 원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · 의존성/lockfile 변경 ·
+  live provider · secret · deploy · DB · production · live billing · **프로세스 spawn 0** ·
+  amend/rebase/reset/merge/stash 0 · **테스트 완화·삭제·skip 0**.
+- **Task 3B는 독립 승인됐다. M5c와 M5 전체는 완료·승인되지 않았다.** 독립 권위는 fresh **Fable 5**
+  read-only 리뷰(구현 worker transcript·자기평가 **미전달** · 범위 `8dd05f9..9a34c5d` ·
+  판정 **`APPROVE — A=0, B=1, C=1`**). 리뷰어는 정적 검토에 더해 focused 테스트 3종과
+  diff/package/skip 확인을 **직접 실행**했다.
+- **변경 파일(2)**: `src/exec/stableController.ts` · `src/exec/stableController.test.ts`.
+  `orchestrationKernel.ts` · `orchestrationStore.ts` · `typedExecution.ts` · `approvalManifest.ts` ·
+  `orchestrationTypes.ts` · `schemas/*` · managed process · trusted Git · reviewer · CLI ·
+  legacy exec/mission · `scripts/*` · package/lock · tracked `dist` · `AGENTS.md`/`CLAUDE.md`
+  **전부 무변경**(중앙이 `git diff --name-only`로 재검증).
+- **한 일**: 55건 red의 원인이던 pre-M5c v1 manifest fixture를 M5c manifest로 교체하고 controller를
+  M5c 계약에 배선했다 — `planRunnableBatch` → `commitPreflightBatch`(전부 `prepared`) →
+  `startPreparedTask`(sync gate와 `provider.start()` **사이 동기 호출**, await 창 0) →
+  `beginDeliveryAttempt`(send 전) → `recordTerminal` → `confirmCleanup` →
+  `completeTaskWithArtifacts`. `startScheduledBatch()`는 무조건 `preflight_required`를 던지는
+  우회 차단 stub로만 남았다. per-attempt `lease.<32hex>` · `#actionId(kind)` 추가.
+  **typed operation dispatch 0** — permit → charge → grant → 효과 → 영수증 체인에 진입하지 않는다.
+- **검증 실측(구현 세션 · 중앙 재실행 · 리뷰어 재실행 3자 일치)**: `npx tsc --noEmit` exit 0 ·
+  `stableController.test.ts` **58/58 pass · fail 0**(이전 **3 pass / 55 fail**) · 회귀 5파일
+  **225/225 pass · fail 0** · `git status --short` = `?? node_modules` 한 줄 ·
+  mutation 2종(`confirmCleanup` 제거 → 40/18 · `beginDeliveryAttempt` 제거 → 56/2, 각각 원복 후 58/58).
+- **교체 assertion 9건**은 전수 기록돼 있고 리뷰어가 **약화 0 · 일부는 강화**로 판정했다(WORKLOG 참조).
+  핵심: `"running"` → `"prepared"` 4건은 프로세스/lease 없이 `running`으로 올라가지 않는다는 더 강한
+  불변식이고, revision `+2` → `+5`는 정확 등호를 유지한다.
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
+  build/dist · M5d. 최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
+- **열린 미래 게이트**: `B-F1`(**미개봉** — managed launcher 첫 소비자·첫 spawn 전) ·
+  `B-16`(**미개봉** — 첫 real typed-write 산출물 배선 전) · `B-11`(무인 advance 전 per-task preflight —
+  Task 3B가 범위를 좁혔다) · `B-12`(재시작 예산 회계) · **신규 `B-13`**(전달 실패 시
+  `failDeliveryAttempt` 미호출 → `activeAttemptId` 잔존. 리뷰 판정 **교착 아님**, 후속 retry가 복구
+  가능) · `C-1` · `C2` · **신규 `C-39`**. 열린 **A는 없다**.
+- **다음 DAG task(미착수)**: managed process supervisor(+자손 정리 — **`B-F1` 개봉이 선행 조건**) →
+  trusted Git → `autopilot` CLI. 사용자 승인 없이 착수하지 않는다.
+
+## 이전 상태 (2026-07-31 — V3 **M5c task 3A 독립 승인 `APPROVE — A=0, B=2, C=3` · Task 3A 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `e88c1ca` ·
   코드 커밋 **`12fbf08`**. fresh Claude Opus 5 단일 세션(이전 작성자 transcript·자기평가 **미상속** ·
