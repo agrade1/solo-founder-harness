@@ -38,9 +38,9 @@
   build/dist · M5d. 최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
 - **열린 미래 게이트**: `B-F1`(**미개봉** — managed launcher 첫 소비자·첫 spawn 전) ·
   `B-16`(**미개봉** — 첫 real typed-write 산출물 배선 전) · `B-11`(무인 advance 전 per-task preflight —
-  Task 3B가 범위를 좁혔다) · `B-12`(재시작 예산 회계) · **신규 `B-13`**(전달 실패 시
+  Task 3B가 범위를 좁혔다) · `B-12`(재시작 예산 회계) · **신규 `B-17`**(전달 실패 시
   `failDeliveryAttempt` 미호출 → `activeAttemptId` 잔존. 리뷰 판정 **교착 아님**, 후속 retry가 복구
-  가능) · `C-1` · `C2` · **신규 `C-39`**. 열린 **A는 없다**.
+  가능) · `C-1` · `C2` · **신규 `C-43`**. 열린 **A는 없다**.
 - **다음 DAG task(미착수)**: managed process supervisor(+자손 정리 — **`B-F1` 개봉이 선행 조건**) →
   trusted Git → `autopilot` CLI. 사용자 승인 없이 착수하지 않는다.
 

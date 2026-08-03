@@ -16,8 +16,8 @@
 - **실측**: `tsc --noEmit` exit 0 · `stableController` **58/58**(이전 3/55) · 회귀 5파일 **225/225** ·
   mutation 2종 red 확인 후 원복. 중앙·리뷰어·구현 세션 3자 수치 일치.
 - **열린 A는 없다.** 열린 게이트: `B-F1`(첫 spawn 전) · `B-16`(첫 real typed-write 배선 전) ·
-  `B-11`/`B-12`(무인 advance·재시작 회계) · **신규 `B-13`**(전달 실패 시 `activeAttemptId` 잔존) ·
-  `C-1` · `C2` · **신규 `C-39`**.
+  `B-11`/`B-12`(무인 advance·재시작 회계) · **신규 `B-17`**(전달 실패 시 `activeAttemptId` 잔존) ·
+  `C-1` · `C2` · **신규 `C-43`**.
 - **미실행**: `npm test` · acceptance 전체 · stress · live · 반복 3회 · build/dist(M5 최종 handoff 예약).
 - **다음 DAG task(미착수)**: managed process supervisor(+자손 정리 · `B-F1` 개봉 필요) →
   trusted Git → `autopilot` CLI.
@@ -416,7 +416,7 @@
 - **B 7건은 하나도 닫지 않았다**(리뷰 원문 그대로): `B-7`·`B-9`(첫 live 실행 전) · `B-10`(edit 가능 provider
   활성화 전) · `B-11`(무인 autopilot 전) · `B-12`(첫 restart/resume 전) · `B-13`(live runner 또는 두 번째
   process-backed provider 전) · `C-12`→B(M5c autopilot 전).
-  **C 10건**: `C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`·`C-38` 상태 유지 + **신규 `C-39`**
+  **C 10건**: `C-35`·`C-5`·`C-17`·`C-29`·`C-19`·`C-36`·`C-37`·`C-30`·`C-38` 상태 유지 + **신규 `C-43`**
   (transaction staging·atomic tmp 정리 실패 orphan). **`C-37`은 닫지 않았다** — 범위가 발행 경계 11개 중
   2개(`body:publish`·`journal:cleanup`)로 줄었을 뿐이다. `C-36`도 그대로 open.
 - **테스트(worker 자기보고 — 독립 실측 아님)**: `orchestrationKernel` **98/98**(89 → 98) ·

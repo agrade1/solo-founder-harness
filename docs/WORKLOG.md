@@ -42,8 +42,8 @@
 - **독립 리뷰**: fresh Fable 5 **read-only**(구현 worker transcript·자기평가 미전달) · 범위
   `8dd05f9..9a34c5d` · 판정 **`APPROVE — A=0, B=1, C=1`**. 리뷰어는 정적 검토에 더해
   위 3종 테스트와 `git diff --name-only`·package/lock diff·skip grep을 **직접 실행**했다.
-- **신규 유예**: `B-13`(전달 실패 시 `failDeliveryAttempt` 미호출 → `activeAttemptId` 잔존) ·
-  `C-39`(`startedIds` 변수명 오도). 상세는 roadmap §9.1.
+- **신규 유예**: `B-17`(전달 실패 시 `failDeliveryAttempt` 미호출 → `activeAttemptId` 잔존) ·
+  `C-43`(`startedIds` 변수명 오도). 상세는 roadmap §9.1.
 - **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · 반복 3회 ·
   build/dist. 최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
 - **다음 DAG task(미착수)**: managed process supervisor(+자손 정리 — **`B-F1` 개봉 필요**) →
