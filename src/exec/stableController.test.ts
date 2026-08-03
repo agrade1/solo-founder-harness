@@ -99,12 +99,41 @@ function authorityFor(codexPath: unknown, gitPath: unknown = TRUSTED_GIT, codexS
   return {
     codex: { path: codexPath as string, sha256: codexSha ?? digestOf(codexPath) },
     git: { path: gitPath as string, sha256: digestOf(gitPath) },
+    // **M5c 필수 3종**(`manifest_pre_m5c_unsupported`가 이것 없는 승인을 거부한다). 이 read-only bridge는
+    // 이 셋을 **열지 않는다**(managed launcher는 `B-F1`, typed run_process는 `B-10` 소유다) — 승인
+    // validator는 경로 계약과 digest 형태만 보고 파일 시스템을 만지지 않으므로 형태만 채운다.
+    controllerEntrypoint: { path: "/opt/harness/controller.mjs", sha256: "9".repeat(64) },
+    node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+    processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
   };
 }
+
+/**
+ * **M5c autopilot 정책**(승인 manifest의 필수 절 — `manifest_pre_m5c_unsupported`가 이것 없는 승인을
+ * 거부한다). 값은 이 suite가 실제로 쓰는 lifecycle만 열어 둔다: attempt 1회, 전달 재시도 여유 1회,
+ * backoff 0(결정론), deadline은 이 테스트들이 절대 닿지 않을 만큼 넉넉하게.
+ */
+const AUTOPILOT_POLICY = {
+  maxTaskAttempts: 2,
+  maxDeliveryAttempts: 2,
+  retryBackoffMs: 0,
+  deliveryDeadlineMs: 600_000,
+  maxNoProgressMs: 600_000,
+  maxAttemptElapsedMs: 600_000,
+  cleanupTermGraceMs: 500,
+  cleanupKillGraceMs: 500,
+};
 
 function manifestFor(head: string, taskIds: string[], over: Record<string, unknown> = {}) {
   const ownershipByTask: Record<string, string[]> = {};
   for (const id of taskIds) ownershipByTask[id] = ["src"];
+  // 승인 validator는 `autopilotPolicy.maxAttemptElapsedMs <= manifest.maxElapsedMs`를 함께 본다.
+  // 경과 예산 회귀는 `maxElapsedMs`를 아주 작게 잡으므로 attempt wall도 같이 좁혀야 승인이 유효하다.
+  const maxElapsedMs = typeof over.maxElapsedMs === "number" ? over.maxElapsedMs : 3_600_000;
+  const autopilotPolicy = {
+    ...AUTOPILOT_POLICY,
+    maxAttemptElapsedMs: Math.min(AUTOPILOT_POLICY.maxAttemptElapsedMs, maxElapsedMs),
+  };
   return {
     milestoneId: MILESTONE,
     approvedCommit: head,
@@ -114,9 +143,11 @@ function manifestFor(head: string, taskIds: string[], over: Record<string, unkno
     allowedDependencies: [{ name: "typescript", version: "5.7.2" }],
     allowedNetworkDomains: ["registry.npmjs.org"],
     executionAuthority: authorityFor(FAKE_CODEX_BIN, TRUSTED_GIT),
+    autopilotPolicy,
+    operationAuthorityByTask: {},
     maxSessions: 2,
     maxTokens: 100_000,
-    maxElapsedMs: 3_600_000,
+    maxElapsedMs,
     localMergeAllowed: false,
     expiresAt: "2099-12-31T00:00:00.000Z",
     ...over,
@@ -424,7 +455,10 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
     manifest,
     clock: (() => {
       let n = 0;
-      return () => new Date(Date.UTC(2026, 6, 27, 0, 0, n++));
+      // **밀리초 단위로 전진한다**(M5c): 한 task가 이제 preflight·start·terminal·cleanup·complete로
+      // 여러 커밋을 내므로 초 단위 시계면 `maxElapsedMs`가 짧은 fixture에서 **kernel의** durable
+      // budget deadline이 먼저 닫혀 버린다(controller의 경과 예산 회귀는 별도 `nowMs` 시계가 본다).
+      return () => new Date(Date.UTC(2026, 6, 27, 0, 0, 0, n++));
     })(),
   });
   for (const id of taskIds) {
@@ -456,6 +490,40 @@ async function fixture(opts: FixtureOpts = {}): Promise<Fixture> {
   // 신원 고정 **뒤에** 실행 파일을 신뢰 조건 밖으로 만든다 → 실패는 invocation 시점의 재검증이 낸다.
   if (opts.breakExecutable) chmodSync(codexBin, 0o600);
   return { repo, kernel, provider, controller, handoffs, codexBin, opts: controllerOpts as unknown as Record<string, unknown> };
+}
+
+// ── M5c lifecycle 헬퍼(테스트가 controller **밖에서** task를 전진시킬 때 쓴다) ──
+//
+// M5c에는 `ready → running` 직접 전이가 없다(`startTask`/`startScheduledBatch`는 `preflight_required`다).
+// 유일한 시작 경로는 `planRunnableBatch → commitPreflightBatch → startPreparedTask`이고, 종료 상태로
+// 나가는 유일한 자격은 `recordTerminal → confirmCleanup`이다. 아래 두 헬퍼가 그 정본 경로를 그대로 쓴다.
+
+let leaseSeq = 0;
+function newLease(): string {
+  return `lease.${(++leaseSeq).toString(16).padStart(32, "0")}`;
+}
+
+/** kernel(SoR)의 정본 시작 경로로 `taskId` 하나를 `running`까지 올리고 그 attempt lease를 준다. */
+function startTaskVia(kernel: OrchestrationKernel, taskId: string): string {
+  const plan = kernel.planRunnableBatch();
+  assert.ok(
+    plan.items.some((t) => t.taskId === taskId),
+    `${taskId}가 scheduler batch에 없다(테스트 전제)`,
+  );
+  kernel.commitPreflightBatch({
+    baseRevision: plan.revision,
+    actionId: `pf-${taskId}`,
+    decisions: plan.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: `at-${t.taskId}` })),
+  });
+  const lease = newLease();
+  kernel.startPreparedTask({ taskId, actionId: `st-${taskId}`, leaseMarker: lease });
+  return lease;
+}
+
+/** `running` task를 결과 발행 자격(`cleaning` + cleanup confirmed)까지 내린다(대장 `B-13`). */
+function cleanTaskVia(kernel: OrchestrationKernel, taskId: string, lease: string, summary: string): void {
+  kernel.recordTerminal({ taskId, actionId: `tm-${taskId}`, marker: "turn_completed", pendingResult: { summary, outputs: [] } });
+  kernel.confirmCleanup({ taskId, actionId: `cl-${taskId}`, leaseMarker: lease });
 }
 
 /** durable 산출물 전부(state·events·messages·snapshot)를 한 문자열로. sentinel 부재 단정용. */
@@ -541,12 +609,15 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     manifest: deliveryManifest,
     clock: (() => {
       let n = 0;
-      return () => new Date(Date.UTC(2026, 6, 27, 0, 0, n++));
+      // **밀리초 단위로 전진한다**(M5c): 한 task가 이제 preflight·start·terminal·cleanup·complete로
+      // 여러 커밋을 내므로 초 단위 시계면 `maxElapsedMs`가 짧은 fixture에서 **kernel의** durable
+      // budget deadline이 먼저 닫혀 버린다(controller의 경과 예산 회귀는 별도 `nowMs` 시계가 본다).
+      return () => new Date(Date.UTC(2026, 6, 27, 0, 0, 0, n++));
     })(),
   });
   kernel.createRootTask(seed("producer", "research"));
   kernel.createDependentTask({ ...seed("worker", "dev-lead"), dependsOn: ["producer"] });
-  kernel.startTask("producer");
+  const producerLease = startTaskVia(kernel, "producer");
   writeArtifact(repo.root, "src/producer/out.md", "# 산출물\n근거 한 줄\n");
   const pointer = kernel.registerArtifact({ taskId: "producer", path: "src/producer/out.md", role: "output" });
   // producer → worker 전달(중앙이 의존 관계를 확인한다).
@@ -570,6 +641,8 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
     summary: "producer 중간 산출물",
     deliverTo: "worker",
   });
+  // 결과 발행은 **확인된 정리 뒤에만** 가능하다(M5c · 대장 `B-13`) — `submitResult`도 같은 자격을 받는다.
+  cleanTaskVia(kernel, "producer", producerLease, "producer 완료");
   kernel.submitResult({
     envelope: {
       schemaVersion: "1",
@@ -689,7 +762,9 @@ test("[M5b] 산출물은 등록·durable 경로에서 검증된 포인터로만 
   });
   const bad = (await g.controller.advanceOnce()).tasks[0];
   assert.equal(bad.marker, "artifact_missing");
-  assert.equal(g.kernel.getTask("task-a")!.state, "running", "등록 실패인데 완료로 만들었다");
+  // M5c: 완료는 `recordTerminal → confirmCleanup` 뒤에만 시도되므로 등록 실패는 `cleaning`에 남는다
+  // (`running`이 아니다). 자원은 계속 붙잡혀 있고 사람·M5d가 판단한다 — 조용한 진행은 없다.
+  assert.equal(g.kernel.getTask("task-a")!.state, "cleaning", "등록 실패인데 완료로 만들었다");
   assert.equal(g.kernel.getMessage("res.task-a"), null, "실패했는데 result 메시지가 남았다");
 });
 
@@ -783,7 +858,9 @@ test("[M5b] 만료·경과·토큰 예산 소진은 bounded blocked marker로 fa
   assert.equal((await expired.controller.advanceOnce()).blocked, "manifest_expired");
   assert.equal(expired.provider.turns.length, 0);
 
-  const elapsed = await fixture({ manifest: { maxElapsedMs: 1 }, nowMs: msClock() });
+  // `maxElapsedMs`는 `autopilotPolicy.maxAttemptElapsedMs`(하한 1_000ms) 이상이어야 승인이 유효하다.
+  // 시계가 호출마다 1초 전진하므로 상한 1_000ms는 **첫 게이트에서** 그대로 소진된다(의미 동일).
+  const elapsed = await fixture({ manifest: { maxElapsedMs: 1_000 }, nowMs: msClock() });
   assert.equal((await elapsed.controller.advanceOnce()).blocked, "budget_elapsed_exhausted");
 
   // 첫 turn(5토큰)에서 상한(3)을 넘으면 그 task는 실패이고 다음 advance는 차단된다.
@@ -919,8 +996,17 @@ test("[M5b] 토큰 usage 카운터는 durable state에 남지 않는다(반환�
 test("[M5b] 늦은 writer는 stale_writer로 거부된다(남의 결과를 덮지 않는다)", async () => {
   const f = await fixture({ taskIds: ["task-a"] });
   // 같은 run을 두 번째 kernel로 열어 **먼저** 커밋한다 → controller의 kernel은 낡은 base를 들고 있다.
-  const other = OrchestrationKernel.open({ workspaceRoot: f.repo.root, runId: RUN_ID });
-  other.startTask("task-a");
+  // 두 번째 writer도 **같은 결정론적 시계**를 써야 한다 — 실제 시각은 이 run의 durable budget deadline
+  // (생성 시각 + maxElapsedMs)을 이미 지났으므로 전진 커밋이 예산 게이트에서 먼저 닫힌다.
+  const other = OrchestrationKernel.open({
+    workspaceRoot: f.repo.root,
+    runId: RUN_ID,
+    clock: (() => {
+      let n = 0;
+      return () => new Date(Date.UTC(2026, 6, 27, 0, 0, 1, n++));
+    })(),
+  });
+  startTaskVia(other, "task-a");
   const out = await f.controller.advanceOnce();
   assert.equal(out.blocked, "stale_writer", "낡은 base로 batch를 시작했다");
   assert.equal(f.provider.turns.length, 0);
@@ -996,7 +1082,7 @@ test("[M5b] A1: 봉인된 kernel·provider는 메서드 monkey-patch 자체를 �
     ["provider.start", f.opts.provider as Record<string, unknown>, "start"],
     ["provider.events", f.opts.provider as Record<string, unknown>, "events"],
     ["kernel.completeTaskWithArtifacts", f.opts.kernel as Record<string, unknown>, "completeTaskWithArtifacts"],
-    ["kernel.scheduleReady", f.opts.kernel as Record<string, unknown>, "scheduleReady"],
+    ["kernel.planRunnableBatch", f.opts.kernel as Record<string, unknown>, "planRunnableBatch"],
   ];
   for (const [label, target, name] of targets) {
     assert.throws(
@@ -1083,7 +1169,8 @@ test("[M5b] A1: controller 권위·카운터는 밖에서 보이지도 바뀌지
 
 test("[M5b] A1: 재진입 시계는 봉인된 kernel 메서드를 갈아끼울 수 없다(진행은 정상)", async () => {
   // 시계는 **봉인 대조를 지난 뒤에** 불린다(`assertGatesOpen`: 드리프트 → clock → 만료·예산). 이전 판의
-  // `scheduleReady`/`startScheduledBatch`는 호출 시점에 caller 소유 property를 **다시 읽는** wrapper였으므로
+  // `scheduleReady`/`startScheduledBatch`(지금은 `planRunnableBatch`/`startPreparedTask`)는 호출 시점에
+  // caller 소유 property를 **다시 읽는** wrapper였으므로
   // 재진입 시계가 그 창에서 갈아끼운 함수가 그대로 실행됐다. 지금은 ⓐ 포착한 함수만 실행되고
   // ⓑ kernel 자체가 얼어 있어 **패치 시도가 성립하지 않는다**(4차 리뷰 A2).
   let patched = 0;
@@ -1099,7 +1186,7 @@ test("[M5b] A1: 재진입 시계는 봉인된 kernel 메서드를 갈아끼울 �
           patched++;
           return [];
         };
-        for (const name of ["scheduleReady", "startScheduledBatch"]) {
+        for (const name of ["planRunnableBatch", "startPreparedTask"]) {
           try {
             definePatch(holder.kernel, name, evil);
           } catch {
@@ -1135,9 +1222,9 @@ test("[M5b] A1/A2: 교대 getter를 단 kernel은 '권위'가 되지 못한다(�
   const real = f.kernel as unknown as Record<string, unknown>;
   assert.throws(
     () =>
-      Object.defineProperty(real, "scheduleReady", {
+      Object.defineProperty(real, "planRunnableBatch", {
         configurable: true,
-        get: () => real.scheduleReady,
+        get: () => real.planRunnableBatch,
       }),
     TypeError,
     "봉인된 kernel에 교대 getter를 달 수 있었다",
@@ -1146,12 +1233,12 @@ test("[M5b] A1/A2: 교대 getter를 단 kernel은 '권위'가 되지 못한다(�
   let evilCalls = 0;
   const alternating = Object.create(Object.getPrototypeOf(f.kernel) as object) as Record<string, unknown>;
   let reads = 0;
-  Object.defineProperty(alternating, "scheduleReady", {
+  Object.defineProperty(alternating, "planRunnableBatch", {
     configurable: true,
     enumerable: true,
-    get: () => (reads++ === 0 ? () => f.kernel.scheduleReady() : () => (evilCalls++, [])),
+    get: () => (reads++ === 0 ? () => f.kernel.planRunnableBatch() : () => (evilCalls++, { revision: 0, items: [] })),
   });
-  for (const m of ["getState", "getManifest", "getTask", "startScheduledBatch", "listPendingInbox", "completeTaskWithArtifacts", "acknowledgeDelivery"]) {
+  for (const m of ["getState", "getManifest", "getTask", "commitPreflightBatch", "startPreparedTask", "listPendingInbox", "beginDeliveryAttempt", "recordTerminal", "confirmCleanup", "completeTaskWithArtifacts", "acknowledgeDelivery"]) {
     Object.defineProperty(alternating, m, {
       configurable: true,
       enumerable: true,
@@ -1533,7 +1620,8 @@ test("[M5b] A1: 증명은 **설정 권위 대조 결과**만 주고, 임의 실�
   assert.throws(() => genuineCodex({ gitExecutablePath: noExec }), /codex_git_executable_invalid/);
   // **승인된 내용과 다른** 실행 파일은 신뢰 조건을 만족해도 생성 자체가 실패한다(6차 리뷰 A1).
   assert.throws(() => genuineCodex({ codexSha256: "0".repeat(64) }), /codex_executable_digest_mismatch/);
-  assert.throws(() => genuineCodex({ manifest: {} }), /invalid_manifest/);
+  // 빈 manifest는 이제 **M5c 이전 승인**으로 먼저 닫힌다(마이그레이션 없음 — 새 승인이 필요하다).
+  assert.throws(() => genuineCodex({ manifest: {} }), /manifest_pre_m5c_unsupported/);
   assert.throws(() => genuineCodex({ controllerRepoRoot: "relative/root" }), /codex_config_invalid/);
 });
 
@@ -1828,7 +1916,7 @@ test("[M5b] A2: 산출물 경로 소유권은 kernel(권위)이 집행한다 —
   const a = out.tasks.find((t) => t.taskId === "task-a")!;
   assert.equal(a.marker, "artifact_not_owned");
   assert.deepEqual(a.artifacts, []);
-  assert.equal(f.kernel.getTask("task-a")!.state, "running", "소유권 위반인데 완료로 만들었다");
+  assert.equal(f.kernel.getTask("task-a")!.state, "cleaning", "소유권 위반인데 완료로 만들었다"); // M5c: 완료 트랜잭션만 거부됐다
   assert.equal(f.kernel.getState().artifacts.length, 0, "소유권 위반 artifact가 durable에 남았다");
   // 같은 batch의 task-b는 자기 계약대로 완료된다(게이트가 batch 전체를 죽이지 않는다).
   assert.equal(out.tasks.find((t) => t.taskId === "task-b")!.status, "completed");
@@ -1853,8 +1941,9 @@ test("[M5b] A3: multi-output 성공 — 순서·포인터가 정확하고 완료
   assert.equal(a.status, "completed", a.marker);
   assert.deepEqual(a.artifacts, outs.map((p) => `${p}@1`), "등록 순서가 handoff 순서와 다르다");
   assert.deepEqual(f.kernel.getTask("task-a")!.artifactRefs.map((r) => r.path), outs);
-  // batch 시작 커밋 1 + 완료 트랜잭션 1 = 2. 산출물마다 커밋하면 이 수가 커진다.
-  assert.equal(f.kernel.getState().revision, before + 2, "완료가 한 커밋이 아니다");
+  // M5c lifecycle 커밋은 정확히 5개다: preflight · start · terminal · cleanup 확인 · **완료 트랜잭션 1**.
+  // 산출물 3건을 따로 등록하면(이전 판의 결함) 이 수가 5가 아니라 8이 된다 — 그 성질을 그대로 고정한다.
+  assert.equal(f.kernel.getState().revision, before + 5, "완료가 한 커밋이 아니다");
 });
 
 test("[M5b] A3: 뒤쪽 산출물이 실패하면 앞쪽 artifact도 durable에 남지 않는다", async () => {
@@ -1899,7 +1988,7 @@ test("[M5b] A3: 뒤쪽 산출물이 실패하면 앞쪽 artifact도 durable에 �
     const a = out.tasks.find((t) => t.taskId === "task-a")!;
     assert.deepEqual([a.status, a.marker], ["failed", want], label);
     assert.deepEqual(a.artifacts, [], `${label}: 실패인데 artifact를 보고했다`);
-    assert.equal(f.kernel.getTask("task-a")!.state, "running", `${label}: 실패인데 완료로 만들었다`);
+    assert.equal(f.kernel.getTask("task-a")!.state, "cleaning", `${label}: 실패인데 완료로 만들었다`); // M5c 완료 자격 단계
     assert.equal(f.kernel.getMessage("res.task-a"), null, `${label}: 실패인데 result가 남았다`);
     assert.deepEqual(
       f.kernel.getState().artifacts.filter((x) => x.producerTaskId === "task-a"),
@@ -1938,7 +2027,9 @@ test("[M5b] A3: 앞 task가 토큰 예산을 소진하면 뒤 task는 provider�
   assert.equal(b.turns, 0);
   assert.equal(f.provider.turns.length, 1, "예산 소진 뒤에도 두 번째 task를 시작했다");
   assert.deepEqual(f.provider.turns.map((t) => t.sessionId), ["sess-task-a"]);
-  assert.equal(f.kernel.getTask("task-b")!.state, "running", "시작하지 않은 task의 lifecycle은 M5c(B-11/B-13) 소유다");
+  // **B-11이 닫은 창**: M5b는 batch 전체를 먼저 running으로 올렸으므로 시작도 못 한 task가 자원을 붙잡은
+  // 채 running에 남았다. M5c는 `prepared`까지만 갔으므로 프로세스도 lease도 attempt 자원도 없다.
+  assert.equal(f.kernel.getTask("task-b")!.state, "prepared", "시작하지 않은 task가 running으로 올라갔다");
   assert.equal(f.kernel.getMessage("res.task-b"), null, "시작도 안 한 task의 result가 남았다");
 });
 
@@ -2000,7 +2091,8 @@ test("[M5b] A4: start 창 — 경계 await 도중 입력이 변조되면 provide
   const worker = out.tasks.find((t) => t.taskId === "worker")!;
   assert.equal(worker.marker, "artifact_hash_mismatch", "경계 뒤 재검증이 없다(낡은 검증으로 provider를 띄웠다)");
   assert.equal(g.provider.turns.length, 0, "포인터가 어긋났는데 provider를 시작했다");
-  assert.equal(g.kernel.getTask("worker")!.state, "running");
+  // M5c: `startPreparedTask`는 provider 호출 **직전**이므로, 그 앞 게이트에서 닫히면 `prepared`에 남는다.
+  assert.equal(g.kernel.getTask("worker")!.state, "prepared");
 });
 
 test("[M5b] A4: send 창 — 경계 await 도중 전달 포인터가 변조되면 send·ack 0", async () => {
@@ -2209,9 +2301,13 @@ function delegateKernel(k: OrchestrationKernel, over: Partial<Record<string, unk
     getState: () => k.getState(),
     getManifest: () => k.getManifest(),
     getTask: (id: string) => k.getTask(id),
-    scheduleReady: () => k.scheduleReady(),
-    startScheduledBatch: () => k.startScheduledBatch(),
+    planRunnableBatch: () => k.planRunnableBatch(),
+    commitPreflightBatch: (i: Parameters<OrchestrationKernel["commitPreflightBatch"]>[0]) => k.commitPreflightBatch(i),
+    startPreparedTask: (i: Parameters<OrchestrationKernel["startPreparedTask"]>[0]) => k.startPreparedTask(i),
     listPendingInbox: (id: string) => k.listPendingInbox(id),
+    beginDeliveryAttempt: (i: Parameters<OrchestrationKernel["beginDeliveryAttempt"]>[0]) => k.beginDeliveryAttempt(i),
+    recordTerminal: (i: Parameters<OrchestrationKernel["recordTerminal"]>[0]) => k.recordTerminal(i),
+    confirmCleanup: (i: Parameters<OrchestrationKernel["confirmCleanup"]>[0]) => k.confirmCleanup(i),
     acknowledgeDelivery: (i: { taskId: string; messageId: string }) => k.acknowledgeDelivery(i),
     completeTaskWithArtifacts: (i: Parameters<OrchestrationKernel["completeTaskWithArtifacts"]>[0]) =>
       k.completeTaskWithArtifacts(i),
@@ -2255,7 +2351,7 @@ test("[M5b] A2: handoff가 던진 값은 실제 클래스와 무관하게 handof
     });
     const a = (await h.controller.advanceOnce()).tasks[0];
     assert.deepEqual([a.status, a.marker], ["failed", "handoff_failed"], String((err as { code?: string })?.code ?? err));
-    assert.equal(h.kernel.getTask("task-a")!.state, "running");
+    assert.equal(h.kernel.getTask("task-a")!.state, "prepared"); // handoff는 start 커밋 **앞**이다(M5c)
     assert.equal(h.kernel.getMessage("res.task-a"), null);
     assert.equal(h.provider.turns.length, 0, "거부인데 자식 프로세스가 떴다");
   }
@@ -2283,14 +2379,18 @@ test("[M5b] A2: 호출자 시계가 던진 임의 코드도 marker가 되지 못
   }
 });
 
-/** controller가 kernel(SoR)에 대고 부르는 좁은 API 전부. */
+/** controller가 kernel(SoR)에 대고 부르는 좁은 API 전부(M5c lifecycle 포함). */
 const KERNEL_API = [
   "getState",
   "getManifest",
   "getTask",
-  "scheduleReady",
-  "startScheduledBatch",
+  "planRunnableBatch",
+  "commitPreflightBatch",
+  "startPreparedTask",
   "listPendingInbox",
+  "beginDeliveryAttempt",
+  "recordTerminal",
+  "confirmCleanup",
   "completeTaskWithArtifacts",
   "acknowledgeDelivery",
 ];
@@ -2318,7 +2418,7 @@ test("[M5b] A2(4차): 위조 완료 권위는 controller 생성에서 거부된�
 
   // ⓑ 평범한 구조적 객체(메서드 모양 + paths.workspaceRoot만 맞춘 것).
   const structural: Record<string, unknown> = { paths: real.paths };
-  for (const m of ["getState", "getManifest", "getTask", "scheduleReady", "startScheduledBatch", "listPendingInbox", "completeTaskWithArtifacts", "acknowledgeDelivery"]) {
+  for (const m of ["getState", "getManifest", "getTask", "planRunnableBatch", "commitPreflightBatch", "startPreparedTask", "listPendingInbox", "beginDeliveryAttempt", "recordTerminal", "confirmCleanup", "completeTaskWithArtifacts", "acknowledgeDelivery"]) {
     structural[m] = (...a: unknown[]) => (real as unknown as Record<string, (...x: unknown[]) => unknown>)[m](...a);
   }
   assert.equal(
@@ -2394,8 +2494,8 @@ test("[M5b] A2: 호출자 kernel(SoR)의 닫힌 집합 밖 코드는 kernel_reje
   const f = await fixture({
     taskIds: ["task-a"],
     handoff: (ctx, root) => {
-      // handoff는 batch 시작 커밋 **뒤**, 완료 커밋 **앞**이다 → 여기서 lock을 잡아 두면 완료 커밋이
-      // `run_lock_held`(닫힌 집합 밖)로 거부된다.
+      // handoff는 preflight 커밋 **뒤**, `startPreparedTask` 커밋 **앞**이다(M5c) → 여기서 lock을 잡아
+      // 두면 그 시작 커밋이 `run_lock_held`(닫힌 집합 밖)로 거부되고 controller가 그것을 접는다.
       writeFileSync(runPaths(root, RUN_ID).lockFile, "다른 writer\n");
       return { spec: readOnlySpec("s", ctx.task.roleId, root), prompt: "p" };
     },
@@ -2403,7 +2503,7 @@ test("[M5b] A2: 호출자 kernel(SoR)의 닫힌 집합 밖 코드는 kernel_reje
   const a = (await f.controller.advanceOnce()).tasks[0];
   assert.deepEqual([a.status, a.marker], ["failed", "kernel_rejected"], "kernel native 코드가 그대로 새어나갔다");
   rmSync(runPaths(f.repo.root, RUN_ID).lockFile, { force: true });
-  assert.equal(openOrchestrationRun({ workspaceRoot: f.repo.root, runId: RUN_ID }).getTask("task-a")!.state, "running");
+  assert.equal(openOrchestrationRun({ workspaceRoot: f.repo.root, runId: RUN_ID }).getTask("task-a")!.state, "prepared");
 });
 
 test("[M5b] C: inbox 항목은 **한 번만 읽고** 그 사본으로 전달한다", async () => {
