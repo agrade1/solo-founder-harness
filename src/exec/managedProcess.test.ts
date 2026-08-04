@@ -23,7 +23,14 @@ import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIMITS, OrchestrationError, REQUIRED_BODY_HEADINGS, type OperationReceipt } from "./orchestrationTypes.js";
+import {
+  LIMITS,
+  ORCHESTRATION_SCHEMA_VERSION,
+  ORCHESTRATOR_ID,
+  OrchestrationError,
+  REQUIRED_BODY_HEADINGS,
+  type OperationReceipt,
+} from "./orchestrationTypes.js";
 import type { AgentMessageType } from "./orchestrationTypes.js";
 import {
   OrchestrationKernel,
@@ -129,7 +136,12 @@ interface Fixture {
  * 진짜 kernel run 하나 + 승인 manifest가 가리키는 **실재하는** node/entrypoint fixture.
  * `entrypointBody`가 이 run의 모든 `run_process`가 실제로 실행하는 프로그램이다.
  */
-function fixture(opts: { entrypointBody: string; timeoutMs?: number } = { entrypointBody: "#!/bin/sh\nexit 0\n" }): Fixture {
+function fixture(
+  opts: { entrypointBody: string; timeoutMs?: number; taskIds?: string[]; maxSessions?: number } = {
+    entrypointBody: "#!/bin/sh\nexit 0\n",
+  },
+): Fixture {
+  const taskIds = opts.taskIds ?? ["root"];
   const ws = makeDir("m5c-mp-ws-");
   mkdirSync(join(ws, "docs"));
   const bin = makeDir("m5c-mp-bin-");
@@ -140,7 +152,7 @@ function fixture(opts: { entrypointBody: string; timeoutMs?: number } = { entryp
     milestoneId: MILESTONE,
     approvedCommit: "a".repeat(40),
     writableRoots: ["docs"],
-    ownershipByTask: { root: ["docs"] },
+    ownershipByTask: Object.fromEntries(taskIds.map((id) => [id, ["docs"]])),
     allowedCommands: [],
     allowedDependencies: [],
     allowedNetworkDomains: [],
@@ -161,18 +173,21 @@ function fixture(opts: { entrypointBody: string; timeoutMs?: number } = { entryp
       cleanupTermGraceMs: 2_000,
       cleanupKillGraceMs: 2_000,
     },
-    operationAuthorityByTask: {
-      root: [
-        {
-          authorityId: "p-node",
-          kind: "run_process",
-          action: "validate-plan",
-          data: { planPath: "docs/plan.json" },
-          timeoutMs: opts.timeoutMs ?? 30_000,
-        },
-      ],
-    },
-    maxSessions: 4,
+    operationAuthorityByTask: Object.fromEntries(
+      taskIds.map((id) => [
+        id,
+        [
+          {
+            authorityId: "p-node",
+            kind: "run_process",
+            action: "validate-plan",
+            data: { planPath: "docs/plan.json" },
+            timeoutMs: opts.timeoutMs ?? 30_000,
+          },
+        ],
+      ]),
+    ),
+    maxSessions: opts.maxSessions ?? 4,
     maxTokens: 100_000,
     maxElapsedMs: 3_600_000,
     localMergeAllowed: false,
@@ -211,16 +226,16 @@ function processOp(operationId: string): Record<string, unknown> {
 }
 
 /** permit(claim) → 권위 과금 → grant. 계약 순서 그대로다. */
-function permitFor(f: Fixture, operationIds: string[], turnId: string): OperationDispatchPermit {
-  const task = f.kernel.getTask("root")!;
+function permitFor(f: Fixture, operationIds: string[], turnId: string, taskId = "root"): OperationDispatchPermit {
+  const task = f.kernel.getTask(taskId)!;
   const permit = f.kernel.issueOperationDispatchPermit({
-    taskId: "root",
+    taskId,
     turnId,
     actionId: nextId("act"),
     plan: {
       schemaVersion: "1",
       runId: RUN_ID,
-      taskId: "root",
+      taskId,
       attemptId: task.execution.attemptId,
       turnId,
       operations: operationIds.map(processOp),
@@ -244,8 +259,75 @@ function launchable(f: Fixture, permit: OperationDispatchPermit, index = 0): Lau
 }
 
 /** 한 turn = 한 계획. operation 하나짜리 turn을 새로 열어 바로 실행 가능한 상태로 만든다. */
-function oneShot(f: Fixture, turnId: string, operationId = "op-1"): Launchable {
-  return launchable(f, permitFor(f, [operationId], turnId));
+function oneShot(f: Fixture, turnId: string, operationId = "op-1", taskId = "root"): Launchable {
+  return launchable(f, permitFor(f, [operationId], turnId, taskId));
+}
+
+/** ready task 하나를 preflight → running으로 올린다(유일한 시작 경로). */
+function startTask(f: Fixture, taskId: string): void {
+  const batch = f.kernel.planRunnableBatch();
+  f.kernel.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextId("act"),
+    decisions: batch.items.map((t) =>
+      t.taskId === taskId
+        ? { taskId: t.taskId, outcome: "prepared" as const, attemptId: nextId("att") }
+        : { taskId: t.taskId, outcome: "deferred" as const },
+    ),
+  });
+  f.kernel.startPreparedTask({
+    taskId,
+    actionId: nextId("act"),
+    leaseMarker: `lease.${(++counter).toString(16).padStart(32, "0")}`,
+  });
+}
+
+/** parent의 spawn_request로 child task를 만들고 running까지 올린다. */
+function spawnChild(f: Fixture, parentId: string, childId: string): void {
+  f.kernel.requestSpawn({
+    envelope: {
+      schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
+      messageId: `spawn-${childId}`,
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      taskId: parentId,
+      parentTaskId: f.kernel.getTask(parentId)!.parentTaskId,
+      sender: f.kernel.getTask(parentId)!.roleId,
+      recipient: ORCHESTRATOR_ID,
+      type: "spawn_request",
+      createdAt: "2026-07-27T00:00:00.000Z",
+      dependsOn: [],
+      artifactRefs: [],
+      supersedes: null,
+    },
+    body: body("spawn_request"),
+    child: { ...seed(childId), roleId: `dev-lead.${childId}` },
+  });
+  startTask(f, childId);
+}
+
+/**
+ * 이 task의 durable `run_process` 수를 n개 늘린다 — **spawn 없이**. operation을 열고
+ * `failOperation`으로 정직하게 닫으면 `run_process` 영수증이 남고, 상한은 영수증 + pending을
+ * durable에서 세므로 카운트에 그대로 들어간다(pending으로 남기면 task가 waiting_children이 될 수 없다).
+ */
+function fillProcessCount(f: Fixture, taskId: string, n: number): void {
+  const permit = permitFor(f, Array.from({ length: n }, (_, i) => `${taskId}-p${i}`), `turn-${taskId}-fill`, taskId);
+  for (let i = 0; i < n; i++) {
+    const { grant } = launchable(f, permit, i);
+    f.kernel.failOperation({ grant, actionId: nextId("act"), marker: "failed" });
+  }
+}
+
+/** 이 run의 durable `run_process` 총수(영수증 + pending) — 커널이 세는 것과 같은 방식이다. */
+function runProcessCount(f: Fixture): number {
+  return f.kernel.getState().tasks.reduce(
+    (sum, t) =>
+      sum +
+      t.execution.operationReceipts.filter((r) => r.kind === "run_process").length +
+      t.execution.pendingOperations.filter((p) => p.kind === "run_process").length,
+    0,
+  );
 }
 
 function receiptOf(f: Fixture, operationId: string): OperationReceipt {
@@ -439,17 +521,95 @@ test("[M5c/3C] spawn 상한: task당 child 4를 넘는 5번째 실행은 spawn �
   assert.equal(f.kernel.getTask("root")!.execution.pendingOperations[0]!.attemptedAt, null);
 });
 
+test("[M5c/3C] spawn 상한: depth 3(root=0)에서는 실행되고, depth 4 task는 애초에 만들어지지 않는다", async () => {
+  assert.equal(LIMITS.maxDepth, 3);
+  const chain = ["root", "d1", "d2", "d3"];
+  const f = fixture({
+    entrypointBody: '#!/bin/sh\necho ran > docs/deep.txt\nexit 0\n',
+    taskIds: chain,
+    maxSessions: chain.length,
+  });
+  for (let i = 1; i < chain.length; i++) spawnChild(f, chain[i - 1]!, chain[i]!);
+  assert.equal(f.kernel.getTask("d3")!.depth, LIMITS.maxDepth);
+
+  // 허용 경계: depth == maxDepth인 task의 run_process는 실제로 spawn된다.
+  const l = oneShot(f, "turn-d3", "op-d3", "d3");
+  const outcome = await executeRunProcessOperation(l.grant, l.op, l.cap);
+  assert.equal(outcome.marker, "applied");
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(readFileSync(join(f.ws, "docs/deep.txt"), "utf8").trim(), "ran");
+
+  // 거부 경계: depth 4는 **task 생성 단계에서** 닫힌다 → depth 4 task는 durable에 존재할 수 없고,
+  // 그래서 assertSpawnLimits의 depth 분기는 도달 불가능한 최후 방어선이다.
+  assert.equal(
+    codeOf(() => spawnChild(f, "d3", "d4")),
+    "depth_limit_exceeded",
+  );
+  assert.equal(f.kernel.getState().tasks.some((t) => t.depth > LIMITS.maxDepth), false);
+});
+
+test("[M5c/3C] spawn 상한: run 전체 child 32번째는 실행되고 33번째는 spawn 전에 닫힌다", async () => {
+  assert.equal(LIMITS.maxTasksPerRun, 32);
+  // task당 4 상한이 먼저 걸리므로 run 전체 상한을 보려면 여러 task가 필요하다.
+  // root(0) → c1..c4(1) → g1..g4(2). 9 task × 최대 4 = 36 > 32.
+  const fill = ["c1", "c2", "c3", "c4", "g1", "g2", "g3", "g4"];
+  const f = fixture({
+    entrypointBody: '#!/bin/sh\necho "$$" >> docs/launches.txt\nexit 0\n',
+    taskIds: ["root", ...fill],
+    maxSessions: 9,
+  });
+  // pending은 running task에서만 열 수 있고 spawn하면 parent가 waiting_children이 되므로,
+  // 각 task는 자기 child를 만들기 **전에** 채운다.
+  // (실행하지 않은 durable pending으로 카운트를 31까지 올린다 — 진짜 spawn 31번을 돌리지 않는다.)
+  fillProcessCount(f, "root", 4);
+  for (const c of ["c1", "c2", "c3", "c4"]) spawnChild(f, "root", c);
+  fillProcessCount(f, "c1", 4);
+  for (const g of ["g1", "g2", "g3", "g4"]) spawnChild(f, "c1", g);
+  for (const t of ["c2", "c3", "c4", "g1", "g2"]) fillProcessCount(f, t, 4);
+  fillProcessCount(f, "g3", 3);
+  assert.equal(runProcessCount(f), 31);
+
+  // 허용 경계: 이 operation의 pending까지 포함해 32번째 → 실제로 spawn된다.
+  const ok = oneShot(f, "turn-32", "op-32", "g4");
+  assert.equal(runProcessCount(f), 32);
+  const outcome = await executeRunProcessOperation(ok.grant, ok.op, ok.cap);
+  assert.equal(outcome.marker, "applied");
+  assert.equal(outcome.exitCode, 0);
+  assert.equal(readFileSync(join(f.ws, "docs/launches.txt"), "utf8").trim().split("\n").length, 1);
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") }); // turn을 닫는다(카운트는 그대로 32).
+  assert.equal(runProcessCount(f), 32);
+
+  // 거부 경계: 33번째는 spawn **전에** 닫힌다 — 새 프로세스도, durable 표시도 없다.
+  const over = oneShot(f, "turn-33", "op-33", "g4");
+  assert.equal(runProcessCount(f), 33);
+  assert.equal(
+    await codeOfAsync(() => executeRunProcessOperation(over.grant, over.op, over.cap)),
+    "process_spawn_limit_exceeded",
+  );
+  assert.equal(readFileSync(join(f.ws, "docs/launches.txt"), "utf8").trim().split("\n").length, 1);
+  const pending = f.kernel.getTask("g4")!.execution.pendingOperations.find((p) => p.operationId === "op-33")!;
+  assert.equal(pending.attemptedAt, null);
+});
+
 // ── deadline · 자손 정리 ────────────────────────────────────────────────────
 
 test("[M5c/3C] deadline: 손자까지 프로세스 그룹으로 정리되고 고아가 남지 않는다", async () => {
   // entrypoint가 손자를 하나 띄우고 자기도 오래 잔다. 둘 다 같은 pgid에 남는다.
   const f = fixture({
     entrypointBody: '#!/bin/sh\n/bin/sleep 30 &\necho $! > docs/grandchild.pid\n/bin/sleep 30\n',
-    timeoutMs: 300,
+    timeoutMs: 2_000,
   });
   const { op, grant, cap } = oneShot(f, "turn-1");
 
-  const code = await codeOfAsync(() => executeRunProcessOperation(grant, op, cap));
+  // 시작 장벽: 손자 pid 파일이 실제로 생긴 것을 **확인한 뒤에** deadline 만료를 기다린다.
+  // (취소 테스트와 같은 패턴. 고정 sleep이 아니라 관측이다 — spawn 폭주로 child의 첫 명령이
+  //  늦어져도 여기서 기다리므로, deadline이 `echo`보다 먼저 도는 경합이 없다.)
+  const running = executeRunProcessOperation(grant, op, cap);
+  const pidFile = join(f.ws, "docs/grandchild.pid");
+  for (let i = 0; i < 150 && !existsSync(pidFile); i++) await sleep(10);
+  assert.equal(existsSync(pidFile), true, "손자가 deadline 전에 뜨지 못했다(장벽 실패)");
+
+  const code = await codeOfAsync(() => running);
   assert.equal(code, "process_deadline_exceeded");
 
   const gpid = Number(readFileSync(join(f.ws, "docs/grandchild.pid"), "utf8").trim());
