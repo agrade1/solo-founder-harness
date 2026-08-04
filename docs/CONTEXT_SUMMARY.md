@@ -2,7 +2,26 @@
 
 최종 갱신: 2026-08-04
 
-## 최신 (2026-08-04 — **V3 M5c task 3C 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄. Task 3C 완료 · `B-F1` 폐쇄. M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-04 — **V3 M5c task 3D trusted Git 독립 리뷰 `APPROVE — A=0, B=1, C=3`. Task 3D 완료. M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+
+- worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`**(`/private/tmp`에서 이전 — 그쪽은
+  내구성이 없었고 실제로 청소기가 파일을 지웠다) · `work/m5c-autopilot` · 커밋 `b09df0e`.
+- **trusted Git**: 허용 연산 3개뿐, 전부 로컬 read-only + exit code만. remote·refspec·branch·경로·
+  메시지를 담을 필드가 API에 없어 **push/fetch/merge는 표현 불가능**. argv는 동결 상수 + `shell:false`.
+  권위 모델은 3C 선례 그대로이고 `superviseProcess`를 재사용해 두 번째 spawn 경로를 만들지 않았다.
+- **독립 리뷰가 실증했다**: `.git` mtime+size 스냅샷 전후 동일(NO-WRITE) · 적대적 repo config
+  (`fsmonitor`/`diff.external`/`pager`)를 심어도 코드 실행 0.
+- **의도된 gap**: commit-class 로컬 쓰기는 durable pending 계약(소유권 밖 닫힌 union)이 먼저라서
+  미구현이다. 다음 task가 그 계약 + stdout 캡처를 함께 가져와야 한다(`C-49`).
+- **실측**: `tsc` exit 0 · `trustedGit` **15/15**(중앙 10회 연속) · 회귀 **225/225** ·
+  managedProcess+stableController **73/73** · 누수 0 · mutation 4종 red 후 원복.
+- **열린 A는 없다.** 신규: `B-20`(gitconfig 미차단 — env 한 줄) · `C-47`/`C-48`/`C-49`.
+  기존: `B-10`·`B-11`·`B-12`·`B-13`·`B-16`·`B-17`·`B-18`·`B-19`·`B-7`·`B-9`·`C-1`·`C2`·`C-43`~`C-46`.
+  **비용순 정리는 `docs/backlog/DEFERRED_COST_ORDER.md`.**
+- **미실행**: `npm test` · acceptance 전체 · stress · live · build/dist(M5 최종 handoff 예약).
+- **다음 DAG task(미착수)**: `autopilot` CLI — M5c의 마지막.
+
+## 이전 (2026-08-04 — **V3 M5c task 3C 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄. Task 3C 완료 · `B-F1` 폐쇄. M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · `work/m5c-autopilot` · 구현 `56cf8d6` ·
   후속 `4774c43`. 구현·후속은 각각 fresh Opus 5 worker, 리뷰는 fresh Fable 5 read-only,

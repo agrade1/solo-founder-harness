@@ -1,5 +1,57 @@
 # WORKLOG.md
 
+## 2026-08-04 (V3 **M5c task 3D — trusted Git · 독립 리뷰 `APPROVE — A=0, B=1, C=3`. Task 3D 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+
+- worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`**(내구성 없는 `/private/tmp`에서 이전) ·
+  branch `work/m5c-autopilot` · 시작 HEAD `f33c1aa` · 코드 커밋 **`b09df0e`**(단일).
+  fresh Claude Opus 5 worker 1개. 중앙 오케스트레이터는 별도 Opus 5 세션이며 구현하지 않았다.
+- **변경 파일(4)**: `orchestrationKernel.ts`(+test) · `trustedGit.test.ts`(신규) · `typedExecution.ts`.
+  **신규 소스 모듈을 만들지 않았다** — `trustedGit.ts`는 두 번째 spawn 경로이거나 삭제된
+  `writeFileEffect.ts` 구멍의 재현이 될 것이라 존재 이유를 얻지 못했다. `managedProcess.ts` ·
+  `orchestrationTypes.ts` · `approvalManifest.ts` · `orchestrationStore.ts` · `schemas/*` ·
+  `stableController.*` · package/lock · docs · dist **전부 무변경**. 신규 의존성 0(stdlib만).
+- **허용 git 연산은 3개뿐이고 전부 로컬 read-only · exit code만 본다**:
+  `rev-parse --verify --quiet HEAD^{commit}` · `diff --no-ext-diff --no-textconv --quiet HEAD --` ·
+  같은 것의 `--cached` 판. 고정 prefix `-c core.fsmonitor=false -c core.hooksPath=/dev/null
+  --no-optional-locks --no-pager`.
+- **hard deny는 구조적으로 불가능하다**: remote·refspec·branch·경로·커밋 메시지를 담을 필드가
+  API에 **존재하지 않는다** → push/fetch/pull/clone/submodule/merge는 안 부르는 게 아니라
+  **표현 불가능**하다. argv는 동결 상수 배열이고 `shell: false`라 호출자 문자열이 argv에 닿지 않는다.
+  `spec.mutates === false`를 spawn 전에 단언하므로 표에 쓰기 행만 추가해도 여전히 거부된다.
+- **권위 모델은 Task 3C 선례 그대로**: kernel 사설 WeakMap 레지스트리 · **객체 참조가 권위**(spread ·
+  hand-made · `Proxy` · `Object.create` · JSON 왕복 전부 조회 실패) · live grant + 발급자 kernel
+  인스턴스 `===` · durable 재독 · A4 mark-then-re-verify(진입 → 소진 → **재독** → digest/repo 재검증 →
+  spawn) · 정리 미확인이 1차 오류를 이김(B1) · 닫힌 13종 `git_*` 코드.
+- **repo 신원**: mint 시점과 spawn 직전 **두 번** 검증 — 절대경로 · NUL 없음 ·
+  `realpathSync(root) === root`(symlink 탈출 차단) · 디렉터리 · 그 경로에 `.git` 존재.
+  대상은 항상 `this.#paths.workspaceRoot`이며 **호출자가 지정할 수 없다**.
+  `MANAGED_PROCESS_ENV`가 `GIT_*`·`HOME` 없는 동결 whitelist라 ambient 리다이렉트도 불가능하다.
+- **독립 리뷰가 정적 검토를 넘어 실증했다**: ⓐ `.git` 전 파일 mtime+size 스냅샷을 3개 쿼리 실행
+  전후 비교 → **바이트 단위 동일(NO-WRITE)** ⓑ repo `.git/config`에 `core.fsmonitor`·`diff.external`·
+  `core.pager`를 sentinel 스크립트로 심고 실행 → **코드 실행 0**(`-c`가 우선순위에서 이긴다).
+- **구현자가 스스로 신고한 3건에 대한 리뷰 판정**
+  - **durable pending 불필요 주장 → 성립.** 효과가 0이면 A4의 pending이 서술할 불확실 창이 없다.
+  - **config 잔여 → B(`B-20`), A 아님.** 오늘 도달 가능한 코드 실행 경로가 없음을 실험으로 확인.
+    수정은 **env 한 줄**(`GIT_CONFIG_NOSYSTEM=1`)이고 `managedProcess.ts` env를 다음에 만지는
+    task에서 함께 닫는다.
+  - **commit-class 쓰기 미구현 → 옳은 결정.** durable pending의 `kind`가 소유권 밖 닫힌 union이라,
+    durable 표시 없는 쓰기는 3A가 닫은 구멍의 재생성이다. 대신 **의도된 gap**이 남았고 다음 task가
+    durable pending 계약을 먼저 가져와야 한다(`C-49`).
+- **교체 assertion 2건**: 둘 다 allow-list **추가 등록**(`resolveTrustedGitCapability`를 공개 API 목록에,
+  `isGenuineTrustedGitCapability`를 attest 표면 목록에). 같은 테스트의 위조 거부 루프가 신규
+  predicate까지 검사하도록 **강화**됐다. 삭제·완화·skip 0.
+- **검증 실측(중앙 재실행)**: `tsc --noEmit` exit 0 · `trustedGit.test.ts` **15/15** ·
+  **10회 연속 전부 통과**(구현 worker는 20회 + 부하 10회 자체 통과) · 회귀 5파일 **225/225** ·
+  managedProcess + stableController **73/73** · 프로세스 누수 0 · `git status --short` = `?? node_modules`.
+  구현 worker mutation 4종(1회 소비 · git 바이너리 검증 · repo 신원 · allow-list 거부) 각각 red 확인 후 원복.
+- **정직 기록**: 구현 중 red 2건이 있었고 근본 원인을 고쳤다 — argv 로그 구분자로 쓴 `--`가 실제 argv
+  원소였던 것, 생존 프로세스 탐지가 tsx 헬퍼와 `ps` 자신을 세던 것. 3C 교훈대로 **고정 sleep 없이
+  관측 배리어만** 썼다.
+- **신규 유예**: `B-20`(system/repo gitconfig 미차단) · `C-47`(`.git` regular file 통과) ·
+  `C-48`(신원 검사 ↔ spawn TOCTOU) · `C-49`(exit-code-only 표면이 얇음 — 다음 task 계획 항목).
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · build/dist.
+- **다음 DAG task(미착수)**: `autopilot` CLI — M5c의 마지막.
+
 ## 2026-08-04 (V3 **M5c task 3C — managed process supervisor · `B-F1` 개봉 후 폐쇄 · 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄. Task 3C 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` ·

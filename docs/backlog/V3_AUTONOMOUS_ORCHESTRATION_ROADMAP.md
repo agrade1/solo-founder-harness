@@ -1816,6 +1816,52 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5c task 3D 대장 갱신 (2026-08-04 — **독립 리뷰 `APPROVE — A=0, B=1, C=3` · Task 3D 완료 · M5c/M5 미완료 · 이 절이 현행이다**)
+
+> 범위 `f33c1aa..b09df0e`. fresh Fable 5 read-only 독립 리뷰(구현 worker transcript 미전달).
+> **이 리뷰는 정적 검토에 그치지 않고 실증 실험을 했다** — ⓐ scratchpad repo에서 `.git` 전 파일의
+> mtime+size 스냅샷을 3개 쿼리 실행 전후로 비교(**바이트 단위 동일 = NO-WRITE**) ⓑ repo `.git/config`에
+> `core.fsmonitor`·`diff.external`·`core.pager`를 sentinel 스크립트로 심고 실행(**코드 실행 0**).
+> 그 외 `trustedGit` 15/15 · kernel+managedProcess+stableController **176/176** · `tsc` exit 0 직접 실행.
+
+**허용 집합은 3개뿐이고 전부 로컬 read-only다**: `rev-parse --verify --quiet HEAD^{commit}` ·
+`diff --no-ext-diff --no-textconv --quiet HEAD --` · 같은 것의 `--cached` 판. 고정 prefix
+`-c core.fsmonitor=false -c core.hooksPath=/dev/null --no-optional-locks --no-pager`.
+**remote·refspec·branch·경로·커밋 메시지를 담을 필드가 API에 없다** → push/fetch/pull/clone/
+submodule/merge는 "안 부르는" 게 아니라 **표현 불가능**하다. `spec.mutates === false`를 spawn 전에
+단언하므로 표에 쓰기 행을 추가하는 것만으로는 여전히 거부된다. 권위 모델은 Task 3C 선례 그대로
+(kernel 사설 WeakMap · 객체 참조가 권위 · 발급자 `===` · durable 재독 · A4 mark-then-re-verify) —
+독립 리뷰가 위조·재생 전수 거부와 동시 이중 소비 불가(①~④가 첫 `await` 전에 동기 실행)를 확인했다.
+`superviseProcess`를 재사용해 **두 번째 spawn 경로를 만들지 않았고** `managedProcess.ts`는 무변경이다.
+
+**리뷰어의 Q2 판정 — "durable pending 불필요" 논리는 성립한다.** 구현자가 스스로 최우선 공격
+대상으로 지목한 항목이다. 실측 결과 세 쿼리 전부 `.git`에 **아무것도 쓰지 않는다**
+(`--no-optional-locks`가 `git diff`의 기회적 index refresh를 억제하고, `rev-parse --verify`는 쓰기가
+없으며, plumbing 쿼리는 auto-gc/maintenance를 유발하지 않는다). **효과가 0이면 A4의 pending이 서술할
+불확실 창 자체가 없다.** 편법이 아니라 옳은 판단이다.
+
+**리뷰어의 Q9 판정 — commit-class 로컬 쓰기 미구현은 옳은 범위 결정이다.** durable pending의
+`kind`는 `orchestrationTypes.ts`/`schemas/`의 닫힌 union이라 이 task 소유권 밖이고, durable 표시 없이
+쓰기를 넣으면 **3A가 닫은 "효과는 있는데 durable 흔적이 없는" 구멍을 재생성**한다. 다만 M5c
+self-hosting은 결국 로컬 commit/worktree 쓰기가 필요하므로 **이 task는 의도적으로 gap을 남겼다** —
+다음 task가 **durable pending 계약을 먼저** 가져와야 하며, `mutates` 단언과 `git_mutation_unsupported`
+코드가 그 순서를 기억이 아니라 **집행**으로 강제한다.
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-20` | B (P2) | **system/repo gitconfig를 여전히 읽는다.** `GIT_CONFIG_NOSYSTEM`/`XDG_CONFIG_HOME` 미설정이라 `/etc/gitconfig`와 `.git/config`가 파싱된다. **오늘 도달 가능한 코드 실행 경로는 없다** — 코드를 실행하는 키(fsmonitor · hooks · external diff · textconv · pager)는 전부 최고 우선순위 `-c`/플래그로 강제 무력화되고, `HOME` 부재가 `~/.gitconfig`와 그 안의 `include.path`를 죽이며, 네트워크 subcommand가 0이라 `credential.helper`/`uploadpack`/`core.sshCommand`는 도달 불가다. 리뷰어가 적대적 config를 실제로 심어 **실행 0**을 확인했다. 남는 것은 *미래 git 버전이 추가할 키*의 가설적 위험이며 gitconfig 파일 쓰기 권한이 선행 조건이다 | 낮음 | read-only 쿼리 프로세스 1개 | 낮음 | **소 — env 한 줄**(`GIT_CONFIG_NOSYSTEM=1`, 선택적으로 `GIT_CONFIG_GLOBAL=/dev/null`) | **`managedProcess.ts` env를 다음에 건드리는 task**(`B-18`/`B-13`/`C-18` live-runner slice)에서 함께 닫는다 | M5c live-runner 세션 | Task 3D 독립 리뷰 F1(STATIC+EXECUTED) · `orchestrationKernel.ts` `TRUSTED_GIT_PREFIX` | open |
+| `C-47` | C (P3) | **`.git`이 regular file(worktree 포인터)이어도 통과한다.** workspace 루트에 `gitdir:` 파일을 심으면 세 쿼리가 **다른 로컬 저장소**에 대해 답한다(그 gitdir의 config도 읽는다 — `B-20`과 같은 잔여). workspace 루트 쓰기 권한이 필요하고 결과는 **잘못된 boolean 판정 1건**이다 — 변경 0 · remote 0 | 낮음 | 판정 1건 | 낮음 | 소(포인터 대상 검증) | worktree가 의미를 갖는 시점 | 다음 kernel slice | Task 3D 독립 리뷰 F2(STATIC) | open |
+| `C-48` | C (P3) | **repo 신원 검사와 spawn 사이 TOCTOU.** 검사와 `cwd` 해석 사이 마이크로초에 경로 구성요소를 symlink로 바꿔치기할 수 있다. 결과는 역시 **다른 로컬 경로에 대한 read-only 쿼리**뿐이다 | 매우 낮음 | 판정 1건 | 낮음 | 중(fd 기반 고정) | 없음(bounded) | — | Task 3D 독립 리뷰 F3(STATIC) | open |
+| `C-49` | C (P2) | **exit-code-only 표면이 self-hosting에 얇다.** `superviseProcess`가 `stdio:"ignore"`라 무엇이 dirty인지·현재 브랜치·HEAD sha를 관측할 수 없다. 게이트 술어("시도 전후 worktree가 깨끗한가")로는 충분하나, **commit 자동화를 원하는 다음 task는 stdout 캡처와 durable pending을 둘 다** 가져와야 한다. 발견이 아니라 계획으로 다루라는 취지 | 확실(다음 task) | 다음 task 범위 | 중(뒤늦게 발견하면 재설계) | 중 | `autopilot` CLI / commit 자동화 착수 전 | 다음 slice | Task 3D 독립 리뷰 F4(STATIC/EXECUTED) | open |
+
+> **확인만 하고 새로 열지 않은 것**: `git_result_unknown`은 매핑 안 된 exit code에서 **던지며 판정을
+> 만들지 않는다**(fail-closed — `exit 42` 테스트로 확인) · `TRUSTED_GIT_TIMEOUT_MS = 30_000` 하드코딩은
+> **옳은 판단**(상수 작업량 로컬 쿼리는 마일스톤 승인 정책의 대상이 아니다) · `B-18`은 `superviseProcess`
+> 경유로 **그대로 상속**되며 악화되지 않았다(`managedProcess` diff 0) · 교체 assertion 2건은 둘 다
+> allow-list **추가 등록**이고 같은 테스트의 위조 거부 루프가 신규 predicate까지 **강화**됐다 ·
+> 신규 공개 API 2종은 안전(resolver는 running task에 봉인된 enum 결박 권능만 발행 · predicate는 read-only).
+> `B-16` **미개봉** · `managedProcess.ts` **무변경**.
+
 ##### M5c task 3C 대장 갱신 (2026-08-04 — **독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄 · Task 3C 완료 · M5c/M5 미완료 · 이 절이 현행이다**)
 
 > 범위 `f2e187d..56cf8d6`(구현) + `98a0778..4774c43`(후속). fresh Fable 5 read-only 독립 리뷰

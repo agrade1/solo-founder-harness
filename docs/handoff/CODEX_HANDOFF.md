@@ -3,7 +3,42 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-08-04 — V3 **M5c task 3C · `B-F1` 폐쇄 · 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄 · Task 3C 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-08-04 — V3 **M5c task 3D trusted Git · 독립 리뷰 `APPROVE — A=0, B=1, C=3` · Task 3D 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`** · branch `work/m5c-autopilot` ·
+  시작 HEAD `f33c1aa` · 코드 커밋 **`b09df0e`**(단일). fresh Claude Opus 5 worker 1개.
+  중앙 오케스트레이터는 별도 Opus 5 세션이며 구현·리뷰를 하지 않았다.
+  **네트워크 연산 0** · 원격 push/PR/merge 0 · MCP · 패키지 설치 · 의존성/lockfile 변경 · secret ·
+  deploy · DB · production · live billing · amend/rebase/reset/stash 0 · **테스트 완화·삭제·skip 0**.
+- **변경 파일(4)**: `orchestrationKernel.ts`(+test) · `trustedGit.test.ts`(신규) · `typedExecution.ts`.
+  신규 소스 모듈 0(두 번째 spawn 경로가 될 `trustedGit.ts`를 만들지 않았다) ·
+  `managedProcess.ts`/`orchestrationTypes.ts`/`approvalManifest.ts`/`orchestrationStore.ts`/
+  `schemas/*`/`stableController.*`/package/lock/docs/dist **전부 무변경** · 신규 의존성 0.
+- **허용 git 연산 3개, 전부 로컬 read-only + exit code만**: `rev-parse --verify --quiet HEAD^{commit}` ·
+  `diff --no-ext-diff --no-textconv --quiet HEAD --` · 같은 것의 `--cached` 판.
+  **hard deny는 구조적으로 불가능** — remote/refspec/branch/경로/메시지 필드가 API에 없어
+  push·fetch·clone·merge가 **표현 불가능**하다. argv는 동결 상수 + `shell:false`.
+  `spec.mutates === false`를 spawn 전에 단언한다.
+- **권위 모델은 Task 3C 선례 그대로**(kernel 사설 WeakMap · 객체 참조가 권위 · 발급자 `===` ·
+  durable 재독 · A4 mark-then-re-verify · B1 정리 우선 · 닫힌 13종 `git_*` 코드).
+  `superviseProcess` 재사용 — 두 번째 spawn 경로 0.
+- **독립 리뷰가 실증했다**: `.git` 전 파일 mtime+size 스냅샷이 3개 쿼리 전후 **바이트 단위 동일**
+  (NO-WRITE) · 적대적 repo config(`fsmonitor`/`diff.external`/`pager`)를 심어도 **코드 실행 0**.
+  → **"durable pending 불필요" 논리 성립**(효과가 0이면 A4가 서술할 불확실 창이 없다).
+- **의도된 gap(다음 task가 받는다)**: commit-class 로컬 쓰기는 durable pending의 `kind`가 소유권 밖
+  닫힌 union이라 미구현이다. durable 표시 없는 쓰기는 3A가 닫은 구멍의 재생성이므로 **순서가 강제된다**
+  (`mutates` 단언 + `git_mutation_unsupported`). stdout 캡처도 함께 필요하다(`C-49`).
+- **검증 실측(중앙 재실행)**: `tsc --noEmit` exit 0 · `trustedGit.test.ts` **15/15**(중앙 10회 연속 ·
+  worker 20회 + 부하 10회) · 회귀 5파일 **225/225** · managedProcess+stableController **73/73** ·
+  누수 0 · mutation 4종 red 후 원복 · `git status --short` = `?? node_modules`.
+- **열린 미래 게이트**: **신규 `B-20`**(system/repo gitconfig 미차단 — 도달 가능한 코드 실행 경로는
+  오늘 없으며 수정은 env 한 줄) · **신규 `C-47`/`C-48`/`C-49`** · 기존 `B-10`(소유 마일스톤 없음) ·
+  `B-11` · `B-12` · `B-13` · `B-16`(미개봉) · `B-17` · `B-18` · `B-19` · `B-7`·`B-9`(live 하드 게이트) ·
+  `C-1` · `C2` · `C-43`~`C-46`. 열린 **A는 없다**.
+  **비용순 정리: `docs/backlog/DEFERRED_COST_ORDER.md`.**
+- **다음 DAG task(미착수)**: `autopilot` CLI — M5c의 마지막.
+
+## 이전 상태 (2026-08-04 — V3 **M5c task 3C · `B-F1` 폐쇄 · 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄 · Task 3C 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` ·
   구현 커밋 **`56cf8d6`**(base `f2e187d`) · 후속 커밋 **`4774c43`**(base `98a0778`).
