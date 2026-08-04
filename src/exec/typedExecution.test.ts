@@ -2491,13 +2491,30 @@ test("[M5c] A2: 임의 콜백으로 성공을 만드는 공개 표면이 존재�
     for (const [name, value] of Object.entries(mod)) {
       if (typeof value !== "function") continue;
       if (Object.getOwnPropertyDescriptor(value, "prototype")?.writable === false) continue;
+      // **M5c task 3C(대장 `B-F1` 개봉)**: `executeRunProcessOperation(grant, op, capability, options?)`만
+      // 인자가 2개를 넘는다. 그 3번째는 **콜백이 아니라 kernel 발급 권능**이며, 아래에서 "함수를 넣으면
+      // 거부된다"를 **실제로 실행해** 단정한다(arity 규칙보다 강한 확인이다). 그 밖의 export는 그대로다.
+      if (name === "executeRunProcessOperation") continue;
       assert.ok(value.length <= 2, `${name}은 인자 ${value.length}개를 받는다 — 콜백 표면이 아닌지 확인해야 한다`);
     }
   }
-  // `run_process`에는 성공 집행기가 **아예 없다**(권능 발급은 순수 판정 · spawn 0).
-  assert.equal("executeRunProcessOperation" in kernelModule, false);
   assert.equal(typeof kernelModule.executeWriteFileOperation, "function");
   assert.equal((kernelModule.executeWriteFileOperation as (...a: unknown[]) => unknown).length, 2);
+
+  // `run_process` 집행기는 **task 3C에서 열렸다**(그전까지 spawn 0). 열렸어도 콜백 표면은 아니다:
+  // 권능 자리에 임의 함수를 넣으면 **spawn도 영수증도 없이** 거부된다.
+  assert.equal(typeof kernelModule.executeRunProcessOperation, "function");
+  assert.equal(typeof typedModule.executeRunProcessOperation, "function");
+  const f = fixture();
+  const [pop, pgrant] = processPermit(f);
+  for (const callback of [() => ({ marker: "applied", path: null, resultSha256: null, exitCode: 0 }), () => undefined]) {
+    await assert.rejects(
+      (kernelModule.executeRunProcessOperation as (...a: unknown[]) => Promise<unknown>)(pgrant, pop, callback),
+      (e: unknown) => (e as OrchestrationError).code === "process_capability_invalid",
+    );
+  }
+  assert.equal(f.kernel.getTask("root")!.execution.operationReceipts.length, 0);
+  assert.equal(f.kernel.getTask("root")!.execution.pendingOperations[0].attemptedAt, null);
 });
 
 // ── 7d. 직접 import 우회 · 발급 인스턴스 격리 (3A 5차 리비전 A3/A2) ────────────
@@ -2556,6 +2573,9 @@ test("[M5c] A3: 위조 authority로 파일 시스템 효과에 도달하는 impo
           let out: unknown;
           try {
             out = (value as (...a: unknown[]) => unknown)(...args);
+            // **비동기 집행기도 같은 관문을 지난다**(M5c task 3C — `executeRunProcessOperation`이 열렸다).
+            // 거부를 promise로 미루는 것으로 이 sweep을 빠져나갈 수 없다.
+            if (typeof (out as { then?: unknown })?.then === "function") out = await out;
           } catch {
             continue; // fail closed = 정답
           }

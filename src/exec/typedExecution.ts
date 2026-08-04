@@ -37,17 +37,17 @@
  * **오류·영수증에 내용은 담지 않는다.** 계획 본문 · 파일 내용 · prompt · stdout/stderr · argv · secret ·
  * 핸들 · 절대 경로는 오류 메시지에도 영수증에도 로그에도 들어가지 않는다 — 필드 이름과 규칙만 적는다.
  */
-import { type ControllerAction, OrchestrationError } from "./orchestrationTypes.js";
+import { OrchestrationError } from "./orchestrationTypes.js";
 import {
   DISPATCH_AUTHORITY_CODES,
+  PROCESS_EFFECT_CODES,
   WRITE_EFFECT_CODES,
   executeWriteFileOperation,
   readDispatchAuthority,
-  resolveApprovedOperation,
   resolveWriteAuthority,
   type OperationOutcome,
 } from "./orchestrationKernel.js";
-import type { TypedWriteFileOperation, TypedRunProcessOperation } from "./typedPlan.js";
+import type { TypedWriteFileOperation } from "./typedPlan.js";
 import type { ApprovedOperation } from "./orchestrationTypes.js";
 
 // 계획 계약은 순수 모듈이 정본이다. 기존 호출부·테스트 호환을 위해 같은 이름으로 재수출한다.
@@ -99,15 +99,18 @@ export const TYPED_EXECUTION_CODES = [
    * - `write_cleanup_unconfirmed` — fd 반납을 확인하지 못했다(1차 오류에 가려지지 않는다).
    */
   ...WRITE_EFFECT_CODES,
+  /**
+   * `run_process` 집행 단계의 닫힌 코드(정본은 `orchestrationKernel.PROCESS_EFFECT_CODES` — 대장 `B-F1`):
+   * `process_capability_invalid` / `process_capability_spent` / `process_spawn_limit_exceeded` /
+   * `process_executable_untrusted` / `process_digest_mismatch` / `process_launch_failed` /
+   * `process_deadline_exceeded` / `process_cleanup_unconfirmed`.
+   */
+  ...PROCESS_EFFECT_CODES,
   ...DISPATCH_AUTHORITY_CODES,
 ] as const;
 export type TypedExecutionCode = (typeof TYPED_EXECUTION_CODES)[number];
 
 // ── 권위 해석 (deny-by-default · 부수 효과 0) ─────────────────────────────────
-
-function denied(what: string): OrchestrationError {
-  return new OrchestrationError("operation_denied", `승인되지 않은 typed operation이다: ${what}`);
-}
 
 /**
  * `write_file` 권위 해석(공개 진입점 — **봉인 permit/grant가 필요하다**).
@@ -125,81 +128,19 @@ export function resolveWriteFileAuthority(
  *
  * 이전 판은 `ProcessLaunchSpec`이라는 **공개 구조적 인터페이스**였다: 실행 파일 경로 · digest ·
  * 파생 argv가 전부 필드로 노출됐고, 그래서 ⓐ 호출자가 같은 모양의 객체를 **직접 만들 수** 있었으며
- * ⓑ 한 번 받은 명세를 취소·만료·attempt 교체 **이후에 재생**할 수 있었다. 미래 launcher가 그 명세를
- * 그대로 믿으면 그 둘이 곧 로컬 실행 권위가 된다.
+ * ⓑ 한 번 받은 명세를 취소·만료·attempt 교체 **이후에 재생**할 수 있었다.
  *
- * 지금 돌려주는 값은 **감사용 신원만** 담은 동결 객체이고, 실행 대상(node 경로·entrypoint·digest·
- * timeout·action data)은 **이 모듈 사설 레코드에만** 있다. 권위는 등록부 연결에서만 나오므로 전개
- * 사본(`{...cap}`)·수제 객체·`Proxy`는 아무것도 얻지 못한다.
- *
- * **이 세션은 launcher를 만들지 않는다(spawn 0).** 미래 launcher가 지켜야 하는 계약은 명시적이다
- * (대장 `B-F1` — 첫 managed-launcher 소비자 전에 필수): ① 이 권능을 **한 번** 소비하고
- * ② 소비 시점에 **현재 durable 상태를 다시 읽고**(살아 있는 pending/grant 확인)
- * ③ spawn 직전에 node·entrypoint **두 파일의 digest를 모두** 재검증한다
- * (`executionBoundary.verifyApprovedExecutable`). 그 소비 함수는 launcher 슬라이스가 소유한다 —
- * 여기서 미리 열지 않는다(열어 두는 순간 그것이 곧 공개 실행 권위다).
+ * **M5c task 3C에서 등록부·발급·소비가 전부 `orchestrationKernel.ts`로 갔다**(대장 `B-F1` 개봉).
+ * 이유는 A3가 `writeFileEffect.ts`를 없앤 것과 같다: 소비자(진짜 spawn)가 kernel 밖에 있으면 그 함수는
+ * **권능을 인자로 받는 공개 함수**가 되고, 위조한 구조적 권능 하나가 곧 로컬 실행 권위가 된다.
+ * 여기서는 계획·호출부 호환을 위해 **이름만** 재수출한다.
  */
-export interface ProcessLaunchCapability {
-  readonly operationId: string;
-  readonly authorityId: string;
-  readonly runId: string;
-  readonly taskId: string;
-  readonly attemptId: string;
-  readonly turnId: string;
-}
-
-/** 권능 뒤에 숨은 실제 실행 명세(모듈 사설 — 밖으로 나가는 통로가 없다). */
-interface LaunchRecord {
-  executable: string;
-  sha256: string;
-  entrypoint: string;
-  entrypointSha256: string;
-  action: ControllerAction;
-  planPath: string;
-  timeoutMs: number;
-  spent: boolean;
-}
-
-const GENUINE_LAUNCH_CAPABILITIES = new WeakMap<object, LaunchRecord>();
-
-/**
- * `run_process` 권위 해석. **spawn하지 않고 grant도 소비하지 않는다**(3A 3차 리비전 A2):
- * 아무것도 실행하지 않는 계획 단계가 "집행했다"는 상태를 만들면 그것만으로 성공 영수증이 나왔다.
- * 지금 이 함수는 **순수 판정**이며(`readDispatchAuthority`), `run_process`에는 **성공 집행기가 아예
- * 없다** — kernel에 `executeRunProcessOperation` 같은 진입점이 존재하지 않으므로 pending은
- * `failOperation(denied|failed)` 또는 safety-only 정합화로만 닫힌다. **성공을 만들 통로가 없다.**
- */
-export function resolveProcessLaunchCapability(op: TypedRunProcessOperation, handle: unknown): ProcessLaunchCapability {
-  const auth = readDispatchAuthority(handle, op);
-  const approved = resolveApprovedOperation(op, auth);
-  if (approved.kind !== "run_process") throw denied("승인 레코드의 kind와 다르다");
-  const node = auth.manifest.executionAuthority.node;
-  const entry = auth.manifest.executionAuthority.controllerEntrypoint;
-  const capability: ProcessLaunchCapability = Object.freeze({
-    operationId: op.operationId,
-    authorityId: op.authorityId,
-    runId: auth.runId,
-    taskId: auth.taskId,
-    attemptId: auth.attemptId,
-    turnId: auth.turnId,
-  });
-  GENUINE_LAUNCH_CAPABILITIES.set(capability, {
-    executable: node.path,
-    sha256: node.sha256,
-    entrypoint: entry.path,
-    entrypointSha256: entry.sha256,
-    action: approved.action,
-    planPath: approved.data.planPath,
-    timeoutMs: approved.timeoutMs,
-    spent: false,
-  });
-  return capability;
-}
-
-/** 이 모듈이 발급한 진짜 실행 권능인가(테스트·감사용 판정 — 실행 명세는 돌려주지 않는다). */
-export function isGenuineLaunchCapability(v: unknown): boolean {
-  return typeof v === "object" && v !== null && GENUINE_LAUNCH_CAPABILITIES.has(v);
-}
+export {
+  executeRunProcessOperation,
+  isGenuineLaunchCapability,
+  resolveProcessLaunchCapability,
+} from "./orchestrationKernel.js";
+export type { ProcessLaunchCapability } from "./orchestrationKernel.js";
 
 // ── write_file 집행 (kernel 고정 진입점에 대한 얇은 이름) ─────────────────────
 

@@ -107,6 +107,7 @@ import {
 import {
   OrchestrationKernel,
   attestOrchestrationKernel,
+  isGenuineLaunchCapability,
   createOrchestrationRun,
   openOrchestrationRun,
 } from "./orchestrationKernel.js";
@@ -2613,9 +2614,15 @@ test("[M5b] A2: 구조적으로 같은 위조 kernel은 증명을 받지 못한�
   // ⓖ 발급기·토큰·factory는 export되어 있지 않다 — 나가는 것은 판정 함수 하나뿐이다.
   assert.deepEqual(
     Object.keys(kernelModule).filter((key) => /attest|issue|token|genuine|brand/i.test(key)),
-    ["attestOrchestrationKernel"],
+    // `isGenuineLaunchCapability`는 M5c task 3C에서 `typedExecution.ts`에서 **옮겨온** 판정 함수다
+    // (대장 `B-F1` — 소비자가 kernel 안에 있어야 해서 등록부째 옮겼다). `attest…`와 같은 부류로
+    // **읽기 전용 판정**이며 발급기가 아니다 — 아래에서 실제로 아무것도 만들지 못함을 단정한다.
+    ["attestOrchestrationKernel", "isGenuineLaunchCapability"],
     "임의 객체를 진짜 kernel로 만들어 줄 표면이 늘었다",
   );
+  for (const v of [{}, { operationId: "op-1" }, k, new Proxy({}, {}), null, "cap", 1, () => undefined]) {
+    assert.equal(isGenuineLaunchCapability(v), false, `${String(v)}가 실행 권능으로 인정됐다`);
+  }
 });
 
 test("[M4a] 같은 runId로 create를 다시 부르면 거부한다(조용한 덮어쓰기 금지)", () => {

@@ -69,6 +69,7 @@ import {
   AUTOPILOT_MARKERS,
   CENTRAL_MESSAGE_TYPES,
   type Clock,
+  type ControllerAction,
   type DeliveryMarker,
   DELIVERY_MARKERS,
   EMPTY_EVENT_AUDIT,
@@ -108,6 +109,8 @@ import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import { approvedOperationFor, assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 import { MAX_PROGRESS_STEP_CHARS, MAX_WORKER_EVENTS, type TypedExecutionPlan, type TypedOperation } from "./autopilotTypes.js";
 import { validateTypedExecutionPlan } from "./typedPlan.js";
+import { verifyApprovedExecutable } from "./executionBoundary.js";
+import { superviseProcess } from "./managedProcess.js";
 import {
   OPERATION_RECEIPT_MARKERS,
   type RunPaths,
@@ -580,15 +583,25 @@ function dispatchDenied(code: DispatchAuthorityCode, message: string): Orchestra
  * 7. manifest canonical digest가 durable `accounting.approvalDigest`와 같은가.
  */
 export function readDispatchAuthority(handle: unknown, op: TypedOperation): Readonly<DispatchAuthority> {
-  // 순수 판정에는 permit도 grant도 쓸 수 있다(grant는 **소진하지 않는다** — 효과가 아니기 때문이다).
+  return dispatchFrom(handle, op).authority;
+}
+
+/**
+ * `readDispatchAuthority`와 **같은 판정**이되 발급자 신원(`permitRecord.issuer`)까지 돌려주는 사설 형태.
+ * 순수 판정에는 permit도 grant도 쓸 수 있다(grant는 **소진하지 않는다** — 효과가 아니기 때문이다).
+ */
+function dispatchFrom(
+  handle: unknown,
+  op: TypedOperation,
+): { authority: Readonly<DispatchAuthority>; task: OrchestrationTask; permitRecord: PermitRecord } {
   const asGrant = typeof handle === "object" && handle !== null ? GENUINE_GRANTS.get(handle) : undefined;
   if (asGrant !== undefined) {
     if (asGrant.op !== op) {
       throw dispatchDenied("dispatch_operation_unbound", "execution grant가 이 operation에 묶여 있지 않다");
     }
-    return authorityFromPermit(asGrant.permit, op).authority;
+    return authorityFromPermit(asGrant.permit, op);
   }
-  return authorityFromPermit(handle, op).authority;
+  return authorityFromPermit(handle, op);
 }
 
 /**
@@ -642,6 +655,275 @@ export function executeWriteFileOperation(grant: unknown, op: TypedWriteFileOper
     path: produced.path === null ? null : normalizeWorkspacePath(produced.path, "effect outcome path"),
     resultSha256: produced.resultSha256 === null ? null : assertSha256Local(produced.resultSha256),
     exitCode: produced.exitCode === null ? null : boundedExit(produced.exitCode),
+  });
+  rec.state = "attempted";
+  const handle: OperationOutcome = Object.freeze({
+    operationId: rec.op.operationId,
+    kind: rec.op.kind,
+    authorityId: rec.op.authorityId,
+    ...rec.outcome,
+  });
+  GENUINE_OUTCOMES.set(handle, rec);
+  return handle;
+}
+
+// ── run_process 실행 권능 + 고정 집행기 (V3 M5c task 3C · 대장 `B-F1` 개봉) ───
+
+/**
+ * **이 등록부가 kernel 모듈 안에 있는 이유**(A2/A3와 같은 이유). 권능을 `typedExecution.ts`에 두면
+ * 그것을 소비하는 집행기는 **권능을 인자로 받는 공개 함수**가 될 수밖에 없고, 그 순간 위조한 구조적
+ * 권능 하나가 곧 로컬 실행 권위가 된다(4차 판이 `writeFileEffect.ts`로 겪은 바로 그 결함이다).
+ * 지금은 grant 등록부(`GENUINE_GRANTS`)와 **같은 모듈의 `WeakMap`**이므로, 권능의 실체에 닿는 방법은
+ * 이 모듈이 발급한 **바로 그 객체 참조**를 들고 있는 것뿐이다 — 전개 사본 · 수제 객체 · `Proxy` ·
+ * durable 문자열에서 재구성한 값은 전부 조회 자체가 실패한다. `typedExecution.ts`는 이름만 재수출한다.
+ */
+export interface ProcessLaunchCapability {
+  readonly operationId: string;
+  readonly authorityId: string;
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly turnId: string;
+}
+
+/** 권능 뒤에 숨은 실제 실행 명세(모듈 사설 — 밖으로 나가는 통로가 없다). */
+interface LaunchRecord {
+  /** 이 권능을 발급한 kernel 인스턴스 자체(A2 — 다른 인스턴스는 이 권능으로 spawn할 수 없다). */
+  issuer: KernelIssuer;
+  executable: string;
+  sha256: string;
+  entrypoint: string;
+  entrypointSha256: string;
+  action: ControllerAction;
+  planPath: string;
+  timeoutMs: number;
+  /** **정확히 한 번**만 false → true가 된다. 되돌리는 통로가 없다(재생 불가). */
+  spent: boolean;
+}
+
+const GENUINE_LAUNCH_CAPABILITIES = new WeakMap<object, LaunchRecord>();
+
+/**
+ * `run_process` 권위 해석. **spawn하지 않고 grant도 소비하지 않는다**(3A 3차 리비전 A2) — 순수 minting이며
+ * 몇 번을 불러도 상태를 만들지 않는다. 실제 실행은 `executeRunProcessOperation()` 하나뿐이고, 그것이
+ * 여기서 발급한 권능을 **정확히 한 번** 소비한다(`B-F1` ①).
+ */
+export function resolveProcessLaunchCapability(op: TypedRunProcessOperation, handle: unknown): ProcessLaunchCapability {
+  const { authority: auth, permitRecord } = dispatchFrom(handle, op);
+  const approved = resolveApprovedOperation(op, auth);
+  if (approved.kind !== "run_process") throw operationDenied("승인 레코드의 kind와 다르다");
+  const node = auth.manifest.executionAuthority.node;
+  const entry = auth.manifest.executionAuthority.controllerEntrypoint;
+  const capability: ProcessLaunchCapability = Object.freeze({
+    operationId: op.operationId,
+    authorityId: op.authorityId,
+    runId: auth.runId,
+    taskId: auth.taskId,
+    attemptId: auth.attemptId,
+    turnId: auth.turnId,
+  });
+  GENUINE_LAUNCH_CAPABILITIES.set(capability, {
+    issuer: permitRecord.issuer,
+    executable: node.path,
+    sha256: node.sha256,
+    entrypoint: entry.path,
+    entrypointSha256: entry.sha256,
+    action: approved.action,
+    planPath: approved.data.planPath,
+    timeoutMs: approved.timeoutMs,
+    spent: false,
+  });
+  return capability;
+}
+
+/** 이 모듈이 발급한 진짜 실행 권능인가(테스트·감사용 판정 — 실행 명세는 돌려주지 않는다). */
+export function isGenuineLaunchCapability(v: unknown): boolean {
+  return typeof v === "object" && v !== null && GENUINE_LAUNCH_CAPABILITIES.has(v);
+}
+
+/** `run_process` 집행 단계가 낼 수 있는 **안정 오류 코드 전부**(닫힌 목록 — 대장 `B-F1`). */
+export const PROCESS_EFFECT_CODES = [
+  /** 권능이 이 모듈 발급이 아니거나(구조적 위조·재구성·proxy) 이 grant/operation에 묶여 있지 않다. */
+  "process_capability_invalid",
+  /** 이미 소비된 권능을 다시 쓰려 했다(재생 — 되돌릴 통로가 없다). */
+  "process_capability_spent",
+  /** spawn 상한(task당 child 4 · depth 3 · run당 32)을 넘었다. **spawn 전에** 닫힌다. */
+  "process_spawn_limit_exceeded",
+  /** node·entrypoint가 spawn 직전 재검증에서 신뢰 조건을 잃었다(부재·symlink·권한·비일반 파일). */
+  "process_executable_untrusted",
+  /** **승인 시점과 spawn 시점 사이에 digest가 달라졌다**(교체된 바이너리·entrypoint). spawn 0. */
+  "process_digest_mismatch",
+  /** spawn 자체가 실패했다(플랫폼·exec). */
+  "process_launch_failed",
+  /** deadline·취소로 종료됐다 — 외부 효과는 일어났을 수 있으므로 성공 영수증이 없다. */
+  "process_deadline_exceeded",
+  /** **자손이 사라진 것을 확인하지 못했다.** 1차 오류에 가려지지 않는다(B1 계약). */
+  "process_cleanup_unconfirmed",
+] as const;
+export type ProcessEffectCode = (typeof PROCESS_EFFECT_CODES)[number];
+
+function processDenied(code: ProcessEffectCode, what: string): OrchestrationError {
+  return new OrchestrationError(code, what);
+}
+
+/** 이 task가 지금까지 **연 `run_process` 수**(영수증 + 미확정 pending — durable에서만 센다). */
+function launchedProcesses(task: OrchestrationTask): number {
+  return (
+    task.execution.operationReceipts.filter((r) => r.kind === "run_process").length +
+    task.execution.pendingOperations.filter((p) => p.kind === "run_process").length
+  );
+}
+
+/**
+ * **spawn 상한 3종을 spawn 전에 닫는다**(로드맵 §5: task당 child 4 · child depth 최대 3(root=0) ·
+ * run당 task 32). 세는 근거는 **현재 durable state**뿐이라 재시작해도 상한이 다시 열리지 않는다
+ * (in-memory 카운터를 만들지 않는 이유다). 지금 집행하려는 operation의 pending은 이미 커밋돼 있으므로
+ * 이 수에 포함되고, 그래서 비교는 `>`다(4번째까지 허용, 5번째 거부).
+ */
+function assertSpawnLimits(state: OrchestrationRunState, task: OrchestrationTask): void {
+  if (task.depth > LIMITS.maxDepth) {
+    throw processDenied("process_spawn_limit_exceeded", `child depth 상한은 ${LIMITS.maxDepth}이다`);
+  }
+  if (state.tasks.length > LIMITS.maxTasksPerRun) {
+    throw processDenied("process_spawn_limit_exceeded", `run당 task는 ${LIMITS.maxTasksPerRun}개까지다`);
+  }
+  if (launchedProcesses(task) > LIMITS.maxChildrenPerTask) {
+    throw processDenied("process_spawn_limit_exceeded", `task당 child는 ${LIMITS.maxChildrenPerTask}개까지다`);
+  }
+  let runTotal = 0;
+  for (const t of state.tasks) runTotal += launchedProcesses(t);
+  if (runTotal > LIMITS.maxTasksPerRun) {
+    throw processDenied("process_spawn_limit_exceeded", `run당 child는 ${LIMITS.maxTasksPerRun}개까지다`);
+  }
+}
+
+/**
+ * **spawn 직전 digest 재검증**(`B-F1` ④). 승인 시점이 아니라 **지금** node·entrypoint 두 파일을 각각
+ * 한 번만 열어 정규 경로·비symlink·일반 파일·실행 비트·타인 쓰기 없음·**승인 digest 일치**를 본다
+ * (`verifyApprovedExecutable`). 비교 대상은 **현재 durable manifest**이고, 권능 발급 시점에 적어 둔
+ * digest와도 대조한다 → 승인과 spawn 사이에 manifest가 바뀌었든 파일이 바뀌었든 여기서 멈춘다.
+ */
+function verifyLaunchTargets(auth: DispatchAuthority, launch: LaunchRecord): { node: string; entrypoint: string } {
+  const codes = {
+    path: "process_executable_untrusted",
+    invalid: "process_executable_untrusted",
+    identity: "process_executable_untrusted",
+    digest: "process_digest_mismatch",
+  };
+  const node = auth.manifest.executionAuthority.node;
+  const entry = auth.manifest.executionAuthority.controllerEntrypoint;
+  if (node.path !== launch.executable || node.sha256 !== launch.sha256) {
+    throw processDenied("process_digest_mismatch", "승인된 node가 권능 발급 이후에 바뀌었다");
+  }
+  if (entry.path !== launch.entrypoint || entry.sha256 !== launch.entrypointSha256) {
+    throw processDenied("process_digest_mismatch", "승인된 controller entrypoint가 권능 발급 이후에 바뀌었다");
+  }
+  verifyApprovedExecutable(node, "executionAuthority.node", codes);
+  verifyApprovedExecutable(entry, "executionAuthority.controllerEntrypoint", codes);
+  return { node: node.path, entrypoint: entry.path };
+}
+
+/**
+ * **`run_process` operation 1건의 고정 집행 진입점 — 이 시스템의 첫 진짜 spawn**(대장 `B-F1` 개봉).
+ *
+ * `executeWriteFileOperation`과 **같은 순서**이고, 그 위에 프로세스에만 필요한 게이트가 얹힌다:
+ *
+ * 1. **권능을 정확히 한 번 소비한다**(`B-F1` ①). 살아 있는 `WeakMap` 조회이므로 위조·재구성·전개 사본은
+ *    조회에서 죽고, `spent`는 되돌릴 통로가 없어 **재생으로 복구되지 않는다**. 발급 인스턴스(`issuer`)와
+ *    grant의 발급 인스턴스를 `===`로 대조하고, 권능이 담은 run/task/attempt/turn/operation 신원이
+ *    grant의 것과 전부 같아야 한다 → 다른 turn·다른 attempt의 권능을 끌어다 쓸 수 없다.
+ * 2. 살아 있는 grant인가 · 아직 소진되지 않았는가 · **바로 이 operation**인가(`B-F1` ②).
+ * 3. `authorityFromPermit`로 **현재 durable 상태를 다시 읽는다**(`B-F1` ③) — in-memory 스냅샷은
+ *    권위가 아니다. 그 state로 spawn 상한을 닫는다(`process_spawn_limit_exceeded` — **효과 0 · 표시 0**).
+ * 4. **`attemptedAt`을 durable하게 먼저 적고**(A4) grant를 다시 못 쓰게 막은 뒤,
+ * 5. **표시 커밋 이후의 권위로만** 진행한다: durable state 재독 → node·entrypoint **digest 재검증**
+ *    (`B-F1` ④) → 그 다음에야 spawn한다. 여기서 거부되면 **spawn 0 · 성공 영수증 0**이고, pending은
+ *    보수적으로 attempted로 남아 `reconcileUncertainOperation()`의 `outcome_unknown`으로만 닫힌다.
+ * 6. 정리 판정이 1차 오류를 이긴다(B1): 자손이 사라진 것을 **관측하지 못하면**
+ *    `process_cleanup_unconfirmed`이며, deadline 오류보다 **먼저** 던진다.
+ */
+export async function executeRunProcessOperation(
+  grant: unknown,
+  op: TypedRunProcessOperation,
+  capability: unknown,
+  options: { signal?: AbortSignal } = {},
+): Promise<Readonly<OperationOutcome>> {
+  // ① **권능 게이트가 가장 먼저다**: 재생 시도는 grant 상태에 가려지지 않고 자기 코드로 보고된다.
+  const launch =
+    typeof capability === "object" && capability !== null ? GENUINE_LAUNCH_CAPABILITIES.get(capability) : undefined;
+  if (launch === undefined) {
+    throw processDenied("process_capability_invalid", "실행 권능이 kernel 발급 값이 아니다");
+  }
+  if (launch.spent) {
+    throw processDenied("process_capability_spent", "이미 소비된 실행 권능이다(재생 금지)");
+  }
+
+  // ② grant — write 경로와 같은 계약.
+  const rec = genuineGrant(grant);
+  if (rec.state !== "issued") {
+    throw dispatchDenied("dispatch_grant_spent", "이미 소진된 execution grant다(중복 집행·재사용 금지)");
+  }
+  if ((rec.op as TypedOperation) !== (op as unknown as TypedOperation)) {
+    throw dispatchDenied("dispatch_operation_unbound", "execution grant가 이 operation에 묶여 있지 않다");
+  }
+  if (rec.op.kind !== "run_process") {
+    throw dispatchDenied("dispatch_operation_unbound", "이 진입점은 run_process operation 전용이다");
+  }
+  const cap = capability as ProcessLaunchCapability;
+  if (
+    launch.issuer !== rec.issuer ||
+    cap.operationId !== op.operationId ||
+    cap.authorityId !== op.authorityId ||
+    cap.runId !== rec.permit.runId ||
+    cap.taskId !== rec.permit.taskId ||
+    cap.attemptId !== rec.permit.attemptId ||
+    cap.turnId !== rec.permit.turnId
+  ) {
+    throw processDenied("process_capability_invalid", "실행 권능이 이 grant의 신원에 묶여 있지 않다");
+  }
+
+  // ③ 진입 자격 + durable state 재독. 여기서 거부되면 durable 표시조차 남지 않는다(거짓 불확실 0).
+  {
+    const entry = authorityFromPermit(rec.permit, rec.op);
+    assertSpawnLimits(entry.permitRecord.readState(), entry.task);
+  }
+
+  // ④ **효과보다 먼저** 권능을 태우고 durable에 적는다. 순서가 계약이다.
+  launch.spent = true;
+  rec.markAttempted();
+  rec.state = "errored";
+
+  // ⑤ 표시 커밋 **이후의** 권위로만 집행한다(A4) — durable 재독이 여기서 한 번 더 일어난다.
+  const { authority } = authorityFromPermit(rec.permit, rec.op);
+  const approved = resolveApprovedOperation(op, authority);
+  if (approved.kind !== "run_process") throw operationDenied("승인 레코드의 kind와 다르다");
+  // spawn **직전** digest 재검증.
+  const target = verifyLaunchTargets(authority, launch);
+  const policy = authority.manifest.autopilotPolicy;
+
+  const supervised = await superviseProcess({
+    executable: target.node,
+    args: [target.entrypoint, approved.action, approved.data.planPath],
+    cwd: authority.workspaceRoot,
+    timeoutMs: approved.timeoutMs,
+    termGraceMs: policy.cleanupTermGraceMs,
+    killGraceMs: policy.cleanupKillGraceMs,
+    signal: options.signal,
+  });
+
+  // ⑥ **정리 미확인이 1차 오류를 이긴다**(B1).
+  if (!supervised.cleanupConfirmed) {
+    throw processDenied("process_cleanup_unconfirmed", "관리 프로세스의 자손이 사라진 것을 확인하지 못했다");
+  }
+  if (supervised.terminatedBy !== "exit") {
+    throw processDenied("process_deadline_exceeded", `관리 프로세스를 ${supervised.terminatedBy}로 종료했다`);
+  }
+
+  rec.outcome = Object.freeze({
+    marker: "applied" as const,
+    path: null,
+    resultSha256: null,
+    exitCode: supervised.exitCode === null ? null : boundedExit(supervised.exitCode),
   });
   rec.state = "attempted";
   const handle: OperationOutcome = Object.freeze({
