@@ -936,6 +936,351 @@ export async function executeRunProcessOperation(
   return handle;
 }
 
+// ── trusted Git (V3 M5c task 3D · 대장 `C-26`) ────────────────────────────────
+
+/**
+ * **하드 deny가 절대적이라는 것이 이 절의 설계를 전부 정한다.**
+ * `AGENTS.md`의 hard deny(원격 저장소 직접 쓰기 · push · PR/merge 자동화 · production deploy ·
+ * live billing)는 "부르지 않는다"가 아니라 **표현할 수 없다**여야 한다. 그래서 trusted Git은
+ * `PROCESS_EFFECT_CODES`·`CONTROLLER_ACTIONS`와 같은 **닫힌 집합** 규율을 그대로 쓴다:
+ *
+ * - 호출자가 고를 수 있는 것은 `TRUSTED_GIT_QUERIES`의 **enum 값 하나**뿐이다.
+ * - 그 enum이 가리키는 **argv 배열은 동결된 상수**다. 브랜치·경로·메시지·remote·refspec을
+ *   담을 **필드가 존재하지 않으므로** 인자 주입도 원격 조작도 표현할 수 없다.
+ * - 집행기는 spawn 직전에 `spec.mutates`가 false임을 **다시 단정**한다. 변경 계열 git을 이 표에
+ *   추가하는 것만으로는 실행되지 않는다 — durable pending(A4 mark) 계약을 먼저 갖춰야 한다.
+ *
+ * **왜 등록부와 집행기가 kernel 모듈 안에 있는가**: Task 3C 선례(`DECISIONS.md` 2026-08-04) 그대로다.
+ * 소비자가 kernel 밖에 살면 권능은 **공개 함수의 인자**가 되고, 그 형태가 A3가 삭제한
+ * `writeFileEffect.ts` 구멍이다. 두 번째 패턴을 만들지 않는다.
+ *
+ * **왜 stdout을 읽지 않는가**: 실제 spawn은 `managedProcess.superviseProcess` 하나뿐이고(두 번째 spawn
+ * 경로를 만들지 않는다 — 자손 정리·deadline·취소가 거기 붙어 있다) 그 감독자는 `stdio: "ignore"`다.
+ * 그래서 닫힌 집합은 **종료 코드로 답하는 술어 질의**만 담는다. 종료 코드 → 판정도 질의마다 닫혀 있고,
+ * 표에 없는 코드는 성공이 아니라 `git_result_unknown`이다(결과를 지어내지 않는다).
+ */
+export const TRUSTED_GIT_QUERIES = ["repo_has_head", "worktree_tracked_clean", "index_clean"] as const;
+export type TrustedGitQuery = (typeof TRUSTED_GIT_QUERIES)[number];
+
+interface TrustedGitSpec {
+  /** **동결된 argv 상수.** 호출자 문자열이 여기에 들어오는 통로가 없다(shell도 보간도 없다). */
+  readonly args: readonly string[];
+  /** 저장소를 바꾸는가. 닫힌 집합은 **전부 false**이고 집행기가 spawn 직전에 다시 단정한다. */
+  readonly mutates: boolean;
+  /** 종료 코드 → 판정. **여기 없는 코드는 성공이 아니다.** */
+  readonly verdicts: Readonly<Record<number, boolean>>;
+}
+
+/**
+ * 모든 질의에 붙는 고정 전치 인자. 사용자·시스템 config가 **프로그램을 실행하게 만드는 축**을 끈다
+ * (fsmonitor hook · hooksPath · external diff · textconv). `HOME`은 `MANAGED_PROCESS_ENV`에 없으므로
+ * `~/.gitconfig`는 애초에 읽히지 않고, `GIT_DIR`/`GIT_WORK_TREE` 등 `GIT_*`도 상속되지 않는다.
+ */
+const TRUSTED_GIT_PREFIX: readonly string[] = Object.freeze([
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.hooksPath=/dev/null",
+  "--no-optional-locks",
+  "--no-pager",
+]);
+
+const CLEAN_VERDICTS: Readonly<Record<number, boolean>> = Object.freeze({ 0: true, 1: false });
+
+/**
+ * **허용된 git 호출 전부**(닫힌 allow-list — 여기 없는 것은 `git_query_unsupported`로 거부된다).
+ * 셋 다 **로컬 · 읽기 전용 · 네트워크 0**이다: 원격을 이름으로도 refspec으로도 담을 수 없고,
+ * `fetch`/`pull`/`push`/`remote`/`submodule`/`clone`/`merge`/`rebase`/`commit`/`tag`는 표에 없다.
+ */
+const TRUSTED_GIT_SPECS: Readonly<Record<TrustedGitQuery, TrustedGitSpec>> = Object.freeze({
+  /** HEAD가 실제 커밋으로 풀리는가(0) / unborn 브랜치인가(1). */
+  repo_has_head: Object.freeze({
+    args: Object.freeze([...TRUSTED_GIT_PREFIX, "rev-parse", "--verify", "--quiet", "HEAD^{commit}"]),
+    mutates: false,
+    verdicts: CLEAN_VERDICTS,
+  }),
+  /** 추적 파일이 HEAD와 같은가(0 = clean) / 다른가(1). */
+  worktree_tracked_clean: Object.freeze({
+    args: Object.freeze([...TRUSTED_GIT_PREFIX, "diff", "--no-ext-diff", "--no-textconv", "--quiet", "HEAD", "--"]),
+    mutates: false,
+    verdicts: CLEAN_VERDICTS,
+  }),
+  /** index가 HEAD와 같은가(0 = staged 변경 없음) / 다른가(1). */
+  index_clean: Object.freeze({
+    args: Object.freeze([
+      ...TRUSTED_GIT_PREFIX,
+      "diff",
+      "--no-ext-diff",
+      "--no-textconv",
+      "--quiet",
+      "--cached",
+      "HEAD",
+      "--",
+    ]),
+    mutates: false,
+    verdicts: CLEAN_VERDICTS,
+  }),
+});
+
+/** git 질의 1건의 wall deadline. 승인 정책이 고를 값이 아니다(질의는 상수 작업량이다). */
+const TRUSTED_GIT_TIMEOUT_MS = 30_000;
+
+/** trusted Git이 낼 수 있는 **안정 오류 코드 전부**(닫힌 목록). */
+export const TRUSTED_GIT_CODES = [
+  /** 권능이 kernel 발급 값이 아니거나(구조적 위조·전개 사본·proxy) 발급 인스턴스에서 이미 회수됐다. */
+  "git_capability_invalid",
+  /** 이미 소비된 권능을 다시 쓰려 했다(재생 — 되돌릴 통로가 없다). */
+  "git_capability_spent",
+  /** 닫힌 allow-list 밖의 질의다. */
+  "git_query_unsupported",
+  /** 변경 계열 git이다 — durable pending(A4) 계약 없이는 **구조적으로** 실행되지 않는다. */
+  "git_mutation_unsupported",
+  /** task가 지금 `running`이 아니다. */
+  "git_task_not_running",
+  /** 권능 발급 이후 durable 신원·승인이 바뀌었다(attempt 교체 · manifest digest drift · 만료 · 시계). */
+  "git_authority_stale",
+  /** 승인된 git 실행 파일이 spawn 직전 재검증에서 신뢰 조건을 잃었다(부재·symlink·권한·비일반 파일). */
+  "git_executable_untrusted",
+  /** 승인 시점과 spawn 시점 사이에 git 바이너리 digest가 달라졌다. spawn 0. */
+  "git_digest_mismatch",
+  /** 대상 디렉터리가 **승인된 저장소 루트 그 자체**임을 확인하지 못했다(상위 repo · symlink 탈출 · 비 repo). */
+  "git_repo_identity_mismatch",
+  /** spawn 자체가 실패했다. */
+  "git_launch_failed",
+  /** deadline·취소로 종료됐다 — 판정을 만들지 않는다. */
+  "git_deadline_exceeded",
+  /** **자손이 사라진 것을 확인하지 못했다.** 1차 오류에 가려지지 않는다(B1 계약). */
+  "git_cleanup_unconfirmed",
+  /** 닫힌 판정표에 없는 종료 코드다(비정상 종료 포함). 성공으로 접지 않는다. */
+  "git_result_unknown",
+] as const;
+export type TrustedGitCode = (typeof TRUSTED_GIT_CODES)[number];
+
+function gitDenied(code: TrustedGitCode, what: string): OrchestrationError {
+  return new OrchestrationError(code, what);
+}
+
+/**
+ * **봉인된 일회용 git 권능.** 담긴 필드는 감사용이고 권위는 등록부 연결에서만 나온다 —
+ * 전개 사본 · 수제 객체 · `Proxy` · durable 문자열에서 재구성한 값은 조회 자체가 실패한다.
+ */
+export interface TrustedGitCapability {
+  readonly runId: string;
+  readonly taskId: string;
+  readonly attemptId: string;
+  readonly query: TrustedGitQuery;
+}
+
+/** 권능 뒤의 실제 실행 명세(모듈 사설 — 밖으로 나가는 통로가 없다). */
+interface TrustedGitRecord {
+  /** 발급 kernel 인스턴스 자체(A2 — 다른 인스턴스는 이 권능으로 git을 돌릴 수 없다). */
+  issuer: KernelIssuer;
+  /** **현재** durable state를 읽는다(공개·override 가능 메서드가 아니라 `#state`를 직접 읽는 클로저). */
+  readState: () => OrchestrationRunState;
+  now: () => string;
+  repoRoot: string;
+  runId: string;
+  taskId: string;
+  attemptId: string;
+  /** 발급 시점 승인 manifest의 canonical digest. */
+  approvalDigest: string;
+  query: TrustedGitQuery;
+  executable: string;
+  sha256: string;
+  termGraceMs: number;
+  killGraceMs: number;
+  /** **정확히 한 번**만 false → true가 된다. 되돌리는 통로가 없다. */
+  spent: boolean;
+}
+
+const GENUINE_GIT_CAPABILITIES = new WeakMap<object, TrustedGitRecord>();
+
+/**
+ * **살아 있는 권능 등록부**(`LIVE_GRANTS`와 같은 모양). 발급 인스턴스별로 갈라져 있으므로
+ * 같은 workspace를 두 번 열어도 첫 인스턴스가 발급한 권능은 두 번째에서 **소비되지 않는다**.
+ */
+const LIVE_GIT_CAPABILITIES = new WeakMap<KernelIssuer, Set<TrustedGitRecord>>();
+
+function liveGitOf(issuer: KernelIssuer): Set<TrustedGitRecord> {
+  let live = LIVE_GIT_CAPABILITIES.get(issuer);
+  if (live === undefined) {
+    live = new Set();
+    LIVE_GIT_CAPABILITIES.set(issuer, live);
+  }
+  return live;
+}
+
+/**
+ * **대상이 승인된 저장소 루트 그 자체인가.** 상위 저장소의 하위 디렉터리 · symlink 탈출 · 저장소가
+ * 아닌 디렉터리를 전부 거부한다. git에게 물어보지 않는다(그러려면 stdout이 필요하고, 무엇보다 판정을
+ * **spawn 이전에** 끝내야 한다).
+ *
+ * - `realpath`가 경로 그대로여야 한다 → 어떤 구성요소도 symlink가 아니다.
+ * - 그 자리에 `.git`이 있어야 한다 → **상위 repo의 하위 디렉터리는 여기서 죽는다**(하위 디렉터리에는
+ *   `.git`이 없다). 디렉터리(주 checkout)이거나 일반 파일(linked worktree의 gitdir 포인터)이면 되고
+ *   **symlink면 거부**한다.
+ */
+function verifyApprovedRepoRoot(root: string): void {
+  if (!isAbsolute(root) || root.includes("\0")) {
+    throw gitDenied("git_repo_identity_mismatch", "승인된 저장소 루트가 NUL 없는 절대경로가 아니다");
+  }
+  let real: string;
+  try {
+    real = realpathSync(root);
+  } catch {
+    throw gitDenied("git_repo_identity_mismatch", "저장소 루트의 realpath를 확인할 수 없다");
+  }
+  if (real !== root) {
+    throw gitDenied("git_repo_identity_mismatch", "저장소 루트가 정규 경로가 아니다(symlink 탈출)");
+  }
+  let rootStat: Stats;
+  let dotGit: Stats;
+  try {
+    rootStat = lstatSync(root);
+    dotGit = lstatSync(joinPath(root, ".git"));
+  } catch {
+    throw gitDenied("git_repo_identity_mismatch", "저장소 루트에 .git이 없다(상위 저장소의 하위 디렉터리일 수 있다)");
+  }
+  if (!rootStat.isDirectory()) {
+    throw gitDenied("git_repo_identity_mismatch", "저장소 루트가 디렉터리가 아니다");
+  }
+  if (!dotGit.isDirectory() && !dotGit.isFile()) {
+    throw gitDenied("git_repo_identity_mismatch", ".git이 디렉터리도 일반 파일도 아니다");
+  }
+}
+
+/**
+ * 권능 소비 시점의 **현재 durable 권위**를 다시 읽는다(스냅샷은 권위가 아니다).
+ * 표시 이전과 이후에 **같은 함수**로 두 번 부른다(A4).
+ */
+function readTrustedGitAuthority(rec: TrustedGitRecord): MilestoneApprovalManifest {
+  const state = rec.readState();
+  const now = rec.now();
+  if (state.runId !== rec.runId) throw gitDenied("git_authority_stale", "run 신원이 권능과 다르다");
+  if (now < state.createdAt || now < state.updatedAt) {
+    throw gitDenied("git_authority_stale", "시계가 durable 기록보다 이르다");
+  }
+  if (now >= state.manifest.expiresAt) throw gitDenied("git_authority_stale", "승인 manifest가 만료됐다");
+  if (manifestDigest(state.manifest) !== state.accounting.approvalDigest) {
+    throw gitDenied("git_authority_stale", "승인 manifest digest가 durable 회계와 다르다");
+  }
+  if (state.accounting.approvalDigest !== rec.approvalDigest) {
+    throw gitDenied("git_authority_stale", "권능 발급 이후 승인이 바뀌었다");
+  }
+  const task = state.tasks.find((t) => t.taskId === rec.taskId);
+  if (task === undefined) throw gitDenied("git_authority_stale", "권능의 task가 durable state에 없다");
+  if (task.state !== "running") throw gitDenied("git_task_not_running", "task가 running이 아니다");
+  if (task.execution.attemptId !== rec.attemptId) {
+    throw gitDenied("git_authority_stale", "durable attempt 신원이 권능과 다르다");
+  }
+  return state.manifest;
+}
+
+/** trusted Git 질의 1건의 결과(불투명 · 동결 · 호출자가 만들 수 없다). */
+export interface TrustedGitResult {
+  readonly query: TrustedGitQuery;
+  /** 닫힌 판정표가 이 종료 코드에 부여한 답. */
+  readonly verdict: boolean;
+  readonly exitCode: number;
+}
+
+/**
+ * **승인된 로컬 git 질의 1건의 고정 집행 진입점**(대장 `C-26`).
+ *
+ * `executeRunProcessOperation`과 **같은 순서**다:
+ * 1. 권능이 kernel 발급이고 **발급 인스턴스에서 아직 살아 있는가** · 아직 소비되지 않았는가.
+ * 2. **현재 durable 상태를 다시 읽어** 만료·승인 digest·task lifecycle·attempt 신원을 확인한다
+ *    (여기서 거부되면 권능은 아직 소비되지 않았다 — 거짓 소진 0).
+ * 3. 닫힌 allow-list 조회 + **`mutates === false` 단정**.
+ * 4. **효과보다 먼저 권능을 태운다**(1회 소비). 되돌릴 통로가 없다.
+ * 5. **소진 이후에 권위를 다시 전수 확인한다**(A4 mark-then-re-verify) → 그 다음에야
+ *    **spawn 직전** git 바이너리 digest 재검증 + 저장소 신원 재검증 → spawn.
+ * 6. 정리 미확인이 1차 오류를 이긴다(B1). deadline·취소·표 밖 종료 코드는 **판정을 만들지 않는다**.
+ *
+ * durable pending(A4의 `attemptedAt` 표시)이 없는 이유는 정직하게 하나다: **닫힌 집합의 모든 질의가
+ * 외부 효과 0**이라 "일어났는지 모르는 효과"가 존재하지 않는다. 그래서 미확정 구간을 durable에 남길
+ * 것이 없고, 실패는 전부 그냥 거부다. 변경 계열을 열려면 durable pending 계약이 **먼저** 필요하며,
+ * 그것을 잊지 못하도록 ③의 `mutates` 단정이 spawn 앞을 막고 있다.
+ */
+export async function executeTrustedGitQuery(
+  capability: unknown,
+  options: { signal?: AbortSignal } = {},
+): Promise<Readonly<TrustedGitResult>> {
+  // ① 권능 게이트.
+  const rec =
+    typeof capability === "object" && capability !== null ? GENUINE_GIT_CAPABILITIES.get(capability) : undefined;
+  if (rec === undefined) throw gitDenied("git_capability_invalid", "git 권능이 kernel 발급 값이 아니다");
+  if (rec.spent) throw gitDenied("git_capability_spent", "이미 소비된 git 권능이다(재생 금지)");
+  if (!liveGitOf(rec.issuer).has(rec)) {
+    throw gitDenied("git_capability_invalid", "이 권능은 발급 인스턴스에서 더 이상 살아 있지 않다");
+  }
+
+  // ② 진입 자격 — durable 재독.
+  readTrustedGitAuthority(rec);
+
+  // ③ 닫힌 allow-list + 변경 금지 단정.
+  const spec = Object.prototype.hasOwnProperty.call(TRUSTED_GIT_SPECS, rec.query)
+    ? TRUSTED_GIT_SPECS[rec.query]
+    : undefined;
+  if (spec === undefined) throw gitDenied("git_query_unsupported", "닫힌 allow-list 밖의 git 질의다");
+  if (spec.mutates) {
+    throw gitDenied("git_mutation_unsupported", "변경 계열 git은 durable pending 계약 없이 집행하지 않는다");
+  }
+
+  // ④ **효과보다 먼저** 권능을 태운다.
+  rec.spent = true;
+  liveGitOf(rec.issuer).delete(rec);
+
+  // ⑤ 소진 **이후의** 권위로만 집행한다(A4).
+  const manifest = readTrustedGitAuthority(rec);
+  const approved = manifest.executionAuthority.git;
+  if (approved.path !== rec.executable || approved.sha256 !== rec.sha256) {
+    throw gitDenied("git_digest_mismatch", "승인된 git이 권능 발급 이후에 바뀌었다");
+  }
+  // spawn **직전** 바이너리 재검증 + 저장소 신원 재검증.
+  verifyApprovedExecutable(approved, "executionAuthority.git", {
+    path: "git_executable_untrusted",
+    invalid: "git_executable_untrusted",
+    identity: "git_executable_untrusted",
+    digest: "git_digest_mismatch",
+  });
+  verifyApprovedRepoRoot(rec.repoRoot);
+
+  let supervised;
+  try {
+    supervised = await superviseProcess({
+      executable: approved.path,
+      // **argv 상수 그대로**다 — 호출자 문자열도 shell도 보간도 없다.
+      args: spec.args,
+      cwd: rec.repoRoot,
+      timeoutMs: TRUSTED_GIT_TIMEOUT_MS,
+      termGraceMs: rec.termGraceMs,
+      killGraceMs: rec.killGraceMs,
+      signal: options.signal,
+    });
+  } catch {
+    throw gitDenied("git_launch_failed", "git 프로세스를 시작할 수 없다");
+  }
+
+  // ⑥ 정리 미확인이 1차 오류를 이긴다(B1).
+  if (!supervised.cleanupConfirmed) {
+    throw gitDenied("git_cleanup_unconfirmed", "git 프로세스의 자손이 사라진 것을 확인하지 못했다");
+  }
+  if (supervised.terminatedBy !== "exit") {
+    throw gitDenied("git_deadline_exceeded", `git 프로세스를 ${supervised.terminatedBy}로 종료했다`);
+  }
+  const exitCode = supervised.exitCode;
+  if (exitCode === null || !Object.prototype.hasOwnProperty.call(spec.verdicts, exitCode)) {
+    throw gitDenied("git_result_unknown", "닫힌 판정표에 없는 종료 코드다");
+  }
+  return Object.freeze({ query: rec.query, verdict: spec.verdicts[exitCode]!, exitCode });
+}
+
+/** 이 모듈이 발급한 진짜 git 권능인가(테스트·감사용 판정 — 실행 명세는 돌려주지 않는다). */
+export function isGenuineTrustedGitCapability(v: unknown): boolean {
+  return typeof v === "object" && v !== null && GENUINE_GIT_CAPABILITIES.has(v);
+}
+
 /**
  * 새 일회용 grant 하나(등록부에만 권위가 있다 — 담긴 필드는 감사용이다).
  * 같은 durable pending 신원의 **이전 grant는 그 자리에서 폐기**된다(A2 — live/live 중복 금지).
@@ -2886,6 +3231,60 @@ export class OrchestrationKernel {
    * lifecycle은 그대로다: `prepared`가 아니면 `startPreparedTask()`를 지나야 하고, ready→running 직접
    * 경로는 여전히 없다(`startTask()`는 `preflight_required`).
    */
+  /**
+   * **일회용 trusted Git 권능 1건 발급**(task 3D · 대장 `C-26`). spawn하지 않고 durable state도 바꾸지
+   * 않는다 — 실제 실행은 `executeTrustedGitQuery()` 하나뿐이고 그것이 이 권능을 **정확히 한 번** 소비한다.
+   *
+   * 권위 결박은 Task 3C의 launch 권능과 같다: 발급 인스턴스 자체(`issuer: this`) · `#state`를 직접 읽는
+   * 재독 클로저 · 발급 시점 승인 digest · durable attempt 신원. **호출자가 고를 수 있는 것은 taskId와
+   * 닫힌 enum 하나뿐**이고 실행 대상은 `manifest.executionAuthority.git`, 작업 디렉터리는 이 run의
+   * `workspaceRoot`로 고정된다(둘 다 호출자가 지정할 필드가 없다).
+   */
+  resolveTrustedGitCapability(input: { taskId: string; query: TrustedGitQuery }): TrustedGitCapability {
+    const taskId = assertSlug(input?.taskId, "taskId");
+    const query = input?.query;
+    if (!Object.prototype.hasOwnProperty.call(TRUSTED_GIT_SPECS, query as string)) {
+      throw gitDenied("git_query_unsupported", `git 질의는 ${TRUSTED_GIT_QUERIES.join("|")} 중 하나여야 한다`);
+    }
+    const state = this.#state;
+    const now = formatTimestamp(this.#clock());
+    assertClockSane(state, now);
+    assertNotExpired(state.manifest, now);
+    const task = requireTask(state, taskId);
+    if (task.state !== "running") throw gitDenied("git_task_not_running", "task가 running이 아니다");
+    const attemptId = task.execution.attemptId;
+    if (attemptId === null) throw gitDenied("git_authority_stale", "durable attempt 신원이 없다");
+    const approved = state.manifest.executionAuthority.git;
+    const repoRoot = this.#paths.workspaceRoot;
+    // 발급 시점에도 저장소 신원을 본다(집행기가 spawn 직전에 **다시** 본다).
+    verifyApprovedRepoRoot(repoRoot);
+    const capability: TrustedGitCapability = Object.freeze({
+      runId: state.runId,
+      taskId,
+      attemptId,
+      query: query as TrustedGitQuery,
+    });
+    const record: TrustedGitRecord = {
+      issuer: this,
+      readState: () => this.#state,
+      now: () => formatTimestamp(this.#clock()),
+      repoRoot,
+      runId: state.runId,
+      taskId,
+      attemptId,
+      approvalDigest: state.accounting.approvalDigest,
+      query: query as TrustedGitQuery,
+      executable: approved.path,
+      sha256: approved.sha256,
+      termGraceMs: state.manifest.autopilotPolicy.cleanupTermGraceMs,
+      killGraceMs: state.manifest.autopilotPolicy.cleanupKillGraceMs,
+      spent: false,
+    };
+    GENUINE_GIT_CAPABILITIES.set(capability, record);
+    liveGitOf(this).add(record);
+    return capability;
+  }
+
   issueOperationDispatchPermit(input: { taskId: string; turnId: string; actionId?: string; plan: unknown }): OperationDispatchPermit {
     const taskId = assertSlug(input?.taskId, "taskId");
     const turnId = assertSlug(input?.turnId, "turnId");

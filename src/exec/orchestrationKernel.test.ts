@@ -108,6 +108,7 @@ import {
   OrchestrationKernel,
   attestOrchestrationKernel,
   isGenuineLaunchCapability,
+  isGenuineTrustedGitCapability,
   createOrchestrationRun,
   openOrchestrationRun,
 } from "./orchestrationKernel.js";
@@ -2510,6 +2511,10 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "requestReview",
     "requestRevision",
     "requestSpawn",
+    // M5c task 3D — **일회용 trusted Git 권능 발급**(대장 `C-26`). durable state를 바꾸지 않고 spawn도
+    // 하지 않는다: 닫힌 enum 하나를 자기 running task에 대해 봉인 권능으로 바꿀 뿐이고, 실제 실행은
+    // 모듈 고정 진입점 `executeTrustedGitQuery()` 하나가 그 권능을 정확히 한 번 소비해서 한다.
+    "resolveTrustedGitCapability",
     "resumeTask",
     "scheduleReady",
     "settleCleanedAttempt",
@@ -2617,11 +2622,14 @@ test("[M5b] A2: 구조적으로 같은 위조 kernel은 증명을 받지 못한�
     // `isGenuineLaunchCapability`는 M5c task 3C에서 `typedExecution.ts`에서 **옮겨온** 판정 함수다
     // (대장 `B-F1` — 소비자가 kernel 안에 있어야 해서 등록부째 옮겼다). `attest…`와 같은 부류로
     // **읽기 전용 판정**이며 발급기가 아니다 — 아래에서 실제로 아무것도 만들지 못함을 단정한다.
-    ["attestOrchestrationKernel", "isGenuineLaunchCapability"],
+    // `isGenuineTrustedGitCapability`(task 3D)도 같은 부류의 **읽기 전용 판정**이다 — 실행 명세를
+    // 돌려주지 않고 아무것도 만들지 않는다(바로 아래에서 전수 거부를 단정한다).
+    ["attestOrchestrationKernel", "isGenuineLaunchCapability", "isGenuineTrustedGitCapability"],
     "임의 객체를 진짜 kernel로 만들어 줄 표면이 늘었다",
   );
   for (const v of [{}, { operationId: "op-1" }, k, new Proxy({}, {}), null, "cap", 1, () => undefined]) {
     assert.equal(isGenuineLaunchCapability(v), false, `${String(v)}가 실행 권능으로 인정됐다`);
+    assert.equal(isGenuineTrustedGitCapability(v), false, `${String(v)}가 git 권능으로 인정됐다`);
   }
 });
 

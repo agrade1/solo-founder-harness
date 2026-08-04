@@ -142,6 +142,20 @@ export {
 } from "./orchestrationKernel.js";
 export type { ProcessLaunchCapability } from "./orchestrationKernel.js";
 
+/**
+ * **trusted Git**(task 3D · 대장 `C-26`) — 등록부·집행기는 launch 권능과 **같은 이유로** kernel 안에 있고
+ * 여기서는 이름만 재수출한다. 호출자가 고를 수 있는 것은 닫힌 enum 하나뿐이며 argv는 동결된 상수다:
+ * remote · refspec · branch · 경로 · 커밋 메시지를 담을 필드가 존재하지 않으므로 push·PR/merge·네트워크
+ * git은 **표현할 수 없다**(hard deny를 호출 규율이 아니라 타입으로 닫는다).
+ */
+export {
+  TRUSTED_GIT_CODES,
+  TRUSTED_GIT_QUERIES,
+  executeTrustedGitQuery,
+  isGenuineTrustedGitCapability,
+} from "./orchestrationKernel.js";
+export type { TrustedGitCapability, TrustedGitCode, TrustedGitQuery, TrustedGitResult } from "./orchestrationKernel.js";
+
 // ── write_file 집행 (kernel 고정 진입점에 대한 얇은 이름) ─────────────────────
 
 /**
