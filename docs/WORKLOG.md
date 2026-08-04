@@ -1,5 +1,57 @@
 # WORKLOG.md
 
+## 2026-08-04 (V3 **M5c task 3C — managed process supervisor · `B-F1` 개봉 후 폐쇄 · 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄. Task 3C 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` ·
+  구현 커밋 **`56cf8d6`**(base `f2e187d`) · 후속 커밋 **`4774c43`**(base `98a0778`).
+  구현·후속 모두 **fresh Claude Opus 5 worker**(각각 별도 세션 · 이전 작성자 transcript·자기평가
+  미상속 · 병렬 writer 0). 중앙 오케스트레이터는 별도 Opus 5 세션이며 구현하지 않았다.
+- **이 시스템 최초의 실제 승인 spawn이 들어왔다.** 그 전까지 전역 spawn 수는 0이었다.
+- **변경 파일**: 구현 6개 — `managedProcess.ts`(신규) · `managedProcess.test.ts`(신규) ·
+  `orchestrationKernel.ts`(+test) · `typedExecution.ts`(+test). 후속 1개 — `managedProcess.test.ts`.
+  package/lock · schemas · store · `stableController.*` · docs · dist · `AGENTS.md`/`CLAUDE.md`
+  **전부 무변경**(중앙 재검증: 해당 경로 diff 0줄). 신규 의존성 0(stdlib만).
+- **`B-F1` 폐쇄**: ① 1회 소비 ② live grant + 발급자 신원 ③ durable 재독 ④ spawn 직전 digest
+  재검증 + A4 mark-then-re-verify. 상세와 근거는 roadmap §9.1 "task 3C 대장 갱신" 절.
+- **아키텍처 결정**: `ProcessLaunchCapability`/`LaunchRecord`/`GENUINE_LAUNCH_CAPABILITIES`/
+  `resolveProcessLaunchCapability`/`isGenuineLaunchCapability`를 `typedExecution.ts`에서 **kernel로
+  이동**하고 `typedExecution.ts`는 이름만 재수출한다. 이유: 소비자가 kernel 밖에 있으면 권능을
+  **공개 함수의 인자로** 받아야 하는데 그게 정확히 A3가 삭제한 `writeFileEffect.ts` 구멍이다.
+  독립 리뷰가 순환 0 · module-private 유지 · A3 성립을 확인했다(`DECISIONS.md` 참조).
+- **자손 정리**: `spawn(..., {detached:true})`로 자식을 프로세스 그룹 리더로 만들고 `reapGroup()`이
+  `-pgid`에 SIGTERM → `kill(-pgid,0)` ESRCH까지 폴링 → SIGKILL → 재폴링한다. **`EPERM`은 살아있음으로
+  처리(fail closed)**. 정상 종료 경로에서도 항상 돈다. `cleanupConfirmed: false`면 deadline 오류보다
+  **먼저** `process_cleanup_unconfirmed`를 던진다(B1 우선순위 보존).
+- **flaky 테스트 — 발견·재현·수정 전말(정직 기록)**: 구현 worker는 "3회 연속 13/13 안정"이라고
+  보고했으나 **중앙 재실행에서 3회 중 1회 실패**했다(약 43회 중 1회, 이름 미포착). 독립 리뷰어가
+  **52회 중 1회 재현하고 이름을 포착**했다 — `[M5c/3C] deadline: 손자까지 …`. 합산 관측 약 **2/95**.
+  원인은 fixture의 **동기화 배리어 부재**(`timeoutMs: 300`인데 이 파일이 실제 프로세스 ~10개를 연속
+  기동 → 부하 시 자식의 첫 명령이 300ms를 넘겨 `grandchild.pid` 기록 전에 deadline SIGTERM이 그룹을
+  죽이고 `readFileSync`가 ENOENT). **테스트 전용 false red다** — 프로덕션 `reapGroup()`은 ESRCH
+  **관측** 기반이라 타이밍이 밀려도 정리 확인이 흔들리지 않고, pgid 재사용은 `false` 방향으로만
+  틀리므로 **false green 경로가 없다**. `4774c43`이 관측 배리어(pid 파일 폴링 — 기존 cancel 테스트와
+  같은 패턴)를 넣고 `timeoutMs` 300 → 2000으로 올렸다. 삭제·완화 0, assertion 1건 **추가**로 강화.
+- **교체 assertion(구현 3~4건 · 후속 0건 삭제)**: 전부 동등하거나 강화. 특히
+  `assert.equal("executeRunProcessOperation" in kernelModule, false)` → 함수임을 확인으로 바뀐 것은
+  **게이트 개봉이 곧 task 목표**라 불가피하며, 콜백 주입이 영수증 0·표시 0으로 거부됨을 **실제 실행**으로
+  검사하는 더 강한 테스트로 대체됐다. A3 sweep은 promise도 await하도록 **강화**됐다.
+- **검증 실측(중앙 재실행)**: `tsc --noEmit` exit 0 · `managedProcess.test.ts` **15/15**(13 → 15) ·
+  **정상 20회 + 부하 10회 = 30회 전부 fail 0**(수정 전 약 2/95) · 회귀 5파일 **225/225** ·
+  `stableController.test.ts` **58/58** · 프로세스 누수 검사 **0줄** · `git status --short` =
+  `?? node_modules`. 구현 worker mutation 4종 · 후속 worker mutation 3종 각각 red 확인 후 원복.
+- **독립 리뷰**: fresh Fable 5 read-only · 범위 `f2e187d..56cf8d6` · 판정
+  **`REVISE — A=0, B=4, C=2`**. 리뷰어는 `managedProcess.test.ts` **52회**와 kernel+typedExecution
+  **167/167**을 직접 실행했다. **A=0이므로 리비전 루프를 돌리지 않고**, B 4건 중 값싼 2건(F1 flake ·
+  F3 상한 테스트)만 같은 task 안에서 닫았다.
+- **신규 유예**: `B-18`(setsid 그룹 탈출 자손을 `cleanupConfirmed`가 못 봄) ·
+  `B-19`(run 전역 프로세스 상한이 `maxTasksPerRun` 상수를 빌려 씀 — 스펙 혼동) ·
+  `C-44`(depth backstop 분기 도달 불가 — 후속 worker가 red 만들기 실패를 정직 보고) ·
+  `C-45`(exit≠0인데 marker가 `applied`) · `C-46`(win32 미검증).
+- **`B-13`은 승격하지 않는다**: 결함은 `StableController.runTask`의 `finally { provider.stop().catch() }`인데
+  프로세스 기반 provider가 **아직 배선되지 않았다**. 새 kernel 경로 자체는 순서가 옳다.
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · build/dist.
+- **다음 DAG task(미착수)**: trusted Git → `autopilot` CLI.
+
 ## 2026-08-03 (V3 **M5c task 3B — StableController M5c 배선 · 독립 리뷰 `APPROVE — A=0, B=1, C=1`. Task 3B 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `8dd05f9` ·

@@ -3,7 +3,49 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-08-03 — V3 **M5c task 3B 독립 리뷰 `APPROVE — A=0, B=1, C=1` · Task 3B 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-08-04 — V3 **M5c task 3C · `B-F1` 폐쇄 · 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄 · Task 3C 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` ·
+  구현 커밋 **`56cf8d6`**(base `f2e187d`) · 후속 커밋 **`4774c43`**(base `98a0778`).
+  구현·후속은 **각각 별도의 fresh Claude Opus 5 worker**(이전 작성자 transcript·자기평가 미상속 ·
+  병렬 writer 0). 중앙 오케스트레이터는 별도 Opus 5 세션이며 구현·리뷰를 하지 않았다.
+  원격 push/PR/merge · 네트워크 · MCP · 패키지 설치 · 의존성/lockfile 변경 · live provider · secret ·
+  deploy · DB · production · live billing · amend/rebase/reset/merge/stash 0 ·
+  **테스트 완화·삭제·skip 0**.
+- **spawn 수가 0이 아니게 됐다 — 설계된 변화다.** 이 시스템 최초의 실제 승인 spawn이
+  `orchestrationKernel.executeRunProcessOperation` → `managedProcess.superviseProcess` 경로로만
+  일어난다. 테스트 밖 호출자는 없다.
+- **변경 파일**: 구현 6(`managedProcess.ts` 신규 · `managedProcess.test.ts` 신규 ·
+  `orchestrationKernel.ts` +test · `typedExecution.ts` +test) · 후속 1(`managedProcess.test.ts`).
+  `orchestrationStore.ts` · `schemas/*`(durable shape 무변경) · `stableController.*` · trusted Git ·
+  reviewer · CLI · legacy exec/mission · `scripts/*` · package/lock · tracked `dist` ·
+  `AGENTS.md`/`CLAUDE.md` **전부 무변경**. 신규 의존성 0(stdlib만).
+- **`B-F1` 폐쇄**: ① 1회 소비(권위가 **객체 참조 자체** — spread/freeze/Proxy/JSON 왕복 전부 빗나감) ·
+  ② live grant + 발급자 신원(kernel 인스턴스 `===` · 신원 6종 결박) · ③ durable 재독(표시 후 재차) ·
+  ④ spawn 직전 node/entrypoint digest 재검증 · A4 mark-then-re-verify. 독립 리뷰가 **중복 spawn 경로
+  없음**(1 승인 → 최대 1 spawn)과 위조 전수 거부를 **실제 실행**으로 확인했다.
+- **아키텍처 결정(리뷰어가 승인)**: 권능 레지스트리를 `typedExecution.ts`에서 kernel로 **이동**하고
+  재수출만 남겼다. 이유는 A3가 삭제한 `writeFileEffect.ts` 구멍의 재발 방지. `DECISIONS.md` 참조.
+- **flaky 테스트 전말(정직 기록)**: 구현 worker "3회 안정" 보고 → **중앙 재실행 약 43회 중 1회 실패** →
+  **리뷰어 52회 중 1회 재현 + 이름 포착**(합산 약 2/95). 원인은 fixture 동기화 배리어 부재이며
+  **테스트 전용 false red**(프로덕션 `reapGroup()`은 ESRCH 관측 기반 · false green 경로 없음).
+  후속 커밋이 관측 배리어를 넣었고 **중앙 재실행 정상 20회 + 부하 10회 = 30회 전부 통과**.
+- **검증 실측(중앙 재실행)**: `npx tsc --noEmit` exit 0 · `managedProcess.test.ts` **15/15**(13 → 15) ·
+  회귀 5파일 **225/225** · `stableController.test.ts` **58/58** · 프로세스 누수 검사 0줄 ·
+  `git status --short` = `?? node_modules` · mutation 7종(구현 4 + 후속 3) red 확인 후 원복.
+- **미실행**: `npm test` · `test:exec` · `test:core` · 전체 acceptance · stress · live · build/dist · M5d.
+  최종 전체 suite 1회는 M5 최종 handoff에 예약돼 있다.
+- **열린 미래 게이트**: `B-10`(edit 가능 실행 집행 — **소유 마일스톤 없음**) · `B-11` · `B-12` ·
+  `B-13`(**프로세스 provider 배선 시 발화**) · `B-16`(미개봉) · `B-17` · **신규 `B-18`**(setsid 탈출
+  자손) · **신규 `B-19`**(run 전역 프로세스 상한이 `maxTasksPerRun` 차용) · `B-7`·`B-9`(live 하드
+  게이트) · `C-1` · `C2` · `C-43` · **신규 `C-44`/`C-45`/`C-46`**. 열린 **A는 없다**.
+  **비용순 정리: `docs/backlog/DEFERRED_COST_ORDER.md`.**
+- **계획 검토 결과(2026-08-04)**: `PLAN-REVIEW — A=1, B=6, C=4` — M5d 스펙 부재(A) 외.
+- **환경 주의**: worktree가 `/private/tmp`에 있어 내구성이 없다. 세션 중 `/tmp` 청소기가 실제로
+  파일을 삭제했고 복구했다(손실 0 · 커밋은 메인 저장소 object store에 durable). **이전 예정.**
+- **다음 DAG task(미착수)**: trusted Git → `autopilot` CLI.
+
+## 이전 상태 (2026-08-03 — V3 **M5c task 3B 독립 리뷰 `APPROVE — A=0, B=1, C=1` · Task 3B 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · branch `work/m5c-autopilot` · 시작 HEAD `8dd05f9` ·
   코드 커밋 **`9a34c5d`**(단일). 구현은 **fresh Claude Opus 5 worker 1개**(이전 작성자 transcript·

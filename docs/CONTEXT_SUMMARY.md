@@ -1,8 +1,36 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-03
+최종 갱신: 2026-08-04
 
-## 최신 (2026-08-03 — **V3 M5c task 3B 독립 리뷰 `APPROVE — A=0, B=1, C=1`. Task 3B 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-04 — **V3 M5c task 3C 독립 리뷰 `REVISE — A=0, B=4, C=2` → 값싼 B 2건 후속 폐쇄. Task 3C 완료 · `B-F1` 폐쇄. M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+
+- worktree `/private/tmp/solo-founder-harness-m5c` · `work/m5c-autopilot` · 구현 `56cf8d6` ·
+  후속 `4774c43`. 구현·후속은 각각 fresh Opus 5 worker, 리뷰는 fresh Fable 5 read-only,
+  중앙 오케스트레이터(Opus 5)는 계획·재검증·문서만 했다.
+- **이 시스템 최초의 실제 승인 spawn.** `B-F1` 폐쇄 — 1회 소비 · live grant + 발급자 신원 ·
+  durable 재독 · spawn 직전 digest 재검증 · A4 mark-then-re-verify. 중복 spawn 경로 없음이
+  독립 리뷰에서 실제 실행으로 확인됐다.
+- **자손 정리**: detached 프로세스 그룹 + `reapGroup()`(SIGTERM → ESRCH 폴링 → SIGKILL → 재폴링,
+  `EPERM`은 살아있음). `cleanupConfirmed: false`가 deadline 오류보다 우선(B1 보존).
+- **아키텍처 결정**: 권능 레지스트리를 `typedExecution.ts` → kernel로 이동(A3 선례). `DECISIONS.md` 참조.
+- **flaky 테스트**: worker는 "안정"이라 했으나 중앙 약 43회 중 1회 · 리뷰어 52회 중 1회 실패.
+  원인은 fixture 배리어 부재였고 **테스트 전용 false red**(프로덕션은 ESRCH 관측 기반 · false green 없음).
+  후속 커밋이 관측 배리어를 넣어 **중앙 재실행 정상 20회 + 부하 10회 = 30회 전부 통과**.
+- **실측**: `tsc` exit 0 · `managedProcess` **15/15** · 회귀 5파일 **225/225** ·
+  `stableController` **58/58** · 프로세스 누수 0 · mutation 7종(구현 4 + 후속 3) red 후 원복.
+- **열린 A는 없다.** 신규 유예: `B-18`(setsid 탈출 자손) · `B-19`(run 전역 프로세스 상한이
+  `maxTasksPerRun` 상수 차용) · `C-44`(depth backstop 도달 불가) · `C-45`(exit≠0인데 `applied`) ·
+  `C-46`(win32 미검증). 기존 열린 게이트: `B-10`·`B-11`·`B-12`·`B-13`·`B-16`·`B-17`·`B-7`·`B-9`·
+  `C-1`·`C2`·`C-43`. **비용순 정리는 `docs/backlog/DEFERRED_COST_ORDER.md`.**
+- **계획 검토(2026-08-04, fresh Fable 5)**: `PLAN-REVIEW — A=1, B=6, C=4`. 핵심 — M5d 스펙 부재 ·
+  `B-10`을 소유한 마일스톤 없음 · live 검증이 단일 고분산 게이트로 누적 · M7이 존재한 적 없는
+  Research Adapter를 "이동"한다고 서술. 상세는 `DEFERRED_COST_ORDER.md` 4군.
+- **미실행**: `npm test` · acceptance 전체 · stress · live · build/dist(M5 최종 handoff 예약).
+- **다음 DAG task(미착수)**: trusted Git → `autopilot` CLI.
+- **주의**: worktree가 `/private/tmp`에 있어 내구성이 없다. 세션 중 `/tmp` 청소기가 실제로 파일을
+  지웠고 복구했다(손실 0 · 커밋은 메인 저장소 object store에 durable). **이전 예정.**
+
+## 이전 (2026-08-03 — **V3 M5c task 3B 독립 리뷰 `APPROVE — A=0, B=1, C=1`. Task 3B 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree `/private/tmp/solo-founder-harness-m5c` · `work/m5c-autopilot` · 시작 `8dd05f9` ·
   코드 커밋 `9a34c5d`. 구현은 fresh Opus 5 worker 1개, 리뷰는 fresh Fable 5 read-only.

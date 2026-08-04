@@ -1,5 +1,23 @@
 # DECISIONS.md
 
+## 2026-08-04 (V3 M5c task 3C — **실행 권능의 소비자는 kernel 안에 있어야 한다**)
+
+- **결정 — `ProcessLaunchCapability`·`LaunchRecord`·`GENUINE_LAUNCH_CAPABILITIES`·
+  `resolveProcessLaunchCapability`·`isGenuineLaunchCapability`를 `typedExecution.ts`에서
+  `orchestrationKernel.ts`로 옮기고, `typedExecution.ts`는 이름만 재수출한다.**
+- **근거**: 권능 소비자가 kernel 밖에 살면 권능을 **공개 함수의 인자로** 받아야 한다. 그 형태가 바로
+  Task 3A의 A3가 삭제한 `writeFileEffect.ts` 구멍이다(위조 가능한 구조적 authority로 효과에 도달하는
+  import 표면). 레지스트리와 집행기를 한 모듈에 두는 A3 선례를 따르고 **두 번째 패턴을 만들지 않는다**.
+- **대안과 기각 사유**: ⓐ 소비자를 `typedExecution.ts`에 두고 kernel이 주입 — 공개 인자 표면이 그대로
+  남는다. ⓑ 별도 `processEffect.ts` 모듈 — 삭제한 `writeFileEffect.ts`를 이름만 바꿔 되살리는 것이다.
+- **검증**: 독립 read-only 리뷰가 순환 import 0(`managedProcess.ts`는 `orchestrationTypes`만 import ·
+  kernel은 `typedExecution`을 import하지 않는다), `GENUINE_LAUNCH_CAPABILITIES`/`LaunchRecord`의
+  module-private 유지, 신규 export 3종이 전부 registry 결박 grant/permit을 요구하거나 read-only
+  predicate임을 확인했다. **A3 성립.**
+- **남는 판단**: `managedProcess.ts`는 export되어 있고 주는 대로 spawn한다. 독립 리뷰 판정은
+  "**새 권위가 아니다**" — canonical marker를 만들지 않고 registry를 건드리지 않으며, 직접 호출은
+  ambient `child_process.spawn`과 권위상 동등하고 영수증은 kernel 사설 경로에서만 발행된다.
+
 ## 2026-07-31 (V3 M5c task 3A **6차 리비전** — **claim namespace는 과금 namespace와 같은 폭이다**)
 
 - **결정 — turn ID의 durable claim은 run 전역에서 유일하다(task-local이 아니다).** 과금 중복 판정
