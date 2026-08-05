@@ -653,15 +653,23 @@ test("[M5c/3C] 취소: AbortSignal로 그룹 전체가 종료되고 성공 영�
 
 test("[M5c/3C] supervisor: SIGTERM을 무시하는 프로세스도 SIGKILL로 거두고 정리를 확인한다", async () => {
   const bin = makeDir("m5c-mp-sup-");
-  const script = writeExecutable(bin, "stubborn.sh", "#!/bin/sh\ntrap '' TERM\n/bin/sleep 30\n");
-  const out = await superviseProcess({
+  // trap을 건 **다음** 줄에서 ready 파일을 쓴다 → 이 파일의 존재가 곧 "TERM 무시가 이미 설치됨"이다.
+  const script = writeExecutable(bin, "stubborn.sh", "#!/bin/sh\ntrap '' TERM\necho ready > ready.txt\n/bin/sleep 30\n");
+  const running = superviseProcess({
     executable: "/bin/sh",
     args: [script],
     cwd: bin,
-    timeoutMs: 100,
+    // 관측 장벽이 생겼으므로 deadline은 더 이상 "trap이 걸렸을 것"을 tight timeout으로 도박하지 않는다.
+    // (deadline 테스트 4774c43과 같은 패턴. 고정 sleep이 아니라 파일 관측이다.)
+    timeoutMs: 2_000,
     termGraceMs: 150,
     killGraceMs: 2_000,
   });
+  const readyFile = join(bin, "ready.txt");
+  for (let i = 0; i < 150 && !existsSync(readyFile); i++) await sleep(10);
+  assert.equal(existsSync(readyFile), true, "deadline 전에 trap이 설치되지 못했다(장벽 실패)");
+
+  const out = await running;
   assert.equal(out.terminatedBy, "deadline");
   assert.equal(out.cleanupConfirmed, true);
   assert.equal(out.signal, "SIGKILL");
