@@ -78,8 +78,30 @@ function authorityFor(codexPath: unknown, gitPath: unknown = TRUSTED_GIT, codexS
   return {
     codex: { path: codexPath as string, sha256: codexSha ?? digestOf(codexPath) },
     git: { path: gitPath as string, sha256: digestOf(gitPath) },
+    // **M5c 필수 3종**(없으면 `manifest_pre_m5c_unsupported`로 승인 자체가 거부된다). 이 provider는
+    // 셋 중 어느 것도 **쓰지 않는다**(managed launcher·typed run_process 소유다) — validator는 경로
+    // 계약과 digest 형태만 보고 파일 시스템을 만지지 않으므로 형태만 채운다(3B의 stableController와 동일).
+    controllerEntrypoint: { path: "/opt/harness/controller.mjs", sha256: "9".repeat(64) },
+    node: { path: "/opt/harness/node", sha256: "e".repeat(64) },
+    processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
   };
 }
+
+/**
+ * **M5c autopilot 정책**(승인 manifest 필수 절). 이 suite는 autopilot lifecycle을 돌리지 않으므로
+ * 값은 승인 validator의 범위 하한을 만족시키는 최소치이며, `maxAttemptElapsedMs`는
+ * `manifest.maxElapsedMs`(60_000) 이하여야 한다는 validator 교차 규칙에 맞춘다.
+ */
+const AUTOPILOT_POLICY = {
+  maxTaskAttempts: 2,
+  maxDeliveryAttempts: 2,
+  retryBackoffMs: 0,
+  deliveryDeadlineMs: 60_000,
+  maxNoProgressMs: 60_000,
+  maxAttemptElapsedMs: 60_000,
+  cleanupTermGraceMs: 500,
+  cleanupKillGraceMs: 500,
+};
 
 /**
  * **테스트 편의 shim.** production 계약에는 실행 파일 경로 옵션이 없다(6차 리뷰 A1 — 경로·digest는
@@ -134,6 +156,8 @@ function manifest(approvedCommit: string) {
     allowedDependencies: [],
     allowedNetworkDomains: [],
     executionAuthority: authorityFor(TRUSTED_BIN, TRUSTED_GIT),
+    autopilotPolicy: AUTOPILOT_POLICY,
+    operationAuthorityByTask: {},
     maxSessions: 2,
     maxTokens: 1000,
     maxElapsedMs: 60_000,
@@ -536,7 +560,9 @@ test("[M5a] approvedCommit 불일치·만료·경로 위반이면 spawn 횟수 0
   assert.equal(
     await expectNoSpawn((repo, home, calls) =>
       codexProvider({
-        manifest: { milestoneId: "m5a" },
+        // M5c 절은 갖췄으나 구조적으로 무효한 manifest — `manifest_pre_m5c_unsupported`(별개 코드)가
+        // 아니라 **필수 필드 누락**으로 닫히는 것을 봐야 이 단정이 원래 주제를 짚는다.
+        manifest: { milestoneId: "m5a", autopilotPolicy: {}, operationAuthorityByTask: {} },
         controllerRepoRoot: repo.root,
         executablePath: TRUSTED_BIN,
         spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
