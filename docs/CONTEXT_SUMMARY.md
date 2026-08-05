@@ -1,8 +1,30 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-04
+최종 갱신: 2026-08-05
 
-## 최신 (2026-08-04 — **V3 M5c task 3D trusted Git 독립 리뷰 `APPROVE — A=0, B=1, C=3`. Task 3D 완료. M5c·M5는 미완료** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-05 — **V3 M5c 완료(3A~3F) · 전체 suite 1회 PASS · M5는 완료 아님** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · `work/m5c-autopilot` · HEAD `77b55e5`.
+  구현은 task마다 fresh Opus 5 worker, 리뷰는 fresh Fable 5 read-only, 중앙(Opus 5)은 계획·재검증·문서.
+- **M5c 완료**: 3A(typed execution kernel) · 3B(StableController 배선) · 3C(managed process supervisor ·
+  `B-F1` 폐쇄) · 3D(trusted Git) · 3E(`harness autopilot` CLI) · 3F(숨은 red 48건 복구).
+  **전부 독립 리뷰 A=0.**
+- **M5는 완료가 아니다.** M5 완료 조건은 live provider + typed execution을 요구하고 둘 다 열린
+  게이트다(`B-7`/`B-9`/`B-10`). autopilot은 **operation 0건 plan만 완료**시키므로 **아직 마일스톤을
+  완료까지 몰고 갈 수 없다.** 증명된 것은 "Autopilot **Bootstrap**"이다.
+- **전체 suite 직렬 1회 실행**: `test:exec` **493/493** · `test:core` **391/391** ·
+  acceptance **PASS=92 / FAIL=0**. **M5a 이후 처음으로 전체가 초록이다.**
+- **이번 세션 최대 발견**: `codexCliProvider.test.ts`가 **11/48로 `8dd05f9`부터 red**였고 아무도
+  몰랐다(모든 세션이 focused 테스트만 돌림). M5a/M5b **안전 테스트 48건**이 Task 3A 이후 실제로
+  검증된 적이 없었다. 원인은 3B가 고친 것과 같은 pre-M5c manifest fixture. **프로덕션 결함은 없었다.**
+- **열린 A는 없다.** 신규 `B-21`(중단 batch의 `prepared` 잔여) · `B-22`(charge 실패 삼킴 — live 전
+  하드 게이트) · `C-50`~`C-56`. 전체 유예 목록의 **비용순 정리는
+  `docs/backlog/DEFERRED_COST_ORDER.md`**.
+- **미실행**: live · stress · 반복 3회 · build/dist · M5d.
+- **다음(사용자 결정 사항)**: **M5-live 슬라이스**(`B-7` 인증 결정 + `B-9` live JSONL 1회 캡처) 또는
+  **M5d**(스펙이 한 줄뿐 — 계획 리뷰 A-1). 중앙은 사용자 승인 없이 착수하지 않는다.
+
+## 이전 (2026-08-04 — **V3 M5c task 3D trusted Git 독립 리뷰 `APPROVE — A=0, B=1, C=3`. Task 3D 완료. M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`**(`/private/tmp`에서 이전 — 그쪽은
   내구성이 없었고 실제로 청소기가 파일을 지웠다) · `work/m5c-autopilot` · 커밋 `b09df0e`.

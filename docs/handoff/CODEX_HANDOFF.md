@@ -3,7 +3,47 @@
 작성 기준: 아래 사실은 실제 코드·테스트·git 기록으로 검증했다. 검증 불가 항목은 `미확인`으로 표기한다.
 고정 규칙은 루트 `AGENTS.md`를 함께 본다.
 
-## 현행 상태 (2026-08-04 — V3 **M5c task 3D trusted Git · 독립 리뷰 `APPROVE — A=0, B=1, C=3` · Task 3D 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
+## 현행 상태 (2026-08-05 — V3 **M5c 완료(3A~3F) · 전체 suite 1회 PASS · M5는 완료 아님** · 이 절이 가장 최신이다)
+
+- worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`** · branch `work/m5c-autopilot` ·
+  HEAD **`77b55e5`**. 구현은 task마다 **별도의 fresh Claude Opus 5 worker**, 독립 리뷰는 **fresh Fable 5
+  read-only**(구현 worker transcript·자기평가 미전달), 중앙 오케스트레이터는 별도 Opus 5 세션이며
+  구현·리뷰를 하지 않았다. 원격 push/PR/merge · 네트워크 · live provider · MCP · 패키지 설치 ·
+  의존성/lockfile 변경 · secret · deploy · DB · production · live billing **전부 0** ·
+  amend/rebase/reset/stash 0 · **테스트 완화·삭제·skip 0**.
+- **M5c 완료 판정**: 3A(typed execution kernel 하드닝) · 3B(StableController M5c 배선) ·
+  3C(managed process supervisor · **`B-F1` 폐쇄** · 최초 실제 승인 spawn) · 3D(trusted Git) ·
+  3E(`harness autopilot` CLI) · 3F(숨은 red 48건 복구). **전부 독립 리뷰 A=0.**
+- **M5는 완료가 아니다 — 이 구분을 흐리지 않는다.** M5 완료 조건(로드맵 ~:1490)은 fixture repo에서
+  Codex plan → Claude implement → test → fresh review → revise → verify가 수동 복사 0회로 도는 것인데
+  live provider와 typed execution이 필요하고 **둘 다 의도적으로 열린 게이트**다(`B-7`/`B-9`/`B-10`).
+  현재 autopilot은 **operation 0건인 plan만 완료에 도달**시킨다 = **아직 마일스톤을 완료까지 몰고 갈 수
+  없다.** 증명된 것은 제목의 나머지 절반 **"Autopilot Bootstrap"**이다.
+- **전체 suite 직렬 1회 — 실행했다**(계획 리뷰 권고를 앞당김): `npm test` →
+  `test:exec` **493/493** · `test:core` **391/391** · acceptance **PASS=92 / FAIL=0** → **ALL PASS**.
+  `test:exec`는 중앙 재실행 **3회 연속 493/493**. **M5a 이후 처음으로 전체가 초록이다.**
+- **가장 중요한 발견(다음 세션이 반드시 알아야 할 것)**: `codexCliProvider.test.ts`가
+  **11 pass / 48 fail로 적어도 `8dd05f9`부터 red**였고 **아무도 몰랐다** — 모든 세션이 focused 테스트만
+  돌리고 `npm run test:exec`를 아무도 돌리지 않았기 때문이다. 그 48건은 M5a/M5b **안전 테스트**
+  (spawn 0 · TOCTOU · 실행 파일 신원 · 격리 홈 · MCP 위반 · 세션 소유권 · 핸들 위조)이며
+  **Task 3A 이후 실제로 검증된 적이 없었다.** 원인은 3B가 `stableController`에서 고친 것과 같은
+  pre-M5c manifest fixture였고, **프로덕션 변경은 하나도 필요하지 않았다**(제품 결함 없음).
+  **교훈: focused 테스트만으로는 계약 변경이 만든 광역 red를 잡지 못한다. slice마다 `test:exec` 1회를
+  돌릴 것.**
+- **열린 미래 게이트**: `B-7`·`B-9`(live 하드 게이트) · `B-10`(edit 가능 실행 집행 — **소유 마일스톤
+  없음**) · `B-11` · `B-12` · `B-13` · `B-16`(미개봉) · `B-17` · `B-18` · `B-19` · `B-20` ·
+  **신규 `B-21`**(중단 batch의 `prepared` 잔여를 autopilot이 되찾지 못함) · **신규 `B-22`**
+  (`chargeTurnUsage` 실패 삼킴 — live 전 하드 게이트) · `C-1` · `C2` · `C-43`~`C-49` ·
+  **신규 `C-50`~`C-56`**. 열린 **A는 없다**.
+  **비용순 정리: `docs/backlog/DEFERRED_COST_ORDER.md`.**
+- **계획 검토(2026-08-04, fresh Fable 5)**: `PLAN-REVIEW — A=1, B=6, C=4`. M5d 스펙 부재(A) ·
+  `B-10` 소유 마일스톤 없음 · M7이 존재한 적 없는 Research Adapter를 "이동"한다고 서술 등.
+- **미실행**: live · stress · 반복 3회 · build/dist · M5d.
+- **다음(사용자 결정 사항 — 중앙은 승인 없이 착수하지 않는다)**: ⓐ **M5-live 슬라이스**
+  (`B-7` 인증 방식 결정 + `B-9` live JSONL 1회 캡처) — 계획 리뷰어의 최우선 권고이며 M6 입장 게이트로
+  삼으라는 제안이다. ⓑ **M5d** — 스펙이 한 줄뿐이라 착수 전 수용 계약 문서화가 선행돼야 한다.
+
+## 이전 상태 (2026-08-04 — V3 **M5c task 3D trusted Git · 독립 리뷰 `APPROVE — A=0, B=1, C=3` · Task 3D 완료 · M5c·M5 여전히 미완료** · 이 절이 가장 최신이다)
 
 - worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`** · branch `work/m5c-autopilot` ·
   시작 HEAD `f33c1aa` · 코드 커밋 **`b09df0e`**(단일). fresh Claude Opus 5 worker 1개.

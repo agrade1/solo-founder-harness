@@ -1816,6 +1816,74 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5c task 3E·3F 대장 갱신 + **M5c 마감** (2026-08-05 — **3E 독립 리뷰 `APPROVE — A=0, B=2, C=6` · 3F로 숨은 red 48건 복구 · 전체 suite 1회 PASS · M5c 완료 · M5 완료 조건은 미충족** · 이 절이 현행이다)
+
+> 3E 범위 `6a743f2..c771f81`(fresh Fable 5 read-only 독립 리뷰) · 3F `c771f81..32b8853` ·
+> 경합 수정 `32b8853..77b55e5`. 열린 **A는 0건**이다.
+
+**M5c는 완료다. M5는 완료가 아니다 — 이 구분을 흐리지 않는다.**
+독립 리뷰(3E Q11)의 판정 그대로 적는다: M5 완료 조건(로드맵 ~:1490)은 fixture repo에서
+Codex plan → Claude implement → test → fresh review → revise → verify가 수동 복사 0회로 도는 것인데,
+그건 live provider와 typed execution이 필요하고 **둘 다 의도적으로 열린 게이트**(`B-7`/`B-9`/`B-10`)다.
+현재 autopilot은 **operation이 0건인 plan만 완료에 도달**시킬 수 있다 — 즉 **아직 마일스톤을 완료까지
+몰고 갈 수 없다.** 이번에 증명된 것은 제목의 나머지 절반, **"Autopilot Bootstrap"**(승인 게이트 · durable ·
+pause-not-hang · 관측 가능 · 취소 정리)이다.
+
+**3E — `harness autopilot`**: 승인 manifest 게이트 → 16회 상한 루프 → `planRunnableBatch` →
+plan 파일이 있는 task만 `prepared`, 없으면 **`deferred`(무접촉)** → turn 직전 `startPreparedTask` →
+`startOfflinePlanTurn`(in-memory · spawn 0) → progress를 `recordProgress` + stdout **양쪽**으로 →
+`recordTerminal` → `confirmCleanup` → `completed`/`paused`/`cancelled`.
+plan 파일은 `{operations, result}`만 담고 **run/task/attempt/turn 결박은 durable state에서** 채운다 →
+plan 파일이 다른 run을 사칭하거나 낡은 attempt를 되살릴 수 없다.
+**열린 게이트 7종(`B-10`·`B-11`·`B-12`·`B-13`·`B-16`·`B-17`·`B-7`/`B-9`)을 하나도 닫지 않고 하나도
+넘지 않았다 — 전부 "소비 회피"로 독립 판정됐다.** `--resume`/재예산 플래그를 **의도적으로 만들지 않았다**.
+`B-16` 경계 판정(구현자가 second opinion을 요청한 건): **밖이다** — B-16은 `applyWriteFile`이 **새 바이트**를
+발행하는 것을 게이트하는데 typed write가 0이고, 기존 task 소유 파일 등록은 M5b가 이미 승인한
+`completeTaskWithArtifacts → addArtifact` 경로(소유권·`writableRoots`·hash 집행)다.
+
+**3F — 숨어 있던 red 48건 복구(이번 세션 최대 발견).**
+`src/exec/codexCliProvider.test.ts`가 **11 pass / 48 fail**이었고 **적어도 `8dd05f9`부터 그랬다.**
+원인은 3B가 `stableController`에서 고친 것과 **같은 결함** — pre-M5c v1 manifest fixture라
+`manifest_pre_m5c_unsupported`가 **각 테스트의 검증 대상에 도달하기 전에** 승인을 거부했다.
+**아무도 몰랐던 이유: 모든 세션이 focused 테스트만 돌렸고 `npm run test:exec`를 아무도 돌리지 않았다.**
+그 48건은 M5a/M5b **안전 테스트**다 — spawn 0 단언 · TOCTOU 재검증 · 실행 파일 신원 고정 · 격리 홈
+계약 · MCP 위반 · 세션 소유권 · 핸들 위조. **Task 3A 이후 이 속성들이 실제로 검증된 적이 없었다.**
+수정은 fixture 이관뿐이고 **프로덕션 변경은 하나도 필요하지 않았다**(= red 뒤에 숨은 제품 결함 없음).
+"초록으로 만든 게 아니라 대상에 도달한다"는 증명: suite 헬퍼 `codeOfCall`이 아무것도 안 던지면
+`"(통과)"` 센티넬을 반환하고 `expectNoSpawn`이 별도로 `calls.length === 0`을 단언하며, 모든 테스트가
+`assert.equal(code, "<구체 코드>")`로 끝난다 → 센티넬로도 `manifest_pre_m5c_unsupported`로도 통과 불가.
+mutation 4종이 실증했다(`approved_commit_mismatch` 3개소 변조 · digest 검사 제거 시 **spawn 0 → 1 반전** ·
+seal-drift 가드 무력화 시 4건 사망).
+
+**경합 수정(`77b55e5`)**: `managedProcess` SIGKILL 테스트가 병렬 부하에서만 red였다. 실험으로 원인
+확정 — 지연 100ms에서 SIGKILL 40/40, 3ms에서 SIGTERM 29·SIGKILL 11, 1ms에서 SIGTERM 40/0 →
+`sh`가 `trap '' TERM`을 설치하기 **전에** deadline이 터져 자식이 그냥 SIGTERM으로 죽고 "고집스러운
+프로세스"가 생기지 않았다. **supervisor는 두 경우 모두 올바르게 동작했다 — 테스트 쪽 경합이다.**
+`4774c43`과 같은 관측 배리어(trap 다음 줄에서 ready 파일 기록 → 폴링)로 고정했고 원본 assertion 3건은
+바이트 동일, 배리어 실패를 소리나게 만드는 assertion 1건이 **추가**됐다.
+
+**전체 suite 1회 — 실행했다(계획 리뷰어 권고를 앞당김).**
+`npm test` 직렬 1회: `test:exec` **493/493** · `test:core` **391/391** · acceptance **PASS=92 / FAIL=0**.
+`test:exec`는 중앙 재실행 **3회 연속 493/493**(수정 전 444/49). **이 저장소에서 M5a 이후 처음으로
+전체가 초록이다.**
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-21` | B (P1) | **중단된 batch의 `prepared` task를 autopilot이 스스로 되찾지 못한다.** 예산 게이트·SIGINT·`preflight_drift`로 batch 중간에 멈추면 나머지가 `prepared`로 남는데, `prepared`는 `RESOURCE_HOLDING_STATES`(`orchestrationTypes.ts:79`)라 배타 class를 잡고 `maxSessions`에 계상되는 반면 `selectSchedulable`(`orchestrationKernel.ts:3985`)은 `ready`/`retry_wait`만 고른다 → **이후 어떤 autopilot 실행도 그 task를 다시 입양·정착시킬 수 없다.** 사람이 `pauseTask`(→`cleanupStatus:"none"`이라 허용) 후 `resumeTask`로 복구할 수는 있으나 attempt 1회를 태운다. 교착도 게이트 소비도 아니지만 **이후 모든 batch를 조용히 줄인다**. `autopilot.test.ts`에 `prepared` 잔여를 다루는 테스트가 **0건**이다 | 중 — batch가 2건 이상인 run에서 | run 1개의 처리량 | 중 | 소~중(`prepared` 재입양/정착 pass) | **autopilot을 반복·예약 실행(cron/loop)하기 전** | 다음 M5c slice | 3E 독립 리뷰 F-1(STATIC) · `autopilot.ts:192-199, 241-243` | open |
+| `B-22` | B (P1) | **`chargeTurnUsage` 실패를 삼켜 토큰 예산이 과소 집행된다.** 거부(`charged_turns_exhausted` · 시계 sanity)가 조용히 넘어가면 그 turn의 토큰이 durable `accounting.tokensUsed`에 반영되지 않고, 이후 `budgetGate`가 낡은 합계로 통과한다. 경과 예산(`budgetDeadlineAt`)은 durable 고정이라 그대로 집행되고 offline 사용량은 어차피 자기신고라 **오늘 노출은 0**이지만, live backend에서는 **실제 미계측 지출**이 된다 | 낮음(지금) → 확실(live) | run 1개의 토큰 회계 | 높음 — live에서 발견하면 이미 지출된 뒤다 | 소(실패를 stop/pause 조건으로) | **`B-7`/`B-9`와 같은 하드 게이트 — live·토큰 생성 backend 배선 전** | live 활성화 slice | 3E 독립 리뷰 F-2(STATIC) · `autopilot.ts:285-295` | open |
+| `C-50` | C (P3) | plan 파일의 malformed JSON · 초과 크기 · 읽기 실패가 전부 `null` → `deferred(plan_missing)`으로 접힌다. 오타 난 plan과 의도적 부재를 구분할 수 없어 **오설정을 숨긴다**. `plan_missing`과 `plan_unreadable`을 분리할 것 | 중 | 운영자 진단 | 낮음 | 소 | 없음(bounded) | — | 3E 리뷰 C-1 · `autopilot.ts:414-427` | open |
+| `C-51` | C (P3) | `readFileSync`가 4 MiB 검사 **전에** 파일 전체를 읽는다 → 거대 plan 파일이 먼저 메모리에 올라온다. `statSync`로 크기를 먼저 볼 것 | 낮음 | 메모리 | 낮음 | 소 | 없음 | — | 3E 리뷰 C-2 · `autopilot.ts:417-418` | open |
+| `C-52` | C (P3) | `resultEnvelope`가 주입된 `clock` 대신 `new Date()`를 쓴다 — 모듈 내 유일한 시계 우회. kernel이 envelope `createdAt`을 교차 검증하지 않아 동작은 하지만 모듈 자신의 시계 권위 규율과 어긋난다 | 낮음 | 일관성 | 낮음 | 소 | 없음 | — | 3E 리뷰 C-3 · `autopilot.ts:477` | open |
+| `C-53` | C (P3) | 잘못된 `--max-iterations`(`"abc"` → NaN)가 거부되지 않고 조용히 16으로 폴백한다 | 낮음 | 운영자 오인 | 낮음 | 소 | 없음 | — | 3E 리뷰 C-4 · `cli.ts:143` · `autopilot.ts:441-444` | open |
+| `C-54` | C (P2) | `resultBody`/`resultEnvelope`가 `stableController`의 사설 등가물을 부분 복제한다. 지금은 수용 가능(제목을 `REQUIRED_BODY_HEADINGS`에서 파생 · kernel이 본문을 재검증 · controller는 범위 밖이었다)이나 **분기 위험**이 있다 | 중 | 두 경로의 본문 계약 | 중 | 중(통합) | **controller를 다음에 여는 slice에서 통합 판단** | 다음 controller slice | 3E 리뷰 C-5 · `autopilot.ts:488-501` vs `stableController.ts:1373` | open |
+| `C-55` | C (P3) | `startPreparedTask` 이후 turn 중간에 kernel이 예기치 않게 throw하면(시계 역행 · `recordTerminal`/`confirmCleanup` 디스크 오류) 잡히지 않고 전파돼 CLI가 죽고 task가 `running`/`cleaning`에서 durable lease를 쥔 채 남는다. **크래시 등가**(`kill -9`와 같음)이고 durable `processLeaseMarker`가 복구용으로 읽히므로 "pause가 필요한데 hang한" 경우는 아니다. `B-21`의 복구 slice에 합류시킬 것 | 낮음 | task 1건 | 낮음 | 중 | `B-21`과 함께 | 다음 M5c slice | 3E 리뷰 C-6 | open |
+| `C-56` | C (P3) | `managedProcess.test.ts`의 `mkdtemp` fixture 디렉터리를 suite가 unlink하지 않아 `$TMPDIR`에 남는다(프로세스 누수는 아니다 · 기존 `makeDir` 헬퍼의 동작이며 이번 변경과 무관) | 확실 | 디스크 부스러기 | 없음 | 소 | 없음 | — | 경합 수정 worker 실측 | open |
+
+> **확인 사항**: `C-49`의 trigger("autopilot CLI 착수 전")는 기술적으로 발화했으나 **autopilot은 commit
+> 자동화를 하지 않으므로** 행은 열린 채 두고 trigger를 **commit 자동화 slice**로 옮긴다.
+> `C-41`(executionBoundary red)은 **fixed 유지**이며 이번 전체 suite 통과로 재확인됐다.
+> `B-16` **미개봉** · `B-10`/`B-11`/`B-12`/`B-13`/`B-17`/`B-18`/`B-19`/`B-20` 변화 없음.
+
 ##### M5c task 3D 대장 갱신 (2026-08-04 — **독립 리뷰 `APPROVE — A=0, B=1, C=3` · Task 3D 완료 · M5c/M5 미완료 · 이 절이 현행이다**)
 
 > 범위 `f33c1aa..b09df0e`. fresh Fable 5 read-only 독립 리뷰(구현 worker transcript 미전달).

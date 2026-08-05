@@ -1,5 +1,90 @@
 # WORKLOG.md
 
+## 2026-08-05 (V3 **M5c 완료 — task 3E autopilot CLI 독립 리뷰 `APPROVE — A=0, B=2, C=6` · 3F로 숨은 red 48건 복구 · 전체 suite 1회 PASS. M5는 완료 아님** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · branch `work/m5c-autopilot`.
+  커밋: `c771f81`(3E) · `32b8853`(3F) · `77b55e5`(경합 수정). 구현은 전부 **각각 별도의 fresh Opus 5
+  worker**, 리뷰는 fresh Fable 5 read-only, 중앙 오케스트레이터(Opus 5)는 계획·재검증·문서만 했다.
+- **M5c는 완료다. M5는 완료가 아니다.** 독립 리뷰 판정 그대로: M5 완료 조건은 live provider와 typed
+  execution을 요구하고 둘 다 **의도적으로 열린 게이트**다(`B-7`/`B-9`/`B-10`). 현재 autopilot은
+  **operation 0건인 plan만 완료에 도달**시키므로 **아직 마일스톤을 완료까지 몰고 갈 수 없다.**
+  증명된 것은 "Autopilot **Bootstrap**"(승인 게이트 · durable · pause-not-hang · 관측 · 취소 정리)이다.
+
+### Task 3E — `harness autopilot` CLI (`c771f81`)
+
+- **변경 파일(3)**: `src/cli.ts` · `src/commands/autopilot.ts`(신규) · `.test.ts`(신규).
+  `src/exec/`·schemas·docs·package **diff 0줄** — `stableController.ts` 무변경.
+- 승인 게이트(마일스톤 일치 · 만료 · durable 예산) → 16회 상한 루프 → plan 파일 있는 task만
+  `prepared`, 없으면 **`deferred`(무접촉)** → turn 직전 `startPreparedTask` → `startOfflinePlanTurn`
+  (in-memory · **spawn 0**) → progress를 `recordProgress` + stdout 양쪽 → `recordTerminal` →
+  `confirmCleanup` → `completed`/`paused`/`cancelled`. run-level 거부만 exit 2.
+- plan 파일은 `{operations, result}`만 담고 **run/task/attempt/turn 결박은 durable state에서** 온다 →
+  plan이 다른 run을 사칭하거나 낡은 attempt를 되살릴 수 없다. 경로 순회는 kernel 발급 taskId의
+  `assertSlug`로 차단. `__proto__`는 `JSON.parse` + 2필드 복사로 무력.
+- **열린 게이트 7종을 하나도 닫지 않고 하나도 넘지 않았다** — `B-10`·`B-11`·`B-12`·`B-13`·`B-16`·
+  `B-17`·`B-7`/`B-9` 전부 **"소비 회피"로 독립 판정**됐다. `--resume`/재예산 플래그를 **의도적으로
+  만들지 않았다**(만들었으면 같은 승인 아래 예산이 새로 생겼을 것이다).
+- **교체 assertion 0건** — 기존 테스트를 하나도 건드리지 않았다.
+- 실측: `tsc` exit 0 · `autopilot.test.ts` **17/17**(중앙 10회 연속 · worker 20회 + 부하 10회) ·
+  exec 8파일 **313/313** · `test:core` **391/391** · mutation 3종 red 후 원복.
+- 개발 중 flake 1건을 **출하 전에** 잡아 고쳤다(자손 검사가 tsx의 esbuild 자식을 셌다 → baseline 상대 +
+  2회 표본 교집합). 고정 sleep 0.
+
+### Task 3F — 숨어 있던 red 48건 복구 (`32b8853`) — **이번 세션 최대 발견**
+
+- `src/exec/codexCliProvider.test.ts`가 **11 pass / 48 fail**이었고 **적어도 `8dd05f9`부터** 그랬다
+  (중앙이 별도 worktree를 떠서 직접 확인). **우리 작업의 회귀가 아니다.**
+- 원인은 3B가 `stableController`에서 고친 것과 **같은 결함** — pre-M5c v1 manifest fixture라
+  `manifest_pre_m5c_unsupported`가 **각 테스트의 검증 대상에 도달하기 전에** 승인을 거부했다.
+- **아무도 몰랐던 이유: 모든 세션이 focused 테스트만 돌렸고 `npm run test:exec`를 아무도 돌리지 않았다.**
+  계획 리뷰어가 경고한 "live/전체 검증이 단일 고분산 게이트로 누적된다"가 실제로 발현한 사례다.
+- 그 48건은 M5a/M5b **안전 테스트**다 — spawn 0 단언 · TOCTOU 재검증 · 실행 파일 신원 고정 ·
+  격리 홈 계약 · MCP 위반 · 세션 소유권 · 핸들 위조. **Task 3A 이후 이 속성들이 실제로 검증된 적이 없다.**
+- 수정은 **fixture 이관뿐**이고 **프로덕션 변경이 하나도 필요하지 않았다** = red 뒤에 숨은 제품 결함 없음.
+  변경 +27/−1, **교체 assertion 0건**(삭제된 줄은 fixture 리터럴 하나).
+- **"초록으로 만든 게 아니라 대상에 도달한다"는 구조적 증명**: `codeOfCall`이 아무것도 안 던지면
+  `"(통과)"` 센티넬을 반환하고 `expectNoSpawn`이 별도로 `calls.length === 0`을 단언하며 모든 테스트가
+  `assert.equal(code, "<구체 코드>")`로 끝난다 → 센티넬로도 `manifest_pre_m5c_unsupported`로도 통과 불가.
+  mutation 4종이 실증: `approved_commit_mismatch` 3개소 변조 → spawn 0·TOCTOU 테스트 사망 ·
+  digest 검사 제거 → **spawn 수 0 → 1 반전** · seal-drift 가드 무력화 → 4건 사망.
+- 정직 기록: worker가 mutation 위치를 한 줄 잘못 짚어 무의미한 결과를 낸 뒤 다시 했고, 세 곳 중 한 곳만
+  끄면 다른 경로로 발화해 green이라 **세 곳 전부**를 꺼야 도달 범위가 증명된다고 보고했다.
+  이 worker는 중간에 API 529로 한 번 죽었고, 중앙이 **프로덕션 파일에 mutation 잔존이 없음을 확인한 뒤**
+  같은 컨텍스트로 재개시켜 mutation·검증·커밋만 마무리했다.
+
+### 경합 수정 (`77b55e5`)
+
+- `managedProcess`의 SIGKILL 테스트가 **병렬 부하에서만** red였다(단독 15/15). 실험으로 원인 확정:
+  지연 100ms → SIGKILL 40/40 · 3ms → SIGTERM 29·SIGKILL 11 · 1ms → SIGTERM 40/0.
+  `sh`가 `trap '' TERM`을 설치하기 **전에** deadline이 터져 자식이 그냥 SIGTERM으로 죽고
+  "고집스러운 프로세스"가 생기지 않았다. **supervisor는 두 경우 모두 올바르게 동작했다 — 테스트 경합이다.**
+- `4774c43`과 같은 관측 배리어(trap 다음 줄에서 ready 파일 → 폴링)로 고정. 원본 assertion 3건 바이트
+  동일, 배리어 실패를 소리나게 만드는 assertion 1건 **추가**. `timeoutMs` 100 → 2000(배리어가 그 값을
+  비-load-bearing으로 만들었기 때문이며 escalation 창인 `termGraceMs`/`killGraceMs`는 불변).
+  파일의 나머지 14건도 같은 형태인지 전수 확인했다(3건은 이미 배리어 보유, 1건은 경합 없음).
+
+### 전체 suite — **직렬 1회 실행했다**
+
+- `npm test`(공용 배타 lock) 1회: `test:exec` **493/493** · `test:core` **391/391** ·
+  acceptance **PASS=92 / FAIL=0** → **ALL PASS**.
+- `test:exec`는 중앙 재실행 **3회 연속 493/493**(3F 이전 444/49 · 경합 수정 이전 492~493 진동).
+- **M5a 이후 이 저장소에서 처음으로 전체가 초록이다.**
+
+### 신규 유예
+
+`B-21`(중단된 batch의 `prepared` 잔여를 autopilot이 되찾지 못함 — 반복·예약 실행 전) ·
+`B-22`(`chargeTurnUsage` 실패를 삼켜 토큰 예산 과소 집행 — live 배선 전 하드 게이트) ·
+`C-50`~`C-56`. 상세는 roadmap §9.1.
+
+### 미실행
+
+live · stress · 반복 3회 · build/dist · M5d. **live는 `B-7`/`B-9` 하드 게이트이며 사용자 승인 사항이다.**
+
+### 다음
+
+M5c 잔여 없음. 다음은 **M5-live 슬라이스**(`B-7` 인증 방식 결정 + `B-9` live JSONL 1회 캡처) 또는
+**M5d**(스펙 부재 — 계획 리뷰 A-1). 둘 다 **사용자 결정 사항**이다.
+
 ## 2026-08-04 (V3 **M5c task 3D — trusted Git · 독립 리뷰 `APPROVE — A=0, B=1, C=3`. Task 3D 완료, M5c·M5는 미완료** · 이 블록이 가장 최신이다)
 
 - worktree **`/Users/jihun/Developer/solo-founder-harness-m5c`**(내구성 없는 `/private/tmp`에서 이전) ·
