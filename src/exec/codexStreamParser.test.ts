@@ -4,6 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { CodexJsonlParser, MAX_EVENTS, MAX_LINE_CHARS, MAX_TEXT_CHARS, MAX_USAGE } from "./codexStreamParser.js";
 import type { SessionEvent } from "./types.js";
 
@@ -46,6 +47,57 @@ const SUCCESS = [
   '{"type":"item.completed","item":{"id":"i3","item_type":"agent_message","text":"검토 결과: 문제 없음"}}',
   '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":40,"output_tokens":30}}',
 ];
+
+/** 실측 캡처(codex-cli 0.145.0-alpha.27)의 **원본 바이트**. 손으로 만든 값이 아니다. */
+const LIVE_JSONL = readFileSync(new URL("./__fixtures__/codex-live-turn.jsonl", import.meta.url), "utf8");
+
+test("[B-9] 실측 codex JSONL(0.145.0-alpha.27): 캡처된 usage 숫자를 그대로 매핑한다", () => {
+  const p = parser();
+  // 캡처 전체를 한 chunk로 그대로 흘린다(줄 단위로 재조립하지 않는다).
+  const events = [...p.push(LIVE_JSONL), ...p.finish({ code: 0, signal: null })];
+
+  assert.deepEqual(markers(events), [], "실측 스트림에 프로토콜 실패 marker가 없어야 한다");
+  assert.equal(p.protocolFailed, false);
+  assert.equal(p.sessionId, "019fd226-6745-7f31-be8d-efe3927ddd89", "실측 thread_id는 정규 UUID로 인정된다");
+
+  const init = events.find((e) => e.kind === "init");
+  assert.ok(init && init.kind === "init", "thread.started → init");
+
+  const r = only(events);
+  assert.equal(r.isError, false);
+  assert.equal(r.terminalReason, "turn_completed");
+  // item.completed의 item은 실측에서 `item_type`이 아니라 `type`을 쓴다 — 별칭 경로가 실제로 필요하다.
+  assert.equal(r.text, "OK", "item.type: agent_message + item.text가 최종 메시지가 된다");
+
+  assert.deepEqual(
+    r.usage,
+    {
+      inputTokens: 13361,
+      // reasoning_output_tokens(13)는 output_tokens(20)의 부분집합이므로 **더하지 않는다**(33이면 이중 계상).
+      outputTokens: 20,
+      cacheCreationInputTokens: 0, // 실측 cache_write_input_tokens = 0
+      cacheReadInputTokens: 1408,
+    },
+    "실측 usage 숫자와 정확히 일치해야 한다",
+  );
+});
+
+test("[B-9] usage 필드명: cache_write_input_tokens(live)와 cache_creation_input_tokens(별칭) 둘 다 읽는다", () => {
+  const usageLine = (u: Record<string, number>) => JSON.stringify({ type: "turn.completed", usage: u });
+  const head = `{"type":"thread.started","thread_id":"${TID}"}`;
+
+  // live 필드명. 캡처값이 0이라 필드명 회귀를 잡지 못하므로 여기서 0이 아닌 값으로 고정한다.
+  const live = only(run([head, usageLine({ input_tokens: 5, cache_write_input_tokens: 77, output_tokens: 3 })]));
+  assert.equal(live.usage.cacheCreationInputTokens, 77, "live 필드명 cache_write_input_tokens를 읽어야 한다");
+
+  // 기존 별칭은 지우지 않는다(다른 CLI 버전 / Claude 형태 대비).
+  const alias = only(run([head, usageLine({ input_tokens: 5, cache_creation_input_tokens: 42, output_tokens: 3 })]));
+  assert.equal(alias.usage.cacheCreationInputTokens, 42, "기존 별칭 지원을 유지해야 한다");
+
+  // reasoning_output_tokens는 output_tokens의 내역이다 — 합산하면 이중 계상이 된다.
+  const reasoning = only(run([head, usageLine({ input_tokens: 5, output_tokens: 30, reasoning_output_tokens: 25 })]));
+  assert.equal(reasoning.usage.outputTokens, 30, "reasoning_output_tokens를 output_tokens에 더하지 않는다");
+});
 
 test("[M5a] 성공 스트림: init·진행·메시지·도구·usage를 provider 중립 이벤트로 매핑", () => {
   const events = run(SUCCESS);
