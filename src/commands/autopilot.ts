@@ -83,6 +83,11 @@ export interface AutopilotTaskOutcome {
   /** `completed` · `paused` · `cancelled` · `deferred`. */
   state: string;
   marker: string;
+  /**
+   * `B-22`: 이 turn의 usage가 durable 회계에 **들어가지 못했다**(거부 코드). 값이 있으면 이후 판정은
+   * 낡은 총량 위에서 이뤄지므로 loop가 계속 돌아서는 안 된다.
+   */
+  chargeFailed?: string;
 }
 
 export interface AutopilotReport {
@@ -197,7 +202,14 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
         stoppedBecause = perTask;
         break;
       }
-      tasks.push(await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit }));
+      const outcome = await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit });
+      tasks.push(outcome);
+      // `B-22`: 원장에 들어가지 않은 turn이 있으면 이후 예산 판정은 낡은 총량을 본다 → 멈춘다.
+      // 이미 지난 task는 `paused`로 착지해 있으므로 사람이 회계를 맞춘 뒤 그대로 이어서 부를 수 있다.
+      if (outcome.chargeFailed !== undefined) {
+        stoppedBecause = "usage_unaccounted";
+        break;
+      }
       if (opts.signal?.aborted) {
         stoppedBecause = "cancelled";
         break;
@@ -281,6 +293,7 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   }
 
   // **실패한 turn의 usage도 durable하게 적는다** — 그래야 다음 판정이 최신 총량을 본다(`B-12`).
+  let chargeFailed: string | null = null;
   try {
     kernel.chargeTurnUsage({
       taskId,
@@ -290,8 +303,17 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
       outputTokens: usage.outputTokens,
       elapsedMs: Math.max(0, clock().getTime() - startedMs),
     });
-  } catch {
-    /* 회계 거부가 정리를 막지 않는다 — 정리는 언제나 진행된다. */
+  } catch (err) {
+    // `B-22`: 정리는 여전히 막지 않는다(아래 recordTerminal → confirmCleanup은 그대로 지난다). 다만
+    // **삼키지 않는다**: 이 turn의 토큰이 durable 회계에 없으므로 다음 `budgetGate`는 낡은 총량을 보고
+    // 통과한다 = live backend에서 계량되지 않은 지출이다. 정리를 지난 뒤 pause + loop 정지로 접는다.
+    //
+    // "예산 소진" 실패와 그 외를 나누지 않는 이유: `chargeTurnUsage`에는 소진 실패 모드가 **없다**
+    // (총량은 상한으로 clamp되고 소진 판정은 `budgetGate`가 나중에 한다). 거부 코드는 전부 신원·중복·
+    // 기록 상한(`turn_already_charged` · `turn_conflict` · `dispatch_identity_stale` ·
+    // `dispatch_plan_conflict` · `charged_turns_exhausted`)이며, 어느 쪽이든 결과는 하나 —
+    // **이 turn의 토큰이 원장에 없다**. 그래서 같은 처분을 받는다.
+    chargeFailed = codeOf(err);
   }
 
   const sealed = marker === "turn_completed" && plan !== null ? { summary: plan.result.summary, outputs: [...plan.result.outputs] } : null;
@@ -303,7 +325,14 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
     kernel.requestCancel({ taskId, actionId: id("cancel") });
     kernel.settleCleanedAttempt({ taskId, actionId: id("settle") });
     emit({ kind: "task_cancelled", taskId, marker });
-    return { taskId, state: "cancelled", marker };
+    return { taskId, state: "cancelled", marker, ...(chargeFailed ? { chargeFailed } : {}) };
+  }
+  // `B-22`: 회계 실패는 turn 자체의 marker보다 **먼저** 착지를 결정한다. 정리는 이미 확인됐고(위),
+  // pause는 kernel이 cleanup 확인을 요구하므로 B1(cleanup_unconfirmed 우선)은 그대로 산다.
+  if (chargeFailed !== null) {
+    kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+    emit({ kind: "task_paused", taskId, marker: chargeFailed, detail: "usage_unaccounted" });
+    return { taskId, state: "paused", marker: chargeFailed, chargeFailed };
   }
   if (marker !== "turn_completed" || plan === null) {
     const reason = pauseReasonFor(marker);

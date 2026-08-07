@@ -348,6 +348,53 @@ test("[M5c-3E] 무효한 계획도 hang 없이 paused로 접힌다", async () =>
   assert.equal(task.execution.cleanupStatus, "confirmed", "정리를 지나지 않고 pause했다");
 });
 
+test("[M5c-3E] usage 과금이 거부되면 정리를 지난 뒤 paused로 착지하고 loop가 멈춘다 (B-22)", async () => {
+  const f = boot({}, ["root", "sibling"]);
+  writePlan(f.planDir, "root", {});
+  writePlan(f.planDir, "sibling", {});
+
+  // 과금 기록을 durable 상한까지 채운다 → autopilot의 다음 charge는 `charged_turns_exhausted`로 거부된다.
+  // (토큰·경과 0이므로 예산 게이트는 그대로 통과한다 — 실패하는 것은 **회계 기록** 하나뿐이다.)
+  const filler = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 30_000, 0) });
+  for (let i = 0; i < LIMITS.maxChargedTurnIds; i++) {
+    filler.chargeTurnUsage({ taskId: "root", turnId: `fill-${i}`, actionId: `fill-act-${i}`, inputTokens: 0, outputTokens: 0, elapsedMs: 0 });
+  }
+
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    onEvent: (e) => events.push(e),
+  });
+
+  // ⓐ 삼키지 않는다: 계획 자체는 완주 가능했지만(operation 0) 회계가 없으므로 완료로 발행하지 않는다.
+  assert.equal(report.tasks.length, 1, "회계 실패 뒤에는 다음 task를 시작하지 않는다");
+  assert.deepEqual(report.tasks[0], {
+    taskId: "root",
+    state: "paused",
+    marker: "charged_turns_exhausted",
+    chargeFailed: "charged_turns_exhausted",
+  });
+  // ⓑ loop는 낡은 총량 위에서 계속 돌지 않는다.
+  assert.equal(report.stoppedBecause, "usage_unaccounted");
+  assert.equal(report.blocked, null);
+  // ⓒ 정리는 그대로 지났다(recordTerminal → confirmCleanup 순서 보존).
+  const task = taskOf(f.ws, "root");
+  assert.equal(task.execution.cleanupStatus, "confirmed", "회계 실패가 정리를 건너뛰게 만들었다");
+  assert.equal(task.state, "paused", "hang하거나 running에 남았다");
+  assert.equal(task.execution.pauseReason, "approval_required");
+  // ⓓ 산출물은 발행되지 않았다 — 회계 없는 turn이 결과를 남기지 않는다.
+  assert.equal(reopen(f.ws).getState().artifacts.length, 0);
+  assert.ok(events.some((e) => e.kind === "task_paused" && e.marker === "charged_turns_exhausted" && e.detail === "usage_unaccounted"));
+  // ⓔ 사라지지도 않는다: 사람이 회계를 맞춘 뒤 그대로 이어갈 수 있다.
+  assert.equal(reopen(f.ws).resumeTask({ taskId: "root", actionId: "act.resume" }).state, "ready");
+  // ⓕ 두 번째 task는 손대지 않았다(attempt·lease 없음).
+  assert.equal(taskOf(f.ws, "sibling").state, "prepared");
+});
+
 test("[M5c-3E] 발행이 거부되는 산출물(디스크에 없음)도 paused로 착지한다", async () => {
   const f = boot();
   writePlan(f.planDir, "root", { result: { summary: "없는 파일", outputs: [{ path: "docs/missing.md", role: "output" }] } });
