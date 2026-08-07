@@ -1436,6 +1436,37 @@ test("[M5a] fake CLI 비정상 종료: stderr는 bounded·scrubbed 요약으로�
   }
 });
 
+test("[M5c] B-7ⓑ: 패턴이 모르는 진짜 토큰이 stderr에 찍혀도 어떤 이벤트·기록에도 닿지 못한다", async () => {
+  const repo = await initRepo();
+  const home = codexHome();
+  // **패턴 redaction이 잡지 못하는 형태다**: `key=`·`Authorization:` 같은 단서가 없는 맨 토큰이고,
+  // 승인된 secret 값 목록에도 없다(live에서 실제로 벌어지는 경우가 바로 이것이다).
+  const TOKEN = `sk-proj-${"A1b2C3d4E5f6G7h8".repeat(3)}`;
+  try {
+    scenario(repo.root, [{ lines: [], exitCode: 9, stderr: `codex fatal: request failed\n${TOKEN}\n` }]);
+    const provider = codexProvider({
+      manifest: manifest(repo.head),
+      controllerRepoRoot: repo.root,
+      executablePath: TRUSTED_BIN,
+      spawn: realFakeSpawn,
+    });
+    const handle = await provider.start(specFor(repo.root, home), "p");
+    const events = await drain(provider.events(handle));
+    const r = resultsOf(events);
+    assert.equal(r.length, 1);
+    assert.equal(r[0].isError, true);
+    assert.equal(r[0].terminalReason, "exit_error", "종료 사유는 그대로 진단된다");
+    // 이벤트 스트림 **전체**를 직렬화해 검사한다 — text든 raw든 어느 필드로도 새지 않는다.
+    assert.ok(!JSON.stringify(events).includes(TOKEN), "토큰이 이벤트로 새어 나왔다");
+    assert.ok(!JSON.stringify(events).includes("sk-proj-"), "토큰 조각조차 남지 않는다");
+    // stderr 본문 자체가 아예 프로세스에 들어오지 않으므로 요약도 비어 있다(패턴 성공에 의존하지 않는다).
+    assert.equal(r[0].text, "", "stderr 본문이 결과 텍스트가 됐다");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
 test("[M5a] fake CLI 중단(signal): 종료 결과 1건 · 실패", async () => {
   const repo = await initRepo();
   const home = codexHome();

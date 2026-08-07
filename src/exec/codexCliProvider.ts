@@ -111,8 +111,6 @@ import type { ExecutionProvider, SessionEvent, SessionHandle, SessionSpec } from
 
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
 export const MAX_PROMPT_CHARS = 262_144;
-/** stderr 버퍼 상한(문자) — 요약 전에도 무제한으로 쌓지 않는다. */
-const MAX_STDERR_BUFFER = 8_192;
 
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const EFFORTS = ["low", "medium", "high", "xhigh"] as const;
@@ -124,7 +122,8 @@ export const CODEX_REVIEW_DEFAULTS = { model: "gpt-5.6-sol", reasoningEffort: "x
 export type SpawnFn = (
   command: string,
   args: string[],
-  options: { cwd: string; env: NodeJS.ProcessEnv; stdio: ["pipe", "pipe", "pipe"] },
+  /** `B-7ⓑ`: stdio[2]는 **타입 수준에서** `"ignore"`다 — 자식 stderr를 pipe로 받는 코드는 컴파일되지 않는다. */
+  options: { cwd: string; env: NodeJS.ProcessEnv; stdio: ["pipe", "pipe", "ignore"] },
 ) => ChildProcess;
 
 /**
@@ -1109,17 +1108,21 @@ export class CodexCliProvider implements ExecutionProvider {
 
     let child: ChildProcess;
     try {
-      child = this.#spawn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
+      // `B-7ⓑ`: stderr는 **fd 단계에서 버린다**(`"ignore"`). 아래 settle이 stderr를 절대 싣지 않는 것과
+      // 합쳐, 자식이 무엇을 찍든 이 프로세스의 메모리에 들어오지 않는다 — redaction 패턴이 그 토큰을
+      // 아는지 여부에 의존하지 않는 구조적 차단이다(패턴은 "대개" 맞을 뿐이고 이 게이트는 그것을 거부한다).
+      child = this.#spawn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "ignore"] });
     } catch (err) {
       // 동기 spawn 예외: 큐를 열어둔 채 두지 않고 종료 결과 1건으로 닫는다.
-      settle({ code: null, signal: null, stderr: (err as Error)?.message ?? "", spawnError: true });
+      // 오류 메시지도 싣지 않는다 — 경로·argv가 섞일 수 있고 `spawn_error` 코드로 진단은 충분하다.
+      void err;
+      settle({ code: null, signal: null, spawnError: true });
       fail("codex_spawn_failed", "codex 실행을 시작하지 못했다");
     }
     // 프로세스를 띄운 뒤부터 그 홈은 provider 소유다 — 이후 invocation은 신원이 같은 홈만 쓴다.
     state.homeId = home.id;
     state.child = child;
 
-    let stderr = "";
     child.stdout?.setEncoding("utf8");
     child.stdout?.on("data", (chunk: string) => {
       for (const e of parser.push(chunk)) {
@@ -1134,20 +1137,13 @@ export class CodexCliProvider implements ExecutionProvider {
         queue.push(e);
       }
     });
-    // stderr는 요약·redaction 후에만 쓰인다(원문은 큐·상태로 나가지 않는다).
-    child.stderr?.setEncoding("utf8");
-    child.stderr?.on("data", (d: string) => {
-      // **상한은 정확하다**(대장 `C-24`): 이전 판은 "아직 상한 아래면 chunk 전체를 붙인다"였으므로
-      // 큰 chunk 하나가 상한을 임의로 넘길 수 있었다(8 KiB 상한에 1 MiB가 들어갈 수 있었다).
-      // 남은 자리만큼만 정확히 잘라 붙인다 — 요약·redaction은 그 뒤 단계다.
-      const room = MAX_STDERR_BUFFER - stderr.length;
-      if (room > 0) stderr += d.length > room ? d.slice(0, room) : d;
-    });
+    // stderr는 읽지 않는다(`stdio[2] = "ignore"`). 주입된 spawn이 stdio를 무시하고 stream을 주더라도
+    // 여기서 구독하지 않으므로 내용이 어디에도 축적되지 않는다. 상한·redaction은 더 이상 방어선이 아니다.
     // stdin EPIPE 등은 프로세스 종료 경로로 수렴시킨다(여기서 던지면 unhandled가 된다).
     child.stdin?.on("error", () => parser.protocolFail("stdin_error"));
 
-    child.on("error", (err) => settle({ code: null, signal: null, stderr: err.message, spawnError: true }));
-    child.on("close", (code, signal) => settle({ code, signal, stderr }));
+    child.on("error", () => settle({ code: null, signal: null, spawnError: true }));
+    child.on("close", (code, signal) => settle({ code, signal }));
 
     try {
       child.stdin?.write(prompt);
