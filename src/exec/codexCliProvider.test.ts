@@ -74,9 +74,12 @@ function digestOf(file: unknown): string {
 }
 
 /** 승인된 실행 권위 record 한 벌(6차 리뷰 A1). */
-function authorityFor(codexPath: unknown, gitPath: unknown = TRUSTED_GIT, codexSha?: string) {
+function authorityFor(codexPath: unknown, gitPath: unknown = TRUSTED_GIT, codexSha?: string, approvedCodexHome?: string) {
   return {
     codex: { path: codexPath as string, sha256: codexSha ?? digestOf(codexPath) },
+    // `B-7ⓐ` — 선택 key. 없으면 live 인증 미승인(홈은 완전히 비어 있어야 한다)이므로 기존 테스트는
+    // 전부 이 분기에 남는다. 있으면 그 경로 하나만 격리 홈으로 인정된다.
+    ...(approvedCodexHome === undefined ? {} : { codexHome: { path: approvedCodexHome } }),
     git: { path: gitPath as string, sha256: digestOf(gitPath) },
     // **M5c 필수 3종**(없으면 `manifest_pre_m5c_unsupported`로 승인 자체가 거부된다). 이 provider는
     // 셋 중 어느 것도 **쓰지 않는다**(managed launcher·typed run_process 소유다) — validator는 경로
@@ -110,16 +113,22 @@ const AUTOPILOT_POLICY = {
  * provider에 경로를 따로 주는 통로를 되살리는 것이 아니다.
  */
 function codexProvider(
-  opts: ProviderOpts & { executablePath?: unknown; gitExecutablePath?: unknown; codexSha256?: string },
+  opts: ProviderOpts & {
+    executablePath?: unknown;
+    gitExecutablePath?: unknown;
+    codexSha256?: string;
+    /** `B-7ⓐ` — 승인 manifest가 고정하는 격리 홈(사람이 1회 로그인해 둔 곳). */
+    approvedCodexHome?: string;
+  },
 ): CodexCliProvider {
-  const { executablePath, gitExecutablePath, codexSha256, ...rest } = opts;
+  const { executablePath, gitExecutablePath, codexSha256, approvedCodexHome, ...rest } = opts;
   // **명시 `undefined`도 그대로 전달한다**(키 부재와 구분) — 경로 계약 회귀가 공허해지지 않게.
   const codexPath = "executablePath" in opts ? executablePath : TRUSTED_BIN;
   const gitPath = "gitExecutablePath" in opts ? gitExecutablePath : TRUSTED_GIT;
   const m = rest.manifest;
   const withAuthority =
     typeof m === "object" && m !== null
-      ? { ...(m as Record<string, unknown>), executionAuthority: authorityFor(codexPath, gitPath, codexSha256) }
+      ? { ...(m as Record<string, unknown>), executionAuthority: authorityFor(codexPath, gitPath, codexSha256, approvedCodexHome) }
       : m;
   return new CodexCliProvider({ ...rest, manifest: withAuthority });
 }
@@ -2360,5 +2369,170 @@ test("[M5a] 시각 권위 계약: 함수 아닌 nowMs는 start에서 거부되�
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+// ── B-7ⓐ: 승인된 격리 CODEX_HOME + 사람 1회 로그인 ──────────────────────────
+//
+// 계약 요약(대장 `B-7ⓐ`): 사람이 **한 번** `CODEX_HOME=<승인 경로> codex login`을 해 두고, 승인 manifest가
+// 그 경로를 `executionAuthority.codexHome`으로 고정한다. harness는 로그인을 대행·자동화·프록시하지 않고
+// auth 파일을 복사·영속화·해싱·기록하지 않는다(여기 어떤 테스트도 자격증명 내용을 만들거나 읽지 않는다 —
+// 파일은 빈 `{}`이고 단정은 전부 존재·권한·소유자에 대한 것이다).
+//
+// 빈 홈 계약과의 관계: **승인이 홈을 고정한 경우에만** "비어 있음"이 "승인된 자격증명 외에는 비어 있음"으로
+// 좁혀진다. 승인이 홈을 담지 않으면 기존 계약 그대로 완전히 빈 홈을 요구한다(아래 마지막 테스트).
+
+/** 사람이 1회 로그인해 둔 상태를 흉내 낸다 — **내용은 의미가 없다**(harness는 열지 않는다). */
+function humanLoggedInHome(): string {
+  const home = codexHome();
+  writeFileSync(join(home, "auth.json"), "{}\n");
+  chmodSync(join(home, "auth.json"), 0o600);
+  return home;
+}
+
+test("[M5c B-7ⓐ] 승인된 격리 홈 + 사람이 넣어 둔 자격증명이면 프로세스가 뜬다(env는 CODEX_HOME 하나뿐)", async () => {
+  const repo = await initRepo();
+  const home = humanLoggedInHome();
+  const calls: FakeCall[] = [];
+  try {
+    const provider = providerWith(repo, repo.root, calls, { approvedCodexHome: home });
+    const handle = await provider.start(specFor(repo.root, home), "리뷰해라");
+    await drain(provider.events(handle));
+    assert.equal(calls.length, 1, "승인된 홈 + 자격증명은 첫 invocation을 통과해야 한다");
+    assert.deepEqual(calls[0].env, { CODEX_HOME: home }, "자식 env는 여전히 CODEX_HOME 하나뿐이다");
+    // 자격증명은 **홈 안에 그대로 있고** harness는 복사본을 만들지 않는다.
+    assert.deepEqual(readdirSync(home).sort(), ["auth.json"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5c B-7ⓐ] 승인된 홈 계약 위반은 전부 spawn 0(fallback 없음)", async () => {
+  // 각 케이스: 홈을 준비 → provider가 승인하는 홈을 지정 → start가 그 코드로 닫히고 프로세스는 0이다.
+  const cases: Array<[string, (home: string, spare: string) => { spec: string; approved: string }, string]> = [
+    [
+      "승인되지 않은 홈으로의 fallback(그 홈이 자격증명까지 갖췄어도)",
+      (home, spare) => {
+        writeFileSync(join(spare, "auth.json"), "{}\n");
+        chmodSync(join(spare, "auth.json"), 0o600);
+        return { spec: spare, approved: home };
+      },
+      "codex_home_not_approved",
+    ],
+    [
+      "승인된 홈에 자격증명이 없다(사람이 아직 로그인하지 않았다)",
+      (home) => {
+        rmSync(join(home, "auth.json"));
+        return { spec: home, approved: home };
+      },
+      "codex_home_credentials_missing",
+    ],
+    [
+      "자격증명에 group/other 권한이 있다",
+      (home) => {
+        chmodSync(join(home, "auth.json"), 0o644);
+        return { spec: home, approved: home };
+      },
+      "codex_home_permissive",
+    ],
+    [
+      "자격증명이 symlink다",
+      (home, spare) => {
+        const target = join(spare, "real-auth.json");
+        writeFileSync(target, "{}\n");
+        chmodSync(target, 0o600);
+        rmSync(join(home, "auth.json"));
+        symlinkSync(target, join(home, "auth.json"));
+        return { spec: home, approved: home };
+      },
+      "codex_home_invalid",
+    ],
+    [
+      "자격증명 뒤에 다른 설정이 묻어 들어왔다",
+      (home) => {
+        writeFileSync(join(home, "config.toml"), "x=1\n");
+        return { spec: home, approved: home };
+      },
+      "codex_home_not_empty",
+    ],
+  ];
+  for (const [label, prepare, expected] of cases) {
+    const repo = await initRepo();
+    const home = humanLoggedInHome();
+    const spare = codexHome();
+    const calls: FakeCall[] = [];
+    try {
+      const { spec, approved } = prepare(home, spare);
+      const provider = providerWith(repo, repo.root, calls, { approvedCodexHome: approved });
+      assert.equal(await codeOfCall(() => provider.start(specFor(repo.root, spec), "p")), expected, label);
+      assert.equal(calls.length, 0, `${label}: 거부 경로인데 프로세스가 떴다`);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(spare, { recursive: true, force: true });
+      rmSync(repo.root, { recursive: true, force: true });
+    }
+  }
+});
+
+test("[M5c B-7ⓐ] 승인된 홈은 invocation 사이에 교체될 수 없다(두 번째 프로세스 0)", async () => {
+  const repo = await initRepo();
+  const home = humanLoggedInHome();
+  const spare = humanLoggedInHome();
+  const calls: FakeCall[] = [];
+  try {
+    const provider = providerWith(repo, repo.root, calls, { approvedCodexHome: home });
+    const spec = specFor(repo.root, home, { codex: { codexHome: home, ephemeral: false } });
+    const handle = await provider.start(spec, "1차");
+    await drain(provider.events(handle));
+    assert.equal(calls.length, 1);
+    // 같은 **경로**에 자격증명까지 똑같이 갖춘 다른 디렉터리를 갖다 놓는다 → 경로 승인만으로는 못 막고
+    // 첫 invocation에서 고정한 dev+ino가 막는다.
+    rmSync(home, { recursive: true, force: true });
+    renameSync(spare, home);
+    assert.equal(await codeOfCall(() => provider.send(handle, "2차")), "codex_home_identity_changed");
+    assert.equal(calls.length, 1, "홈이 교체됐는데 두 번째 프로세스가 떴다");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(spare, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5c B-7ⓐ] 승인이 홈을 담지 않으면 자격증명이 있어도 거부한다(빈 홈 계약 유지)", async () => {
+  // live 인증 미승인 = ambient 자격증명 밀반입 금지. 이 경로에서 관측 가능한 동작은 M5a와 **똑같다**.
+  assert.equal(
+    await expectNoSpawn(async (repo, home, calls) => {
+      writeFileSync(join(home, "auth.json"), "{}\n");
+      chmodSync(join(home, "auth.json"), 0o600);
+      return providerWith(repo, repo.root, calls).start(specFor(repo.root, home), "p");
+    }),
+    "codex_home_not_empty",
+  );
+});
+
+test("[M5c B-7ⓐ] 자격증명 계약은 순수 함수 수준에서도 같다(내용은 열지 않는다)", async () => {
+  const home = humanLoggedInHome();
+  const other = codexHome();
+  try {
+    const approved = { path: home };
+    // 정상: 승인된 홈 + 0600 자격증명.
+    assert.equal(verifyCodexHome(home, { approved }).path, home);
+    // 승인된 경로가 아니면 다른 어떤 조건도 보지 않는다.
+    assert.equal(await codeOfCall(() => verifyCodexHome(other, { approved })), "codex_home_not_approved");
+    // 소유자 전용 홈 권한 계약은 그대로다.
+    chmodSync(home, 0o750);
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_permissive");
+    chmodSync(home, 0o700);
+    // 자격증명 권한 완화.
+    chmodSync(join(home, "auth.json"), 0o606);
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_permissive");
+    chmodSync(join(home, "auth.json"), 0o600);
+    // resume(소유 신원 대조)에서도 승인된 경로가 아니면 거부다.
+    const id = verifyCodexHome(home, { approved }).id;
+    assert.equal(await codeOfCall(() => verifyCodexHome(other, { approved, identity: id })), "codex_home_not_approved");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(other, { recursive: true, force: true });
   }
 });

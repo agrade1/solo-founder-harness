@@ -113,8 +113,18 @@ export const DEPENDENCY_KEYS = ["name", "version"] as const;
  * 승인된 실행 권위 key. M5c(v2)에서 `node`·`processObserver`가 필수로 더해졌고 `codex`는 null 허용이다.
  * 더 넣거나 빼면 `invalid_manifest`이고, v1(`codex`+`git`만)은 `manifest_pre_m5c_unsupported`다.
  */
-export const EXECUTION_AUTHORITY_KEYS = ["codex", "controllerEntrypoint", "git", "node", "processObserver"] as const;
+export const EXECUTION_AUTHORITY_KEYS = ["codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"] as const;
+/**
+ * 위 집합 중 **필수** key(대장 `B-7ⓐ`). `codexHome`만 선택이다 — 없으면 "live 인증 미승인"이고
+ * 격리 홈은 기존 계약대로 완전히 비어 있어야 한다(조용한 fallback이 아니라 인증 없는 fail closed다).
+ * 필수로 만들지 않은 이유는 호환이 아니라 **의미**다: 자격증명을 넣어 둔 홈은 사람이 별도로 승인해야
+ * 하는 자산이고, 그것이 없는 승인은 codex를 인증 없이 돌리라는 뜻이지 "아무 홈이나 쓰라"는 뜻이 아니다.
+ */
+export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["codexHome"] as const;
+export const EXECUTION_AUTHORITY_REQUIRED_KEYS = ["codex", "controllerEntrypoint", "git", "node", "processObserver"] as const;
 export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"] as const;
+/** 승인된 디렉터리 record의 key 집합. **digest는 없다** — 자격증명 내용은 해싱조차 하지 않는다. */
+export const APPROVED_DIRECTORY_KEYS = ["path"] as const;
 
 /** M5c autopilot 정책 key(전부 필수 — 조용한 기본값이 없다). */
 export const AUTOPILOT_POLICY_KEYS = [
@@ -199,12 +209,18 @@ function asArray(v: unknown, what: string): unknown[] {
   return read;
 }
 
-function closedKeys(o: Record<string, unknown>, allowed: readonly string[], what: string): void {
+function closedKeys(
+  o: Record<string, unknown>,
+  allowed: readonly string[],
+  what: string,
+  /** `allowed` 중 **부재가 허용되는** key(대장 `B-7ⓐ`). 기본은 빈 목록 = 전부 필수(기존 계약 그대로). */
+  optional: readonly string[] = [],
+): void {
   for (const k of Object.keys(o)) {
     if (!allowed.includes(k)) throw new OrchestrationError("invalid_manifest", `${what}에 허용되지 않은 필드: ${k}`);
   }
   for (const k of allowed) {
-    if (!(k in o)) throw new OrchestrationError("invalid_manifest", `${what}에 필수 필드 없음: ${k}`);
+    if (!optional.includes(k) && !(k in o)) throw new OrchestrationError("invalid_manifest", `${what}에 필수 필드 없음: ${k}`);
   }
 }
 
@@ -263,13 +279,12 @@ export function pathWithin(child: string, root: string): boolean {
  * 경로는 NUL 없는 절대경로이고 `.`/`..` segment·중복 `/`·후행 `/`가 없어야 한다(정규형).
  * 정규형 판정은 **schema와 공유하는** `APPROVED_PATH_PATTERN` 하나로 한다(7차 리뷰 C-40).
  */
-function validateApprovedExecutable(raw: unknown, what: string): ApprovedExecutable {
-  const o = asObject(raw, what);
-  closedKeys(o, APPROVED_EXECUTABLE_KEYS, what);
-  const path = o.path;
-  // 길이는 **코드 포인트**로 센다 — schema `maxLength`와 같은 의미여야 한다(대장 `C-40`).
-  // 고립 surrogate는 파일 시스템 경계에서 U+FFFD로 바뀌므로 **승인된 실행 파일 경로의 신원이 깨진다**
-  // (V3 M5c 3A 리비전 A4 — workspace 경로와 같은 규칙을 승인된 절대경로에도 적용한다).
+/**
+ * 승인된 절대경로 1건. 길이는 **코드 포인트**로 센다 — schema `maxLength`와 같은 의미여야 한다(대장 `C-40`).
+ * 고립 surrogate는 파일 시스템 경계에서 U+FFFD로 바뀌므로 **승인된 경로의 신원이 깨진다**
+ * (V3 M5c 3A 리비전 A4 — workspace 경로와 같은 규칙을 승인된 절대경로에도 적용한다).
+ */
+function approvedAbsolutePath(path: unknown, what: string): string {
   if (
     typeof path !== "string" ||
     codePointLength(path) > LIMITS.maxPathLength ||
@@ -278,6 +293,23 @@ function validateApprovedExecutable(raw: unknown, what: string): ApprovedExecuta
   ) {
     throw new OrchestrationError("invalid_manifest", `${what}.path는 정규 절대경로여야 한다`);
   }
+  return path;
+}
+
+/**
+ * 승인된 디렉터리 1건(대장 `B-7ⓐ`). 경로 계약만 본다 — 파일 시스템은 만지지 않고 내용 digest도 없다.
+ * 신원(dev+ino) · 0700 · 소유자 · 허용된 항목 검증은 spawn 직전 `verifyCodexHome`이 한다.
+ */
+function validateApprovedDirectory(raw: unknown, what: string): { path: string } {
+  const o = asObject(raw, what);
+  closedKeys(o, APPROVED_DIRECTORY_KEYS, what);
+  return { path: approvedAbsolutePath(o.path, what) };
+}
+
+function validateApprovedExecutable(raw: unknown, what: string): ApprovedExecutable {
+  const o = asObject(raw, what);
+  closedKeys(o, APPROVED_EXECUTABLE_KEYS, what);
+  const path = approvedAbsolutePath(o.path, what);
   if (typeof o.sha256 !== "string" || !new RegExp(SHA256_PATTERN).test(o.sha256)) {
     throw new OrchestrationError("invalid_manifest", `${what}.sha256은 64자 소문자 hex digest여야 한다`);
   }
@@ -298,9 +330,16 @@ function validateExecutionAuthority(raw: unknown): MilestoneApprovalManifest["ex
       "M5c 이전 승인 manifest다(executionAuthority.node/processObserver/controllerEntrypoint 없음). 마이그레이션하지 않으며 새 승인이 필요하다",
     );
   }
-  closedKeys(o, EXECUTION_AUTHORITY_KEYS, "manifest.executionAuthority");
+  closedKeys(o, EXECUTION_AUTHORITY_KEYS, "manifest.executionAuthority", EXECUTION_AUTHORITY_OPTIONAL_KEYS);
+  // `B-7ⓐ`: 선택 key. **부재와 `null`은 같은 뜻**(live 인증 미승인)이고, 그 경우 정규화 결과에 키 자체가
+  // 없으므로 기존 승인의 canonical digest는 **바이트 단위로 그대로**다(예산 회계·state binding 불변).
+  const codexHome =
+    o.codexHome === undefined || o.codexHome === null
+      ? null
+      : validateApprovedDirectory(o.codexHome, "manifest.executionAuthority.codexHome");
   return {
     codex: o.codex === null ? null : validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
+    ...(codexHome === null ? {} : { codexHome }),
     // **고정 controller entrypoint**(3A 2차 리비전 B2): 모든 typed `run_process`가 실행하는 **유일한**
     // script다. 경로·digest는 여기서만 오고 승인 문서의 다른 어떤 필드도 이것을 바꾸지 못한다.
     controllerEntrypoint: validateApprovedExecutable(o.controllerEntrypoint, "manifest.executionAuthority.controllerEntrypoint"),

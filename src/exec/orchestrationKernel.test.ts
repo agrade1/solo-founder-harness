@@ -73,9 +73,11 @@ import {
   isRegistryRoleId,
   networkDomainAllowed,
   validateApprovalManifest,
+  APPROVED_DIRECTORY_KEYS,
   APPROVED_EXECUTABLE_KEYS,
   APPROVED_PATH_PATTERN,
   EXECUTION_AUTHORITY_KEYS,
+  EXECUTION_AUTHORITY_REQUIRED_KEYS,
 } from "./approvalManifest.js";
 import {
   ACCOUNTING_KEYS,
@@ -4166,9 +4168,19 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
   assert.equal(s.properties.allowedDependencies.items.properties.name.pattern, DEPENDENCY_NAME_PATTERN);
   assert.equal(s.properties.allowedDependencies.items.properties.version.pattern, DEPENDENCY_VERSION_PATTERN);
   // 6차 리뷰 A1 — 승인된 실행 권위도 계약 문서와 런타임 validator가 같은 집합이어야 한다.
-  assert.deepEqual(s.properties.executionAuthority.required, [...EXECUTION_AUTHORITY_KEYS]);
+  assert.deepEqual(s.properties.executionAuthority.required, [...EXECUTION_AUTHORITY_REQUIRED_KEYS]);
   assert.equal(s.properties.executionAuthority.additionalProperties, false);
   assert.deepEqual(Object.keys(s.properties.executionAuthority.properties).sort(), [...EXECUTION_AUTHORITY_KEYS].sort());
+  // `B-7ⓐ` — 선택 key는 **정확히 `codexHome` 하나**여야 한다(런타임 closed 집합 − schema required).
+  // 새 선택 key가 조용히 늘어나면 여기서 걸린다.
+  assert.deepEqual(
+    EXECUTION_AUTHORITY_KEYS.filter((k) => !(EXECUTION_AUTHORITY_REQUIRED_KEYS as readonly string[]).includes(k)),
+    ["codexHome"],
+  );
+  assert.equal(s.properties.executionAuthority.properties.codexHome.$ref, "#/definitions/approvedDirectory");
+  assert.deepEqual(s.definitions.approvedDirectory.required, [...APPROVED_DIRECTORY_KEYS]);
+  assert.equal(s.definitions.approvedDirectory.additionalProperties, false);
+  assert.equal(s.definitions.approvedDirectory.properties.path.pattern, APPROVED_PATH_PATTERN);
   // M5c — `codex`만 nullable이고 git·node·processObserver는 승인된 실행 파일이어야 한다(양쪽 동치).
   assert.deepEqual(
     s.properties.executionAuthority.properties.codex.oneOf.map((x: any) => x.$ref ?? x.type),

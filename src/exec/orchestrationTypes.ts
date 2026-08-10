@@ -762,6 +762,16 @@ export interface ApprovedExecutable {
 }
 
 /**
+ * **승인된 디렉터리 1건**(V3 M5c — 대장 `B-7ⓐ`). 실행 파일과 달리 내용 digest가 없다: 디렉터리 안에는
+ * 사람이 1회 `codex login`으로 만든 **자격증명**이 들어 있고, harness는 그 내용을 **읽지도 해싱하지도
+ * 기록하지도 않는다**(digest를 남기는 순간 그것이 곧 자격증명 유출 경로다). 승인이 고정하는 것은
+ * **경로 하나**이고, 그 경로가 만족해야 할 신원·권한 계약은 `verifyCodexHome`이 spawn 직전에 집행한다.
+ */
+export interface ApprovedDirectory {
+  path: string;
+}
+
+/**
  * **승인된 typed operation 1건**(V3 M5c — 대장 `B-10`). 이 union이 닫혀 있다는 것이 이 계층의 전부다:
  * shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git ·
  * deploy · billing · PR merge 변종은 **존재하지 않는다**(표현할 타입이 없으므로 승인될 수도 없다).
@@ -862,6 +872,15 @@ export interface MilestoneApprovalManifest {
    */
   executionAuthority: {
     codex: ApprovedExecutable | null;
+    /**
+     * **대장 `B-7ⓐ` — 승인된 격리 `CODEX_HOME`**(선택). 사람이 **1회** `codex login`으로 자격증명을 넣어 둔
+     * 전용 디렉터리이며, harness는 로그인을 대행·자동화하지도, auth 파일을 복사·영속화하지도 않는다.
+     * **선택인 이유**: 이 키가 없는 승인은 "live 인증이 승인되지 않았다"를 뜻하고, 그 경우 홈은 기존 계약
+     * 그대로 **완전히 비어 있어야** 한다(자식 env는 `CODEX_HOME` 하나뿐이므로 ambient 자격증명이 도달할
+     * 통로가 애초에 없다 → 인증 없이 fail closed다). 있으면 `spec.codex.codexHome`은 **이 경로와 정확히
+     * 같아야** 하고(다르면 spawn 0), 그때만 홈에 승인된 자격증명 파일이 있는 것이 허용된다.
+     */
+    codexHome?: ApprovedDirectory;
     /**
      * M5c 3A 2차 리비전 B2 — **모든 typed `run_process`가 실행하는 유일한 script**. digest는 실행 경계에서
      * 다시 확인한다. 승인 문서의 operation 레코드는 이 값을 바꾸거나 다른 경로를 고를 수 없다.
