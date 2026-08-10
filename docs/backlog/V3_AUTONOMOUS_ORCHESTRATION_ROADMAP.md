@@ -1816,6 +1816,35 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5d task 1 — `B-21`·`C-55` 마감 (2026-08-10 — **독립 리뷰 `APPROVE — A=0, B=0, C=3`** · 이 절이 현행이다)
+
+> 범위 `fc0a528..1cbfe9a`. M5d는 **offline self-hosting acceptance**이고 사용자가 두 결정을 승인했다:
+> ⓐ **offline typed execution 소비 게이트를 연다**(live provider 게이트는 닫힌 채 유지) ·
+> ⓑ self-hosting 대상은 **작은 fixture repo**(하네스 레포 자신이 아니다).
+> Task 1은 그 acceptance가 밟게 될 복구 경로를 먼저 닫는다.
+
+- **`B-21` → fixed**: `prepared`는 `RESOURCE_HOLDING_STATES`인데 `selectSchedulable`은 `ready`/`retry_wait`만
+  고른다 → 중단된 batch의 잔여가 배타 class와 `maxSessions` 자리를 영구히 잡았다. iteration 시작에서
+  잔여를 되찾는다: 계획이 있으면 `startPreparedTask`로 이어 달리고(봉인된 preflight 재대조 —
+  **새 attempt를 태우지 않는다**), 없으면 `paused(approval_required)`로 접어 자원을 놓아준다.
+  시작이 거부된 잔여(`preflight_drift`)도 `prepared`에 두지 않는다 — 그것이 같은 누수를 다시 만든다.
+- **`C-55` → fixed(범위 명시)**: turn 중간 kernel throw가 CLI를 죽이고 나머지 batch를 조용히 밀던 것을
+  잡아 `turn_aborted`로 loop를 멈춘다. **그 task 자체의 정리는 하지 않는다** — lease가 `runTaskTurn`
+  안에 있어 catch가 대신 놓을 수 없다. 크래시 등가는 그대로이고 durable `processLeaseMarker`가
+  복구 근거다. 바뀐 것은 "나머지를 계속 밀지 않는다" 하나다.
+- **검증**: `tsc --noEmit` 0 · `autopilot.test.ts` **21 pass** · `src/exec/*.test.ts` **501 pass / 0 fail**.
+  기존 테스트 수정·완화 **0건**. 프로세스 spawn 0 · 네트워크 0 · live 0.
+- **독립 리뷰**(fresh Fable 5 read-only): `APPROVE`. attempt 미소모(`attemptNo` 증가는
+  `commitPreflightBatch`의 `prepared` 분기뿐) · `prepared`의 `cleanupStatus="none"`이라 `pauseTask`
+  합법 · 되찾기가 batch 계산보다 **먼저**라 이중 계상 없음 · 동시 writer는 `commitRun`의 revision
+  대조(`stale_writer`)가 막음 · 새 테스트 3건 전부 mutation 관점에서 red가 된다고 판정. C-3은 **이번에
+  수정**했다(`1cbfe9a` — abort를 `task_paused`로 알리지 않는다).
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-59` | C (P3) | **되찾기·start_rejected의 `pauseTask`가 `C-55` try/catch 밖이다.** 다른 writer가 그 좁은 창에서 상태를 바꾸면(`stale_writer`·`invalid_transition`) 예외가 CLI로 전파돼 `C-55`가 막은 것과 같은 크래시가 재현된다. 단일 운영자 모델에서는 실질 무해다 | 낮음 | CLI 프로세스 1개 | 낮음 | 소(같은 catch 안으로) | 다중 운영자·동시 autopilot을 허용하기 전 | 다음 autopilot slice | Task 1 독립 리뷰 C-1 · `autopilot.ts` 되찾기/start_rejected pause | open |
+| `C-60` | C (P3) | **abort 원인이 어디에도 남지 않는다.** `codeOf`가 비-`OrchestrationError`를 `autopilot_internal_error`로 접어 운영자는 marker 한 단어만 본다. 원문 메시지를 그대로 싣는 것은 경로 유출 위험이 있으므로(같은 계층의 stderr 규율) **bounded·정규화된 진단**이 필요하다 | 중(진단할 일이 생길 때) | 운영자 진단 | 낮음 | 소 | 없음(bounded) | — | Task 1 독립 리뷰 C-2 | open |
+
 ##### live 하드 게이트 마감 4건 — `B-9` · `B-7ⓑ` · `B-22` · `B-7ⓐ` (2026-08-10 — **`B-7ⓐ` 독립 리뷰 `APPROVE — A=0, B=1, C=2`** · live 실행은 **여전히 0회** · 이 절이 현행이다)
 
 > 범위 `a00a6af..fc0a528`. 커밋 4건은 **live를 켜기 전에 닫기로 예약돼 있던 하드 게이트**를 offline에서
