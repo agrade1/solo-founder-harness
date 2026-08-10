@@ -699,7 +699,9 @@ test("[M5c] turn 중간 kernel throw는 CLI를 죽이지 않고 loop를 멈춘�
   assert.equal(report.blocked, null);
   const aborted = report.tasks.filter((t) => t.state === "aborted");
   assert.equal(aborted.length, 1, `aborted 착지가 정확히 1건이 아니다: ${JSON.stringify(report.tasks)}`);
-  assert.ok(events.some((e) => e.kind === "task_paused" && e.detail === "turn_aborted"));
+  // paused로 알리지 않는다 — 소비자가 "복구됨"으로 오독하면 안 된다(lease를 쥔 크래시 등가다).
+  assert.ok(events.some((e) => e.kind === "task_aborted" && e.detail === "turn_aborted"));
+  assert.ok(!events.some((e) => e.kind === "task_paused" && e.detail === "turn_aborted"));
   // ⓒ 두 번째 task는 시작되지 않았다.
   assert.ok(!report.tasks.some((t) => t.taskId !== aborted[0].taskId && t.state === "completed"));
 });

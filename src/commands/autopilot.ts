@@ -69,6 +69,8 @@ export interface AutopilotEvent {
     | "task_started"
     | "task_progress"
     | "task_paused"
+    /** turn 중간 kernel throw(`C-55`) — **paused가 아니다**: lease를 쥔 크래시 등가 상태다. */
+    | "task_aborted"
     | "task_completed"
     | "task_cancelled"
     | "run_finished";
@@ -236,7 +238,7 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
         outcome = await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit });
       } catch (err) {
         const marker = codeOf(err);
-        emit({ kind: "task_paused", taskId, marker, detail: "turn_aborted" });
+        emit({ kind: "task_aborted", taskId, marker, detail: "turn_aborted" });
         tasks.push({ taskId, state: "aborted", marker });
         stoppedBecause = "turn_aborted";
         break;
