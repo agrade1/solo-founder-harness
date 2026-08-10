@@ -1748,17 +1748,38 @@ function requireNoFollow(): void {
  * 낼 수 있다. 그래도 진짜 grant와 승인된 경로·내용은 계속 필요하므로 위조 권위 우회는 아니다.
  * ponytail: 결정론적 경쟁 재현에는 이 방법밖에 없다. 실제 병렬 프로세스로 바꿀 이유가 생기면 그때 바꾼다.
  *
- * **남아 있는 표면(정직)**: setter가 shipped export이므로 같은 프로세스의 ambient 권한 코드가 판정을
- * 실패로 바꾸거나 위 조건의 canonical 성공을 유도할 수 있다. hook이 **던진 오류**는 전부
- * `write_failed`로 정규화되지만 hook의 파일 시스템 변경까지 failure-only인 것은 아니다.
- * 대장 `C-1`(발행 seam export) open 유지.
+ * **왜 production에서 도달 불가인가**(대장 `C-1` 마감): 등록은 두 겹으로 막힌다. ⓐ 이 setter는
+ * production facade(`typedExecution.ts`)에서 **재수출되지 않는다** — 제품 코드가 보는 표면에 없다.
+ * ⓑ 등록 시점에 **직접 호출자의 스택 프레임이 `*.test.ts` 파일**임을 요구한다. 배포 산출물은
+ * `tsconfig.json`의 exclude가 모든 `.test.ts`를 build에서 빼므로 `dist/`에는 `.test.ts` 파일이 **하나도
+ * 없다** — 배포된 CLI에서는 이 조건을 만족하는 프레임을 만들 수 없고, 따라서 hook을 심을 수 없다.
+ * 조건이 깨지면 seam은 등록되지 않고 던진다(조용히 무시하지 않는다).
+ * ponytail: 결정론적 경쟁 재현에는 이 방법밖에 없다. 실제 병렬 프로세스로 바꿀 이유가 생기면 그때 바꾼다.
+ *
+ * **남아 있는 표면(정직 — 없앴다고 주장하지 않는다)**: ⓐ TypeScript 소스 체크아웃을 `tsx`로 돌리는
+ * 개발 환경에서는 `.test.ts` 파일을 새로 만들어 등록할 수 있다(배포 산출물에는 해당 없음).
+ * ⓑ 같은 프로세스에서 `Error.prepareStackTrace`나 `Error.captureStackTrace`를 이미 바꿀 수 있는
+ * 코드는 프레임 문자열을 위조할 수 있다 — 그 정도 권한이면 모듈 자체를 갈아끼울 수 있으므로 새로운
+ * 권한 상승은 아니다. ⓒ hook이 할 수 있는 일의 상한은 위 문단 그대로다(DoS + ambient 권한 canonical).
  */
 export type PublicationSeam = "parentWalk" | "targetOpen" | "publish" | "dirFsync";
 
 let SEAMS: Partial<Record<PublicationSeam, () => void>> = {};
 
+/** 스택에서 이 모듈 자신의 프레임을 걷어내고 남는 **첫 호출자** 프레임이 `*.test.ts`인지 본다. */
+function callerIsTestFile(stack: string | undefined): boolean {
+  const frames = (stack ?? "").split("\n").filter((line) => /^\s*at\s/.test(line));
+  const caller = frames.find((line) => !line.includes("orchestrationKernel.ts"));
+  if (caller === undefined) return false;
+  // 경로 끝이 `...test.ts` 또는 `...test.ts:line:col`인 프레임만 통과시킨다.
+  return /\.test\.ts(:\d+:\d+)?\)?\s*$/.test(caller);
+}
+
 /** 테스트 전용. 돌려주는 함수를 부르면 원상복구된다(테스트 사이에 상태가 새지 않는다). */
 export function __setPublicationSeamsForTest(seams: Partial<Record<PublicationSeam, () => void>>): () => void {
+  if (!callerIsTestFile(new Error().stack)) {
+    throw writeFailed("발행 seam은 테스트 파일에서만 등록할 수 있다");
+  }
   const previous = SEAMS;
   SEAMS = seams;
   return () => {

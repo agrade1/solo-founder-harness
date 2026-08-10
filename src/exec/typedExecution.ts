@@ -66,8 +66,9 @@ export {
   validateTypedExecutionPlan,
 } from "./typedPlan.js";
 export type { PlanBinding, TypedRunProcessOperation, TypedWriteFileOperation } from "./typedPlan.js";
-// 파일 시스템 판정의 테스트 seam은 kernel 모듈이 정본이다(같은 이름으로 재수출한다).
-export { __setPublicationSeamsForTest } from "./orchestrationKernel.js";
+// 파일 시스템 판정의 테스트 seam **setter는 이 production facade에서 재수출하지 않는다**(대장 `C-1`).
+// 타입만 남긴다 — 타입은 런타임 표면이 아니다. 등록 함수는 kernel 모듈에만 있고, 거기서 다시
+// "호출자가 `*.test.ts`" 조건으로 막힌다(자세한 근거는 orchestrationKernel.ts의 seam 주석).
 export type { PublicationSeam } from "./orchestrationKernel.js";
 export type {
   DispatchAuthority,

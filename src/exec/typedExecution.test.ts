@@ -59,6 +59,7 @@ import { RUN_PROCESS_AUTHORITY_KEYS, WRITE_FILE_AUTHORITY_KEYS, validateApproval
 import {
   DISPATCH_AUTHORITY_CODES,
   OrchestrationKernel,
+  __setPublicationSeamsForTest,
   type OperationDispatchPermit,
   type OperationExecutionGrant,
   type PreflightDecision,
@@ -76,7 +77,6 @@ import {
   TYPED_PLAN_RESULT_KEYS,
   WINDOWS_DRIVE_PATTERN,
   WRITE_FILE_OPERATION_KEYS,
-  __setPublicationSeamsForTest,
   applyWriteFile,
   isGenuineLaunchCapability,
   resolveProcessLaunchCapability,
@@ -1907,6 +1907,28 @@ function withSeams<T>(seams: Partial<Record<PublicationSeam, () => void>>, fn: (
     restore();
   }
 }
+
+test("[M5d] C-1: 발행 seam은 production import 경로에서 등록할 수 없다", async () => {
+  // ⓐ production facade에는 setter 런타임 export가 없다(타입만 남는다).
+  const facade = (await import("./typedExecution.js")) as unknown as Record<string, unknown>;
+  assert.equal("__setPublicationSeamsForTest" in facade, false, "facade가 seam setter를 다시 노출했다");
+
+  // ⓑ kernel의 setter는 호출자 프레임이 `*.test.ts`가 아니면 등록하지 않고 던진다.
+  //    `new Function` 본문 프레임은 `<anonymous>`라서 `dist/`의 production 프레임과 같은 위치에 선다.
+  const fromNonTestFrame = new Function("set", "return set({});") as (set: unknown) => unknown;
+  assert.throws(
+    () => fromNonTestFrame(__setPublicationSeamsForTest),
+    (err: unknown) => (err as { code?: string }).code === "write_failed",
+    "테스트 파일 밖에서 seam 등록이 통과했다",
+  );
+
+  // 거부가 기존 seam 상태를 건드리지 않았는지도 본다(실패 경로가 상태를 오염시키면 안 된다).
+  const observed: string[] = [];
+  withSeams({ parentWalk: () => observed.push("parentWalk") }, () => {
+    assert.throws(() => fromNonTestFrame(__setPublicationSeamsForTest));
+  });
+  assert.deepEqual(observed, [], "거부 경로가 seam을 실행했다");
+});
 
 test("[M5c] A4: 부모 이름이 교체돼도 승인 범위 밖으로 나가지 않는다(판정 단계 재확인)", () => {
   const outside = mkdtempSync(join(tmpdir(), "m5c-outside-"));
