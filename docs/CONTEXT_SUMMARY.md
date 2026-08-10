@@ -1,8 +1,25 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-05
+최종 갱신: 2026-08-10
 
-## 최신 (2026-08-05 — **V3 M5c 완료(3A~3F) · 전체 suite 1회 PASS · M5는 완료 아님** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-10 — **live 하드 게이트 4건 마감(`B-9`·`B-7ⓑ`·`B-22`·`B-7ⓐ`) · live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · `work/m5c-autopilot` · HEAD `fc0a528`.
+- **닫힌 게이트 4건**: `B-9`(실측 JSONL usage 필드명) · `B-7ⓑ`(자식 stderr를 fd 단계에서 폐기 —
+  패턴 redaction 의존 제거) · `B-22`(charge 실패를 pause·정지 조건으로) · `B-7ⓐ`(live 인증 방식 결정:
+  **승인 manifest가 격리 `CODEX_HOME` 경로를 고정하고 사람이 1회 로그인**. harness는 auth를
+  복사·해싱·기록하지 않는다 → `ApprovedDirectory`에 digest 필드가 없다).
+- **`B-7ⓐ` 독립 리뷰(fresh Fable 5) `APPROVE — A=0, B=1, C=2`**. 신규 `B-23`(실제 `codex login`이
+  `auth.json` 하나만 쓰는지 **미확인** — 아니면 첫 live가 `codex_home_not_empty`로 죽는다. 허용 목록을
+  미리 넓히지 않고 **실측 후 관측된 파일만** 추가한다) · `C-57`(재시작 후 홈 재사용 마찰) ·
+  `C-58`(자격증명 파일 dev+ino 미고정 — 선언된 threat model 밖)를 대장에 등록했다.
+- **live 게이트는 사라지지 않았다** — `B-7`/`B-9` 자리를 **`B-23`**(자격증명 산출물 실측 1회)이 이어받는다.
+- 검증: `tsc --noEmit` 0 · `npm run test:exec` **168/168**(focused). 전체 suite·acceptance·stress·live는
+  **미실행**(다음 handoff 게이트에 예약).
+- 스킬 자산 설치(`82a890b`): `.claude/skills/harness-dev/` + 대상 프로젝트용 `templates/`.
+- **다음(사용자 결정)**: `B-23` 실측을 포함한 **M5-live 슬라이스** 또는 **M5d**. 중앙은 승인 없이 착수하지 않는다.
+
+## 이전 (2026-08-05 — **V3 M5c 완료(3A~3F) · 전체 suite 1회 PASS · M5는 완료 아님** · 이 블록이 가장 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · `work/m5c-autopilot` · HEAD `77b55e5`.
   구현은 task마다 fresh Opus 5 worker, 리뷰는 fresh Fable 5 read-only, 중앙(Opus 5)은 계획·재검증·문서.

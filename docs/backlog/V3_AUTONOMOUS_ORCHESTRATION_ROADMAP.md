@@ -1816,6 +1816,43 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### live 하드 게이트 마감 4건 — `B-9` · `B-7ⓑ` · `B-22` · `B-7ⓐ` (2026-08-10 — **`B-7ⓐ` 독립 리뷰 `APPROVE — A=0, B=1, C=2`** · live 실행은 **여전히 0회** · 이 절이 현행이다)
+
+> 범위 `a00a6af..fc0a528`. 커밋 4건은 **live를 켜기 전에 닫기로 예약돼 있던 하드 게이트**를 offline에서
+> 닫은 것이다. **이 세션도 실제 Codex 추론 0 · 네트워크 0 · secret 사용 0**이며, 게이트가 닫혔다는 것과
+> live가 검증됐다는 것은 다르다 — 아래 `B-23`이 그 남은 간극이다.
+
+- **`B-9` → fixed**(`3d14c7b`): 실측 codex JSONL usage 필드명(`cache_write_input_tokens` 등) 반영.
+- **`B-7ⓑ` → fixed**(`2154a39`): 자식 `stdio[2] = "ignore"`. stderr가 fd 단계에서 버려져 이 프로세스
+  메모리에 들어오지 않는다. `SpawnFn` 타입도 `"ignore"` 고정이라 pipe로 받는 코드는 컴파일되지 않는다.
+  패턴 전용 redaction에 의존하지 않는다.
+- **`B-22` → fixed**(`5a8d9f0`): `chargeTurnUsage` 거부를 삼키지 않고 정리 후 `approval_required` pause +
+  loop `usage_unaccounted` 정지. task는 resume 가능하다.
+- **`B-7ⓐ` → fixed**(`fc0a528`): live 인증 방식을 사람이 결정해야 했던 항목. **"승인된 격리 홈에 사람이
+  1회 로그인"** 을 택했다. `manifest.executionAuthority.codexHome`(유일한 선택 key · `ApprovedDirectory` ·
+  **내용 digest 없음**)이 경로를 고정하고, 승인 홈이면 ⓐ 경로 정확 일치(`codex_home_not_approved`)
+  ⓑ 홈·자격증명 프로세스 uid 소유 ⓒ `auth.json` 외 항목 0(`codex_home_not_empty`) ⓓ 자격증명 부재는
+  거부(`codex_home_credentials_missing`)다. harness는 로그인을 대행·자동화·프록시하지 않고 auth를
+  복사·영속화·**해싱**·기록하지 않는다(digest를 남기는 것 자체가 유출 경로다). 승인이 홈을 담지 않으면
+  기존 계약대로 **완전히 비어 있어야** 하고 `~/.codex` fallback은 어느 경로에도 없다. 부재와 `null`을 같게
+  정규화하므로 **기존 승인의 canonical digest는 바이트 단위로 불변**이다.
+- **검증**: `tsc --noEmit` 0 · `npm run test:exec` **168/168 pass**(focused). 전체 suite·acceptance·stress·
+  live는 **미실행**(다음 handoff 게이트에 그대로 예약).
+- **독립 리뷰**(fresh Fable 5 read-only, `fc0a528` diff): `APPROVE`. TOCTOU는 사전 검증 + spawn 직전
+  동기 게이트가 둘 다 `approved`를 받아 재검증하므로 닫혀 있고, 오류 메시지에 경로·uid·파일명이 없으며,
+  하드링크는 inode의 소유자·모드를 공유하므로 소유자 검사로 덮인다고 판정했다. 신규 등록은 아래 3건이다.
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-23` | B (P1) | **`codex login`의 실제 산출물이 `auth.json` 하나라는 가정이 미확인이다.** `CODEX_CREDENTIAL_FILES`가 `["auth.json"]` 하나인데 실제 로그인이 `config.toml`·버전 파일 등을 함께 쓰면 첫 invocation이 `codex_home_not_empty`로 죽어 **live가 실사용 불가**가 된다. 지금 테스트는 전부 **합성 홈**이라 이 가정을 검증하지 못한다. 반대 방향(허용 목록을 미리 넓히기)은 하지 않는다 — 넓히는 순간 `config.toml`·MCP 정의가 자격증명 뒤에 묻어 들어오는 통로가 열린다. 실측 후 **정확히 관측된 파일만** 추가한다 | 중 | 첫 live 실행 | 낮음(offline 0 · live에서 즉시 발견) | 소(실제 `CODEX_HOME=<path> codex login` 1회 실행 후 항목 목록 실측) | **첫 live 실행 착수 전(하드 게이트 — `B-7`을 대체한다)** | 사용자 + live 활성화 slice | `B-7ⓐ` 독립 리뷰 B · `codexCliProvider.ts` `CODEX_CREDENTIAL_FILES` | open |
+| `C-57` | C (P3) | **provider 재시작 후 홈 재사용이 막힐 수 있다.** codex가 첫 run에서 홈에 세션·캐시 파일을 쓴다면(**미확인**) `homeId`가 없는 새 provider의 첫 검증이 `codex_home_not_empty`로 거부하고, 사람이 `auth.json`만 남기고 수동 청소해야 한다. 운영 마찰이며 안전 결함은 아니다. `B-23` 실측에서 같이 관측될 항목이다 | 미확인 | 운영 절차 | 낮음 | 소(문서화 또는 실측 기반 목록 확장) | `B-23`과 함께 | live 활성화 slice | `B-7ⓐ` 독립 리뷰 C-1 | open |
+| `C-58` | C (P3) | **자격증명 파일 자체는 dev+ino가 고정되지 않는다.** 홈은 첫 invocation에서 dev+ino로 핀되지만 `auth.json`은 `lstat` 1회뿐이라 검증~codex 읽기 사이 교체가 가능하다. 다만 **같은 uid만** 가능하고 그건 이 계층이 명시적으로 선언한 threat model 밖이다(소유자 자신은 언제든 자기 홈을 쓸 수 있다) | 매우 낮음 | 자격증명 1건 | 낮음 | 중(fd 기반 고정) | 없음(선언된 범위 밖) | — | `B-7ⓐ` 독립 리뷰 C-3 | open |
+
+> **`B-7`은 이 절로 닫힌다**(ⓐ·ⓑ 모두 fixed) — 다만 **live 하드 게이트가 사라진 것은 아니다**:
+> 그 자리는 `B-23`(자격증명 산출물 실측)이 이어받고 `B-9`는 fixed다. `B-10`·`B-11`·`B-12`·`B-13`·
+> `B-16`·`B-17`·`B-18`·`B-19`·`B-20`·`B-21`은 **변화 없음**(이 세션은 controller·process·scheduler 계층을
+> 건드리지 않았다).
+
 ##### M5c task 3E·3F 대장 갱신 + **M5c 마감** (2026-08-05 — **3E 독립 리뷰 `APPROVE — A=0, B=2, C=6` · 3F로 숨은 red 48건 복구 · 전체 suite 1회 PASS · M5c 완료 · M5 완료 조건은 미충족** · 이 절이 현행이다)
 
 > 3E 범위 `6a743f2..c771f81`(fresh Fable 5 read-only 독립 리뷰) · 3F `c771f81..32b8853` ·

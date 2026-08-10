@@ -1,5 +1,41 @@
 # WORKLOG.md
 
+## 2026-08-10 (V3 **live 하드 게이트 4건 마감 — `B-9` · `B-7ⓑ` · `B-22` · `B-7ⓐ`. `B-7ⓐ` 독립 리뷰 `APPROVE — A=0, B=1, C=2`. live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
+
+- **스킬 자산 설치**(`82a890b`): 형제 체크아웃 `solo-founder-harness`의 `2600c13` 자산 3개를 이 worktree에도
+  설치 — `.claude/skills/harness-dev/SKILL.md`(이 레포 개발 규칙) + 대상 프로젝트용 `templates/CLAUDE.md` ·
+  `templates/claude-skills/founder-mvp-guard/SKILL.md`. 스킬 자체가 정한 경계대로 `templates/`는 이 레포의
+  `CLAUDE.md`·`.claude/skills/`로 섞지 않았다. 코드·schema 무수정.
+- **`B-9` fixed**(`3d14c7b`): 실측 codex JSONL usage 필드명(`cache_write_input_tokens` 등) 반영.
+- **`B-7ⓑ` fixed**(`2154a39`): 자식 `stdio[2]="ignore"` — stderr가 fd 단계에서 버려져 이 프로세스 메모리에
+  들어오지 않는다. `SpawnFn` 타입도 `"ignore"` 고정이라 pipe로 받는 코드는 컴파일되지 않는다. settle에
+  stderr를 싣지 않는다. 패턴 전용 redaction에 의존하지 않게 됐다.
+- **`B-22` fixed**(`5a8d9f0`): `chargeTurnUsage` 거부를 삼키지 않는다. 정리(`recordTerminal`→`confirmCleanup`)
+  순서는 보존하고, 그 뒤 `approval_required`로 pause + loop를 `usage_unaccounted`로 정지한다. task는
+  `paused`로 남아 resume 가능하다(hang도 소실도 아니다).
+- **`B-7ⓐ` fixed**(`fc0a528`) — live 인증 방식을 **사람이 결정해야 했던** 항목. 대장의 세 선택지 중
+  **"격리 홈에 사람 1회 로그인"** 을 택했다.
+  - `manifest.executionAuthority.codexHome`: **유일한 선택 key** · `ApprovedDirectory`(경로 하나, **내용
+    digest 없음** — digest를 남기는 것 자체가 자격증명 유출 경로다). 부재/`null`을 같게 정규화하므로
+    **기존 승인의 canonical digest는 바이트 단위로 불변**이다(예산 회계·state binding 무영향).
+  - 승인 홈일 때: 경로 정확 일치(`codex_home_not_approved`) · 홈·자격증명 **프로세스 uid 소유** ·
+    `auth.json` 외 항목 0(`codex_home_not_empty`) · 자격증명 부재는 거부(`codex_home_credentials_missing`).
+    자격증명은 **열지 않는다**(lstat 한 번 — 존재·정규 파일·비symlink·group/other 0·소유자).
+  - 승인이 홈을 담지 않으면 기존 계약대로 **완전히 비어 있어야** 한다 = 인증 없이 fail closed.
+    `~/.codex` fallback은 어느 경로에도 없다(자식 env는 `CODEX_HOME` 하나뿐).
+  - 승인 홈은 **봉인된 manifest**에서만 오므로 turn 사이 교체는 `codex_spec_mutated`다.
+  - schema에 `approvedDirectory` 정의 추가. kernel 계약 테스트가 **"선택 key는 `codexHome` 하나"** 를 강제한다.
+- **검증**: `tsc --noEmit` 0 · `npx tsx --test src/exec/{codexCliProvider,approvalManifest,orchestrationKernel}.test.ts`
+  **168 pass / 0 fail**. 전체 suite·`test:core`·acceptance·stress·live는 **미실행**.
+- **독립 리뷰**(fresh Fable 5 read-only, `fc0a528` diff): `APPROVE`. TOCTOU는 사전 검증 + spawn 직전 동기
+  게이트가 둘 다 승인 홈을 재검증해 닫혀 있고, 오류 메시지에 경로·uid·파일명이 없으며, 하드링크는 inode의
+  소유자·모드를 공유하므로 소유자 검사로 덮인다고 판정. 신규 등록: **`B-23`**(실제 `codex login` 산출물이
+  `auth.json` 하나인지 **미확인** — 아니면 첫 live가 `codex_home_not_empty`로 죽는다. **허용 목록을 미리
+  넓히지 않고** 실측 후 관측된 파일만 추가한다) · `C-57`(재시작 후 홈 재사용 마찰 — 미확인) ·
+  `C-58`(자격증명 dev+ino 미고정 — 같은 uid만 가능하므로 선언된 threat model 밖).
+- **`B-7`은 닫혔지만 live 하드 게이트는 남아 있다** — 그 자리를 `B-23`이 이어받는다. live 실행 0 ·
+  네트워크 0 · secret 사용 0. `B-10`~`B-21`은 변화 없음(controller·process·scheduler 계층 무접촉).
+
 ## 2026-08-05 (V3 **M5c 완료 — task 3E autopilot CLI 독립 리뷰 `APPROVE — A=0, B=2, C=6` · 3F로 숨은 red 48건 복구 · 전체 suite 1회 PASS. M5는 완료 아님** · 이 블록이 가장 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · branch `work/m5c-autopilot`.
