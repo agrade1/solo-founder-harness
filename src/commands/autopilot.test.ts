@@ -571,3 +571,135 @@ test("[M5c-3E] durable 결과 본문에 raw·토큰 카운터가 없고 §5.2 he
   assert.ok(!/usage|token|프롬프트/i.test(durable), "durable 본문에 raw·토큰 흔적이 있다");
   assert.ok((k.getTask("root")?.resultSummary ?? "").length <= LIMITS.maxSummaryLength);
 });
+
+// ── ⑦ 중단된 batch의 잔여 복구 (B-21 · C-55) ────────────────────────────────
+
+test("[M5c] 중단된 batch가 남긴 prepared task를 다음 실행이 되찾아 완주시킨다 (B-21)", async () => {
+  const f = boot({}, ["root", "sibling"]);
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const plan = { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } };
+  writePlan(f.planDir, "root", plan);
+  writePlan(f.planDir, "sibling", plan);
+
+  // ⓐ 첫 실행: 첫 task의 진행을 본 순간 취소한다 → 두 번째는 `prepared`에 남는다(자원 점유 상태).
+  const ac = new AbortController();
+  const first = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    signal: ac.signal,
+    onEvent: (e) => {
+      if (e.kind === "task_progress") ac.abort();
+    },
+  });
+  assert.equal(first.stoppedBecause, "cancelled");
+  const leftover = taskOf(f.ws, "sibling");
+  assert.equal(leftover.state, "prepared", "이 테스트의 전제(잔여 prepared)가 성립하지 않았다");
+  const attemptNo = leftover.execution.attemptNo;
+
+  // ⓑ 두 번째 실행: scheduler는 `prepared`를 고르지 않으므로(ready/retry_wait만) 되찾기가 없으면
+  //    이 task는 영원히 자원을 붙잡는다. 되찾아 완주시켜야 한다 — **새 attempt를 태우지 않고**.
+  const events: AutopilotEvent[] = [];
+  const second = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+    onEvent: (e) => events.push(e),
+  });
+
+  assert.ok(
+    second.tasks.some((t) => t.taskId === "sibling" && t.state === "completed"),
+    `되찾지 못했다: ${JSON.stringify(second.tasks)}`,
+  );
+  const recovered = taskOf(f.ws, "sibling");
+  assert.equal(recovered.state, "completed");
+  assert.equal(recovered.execution.attemptNo, attemptNo, "되찾기가 attempt를 새로 태웠다");
+  assert.equal(recovered.execution.cleanupStatus, "confirmed");
+  assert.equal(recovered.execution.processLeaseMarker, null, "되찾은 turn이 lease를 놓지 않았다");
+});
+
+test("[M5c] 계획이 없는 잔여 prepared는 자원을 붙잡지 않고 paused로 접힌다 (B-21)", async () => {
+  const f = boot({}, ["root", "sibling"]);
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const plan = { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } };
+  writePlan(f.planDir, "root", plan);
+  writePlan(f.planDir, "sibling", plan);
+
+  const ac = new AbortController();
+  await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    signal: ac.signal,
+    onEvent: (e) => {
+      if (e.kind === "task_progress") ac.abort();
+    },
+  });
+  assert.equal(taskOf(f.ws, "sibling").state, "prepared");
+
+  // 사람이 계획을 치웠다 = 무인 전진 자격이 없다. 그렇다고 `prepared`로 두면 자원을 영구히 잡는다.
+  rmSync(join(f.planDir, "sibling.json"));
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+    onEvent: (e) => events.push(e),
+  });
+
+  assert.ok(report.tasks.some((t) => t.taskId === "sibling" && t.state === "paused" && t.marker === "plan_missing"));
+  const task = taskOf(f.ws, "sibling");
+  assert.equal(task.state, "paused", "잔여가 여전히 자원 점유 상태다");
+  assert.equal(task.execution.pauseReason, "approval_required");
+  assert.ok(events.some((e) => e.kind === "task_paused" && e.detail === "prepared_reclaimed"));
+  // 사라지지 않는다: 사람이 계획을 되돌려 놓고 resume하면 그대로 이어간다.
+  assert.equal(reopen(f.ws).resumeTask({ taskId: "sibling", actionId: "act.resume" }).state, "ready");
+});
+
+test("[M5c] turn 중간 kernel throw는 CLI를 죽이지 않고 loop를 멈춘다 (C-55)", async () => {
+  const f = boot({}, ["root", "sibling"]);
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const plan = { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } };
+  writePlan(f.planDir, "root", plan);
+  writePlan(f.planDir, "sibling", plan);
+
+  // **관측 barrier**: task가 실제로 시작된 뒤에만 시계를 되돌린다 → 다음 kernel 호출이 시계 sanity로
+  // throw한다. `startPreparedTask` 이후 turn 중간의 예기치 않은 throw를 결정론적으로 재현한다(`C-55`).
+  let ticks = 0;
+  let started = false;
+  const clock = (): Date => {
+    ticks += 1;
+    return started ? new Date(T0 - 3_600_000) : new Date(T0 + 60_000 + ticks * 1000);
+  };
+
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock,
+    onEvent: (e) => {
+      events.push(e);
+      if (e.kind === "task_started") started = true;
+    },
+  });
+
+  // ⓐ 예외가 CLI 밖으로 전파되지 않았다(이 await 자체가 그 증거다).
+  // ⓑ loop는 나머지 batch를 조용히 계속 밀지 않는다.
+  assert.equal(report.stoppedBecause, "turn_aborted");
+  assert.equal(report.blocked, null);
+  const aborted = report.tasks.filter((t) => t.state === "aborted");
+  assert.equal(aborted.length, 1, `aborted 착지가 정확히 1건이 아니다: ${JSON.stringify(report.tasks)}`);
+  assert.ok(events.some((e) => e.kind === "task_paused" && e.detail === "turn_aborted"));
+  // ⓒ 두 번째 task는 시작되지 않았다.
+  assert.ok(!report.tasks.some((t) => t.taskId !== aborted[0].taskId && t.state === "completed"));
+});

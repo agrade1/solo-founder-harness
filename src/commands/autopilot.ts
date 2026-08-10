@@ -80,7 +80,7 @@ export interface AutopilotEvent {
 
 export interface AutopilotTaskOutcome {
   taskId: string;
-  /** `completed` · `paused` · `cancelled` · `deferred`. */
+  /** `completed` · `paused` · `cancelled` · `deferred` · `aborted`(turn 중간 kernel throw — `C-55`). */
   state: string;
   marker: string;
   /**
@@ -160,8 +160,27 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
       stoppedBecause = gate;
       break;
     }
+    // **`B-21`: 중단된 batch가 남긴 `prepared`를 먼저 되찾는다.** `prepared`는 자원 점유 상태
+    // (`RESOURCE_HOLDING_STATES`)인데 `selectSchedulable`은 `ready`/`retry_wait`만 고르므로, 되찾지
+    // 않으면 그 task가 배타 class와 `maxSessions` 자리를 영구히 붙잡아 **이후 모든 batch가 조용히
+    // 줄어든다**. 되찾기는 `startPreparedTask`가 봉인된 preflight를 다시 대조하므로(`preflight_drift`)
+    // 안전하고 **새 attempt를 태우지 않는다**(`commitPreflightBatch`를 다시 지나지 않는다).
+    // 계획이 없는 잔여는 `paused`로 접어 자원을 놓아준다 — 조용히 붙잡는 것보다 사람이 보는 편이 낫다.
+    const reclaimed = new Map<string, PlanDocument>();
+    for (const task of kernel.getState().tasks) {
+      if (task.state !== "prepared") continue;
+      const doc = readPlanDocument(opts.planDir, task.taskId);
+      if (doc) {
+        reclaimed.set(task.taskId, doc);
+        continue;
+      }
+      kernel.pauseTask({ taskId: task.taskId, actionId: id("pause"), pauseReason: "approval_required" });
+      emit({ kind: "task_paused", taskId: task.taskId, marker: "plan_missing", detail: "prepared_reclaimed" });
+      tasks.push({ taskId: task.taskId, state: "paused", marker: "plan_missing" });
+    }
+
     const batch = kernel.planRunnableBatch();
-    if (batch.items.length === 0) {
+    if (batch.items.length === 0 && reclaimed.size === 0) {
       stoppedBecause = "no_runnable_tasks";
       break;
     }
@@ -169,20 +188,25 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
 
     // **무인 전진의 자격은 "offline 계획이 실제로 있는가" 하나다**(`B-11`). 없으면 `deferred` —
     // 상태·attempt·자원을 건드리지 않으므로 사람이 계획을 넣고 다시 부르면 그대로 이어진다.
-    const plans = new Map<string, PlanDocument>();
+    // 되찾은 `prepared`가 먼저 들어가 있다(같은 turn loop 하나가 둘을 함께 진행한다).
+    const plans = new Map<string, PlanDocument>(reclaimed);
     for (const task of batch.items) {
       const doc = readPlanDocument(opts.planDir, task.taskId);
       if (doc) plans.set(task.taskId, doc);
     }
-    kernel.commitPreflightBatch({
-      baseRevision: batch.revision,
-      actionId: id("pf"),
-      decisions: batch.items.map((t) =>
-        plans.has(t.taskId)
-          ? ({ taskId: t.taskId, outcome: "prepared", attemptId: id("att") } as const)
-          : ({ taskId: t.taskId, outcome: "deferred" } as const),
-      ),
-    });
+    // batch가 비어 있어도(되찾은 `prepared`만 있을 때) preflight를 부르지 않는다 — 빈 batch에
+    // 결정을 커밋하는 것은 아무 의미 없는 revision 증가일 뿐이다.
+    if (batch.items.length > 0) {
+      kernel.commitPreflightBatch({
+        baseRevision: batch.revision,
+        actionId: id("pf"),
+        decisions: batch.items.map((t) =>
+          plans.has(t.taskId)
+            ? ({ taskId: t.taskId, outcome: "prepared", attemptId: id("att") } as const)
+            : ({ taskId: t.taskId, outcome: "deferred" } as const),
+        ),
+      });
+    }
     for (const task of batch.items) {
       if (!plans.has(task.taskId)) {
         emit({ kind: "task_deferred", taskId: task.taskId, marker: "plan_missing" });
@@ -202,8 +226,29 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
         stoppedBecause = perTask;
         break;
       }
-      const outcome = await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit });
+      // **`C-55`**: turn 중간에 kernel이 예기치 않게 throw하면(시계 역행 · durable 쓰기 오류) 지금까지는
+      // CLI 프로세스가 그대로 죽어 task가 `running`/`cleaning`에 durable lease를 쥔 채 남았다. 여기서
+      // 잡아 **loop를 소리나게 멈추고** 남은 task를 시작하지 않는다. 그 task 자체는 여전히 크래시 등가라
+      // durable `processLeaseMarker`로 복구한다 — 이 catch가 정리를 대신 해줄 수는 없다(lease는
+      // `runTaskTurn` 안에 있다). 바뀌는 것은 **나머지 batch를 조용히 계속 밀지 않는다**는 점이다.
+      let outcome: AutopilotTaskOutcome;
+      try {
+        outcome = await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit });
+      } catch (err) {
+        const marker = codeOf(err);
+        emit({ kind: "task_paused", taskId, marker, detail: "turn_aborted" });
+        tasks.push({ taskId, state: "aborted", marker });
+        stoppedBecause = "turn_aborted";
+        break;
+      }
       tasks.push(outcome);
+      // 시작이 거부된 잔여(`preflight_drift` 등)를 `prepared`에 두면 그것이 곧 `B-21`을 다시 만든다 —
+      // 자원을 놓아주고 사람이 보게 한다. attempt는 이미 소모된 뒤이므로 여기서 더 태우지 않는다.
+      if (outcome.state === "prepared") {
+        kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+        emit({ kind: "task_paused", taskId, marker: outcome.marker, detail: "start_rejected" });
+        outcome.state = "paused";
+      }
       // `B-22`: 원장에 들어가지 않은 turn이 있으면 이후 예산 판정은 낡은 총량을 본다 → 멈춘다.
       // 이미 지난 task는 `paused`로 착지해 있으므로 사람이 회계를 맞춘 뒤 그대로 이어서 부를 수 있다.
       if (outcome.chargeFailed !== undefined) {
