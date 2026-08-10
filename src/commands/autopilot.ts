@@ -23,12 +23,15 @@
  * - **`B-17`(실패한 전달이 `activeAttemptId`를 남긴다)** — 소비하지 않는다. 이 loop는
  *   `beginDeliveryAttempt`를 **부르지 않는다**(inbox 전달은 provider 세션 계약이며 이 slice 밖이다) →
  *   열린 채 남을 attempt가 생기지 않는다. inbox가 있는 task도 여기서는 그냥 pause될 뿐이다.
- * - **`B-10`(타입 있는 edit 가능 실행 집행)** / **`B-16`(real typed-write 산출물 발행)** — 소비하지 않는다.
- *   **typed operation을 하나도 dispatch하지 않는다**: `issueOperationDispatchPermit`·`beginOperation`·
- *   `executeWriteFileOperation`·`executeRunProcessOperation`을 부르는 코드가 이 파일에 없다.
- *   worker 계획에 operation이 **1건이라도** 있으면 그 turn은 집행 대신 `operation_denied`로 닫히고
- *   task는 `paused(approval_required)`로 착지한다(hang 없음 · 복구 가능). 발행되는 artifact는
- *   **이미 디스크에 있고 그 task가 소유한 파일**뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
+ * - **`B-10`(타입 있는 edit 가능 실행 집행)** — **M5d task 2에서 소비한다**(사용자 승인:
+ *   "offline typed execution 소비 게이트를 연다"). `issueOperationDispatchPermit` → `beginOperation` →
+ *   고정 집행기 → `recordOperationReceipt`를 계획 순서대로 부른다. **권위는 하나도 이 파일에 없다**:
+ *   승인 레코드 대조·소유권·`writableRoots`·digest 재검증·spawn 상한·deadline·멱등 pending은 전부
+ *   kernel 안에서 일어나고, autopilot이 고를 수 있는 것은 **계획에 이미 있는 operationId의 순서**뿐이다.
+ *   승인되지 않은 operation은 여전히 `operation_denied`로 닫히고 task는 `paused`로 착지한다.
+ * - **`B-16`(real typed-write 산출물 발행)** — 소비하지 않는다. 발행(신규 파일 생성)은 집행기 **판정
+ *   단계에서** 여전히 fail closed다(`write_publish_unsupported`). 발행되는 artifact는 **이미 디스크에
+ *   있고 그 task가 소유한 파일**뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
  * - **`B-7`/`B-9`(live)** — 소비하지 않는다. 유일한 backend는 `offline-plan`이고 `claude`·`codex`는
  *   worker가 hard reject한다. 네트워크 호출 0 · 추론 0 · spawn 0.
  *
@@ -55,7 +58,19 @@ import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from 
 import type { TypedExecutionPlan, WorkerEvent } from "../exec/autopilotTypes.js";
 import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
 import { openOrchestrationRun } from "../exec/orchestrationKernel.js";
-import type { OrchestrationKernel, WorkerProgressChannel } from "../exec/orchestrationKernel.js";
+import type {
+  OperationDispatchPermit,
+  OperationExecutionGrant,
+  OrchestrationKernel,
+  WorkerProgressChannel,
+} from "../exec/orchestrationKernel.js";
+// **집행 진입점은 facade 하나만 쓴다** — kernel 사설 집행기에 직접 닿는 통로를 만들지 않는다.
+import {
+  applyWriteFile,
+  executeRunProcessOperation,
+  resolveProcessLaunchCapability,
+  resolveWriteFileAuthority,
+} from "../exec/typedExecution.js";
 
 /** 한 번의 `autopilot` 실행이 도는 iteration 상한(무인 loop는 언제나 bounded다). */
 export const DEFAULT_MAX_ITERATIONS = 16;
@@ -305,6 +320,8 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
 
   const attemptId = started.task.execution.attemptId ?? "";
   let plan: TypedExecutionPlan | null = null;
+  let dispatchCharged = false;
+  let dispatchChargeFailed: string | null = null;
   let marker: AutopilotMarker = "worker_failed";
   let usage = { inputTokens: 0, outputTokens: 0 };
   try {
@@ -331,7 +348,26 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
       if (ev.kind === "terminal") {
         usage = boundedUsage(ev.usage);
         plan = validateTypedExecutionPlan(ev.plan, { runId: kernel.getState().runId, taskId, attemptId, turnId });
-        marker = plan.operations.length > 0 ? "operation_denied" : "turn_completed";
+        // **M5d task 2 — `B-10` 소비면.** operation이 있으면 승인 경계 안에서 **집행한다**.
+        // 하나라도 닫히지 않으면 `turn_completed`가 아니며, 그 turn은 결과를 발행하지 않는다.
+        if (plan.operations.length > 0) {
+          const dispatched = await dispatchOperations({
+            kernel,
+            taskId,
+            turnId,
+            plan,
+            usage,
+            elapsedMs: Math.max(0, clock().getTime() - startedMs),
+            signal: ctx.signal,
+          });
+          marker = dispatched.marker;
+          // 생산 turn은 **집행보다 먼저** 권위 있게 과금된다 → 여기서 다시 적지 않는다.
+          dispatchCharged = dispatched.charged;
+          dispatchChargeFailed = dispatched.chargeFailed;
+          if (marker !== "turn_completed") plan = null;
+        } else {
+          marker = "turn_completed";
+        }
       }
     }
   } catch (err) {
@@ -342,6 +378,9 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   // **실패한 turn의 usage도 durable하게 적는다** — 그래야 다음 판정이 최신 총량을 본다(`B-12`).
   let chargeFailed: string | null = null;
   try {
+    // 생산 turn은 `dispatchOperations`가 이미 권위 있게 적었다(순서가 계약이다). 그 경우 여기서 다시
+    // 적으면 `turn_already_charged`다 — 같은 turn은 정확히 한 번만 원장에 들어간다.
+    if (dispatchCharged) throw new SkipCharge();
     kernel.chargeTurnUsage({
       taskId,
       turnId,
@@ -360,8 +399,9 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
     // 기록 상한(`turn_already_charged` · `turn_conflict` · `dispatch_identity_stale` ·
     // `dispatch_plan_conflict` · `charged_turns_exhausted`)이며, 어느 쪽이든 결과는 하나 —
     // **이 turn의 토큰이 원장에 없다**. 그래서 같은 처분을 받는다.
-    chargeFailed = codeOf(err);
+    chargeFailed = err instanceof SkipCharge ? null : codeOf(err);
   }
+  if (dispatchChargeFailed !== null) chargeFailed = dispatchChargeFailed;
 
   const sealed = marker === "turn_completed" && plan !== null ? { summary: plan.result.summary, outputs: [...plan.result.outputs] } : null;
   kernel.recordTerminal({ taskId, actionId: id("term"), marker, pendingResult: sealed });
@@ -403,6 +443,164 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   }
   emit({ kind: "task_completed", taskId, marker });
   return { taskId, state: "completed", marker };
+}
+
+// ── typed operation 집행 (M5d task 2 — `B-10` 소비면) ───────────────────────
+
+/**
+ * **승인된 typed operation을 계획 순서대로 집행한다.**
+ *
+ * 이 함수가 여는 것은 **집행 하나뿐**이다 — 권위는 전부 kernel이 쥐고 있고 여기에는 판정이 없다:
+ * 승인 레코드 대조 · 소유권 · `writableRoots` · digest 재검증 · spawn 상한 · deadline · 멱등 pending은
+ * 전부 `beginOperation`/집행기 안에서 일어난다. autopilot이 고를 수 있는 것은 **계획에 이미 있는
+ * operationId의 순서**뿐이고, 실행 대상·argv·경로·바이트를 고르는 통로는 존재하지 않는다.
+ *
+ * **하나라도 닫히지 않으면 turn이 완료가 아니다.** 실패한 operation은 열린 pending으로 남지 않는다:
+ * 집행 경계에 들어가지 않았으면 `failOperation`, 들어갔으면(외부 효과가 있었을 수 있다)
+ * `reconcileUncertainOperation`의 `outcome_unknown`으로 **정직하게** 닫는다. 둘 다 실패하면 pending이
+ * 남아 `chargeTurnUsage`가 거부하고, 그것은 `B-22` 경로로 pause + loop 정지가 된다(조용한 진행 없음).
+ *
+ * live·네트워크는 이 경로로도 열리지 않는다 — `run_process`가 실행하는 것은 승인 manifest가 digest로
+ * 고정한 `node <controllerEntrypoint>`뿐이고 action은 닫힌 enum이다.
+ */
+async function dispatchOperations(ctx: {
+  kernel: OrchestrationKernel;
+  taskId: string;
+  turnId: string;
+  plan: TypedExecutionPlan;
+  usage: { inputTokens: number; outputTokens: number };
+  elapsedMs: number;
+  signal?: AbortSignal;
+}): Promise<DispatchResult> {
+  const { kernel, taskId, turnId, plan, signal } = ctx;
+  let permit: OperationDispatchPermit;
+  try {
+    permit = kernel.issueOperationDispatchPermit({ taskId, turnId, actionId: id("permit"), plan });
+  } catch (err) {
+    // permit이 없으면 claim도 없다 — 이 turn은 평범한 과금으로 닫힌다.
+    return { marker: operationMarker(err), charged: false, chargeFailed: null };
+  }
+
+  // **순서가 계약이다: 권위 과금 → grant → 효과.** kernel은 "이 계획의 turn을 kernel 발급 권위로
+  // 과금했는가"를 효과 게이트에서 본다(`budget_turn_unaccounted`) — 효과를 승인하는 것은 **과금된
+  // 생산 turn**이지 호출자의 선언이 아니다. 그래서 여기서 먼저 적는다.
+  try {
+    kernel.chargeDispatchTurnUsage({
+      permit,
+      actionId: id("charge"),
+      inputTokens: ctx.usage.inputTokens,
+      outputTokens: ctx.usage.outputTokens,
+      elapsedMs: ctx.elapsedMs,
+    });
+  } catch (err) {
+    // `B-22`와 같은 처분: 원장에 없는 turn으로는 효과를 승인하지 않는다(operation 0건 · pending 0건).
+    return { marker: operationMarker(err), charged: false, chargeFailed: codeOf(err) };
+  }
+
+  // **operation은 permit이 쥔 계획에서 꺼낸다.** kernel이 계획을 다시 검증하면서 자기 사본을 만들므로,
+  // 호출자가 들고 있던 객체를 그대로 넘기면 grant 결박 검사에서 `dispatch_operation_unbound`다.
+  // (이 결박이 곧 "계획 밖 operation·치환된 operation은 표현할 수 없다"는 계약이다.)
+  for (const op of permit.plan.operations) {
+    if (signal?.aborted) return { marker: "cancelled", charged: true, chargeFailed: null };
+    // **승인 여부는 등록보다 먼저 본다.** facade의 권위 해석은 순수 판정이고(파일 시스템 무접촉 ·
+    // grant 미소비) 집행기는 durable pending을 `attemptedAt`으로 먼저 찍은 **뒤에** 승인을 다시 읽는다.
+    // 그래서 이 사전 판정이 없으면 **한 번도 효과가 없었던 거부**가 `outcome_unknown`으로 기록된다 —
+    // 승인 밖 요청과 "정말 결과를 모르는" 요청이 같은 marker를 받아서는 안 된다.
+    try {
+      if (op.kind === "write_file") resolveWriteFileAuthority(op, permit);
+      else resolveProcessLaunchCapability(op, permit);
+    } catch (err) {
+      return { marker: operationMarker(err), charged: true, chargeFailed: null };
+    }
+    let grant: OperationExecutionGrant;
+    try {
+      grant = kernel.beginOperation({ permit, operationId: op.operationId, actionId: id("op") });
+    } catch (err) {
+      // 등록 자체가 거부되면 durable pending도 효과도 없다 — 닫을 것이 없다.
+      return { marker: operationMarker(err), charged: true, chargeFailed: null };
+    }
+    try {
+      const outcome =
+        op.kind === "write_file"
+          ? applyWriteFile(op, grant)
+          : await executeRunProcessOperation(grant, op, resolveProcessLaunchCapability(op, grant), { signal });
+      kernel.recordOperationReceipt({ outcome, actionId: id("rcpt") });
+    } catch (err) {
+      closePendingOperation(kernel, grant, taskId, op.operationId, err);
+      return { marker: operationMarker(err), charged: true, chargeFailed: null };
+    }
+  }
+  return { marker: "turn_completed", charged: true, chargeFailed: null };
+}
+
+/** 집행 결과 + **이 turn이 원장에 들어갔는가**. 과금은 집행보다 먼저 일어나므로 여기서 함께 보고한다. */
+interface DispatchResult {
+  marker: AutopilotMarker;
+  /** `true`면 `chargeDispatchTurnUsage`가 이미 성공했다 — 뒤에서 다시 과금하지 않는다. */
+  charged: boolean;
+  /** 권위 과금이 거부된 코드(`B-22` 처분 대상). */
+  chargeFailed: string | null;
+}
+
+/**
+ * 실패한 operation의 durable pending을 닫는다. **성공을 만들 수 없는 두 경로뿐이다.**
+ *
+ * `failOperation`은 집행 경계에 들어가지 않은 pending만 받는다(들어간 것을 평범한 실패로 지우면 부분
+ * 외부 효과가 기록에서 사라진다). 그래서 거부되면 durable 신원으로 `reconcileUncertainOperation`을 부른다 —
+ * marker는 호출자 입력이 아니라 durable 진실에서 파생되므로 여기서 결과를 지어낼 수 없다.
+ * 둘 다 실패하면 **삼키지 않는다**: pending이 남아 turn을 닫을 수 없고 loop가 멈춘다.
+ */
+function closePendingOperation(
+  kernel: OrchestrationKernel,
+  grant: OperationExecutionGrant,
+  taskId: string,
+  operationId: string,
+  cause: unknown,
+): void {
+  try {
+    kernel.failOperation({ grant, actionId: id("failop"), marker: isDenial(cause) ? "denied" : "failed" });
+    return;
+  } catch {
+    /* 집행 경계에 들어간 pending이다 — 아래 정합화로만 정직하게 닫힌다. */
+  }
+  const task = kernel.getTask(taskId);
+  const exec = task?.execution;
+  if (!task || exec?.attemptId == null || exec.dispatchTurnId == null || exec.dispatchPlanDigest == null) return;
+  const op = task.execution.pendingOperations.find((p) => p.operationId === operationId);
+  if (op === undefined) return;
+  try {
+    kernel.reconcileUncertainOperation({
+      runId: kernel.getState().runId,
+      taskId,
+      attemptId: exec.attemptId,
+      turnId: exec.dispatchTurnId,
+      planDigest: exec.dispatchPlanDigest,
+      operationId,
+      kind: op.kind,
+      authorityId: op.authorityId,
+      actionId: id("recon"),
+    });
+  } catch {
+    /* 남은 pending은 `chargeTurnUsage`가 거부한다 → `B-22` 경로(pause + 정지). 조용히 진행하지 않는다. */
+  }
+}
+
+/** 이미 권위 있게 과금된 turn을 두 번 적지 않기 위한 내부 신호(오류가 아니다). */
+class SkipCharge extends Error {}
+
+/** 거부(승인 밖·권위 위반)와 집행 실패를 나눈다 — 전자만 `denied` 영수증을 받는다. */
+function isDenial(err: unknown): boolean {
+  const code = codeOf(err);
+  return code.startsWith("dispatch_") || code.startsWith("operation_") || code === "plan_invalid";
+}
+
+/** 집행 단계 오류 → 닫힌 `AutopilotMarker`. 데이터가 marker를 고르지 못한다. */
+function operationMarker(err: unknown): AutopilotMarker {
+  const code = codeOf(err);
+  if (code === "process_cleanup_unconfirmed") return "cleanup_unconfirmed";
+  if (code.startsWith("process_")) return "process_failed";
+  if (code === "plan_invalid") return "plan_invalid";
+  return "operation_denied";
 }
 
 /**

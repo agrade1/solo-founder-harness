@@ -18,7 +18,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS } from "../exec/orchestrationTypes.js";
@@ -296,7 +297,7 @@ test("[M5c-3E] 실패한 turn의 usage도 durable 회계에 남고 재시작이 
 
 // ── ③ hang 대신 pause ───────────────────────────────────────────────────────
 
-test("[M5c-3E] typed operation을 요구하는 계획은 집행하지 않고 paused로 착지한다 (B-10/B-16 미소비)", async () => {
+test("[M5d] 승인되지 않은 typed operation은 denied 영수증으로 닫히고 paused로 착지한다 (deny-by-default)", async () => {
   const f = boot();
   writePlan(f.planDir, "root", {
     operations: [{ operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "x", expectedBeforeSha256: null }],
@@ -317,12 +318,17 @@ test("[M5c-3E] typed operation을 요구하는 계획은 집행하지 않고 pau
   const task = taskOf(f.ws, "root");
   assert.equal(task.state, "paused", "hang하거나 running에 남았다");
   assert.equal(task.execution.pauseReason, "approval_required");
-  // **집행 흔적이 0이다** — permit·grant·영수증·미확정 operation 어느 것도 만들지 않았다.
-  assert.deepEqual(task.execution.pendingOperations, []);
-  assert.deepEqual(task.execution.operationReceipts, []);
-  assert.equal(task.execution.dispatchTurnId, null);
-  assert.equal(task.execution.chargedPlanDigest, null);
-  // 파일도 만들어지지 않았다.
+  // **M5d task 2 이후의 계약**: 집행 게이트는 열렸지만 승인은 `operationAuthorityByTask`에서만 온다.
+  // 이 manifest는 그 task에 아무 authority도 승인하지 않았으므로 거부가 **등록보다 먼저** 일어난다:
+  // durable pending도 영수증도 만들어지지 않는다(효과 0 · 흔적 0).
+  assert.deepEqual(task.execution.pendingOperations, [], "미확정 operation이 남았다");
+  // 승인 밖 요청은 **등록 전에** 거부된다 → durable 영수증도 pending도 없다. `outcome_unknown`은
+  // "정말 결과를 모르는" 경우에만 쓰인다(승인 밖 요청과 같은 marker를 받아서는 안 된다).
+  assert.deepEqual(task.execution.operationReceipts, [], "승인 밖 거부가 durable 영수증을 남겼다");
+  // 집행을 시도했다는 사실은 turn claim으로 정직하게 남는다.
+  assert.notEqual(task.execution.dispatchTurnId, null, "집행 시도가 turn claim으로 남지 않았다");
+  // 파일도 만들어지지 않았다 — 승인 밖 경로에 바이트가 생기지 않는다.
+  assert.equal(existsSync(join(f.ws, "docs/x.md")), false, "승인되지 않은 operation이 파일을 만들었다");
   assert.equal(reopen(f.ws).getState().artifacts.length, 0);
   assert.ok(events.some((e) => e.kind === "task_paused" && e.marker === "operation_denied"));
 
@@ -704,4 +710,110 @@ test("[M5c] turn 중간 kernel throw는 CLI를 죽이지 않고 loop를 멈춘�
   assert.ok(!events.some((e) => e.kind === "task_paused" && e.detail === "turn_aborted"));
   // ⓒ 두 번째 task는 시작되지 않았다.
   assert.ok(!report.tasks.some((t) => t.taskId !== aborted[0].taskId && t.state === "completed"));
+});
+
+// ── ⑧ 승인된 typed operation 집행 (M5d task 2 — B-10 소비) ──────────────────
+
+test("[M5d] 승인된 write_file operation은 집행 경계를 지나 applied 영수증으로 닫힌다 (B-10 소비)", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  // **오늘의 write_file은 바이트를 만들지 못한다**: 신규 생성은 `write_publish_unsupported`(`B-16` — 열지
+  // 않은 게이트), 내용 교체는 `write_replace_unsupported`다. 성공 경로는 **크래시 창 멱등** 하나뿐이다 —
+  // 의도한 내용이 이미 있으면 부모 fsync를 확인하고 `already_applied`로 닫는다. 이 테스트가 고정하는 것은
+  // 그 계약이지 "쓰기가 된다"가 아니다.
+  writeOutput(f.ws, "docs/x.md", "same\n");
+  const same = createHash("sha256").update("same\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "same\n", expectedBeforeSha256: same },
+    ],
+    result: { summary: "멱등 쓰기 1건", outputs: [{ path: "docs/x.md", role: "output" }] },
+  });
+
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    onEvent: (e) => events.push(e),
+  });
+
+  // ⓐ turn이 집행 경계를 지나 완료로 닫히고 결과가 발행됐다.
+  assert.deepEqual(report.tasks, [{ taskId: "root", state: "completed", marker: "turn_completed" }]);
+  assert.equal(taskOf(f.ws, "root").state, "completed");
+  // ⓑ 영수증 marker는 **kernel이 만든다** — 호출자가 고를 수 없다.
+  const task = taskOf(f.ws, "root");
+  assert.deepEqual(task.execution.pendingOperations, [], "미확정 operation이 남았다");
+  assert.equal(task.execution.operationReceipts.length, 1);
+  assert.equal(task.execution.operationReceipts[0].marker, "already_applied");
+  assert.equal(task.execution.operationReceipts[0].operationId, "op-1");
+  // ⓒ 생산 turn은 **권위 있는 과금**으로만 닫힌다(claim된 계획 digest가 회계에 남는다).
+  assert.notEqual(task.execution.chargedPlanDigest, null, "생산 turn이 권위 없이 과금됐다");
+  assert.equal(task.execution.chargedPlanDigest, task.execution.dispatchPlanDigest);
+  assert.ok(events.some((e) => e.kind === "task_completed"));
+});
+
+test("[M5d] 바이트를 만드는 write는 승인돼 있어도 여전히 fail closed다 (B-16 미개봉)", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "before\n");
+  const before = createHash("sha256").update("before\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "after\n", expectedBeforeSha256: before },
+    ],
+    result: { summary: "내용 교체 시도", outputs: [] },
+  });
+
+  const report = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
+
+  // 집행 게이트를 연 것이 **바이트 발행을 연 것은 아니다**(`B-16`은 별도 승인이다).
+  assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "before\n", "닫힌 게이트가 바이트를 만들었다");
+  assert.equal(report.tasks[0].state, "paused");
+  assert.equal(report.tasks[0].marker, "operation_denied");
+  assert.deepEqual(taskOf(f.ws, "root").execution.pendingOperations, [], "미확정 operation이 남았다");
+});
+
+test("[M5d] 승인된 authorityId라도 경로가 다르면 집행하지 않는다 (승인 레코드가 정본)", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "before\n");
+  writeOutput(f.ws, "docs/other.md", "other\n");
+  const before = createHash("sha256").update("other\n").digest("hex");
+  // 승인된 authorityId를 들고 **다른 승인된 파일**을 노린다 — authorityId가 경로를 고르지 못해야 한다.
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/other.md", content: "hijacked\n", expectedBeforeSha256: before },
+    ],
+    result: { summary: "경로 바꿔치기", outputs: [] },
+  });
+
+  const report = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
+
+  assert.equal(readFileSync(join(f.ws, "docs/other.md"), "utf8"), "other\n", "승인 레코드 밖 경로에 바이트가 생겼다");
+  assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "before\n", "무관한 승인 경로가 바뀌었다");
+  assert.equal(report.tasks[0].state, "paused");
+  assert.equal(report.tasks[0].marker, "operation_denied");
+  const task = taskOf(f.ws, "root");
+  assert.deepEqual(task.execution.pendingOperations, [], "거부 뒤 미확정 operation이 남았다");
+  assert.equal(reopen(f.ws).getState().artifacts.length, 0);
+});
+
+test("[M5d] 앞 operation이 거부되면 뒤 operation은 집행되지 않는다 (turn 전체가 완료가 아니다)", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-2", kind: "write_file", path: "docs/second.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/second.md", "second\n");
+  const before = createHash("sha256").update("second\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      // 첫 번째는 승인되지 않은 authority다 → 여기서 멈춰야 한다.
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-x", path: "docs/second.md", content: "no\n", expectedBeforeSha256: before },
+      { operationId: "op-2", kind: "write_file", authorityId: "auth-2", path: "docs/second.md", content: "yes\n", expectedBeforeSha256: before },
+    ],
+    result: { summary: "두 건", outputs: [] },
+  });
+
+  const report = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
+
+  assert.equal(readFileSync(join(f.ws, "docs/second.md"), "utf8"), "second\n", "거부 이후의 operation이 집행됐다");
+  assert.equal(report.tasks[0].marker, "operation_denied");
+  assert.equal(taskOf(f.ws, "root").state, "paused");
 });
