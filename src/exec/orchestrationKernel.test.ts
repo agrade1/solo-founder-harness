@@ -563,6 +563,8 @@ test("[M4a] nested child spawn과 최대 depth 3 상한", () => {
 });
 
 test("[M4a] run 전체 task 32개 상한", () => {
+  // task 상한은 프로세스 상한과 **별개 상수**다(`B-19`).
+  assert.equal(LIMITS.maxTasksPerRun, 32);
   const ws = makeWorkspace();
   const ids = Array.from({ length: LIMITS.maxTasksPerRun }, (_, i) => `t${i}`);
   const k = createOrchestrationRun({

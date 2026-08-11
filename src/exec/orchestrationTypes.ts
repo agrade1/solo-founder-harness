@@ -323,6 +323,12 @@ export const LIMITS = {
   maxDepth: 3,
   /** run 하나의 총 task 수. */
   maxTasksPerRun: 32,
+  /**
+   * run 하나가 열 수 있는 총 `run_process` 수. **task 상한과 별개 개념이다**(`B-19`) —
+   * 값이 우연히 같아도 같은 상수를 빌려 쓰지 않는다. task fan-out 때문에 `maxTasksPerRun`을
+   * 조정해도 프로세스 상한은 따라 움직이지 않는다.
+   */
+  maxProcessesPerRun: 32,
   /** slug(runId/taskId/messageId/roleId/…) 최대 길이. */
   maxIdLength: 64,
   /** title/scope 등 짧은 텍스트 필드. */
