@@ -1816,6 +1816,24 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5 완료 게이트 정리 — `B-25`·`B-26` 마감 (2026-08-11 · `B-24`는 병렬 slice 진행 중 · 이 절이 현행이다)
+
+> 범위 `d02ee77..69cd089`. M5 완료 선언 전 하드 게이트 3건 중 2건을 닫았다.
+
+- **`B-25` → fixed**(⑨): 같은 배타 resource class를 요구하는 task 2건이 **같은 batch에 함께 들어가지
+  않는다**(scheduler가 자원 점유 상태를 보고 하나만 고른다)는 것, 그럼에도 **둘 다 완주해 굶지 않는다**는
+  것, 종료 시 점유 상태가 남지 않는다는 것을 autopilot loop를 통과시켜 실측한다.
+- **`B-26` → fixed**(⑩): **진짜 자식 프로세스**를 띄워 durable 파일만으로 같은 run을 이어받게 한다 —
+  in-memory 상태는 하나도 넘어가지 않고 자식은 **자기 실제 시계**를 쓴다. ⑦(같은 프로세스 재수화)이
+  시계 단조성을 인위적으로 유지하던 한계가 여기서 사라진다.
+  - 그 과정에서 **fixture 결함 1건**을 발견해 고쳤다: 합성 시계가 고정 날짜였던 탓에 자식의 실제 시계가
+    durable 예산 창 밖으로 벗어나 `budget_elapsed_exhausted`가 됐다. 제품 결함이 아니라 acceptance 설계
+    결함이었고, 기준을 **실제 시각**으로 바꿔 해결했다(1 tick = 1ms).
+- **mutation 확인**(공허성 방지): 배타 class 선언을 지우면 ⑨가 red, 자식 spawn을 없애면 ⑩이 red.
+- **실측**: M5d 내부 체크 27 → **33건**(FAIL=0) · `scripts/acceptance.sh` 전체 **PASS=101 / FAIL=0**.
+- **`B-24`는 열려 있다** — 별도 격리 worktree에서 `scripts/m5d-cleanup-acceptance.mjs`(실제 spawn +
+  deadline/cancellation 자손 정리)로 진행 중이다. **M5 완료 선언은 그것과 `B-23`(live) 이후다.**
+
 ##### M5d task 3·5 — offline self-hosting acceptance + 전체 suite 1회 (2026-08-11 — **적대적 리뷰 `REVISE — A=2` → A 2건 즉시 수정 후 재검증** · 이 절이 현행이다)
 
 > 범위 `c66b88f..462e1c9`. **배송 우선(MVP-first) 방침**(사용자 2026-08-11) 아래 진행했다:
@@ -1852,8 +1870,8 @@ DAG 전진 mutation에 red가 된다 · ⑥은 승인·경로·소유권이 전�
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `B-24` | B (P1) | **deadline·cancellation 시 descendant 정리 acceptance가 없다.** M5 완료 조건의 명시 항목("잔존 프로세스 0")인데 M5d acceptance는 spawn 0회라 그것을 증명할 수 없고, 증명한 것처럼 읽히지 않도록 라벨을 한정했을 뿐이다. `managedProcess` 단위 테스트가 supervisor 계층은 덮지만 **autopilot→집행→자손**의 end-to-end는 미검이다 | 확실(미검) | M5 완료 판정의 정당성 | 중 — M5 done을 선언한 뒤 발견하면 판정을 되돌려야 한다 | 중(자손을 낳는 fixture + deadline 시나리오) | **M5 완료 선언 전(하드 게이트)** | live/lifecycle slice | Task 3 적대적 리뷰 A2·B2 · `m5d-offline-acceptance.mjs` ⑧ | open |
-| `B-25` | B (P2) | **배타 resource class 동시 실행 0이 M5d acceptance에 없다.** M5 완료 조건 항목이고 M4b acceptance가 scheduler 층을 부분적으로 덮지만, autopilot loop를 통과하는 경로는 미검이다(이 run의 task들은 자원 class를 선언하지 않는다) | 중 | M5 완료 판정의 정당성 | 중 | 소~중(자원 class를 선언한 task 2건 시나리오) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 4번 | open |
-| `B-26` | B (P2) | **"재시작"이 같은 프로세스 안에서의 `openOrchestrationRun` 재호출이다.** 디스크 rehydrate는 실측이지만 프로세스 전역 `clockTick` 공유로 시계 단조성이 인위적으로 유지된다 → **별도 프로세스 재시작(시계 되감김 포함)** 은 미검이다 | 중 | 재시작 복구 계약 | 중 | 소(child process로 2단계 실행) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 B1 | open |
+| `B-25` | B (P2) | **[fixed 2026-08-11 — M5d acceptance ⑨]** 배타 resource class 동시 실행 0이 M5d acceptance에 없었다. M5 완료 조건 항목이고 M4b acceptance가 scheduler 층을 부분적으로 덮지만, autopilot loop를 통과하는 경로는 미검이다(이 run의 task들은 자원 class를 선언하지 않는다) | 중 | M5 완료 판정의 정당성 | 중 | 소~중(자원 class를 선언한 task 2건 시나리오) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 4번 | **fixed** |
+| `B-26` | B (P2) | **[fixed 2026-08-11 — M5d acceptance ⑩]** "재시작"이 같은 프로세스 안에서의 `openOrchestrationRun` 재호출이었다. 디스크 rehydrate는 실측이지만 프로세스 전역 `clockTick` 공유로 시계 단조성이 인위적으로 유지된다 → **별도 프로세스 재시작(시계 되감김 포함)** 은 미검이다 | 중 | 재시작 복구 계약 | 중 | 소(child process로 2단계 실행) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 B1 | **fixed** |
 
 ##### M5d — **`B-16` 부분 개방**: 고정한 fd로 기존 파일 교체 발행 (2026-08-11 — **적대적 독립 리뷰 `APPROVE — A=0, B=1, C=3`** · B-1 즉시 수정 · 이 절이 현행이다)
 
