@@ -17,8 +17,10 @@
  *   손자가 TERM을 받았다는 증거 파일(`*.term`)로 **SIGKILL 경로를 실제로 밟았다**는 것까지 확인한다.
  * - **성공 영수증이 없다** — deadline/cancel로 죽은 집행은 `applied`가 아니며 task는 hang 없이 `paused`로
  *   착지하고 미확정 pending을 남기지 않는다.
- * - **잔존 프로세스 0** — 종료 시점에 baseline 밖의 자식이 없다(여기서는 spawn 부재의 확인이 아니라
- *   **실제로 띄운 뒤의** 확인이다).
+ * - **잔존 프로세스 0** — 종료 시점에 ⓐ baseline 밖 **직계 자식**이 없고 ⓑ ①②에서 **관측한 손자 pid가
+ *   전부 사라졌다**. ⓑ가 핵심이다: 유출된 손자는 부모가 죽는 순간 init으로 reparent되어 직계 자식
+ *   목록에서 사라지므로, ⓐ만으로 "자손 0"을 주장하면 과대주장이다(SIGKILL 승격을 지우는 mutation에서
+ *   ⓐ만 green으로 남는 것을 실제로 확인했다).
  *
  * ## 무엇을 증명하지 않는가 (정직하게)
  *
@@ -188,6 +190,8 @@ const seed = (taskId) => ({
   assignmentBody: body("task_assignment"),
 });
 
+/** ①②에서 실제로 관측한 손자 pid. ③이 **reparent된 유출까지** 보기 위해 모은다. */
+const observedGrandchildren = [];
 let ws;
 let planDir;
 let toolDir;
@@ -232,6 +236,7 @@ try {
     await watcher;
 
     check("승인된 controller가 실제로 손자를 낳았다(pid 관측)", Number.isInteger(grandchild) && grandchild > 1, String(grandchild));
+    if (Number.isInteger(grandchild)) observedGrandchildren.push(grandchild);
     check("deadline 초과 뒤 손자가 실제로 죽었다(ESRCH)", grandchild !== null && (await awaitGone(grandchild)), `pid=${grandchild}`);
 
     const task = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock }).getTask("deadline");
@@ -261,6 +266,7 @@ try {
     await watcher;
 
     check("취소 전에 손자가 살아 있었다(ready 배리어 관측)", Number.isInteger(grandchild) && grandchild > 1, String(grandchild));
+    if (Number.isInteger(grandchild)) observedGrandchildren.push(grandchild);
     check("취소 뒤 손자가 실제로 죽었다(ESRCH)", grandchild !== null && (await awaitGone(grandchild)), `pid=${grandchild}`);
     check("손자는 SIGTERM을 받고도 살아 있었다 → SIGKILL 경로를 밟았다", existsSync(join(ws, "cancel.term")));
 
@@ -286,7 +292,21 @@ try {
         return e.code !== "ESRCH";
       }
     });
-    check("이 프로세스의 자손이 남지 않았다", still.length === 0, still.join(","));
+    // **라벨을 측정값에 맞춘다**: `childPids()`는 `ppid === process.pid`인 **직계 자식**만 센다.
+    // 유출된 손자는 부모가 죽는 순간 init으로 reparent되므로 여기에 잡히지 않는다 — 그래서 이 체크
+    // 하나로 "자손 0"을 주장하면 과대주장이다(SIGKILL 승격을 제거하는 mutation에서 실제로 이 체크만
+    // green으로 남는 것을 확인했다). 진짜 자손 판정은 **관측한 손자 pid를 직접 보는** 아래 체크다.
+    check("직계 자식이 남지 않았다", still.length === 0, still.join(","));
+    const leaked = observedGrandchildren.filter((pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (e) {
+        return e.code !== "ESRCH";
+      }
+    });
+    check("관측한 손자 전부가 사라졌다(reparent된 유출까지 본다)", observedGrandchildren.length > 0 && leaked.length === 0,
+      `관측=${observedGrandchildren.length} 잔존=${leaked.join(",") || 0}`);
   }
 } catch (e) {
   fail += 1;

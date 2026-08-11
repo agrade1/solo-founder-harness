@@ -237,6 +237,24 @@ echo "$M5D_OUT" | grep -q "자식 프로세스가 durable 상태만으로 run을
 check "M5d 별도 프로세스 재시작 확인 출력 (B-26)" $?
 
 echo ""
+echo "== Test 17: M5 deadline·cancellation 자손 정리 (실제 spawn) =="
+# 실제로 프로세스를 띄운다(다른 acceptance는 spawn 0회다). 임시 workspace 전용.
+M5CL_OUT="$(node scripts/m5d-cleanup-acceptance.mjs 2>&1)"
+M5CL_RC=$?
+[ "$M5CL_RC" -eq 0 ];                             check "M5 cleanup acceptance exit 0" $?
+echo "$M5CL_OUT" | grep -q " FAIL=0";             check "M5 cleanup 내부 체크 전부 통과" $?
+echo "$M5CL_OUT" | grep -q "실제로 손자를 낳았다"
+check "M5 실제 자손 생성 관측 출력" $?
+echo "$M5CL_OUT" | grep -q "deadline 초과 뒤 손자가 실제로 죽었다"
+check "M5 deadline 자손 정리 확인 출력 (B-24)" $?
+echo "$M5CL_OUT" | grep -q "취소 뒤 손자가 실제로 죽었다"
+check "M5 cancellation 자손 정리 확인 출력 (B-24)" $?
+echo "$M5CL_OUT" | grep -q "SIGKILL 경로를 밟았다"
+check "M5 SIGKILL 승격 경로 확인 출력" $?
+echo "$M5CL_OUT" | grep -q "관측한 손자 전부가 사라졌다"
+check "M5 reparent된 유출까지 확인 출력" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
