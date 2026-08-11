@@ -13,9 +13,14 @@
   둘 다 fail closed이고 성공 경로는 멱등(`already_applied`) 하나, run_process action은 읽기 전용
   `validate-plan` 하나다. 열린 것은 **집행 lifecycle**이고 **implement 능력이 아니다** —
   self-hosting 루프를 말 그대로 돌리려면 **`B-16`(예방 안전한 발행 primitive)** 을 여는 별도 승인이 필요하다.
-- **다음(사용자 결정)**: ⓐ `B-16`을 열지 않고 Task 3 acceptance를 "루프 골격·승인 경계·복구·관측" 증명으로
-  한정 · ⓑ `B-16`을 여는 slice를 먼저. 어느 쪽이든 M5d 완료 ≠ M5 완료(live는 `B-23`이 그대로 막고 있다).
-- 신규 유예: `C-59`·`C-60`(task 1) · `C-61`·`C-62`(task 2·4). 열린 A·B는 **0건**.
+- **`B-16` 부분 개방 완료**(사용자 승인 — HEAD `7e5a966`): typed write가 **처음으로 실제 바이트를 낸다**.
+  승인된 **기존 파일 교체만**이고 신규 파일 발행은 계속 fail closed. 고정한 fd에 직접 써서 발행 syscall에
+  pathname이 없다(3A 2차 A3의 폐쇄 근거가 이 형태엔 성립하지 않는다). **교환한 것은 원자성** — torn은
+  재시도 시 preimage 불일치로 fail closed이고 자동 복구하지 않는다. 적대적 리뷰 `APPROVE A=0/B=1/C=3`.
+  → **self-hosting 루프의 implement 단계가 "기존 파일 수정" 범위에서 열렸다.**
+- 신규 유예: `C-59`·`C-60`(task 1) · `C-61`·`C-62`(task 2·4) · `C-63`~`C-65`(`B-16`). 열린 A·B는 **0건**.
+- **다음**: Task 3(offline self-hosting acceptance — fixture repo에서 plan→implement→test→review→revise를
+  수동 복사 0회로) → Task 5(최종 handoff · **전체 suite 직렬 1회**). M5d 완료 ≠ M5 완료(live는 `B-23`).
 
 ## 이전 (2026-08-10 — **live 하드 게이트 4건 마감(`B-9`·`B-7ⓑ`·`B-22`·`B-7ⓐ`) · live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 

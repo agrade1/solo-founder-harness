@@ -1816,6 +1816,45 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5d — **`B-16` 부분 개방**: 고정한 fd로 기존 파일 교체 발행 (2026-08-11 — **적대적 독립 리뷰 `APPROVE — A=0, B=1, C=3`** · B-1 즉시 수정 · 이 절이 현행이다)
+
+> 범위 `b3226fc..7e5a966`. **사용자가 명시 승인한 slice**다("2번으로 진행" = `B-16`을 여는 slice를 먼저).
+> 이 레포에서 **안전 반경이 가장 큰 변경**이라 리뷰를 통과가 아니라 **파괴 목적**으로 걸었다.
+
+**무엇이 바뀌었나.** typed `write_file`이 **처음으로 실제 바이트를 낸다** — 단 **승인된 기존 파일의 교체만**이다.
+
+- 3A 2차 리비전 A3이 교체를 닫은 이유는 "temp → 최종 pathname `rename(2)`" 형태에서 **부모 이름 교체
+  경쟁**을 예방할 수 없다는 것이었다. **그 이유는 새 형태에 성립하지 않는다**: rename하지 않고,
+  신원(dev+ino)과 preimage를 이미 확정해 둔 **바로 그 fd**에 `write`/`ftruncate`/`fsync`한다 →
+  발행 syscall에 **pathname이 하나도 없다**. 리뷰가 코드로 확인했다(판정·멱등·conflict·교체가 전부
+  같은 `targetFd` 하나를 공유하고, 쓰기 syscall은 `applyToFixedTarget` 안에만 존재한다).
+- **신규 파일 발행은 계속 fail closed**다(`write_publish_unsupported` — `B-16` **잔여**): 부재 대상에는
+  고정할 fd가 없어 최종 `link(2)`가 pathname을 지나야 한다. 그 창은 여전히 예방할 수 없다.
+- `already_applied`의 durability 기준을 **높였다**: 내용 fsync도 요구한다(앞선 시도가 다 쓰고 fsync 전에
+  죽었을 수 있다 — "다시 보니 있더라"는 durability의 증거가 아니다).
+- 신규 코드 `write_apply_incomplete`(torn일 수 있음을 정직하게 말한다) · seam 2종 추가.
+
+**교환한 것(정직 — 없앴다고 주장하지 않는다)**: **원자성을 잃었다.** 이전 계약은 "원자성을 보장할 수
+없으면 거부"였고 지금은 "원자성 없이 쓰되 torn을 fail closed로 표면화"다. torn은 재시도 시 preimage
+불일치(`write_conflict`)로 막히고 **자동 복구되지 않는다**(사람이 본다). 거짓 성공 영수증 경로는 없다 —
+리뷰가 durable 경로를 추적해 확인했다. 같은 uid 경쟁자는 여전히 막지 못한다(선언된 threat model 그대로);
+막는 것은 **바이트가 다른 파일·다른 디렉터리로 새는 일**이다. durability는 기존 fsync 전제와 같은 수준이다.
+
+- **리뷰 B-1 — 이 세션이 저지른 과대주장, 즉시 수정**(`7e5a966`): 테스트 주석이 "autopilot 쪽 테스트가
+  그 경로를 덮는다"고 적었으나 `write_apply_incomplete`도 그로 인한 `outcome_unknown` 닫힘도 **어디에도
+  없었다**. 없는 커버리지를 실제로 만들었다(autopilot 경로에 seam fault 주입 → pending 0 · 영수증
+  `outcome_unknown` · paused 착지 · artifact 0) 그리고 주석을 정정했다. 리뷰 C-1(낡은 사양 서술)도 함께.
+- **검증**: `tsc --noEmit` 0 · `src/exec/*.test.ts` + `autopilot.test.ts` **538 pass / 0 fail**.
+  테스트 **삭제·완화 0건** — "replace는 항상 fail closed" 1건을 새 계약으로 갱신하고 **11건 추가**했다
+  (inode 유지 = rename 부재 증거 · 꼬리 절단 · preimage 불일치 · 부모 교체 · torn · 내용 fsync 실패 ·
+  멱등 경로 fsync 실패 · 신규 발행 잔여 · autopilot 교체 성공 · autopilot 신규 발행 거부 · torn e2e).
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-63` | C (P2) | **torn 파일을 그대로 artifact로 선언하는 별도 승인 plan은 막히지 않는다.** 재시도는 `write_conflict`로 막히지만, 깨진 내용을 "의도한 산출물"이라고 선언한 승인된 plan이 오면 `completeTaskWithArtifacts`는 hash·소유권만 보므로 통과한다. 승인 게이트 뒤이므로 사람의 판단 문제다 | 낮음 | task 1건의 산출물 품질 | 낮음 | 중(내용 sanity 계약이 필요한데 그것은 승인 문서의 몫) | 없음 — `B-16` 신규 발행을 열 때 함께 재검토 | 다음 `B-16` slice | `B-16` 적대적 리뷰 3번 | open |
+| `C-64` | C (P3) | **쓰기 권한 없는 대상(0444)은 멱등 판정조차 못 한다.** 대상 open이 `O_RDWR`이라 `already_applied`·`write_conflict` 판정이 open 단계에서 `write_failed`가 된다. fail closed 방향이지만 크래시 복구 멱등의 범위가 좁아졌다. `O_RDONLY` 재시도 fallback은 **경로 재오픈이라 채택하지 않았다**(그것이 이 slice의 핵심 성질을 깬다) | 낮음 | read-only 대상 | 낮음 | 중(fd 재사용을 유지하는 해법이 필요) | 없음(bounded) | — | `B-16` 적대적 리뷰 C-2 · `judgeWriteTransaction` 대상 open | open |
+| `C-65` | C (P3) | **"발행 경로에 pathname이 없다"를 집행하는 테스트가 없다.** 판정 후 경로를 재오픈해 쓰는 구현도 현재 테스트를 전부 통과한다(부모 교체 seam은 재확인 단계에서 발화한다) — 그 성질의 보증은 **코드 리뷰뿐**이다. 정직하게 기록한다 | 확실(현재) | 회귀 검출 | 중 — 나중에 조용히 깨질 수 있다 | 중(경로 재오픈을 관측하는 seam 또는 syscall 추적) | 발행 경로를 다시 손대는 slice | 다음 `B-16` slice | `B-16` 적대적 리뷰 6번 | open |
+
 ##### M5d task 2·4 — `B-10` 소비면 · `C-1` 마감 (2026-08-11 — **독립 리뷰 2건 병렬 `APPROVE — A=0, B=0` · C 5건 전부 이번에 반영** · 이 절이 현행이다)
 
 > 범위 `d7bcdc9..2b49a36`. Task 2(autopilot)와 Task 4(kernel seam)는 **파일 소유권이 겹치지 않아

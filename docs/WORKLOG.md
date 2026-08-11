@@ -33,8 +33,23 @@
 - **검증**: `tsc --noEmit` 0 · `src/exec/*.test.ts` + `autopilot.test.ts` **528 pass / 0 fail**.
   기존 테스트 **삭제·완화 0건**(기존 "B-10 미소비" 테스트 1건은 사용자가 연 게이트라 **더 강한 새 계약으로
   갱신**했고, `B-16` 미개봉 테스트를 추가했다). `test:core`·acceptance·stress·live는 **미실행**.
-- **남은 것**: Task 3(offline self-hosting acceptance) — 그 범위가 `B-16` 결정에 달려 있어 사용자 판단 대기.
-  Task 5(최종 handoff · 전체 suite 직렬 1회)는 그 뒤다.
+- **`B-16` 부분 개방**(`90f72db`·`7e5a966`) — 사용자가 "2번으로 진행"으로 승인한 slice. 계획은 fresh
+  Fable 5, 구현 Opus 5, **적대적** 독립 리뷰 fresh Fable 5 → `APPROVE A=0/B=1/C=3`.
+  - typed `write_file`이 **처음으로 실제 바이트를 낸다** — 승인된 **기존 파일 교체만**. rename하지 않고
+    신원·preimage를 확정해 둔 **그 fd**에 `write`/`ftruncate`/`fsync` → 발행 syscall에 pathname이 없다.
+    3A 2차 A3이 교체를 닫은 이유(최종 pathname rename 직전 창)가 이 형태에는 성립하지 않는다.
+  - **신규 파일 발행은 계속 fail closed**(고정할 fd가 없다 — `B-16` 잔여).
+  - **교환한 것: 원자성.** torn은 재시도 시 preimage 불일치로 fail closed이고 자동 복구하지 않는다.
+    거짓 성공 영수증 경로는 없다(리뷰가 durable 경로 추적으로 확인).
+  - `already_applied`의 durability 기준을 **높였다**(내용 fsync 추가).
+  - **리뷰 B-1은 이 세션의 과대주장이었다**: 테스트 주석이 "autopilot 쪽 테스트가 덮는다"고 적었는데
+    실제로는 없었다. 없는 커버리지를 만들고(seam fault → `outcome_unknown` · pending 0) 주석을 정정했다.
+    이 레포가 반복 지적받아 온 바로 그 병이라 A급으로 다뤘다.
+  - 신규 `C-63`(torn을 artifact로 선언하는 승인 plan은 막지 않는다) · `C-64`(0444 대상은 멱등 판정 불가) ·
+    `C-65`("pathname 없음"을 집행하는 테스트가 없다 — 보증은 코드 리뷰뿐).
+  - 실측: `tsc` 0 · **538 pass / 0 fail** · 테스트 삭제·완화 0(1건 갱신 + **11건 추가**).
+- **남은 것**: Task 3(offline self-hosting acceptance) — implement 단계가 열렸으므로 이제 "기존 파일
+  수정" 형태의 루프를 실제로 증명할 수 있다. Task 5(최종 handoff · 전체 suite 직렬 1회)는 그 뒤다.
 
 ## 2026-08-10 (V3 **live 하드 게이트 4건 마감 — `B-9` · `B-7ⓑ` · `B-22` · `B-7ⓐ`. `B-7ⓐ` 독립 리뷰 `APPROVE — A=0, B=1, C=2`. live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 
