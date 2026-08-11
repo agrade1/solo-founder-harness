@@ -1816,6 +1816,36 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### `B-24` 마감 — deadline·cancellation 자손 정리 end-to-end (2026-08-11 · **M5 완료 게이트 3건 전부 닫힘** · 이 절이 현행이다)
+
+> 범위 `69cd089..3742ff6`. 구현은 **격리 worktree 병렬 slice**(파일 소유권: 신규 스크립트 1개만),
+> 통합·mutation 검증·라벨 정정은 중앙이 직렬로 했다.
+
+- **`B-24` → fixed**: `scripts/m5d-cleanup-acceptance.mjs`(acceptance.sh **Test 17**, 내부 체크 15건).
+  **실제로 spawn한다** — autopilot → typed `run_process` 집행 → 승인 manifest가 digest로 고정한
+  `node <controllerEntrypoint>` → **손자 프로세스**까지의 end-to-end다.
+  - deadline 초과와 cancellation **양쪽**에서 손자가 실제로 죽는 것을 `process.kill(pid,0)` ESRCH
+    폴링(상한 5초, 넘으면 FAIL)으로 확인한다. 손자는 `trap ... TERM`으로 **SIGTERM을 받고도 살아남으므로**
+    정리는 **SIGKILL 경로까지** 밟아야 성립하고, cancel 시나리오는 `*.term` 증거 파일로 그것을 단정한다.
+  - 고정 sleep 없이 **ready 파일 배리어**로 경합을 없앴다(이 레포가 과거 `trap` 설치 전 deadline 발화로
+    간헐 red를 겪은 그 함정).
+  - 성공 영수증 0 · 미확정 pending 0 · hang 없이 `paused` 착지 · marker `process_failed`.
+- **중앙의 mutation 검증에서 과대주장 1건을 잡아 고쳤다**: `managedProcess`의 SIGKILL 승격을 제거하니
+  자손 정리 체크가 red가 되는데 **③("이 프로세스의 자손이 남지 않았다")만 green으로 남았다**.
+  `childPids()`가 `ppid === process.pid`인 **직계 자식**만 세는데 유출된 손자는 부모가 죽는 순간 init으로
+  **reparent**되어 그 목록에서 사라지기 때문이다 → 라벨이 측정값보다 넓었다. ①②에서 **관측한 손자 pid를
+  모아 직접 확인**하도록 바꿔 같은 mutation에서 ③도 red가 된다(관측=2 잔존=2).
+- **증명하지 않는 것(헤더에 명시)**: fixture controller는 실제 `validate-plan` 구현이 아니다(정리 역학만
+  대상) · deadline 시나리오는 spawn 시각부터 시계가 흘러 외부 배리어를 걸 수 없으므로 **"죽는다"만**
+  단정하고 SIGKILL 경로 단정은 cancel 시나리오에만 둔다 · 증손자·`setsid`로 pgid를 탈출한 자손은 범위
+  밖이다(supervisor의 소유 단위는 pgid 하나다) · live·네트워크·git write 0.
+- **프로덕션 코드 무수정** — acceptance만으로 통과했다(= 이 계약에 숨은 제품 결함이 없었다).
+- **실측**: 내부 체크 15건 FAIL=0 · `scripts/acceptance.sh` 전체 **PASS=108 / FAIL=0**.
+
+**M5 완료 선언 전 게이트 3건(`B-24`·`B-25`·`B-26`)이 전부 닫혔다.** 남은 것은 **`B-23`(live 인증
+자격증명 산출물 실측)** 하나이고 그것은 **사용자의 `codex login` 1회**가 필요하다 — 그 전까지 M5는
+완료가 아니며, live 실행은 여전히 0회다.
+
 ##### M5 완료 게이트 정리 — `B-25`·`B-26` 마감 (2026-08-11 · `B-24`는 병렬 slice 진행 중 · 이 절이 현행이다)
 
 > 범위 `d02ee77..69cd089`. M5 완료 선언 전 하드 게이트 3건 중 2건을 닫았다.
@@ -1869,7 +1899,7 @@ DAG 전진 mutation에 red가 된다 · ⑥은 승인·경로·소유권이 전�
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-24` | B (P1) | **deadline·cancellation 시 descendant 정리 acceptance가 없다.** M5 완료 조건의 명시 항목("잔존 프로세스 0")인데 M5d acceptance는 spawn 0회라 그것을 증명할 수 없고, 증명한 것처럼 읽히지 않도록 라벨을 한정했을 뿐이다. `managedProcess` 단위 테스트가 supervisor 계층은 덮지만 **autopilot→집행→자손**의 end-to-end는 미검이다 | 확실(미검) | M5 완료 판정의 정당성 | 중 — M5 done을 선언한 뒤 발견하면 판정을 되돌려야 한다 | 중(자손을 낳는 fixture + deadline 시나리오) | **M5 완료 선언 전(하드 게이트)** | live/lifecycle slice | Task 3 적대적 리뷰 A2·B2 · `m5d-offline-acceptance.mjs` ⑧ | open |
+| `B-24` | B (P1) | **[fixed 2026-08-11 — acceptance Test 17]** deadline·cancellation 시 descendant 정리 acceptance가 없었다. M5 완료 조건의 명시 항목("잔존 프로세스 0")인데 M5d acceptance는 spawn 0회라 그것을 증명할 수 없고, 증명한 것처럼 읽히지 않도록 라벨을 한정했을 뿐이다. `managedProcess` 단위 테스트가 supervisor 계층은 덮지만 **autopilot→집행→자손**의 end-to-end는 미검이다 | 확실(미검) | M5 완료 판정의 정당성 | 중 — M5 done을 선언한 뒤 발견하면 판정을 되돌려야 한다 | 중(자손을 낳는 fixture + deadline 시나리오) | **M5 완료 선언 전(하드 게이트)** | live/lifecycle slice | Task 3 적대적 리뷰 A2·B2 · `m5d-cleanup-acceptance.mjs`(Test 17) | **fixed** |
 | `B-25` | B (P2) | **[fixed 2026-08-11 — M5d acceptance ⑨]** 배타 resource class 동시 실행 0이 M5d acceptance에 없었다. M5 완료 조건 항목이고 M4b acceptance가 scheduler 층을 부분적으로 덮지만, autopilot loop를 통과하는 경로는 미검이다(이 run의 task들은 자원 class를 선언하지 않는다) | 중 | M5 완료 판정의 정당성 | 중 | 소~중(자원 class를 선언한 task 2건 시나리오) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 4번 | **fixed** |
 | `B-26` | B (P2) | **[fixed 2026-08-11 — M5d acceptance ⑩]** "재시작"이 같은 프로세스 안에서의 `openOrchestrationRun` 재호출이었다. 디스크 rehydrate는 실측이지만 프로세스 전역 `clockTick` 공유로 시계 단조성이 인위적으로 유지된다 → **별도 프로세스 재시작(시계 되감김 포함)** 은 미검이다 | 중 | 재시작 복구 계약 | 중 | 소(child process로 2단계 실행) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 B1 | **fixed** |
 

@@ -1,5 +1,32 @@
 # WORKLOG.md
 
+## 2026-08-11 (V3 **M5 완료 게이트 3건 전부 마감 — `B-24`·`B-25`·`B-26`. 남은 것은 `B-23`(사용자 `codex login` 1회)뿐** · 이 블록이 가장 최신이다)
+
+- **`B-25`·`B-26`**(`69cd089`, 중앙 직렬) — M5d acceptance에 시나리오 2종 추가(내부 체크 27 → 33).
+  - ⑨ **배타 resource class**: 같은 class를 요구하는 task 2건이 같은 batch에 함께 들어가지 않으면서
+    **둘 다 완주해 굶지 않는다**. 종료 시 자원 점유 상태 0.
+  - ⑩ **별도 프로세스 재시작**: 진짜 자식 프로세스가 durable 파일만으로 run을 이어받는다(in-memory
+    전달 0 · 자식은 **자기 실제 시계**를 쓴다). ⑦의 "같은 프로세스 재수화" 한계를 없앴다.
+  - 그 과정에서 **fixture 결함 1건** 발견·수정: 합성 시계가 고정 날짜라 자식의 실제 시계가 durable 예산
+    창 밖으로 나가 `budget_elapsed_exhausted`가 됐다. 제품 결함이 아니었고 기준을 실제 시각으로 바꿨다.
+  - **mutation 확인**: 배타 class 선언 제거 → ⑨ red · 자식 spawn 제거 → ⑩ red.
+- **`B-24`**(`7a6a985`+`3742ff6`, **격리 worktree 병렬 slice** → 중앙 통합) — `m5d-cleanup-acceptance.mjs`
+  (acceptance.sh **Test 17**, 내부 체크 15). **실제로 spawn한다**: autopilot → typed `run_process` →
+  digest로 고정된 `node <controllerEntrypoint>` → **손자**까지 end-to-end.
+  - deadline·cancellation 양쪽에서 손자가 ESRCH로 사라지는 것을 폴링(상한 5초, 넘으면 FAIL)으로 확인.
+    손자는 `trap ... TERM`으로 SIGTERM을 견디므로 정리는 **SIGKILL 경로까지** 밟아야 성립한다.
+  - 고정 sleep 없이 **ready 파일 배리어** — 이 레포가 과거 겪은 "trap 설치 전 deadline 발화" 경합 회피.
+  - **프로덕션 코드 무수정**으로 통과 = 이 계약에 숨은 제품 결함이 없었다.
+- **중앙 mutation 검증이 과대주장 1건을 잡았다**: `managedProcess`의 SIGKILL 승격을 지우면 자손 정리
+  체크가 red가 되는데 **③만 green으로 남았다**. `childPids()`는 직계 자식만 세는데 유출된 손자는
+  부모가 죽는 순간 init으로 **reparent**되어 목록에서 사라지기 때문이다 — 라벨이 측정값보다 넓었다.
+  → 관측한 손자 pid를 직접 확인하도록 고쳐 같은 mutation에서 ③도 red가 된다. **acceptance를 만들 때마다
+  mutation으로 확인하는 것을 이 세션의 기본 절차로 삼았다**(공허한 체크로 A급을 두 번 맞은 뒤의 학습).
+- **실측**: `scripts/acceptance.sh` 전체 **PASS=108 / FAIL=0**(Test 16 33건 + Test 17 15건 포함).
+- **M5 상태**: 완료 게이트 3건은 닫혔다. **남은 하드 게이트는 `B-23` 하나** — 실제 `codex login` 산출물
+  실측이 필요하고 **사용자 액션**이다(`CODEX_HOME=~/harness-codex-home codex login` 후 `ls -la`).
+  그 전까지 **M5는 완료가 아니고 live 실행은 0회**다.
+
 ## 2026-08-11 (V3 **M5d 착수 — task 1·2·4 완료. 독립 리뷰 3건 전부 `APPROVE — A=0`. typed execution이 바이트를 만들 수 없다는 사실을 실측으로 확인** · 이 블록이 가장 최신이다)
 
 - **M5d 범위 승인 2건**(사용자): ⓐ **offline typed execution 소비 게이트를 연다**(live는 닫힌 채 유지)

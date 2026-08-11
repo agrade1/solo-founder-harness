@@ -25,10 +25,16 @@
   **전체 suite 직렬 1회**: `test:exec` **510/510** · `test:core` **402/402** · acceptance **99/99**.
 - **작업 방침 문서화 완료**(CLAUDE.md · AGENTS.md · harness-dev 스킬 · templates/): 배송 우선(MVP-first,
   A급 즉시 수정 / B·C 기록 후 진행) · 모델 분업(Fable 5 계획·적대적 리뷰 / Opus 5 구현) · 병렬 규율.
-- **M5d는 완료. M5는 완료가 아니다** — 완료 선언 전 하드 게이트 3건이 남았다: `B-24`(deadline·cancellation
-  자손 정리 acceptance 부재) · `B-25`(배타 자원 동시 실행 0 미검) · `B-26`(별도 프로세스 재시작 미검).
-  live는 `B-23`(실제 `codex login` 산출물 실측 — 사용자 1회 로그인 필요)이 그대로 막고 있다.
-- 신규 유예: `C-59`~`C-65` · `B-24`~`B-26`. **열린 A는 0건.**
+- **M5 완료 게이트 3건 전부 마감**(2026-08-11): `B-24`(deadline·cancellation 자손 정리 — acceptance
+  **Test 17**, 실제 spawn·SIGKILL 경로까지) · `B-25`(배타 자원 동시 실행 0 — Test 16 ⑨) ·
+  `B-26`(별도 프로세스 재시작 — Test 16 ⑩). acceptance 전체 **PASS=108 / FAIL=0**.
+- **남은 하드 게이트는 `B-23` 하나이고 사용자 액션이다**: `CODEX_HOME=~/harness-codex-home codex login`
+  실행 후 `ls -la ~/harness-codex-home` 결과 필요. 하네스는 그 홈에 `auth.json` **외 항목이 하나라도**
+  있으면 거부하므로(설정·MCP 정의가 자격증명 뒤에 묻어 들어오는 통로 차단), **실측 후 관측된 파일만**
+  허용 목록에 넣는다. 그 전까지 **M5는 완료가 아니고 live 실행은 0회**다.
+- 신규 유예: `C-59`~`C-65`. **열린 A는 0건이고 열린 B는 `B-23` 외 lifecycle 잔여뿐이다.**
+- **이 세션의 절차 학습**: acceptance를 만들 때마다 **mutation으로 red가 되는지 직접 확인**한다.
+  공허한 체크(항등식·구조적 상시 green·측정값보다 넓은 라벨)로 A급 지적을 세 번 받았고 전부 즉시 고쳤다.
 
 ## 이전 (2026-08-10 — **live 하드 게이트 4건 마감(`B-9`·`B-7ⓑ`·`B-22`·`B-7ⓐ`) · live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 
