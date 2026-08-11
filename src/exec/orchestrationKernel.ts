@@ -1907,19 +1907,23 @@ function writeOutcome(marker: WriteEffectMarker, path: string | null, resultSha2
  * 2. 바이트 상한 = `min(승인 maxBytes, LIMITS.maxWriteBytes)`.
  * 3. no-follow 경로 walk(symlink·비일반 파일 거부) + 부모 디렉터리 신원을 **열린 fd로 고정**.
  * 4. 대상 preimage를 **열어 둔 fd 하나로** 확정(경로 재오픈 없음) → 판정 직전 부모 신원 **재확인**.
- * 5. **크래시 창 멱등**: 현재 내용이 의도한 내용과 같으면 `already_applied`(**부모 fsync 성공 뒤에만** — A4).
+ * 5. **크래시 창 멱등**: 현재 내용이 의도한 내용과 같으면 `already_applied` — **내용 fsync와 부모 fsync가
+ *    모두 성공한 뒤에만**(M5d에서 내용 fsync를 추가해 기준을 높였다).
  * 6. preimage 불일치는 **쓰지 않고** `write_conflict`.
- * 7. 대상이 있고 내용이 다르면 `write_replace_unsupported`(3A 2차 A3).
- * 8. **대상이 없으면 `write_publish_unsupported`**(3A 3차 A4 · 대장 `B-16`) — 예방 안전한 발행 primitive가
- *    없어 아예 시도하지 않는다. temp를 만들지 않으므로 파일 시스템 부작용이 **0**이다.
+ * 7. **대상이 있고 내용이 다르면 교체한다**(M5d — 대장 `B-16` 부분 개방). 3A 2차 리비전 A3이 이 분기를
+ *    닫은 이유는 "temp → 최종 pathname `rename(2)`" 형태에서 **부모 이름 교체 경쟁**을 예방할 수 없다는
+ *    것이었다. 그 이유는 지금 형태에 **성립하지 않는다**: rename하지 않고 4에서 신원까지 확정한 **바로
+ *    그 fd**에 쓴다 → 발행 syscall(`write`/`ftruncate`/`fsync`)에 pathname이 **하나도 없다**.
+ *    잃은 것은 **원자성**이다(`applyToFixedTarget` 주석에 무엇이 남는지 적어 두었다).
+ * 8. **대상이 없으면 `write_publish_unsupported`**(3A 3차 A4 · 대장 `B-16` **잔여**) — 부재 대상에는
+ *    고정할 fd가 없으므로 최종 `link(2)`가 pathname을 지나야 하고, 그 창은 여전히 예방할 수 없다.
+ *    Node 18/macOS 내장에 디스크립터 상대 no-replace 발행(`linkat`)이 없다. `process.chdir(parent)` +
+ *    basename `link`는 평가 후 기각했다(프로세스 전역 상태 · worker thread에서 throw · managed launcher가
+ *    자식 cwd까지 오염). temp를 만들지 않으므로 이 거부의 파일 시스템 부작용은 **0**이다.
  *
- * **왜 발행이 없는가(정직)**: `link(2)`/`rename(2)`는 pathname을 받고, 최종 부모 확인과 syscall 사이에
- * 같은 사용자 경쟁자가 승인된 부모 **이름**을 교체하면 커널이 그 교체본을 통해 경로를 해석한다 →
- * 승인 범위 밖 발행 + 엉뚱한 디렉터리 fsync. 발행된 inode는 우리 temp와 같으므로 **사후 검증은 통과한다**.
- * Node 18/macOS 내장에는 디스크립터 상대 no-replace 발행(`linkat`)이 없다.
- * `process.chdir(parent)` + basename `link`로 cwd를 디렉터리 참조처럼 쓰는 방법은 **평가했고 채택하지
- * 않았다**: 프로세스 전역 상태이며 worker thread에서 던지고, managed launcher가 자식을 띄우는 순간 자식
- * cwd까지 오염시킨다. 승인된 helper·의존성·자식 프로세스 없이 안전을 **증명할 수 없으므로 fail closed**다.
+ * **관측 가능한 회귀 하나(정직)**: 4의 대상 open이 `O_RDWR`이므로 **쓰기 권한이 없는 대상**(예: 0444)은
+ * 교체는 물론 `already_applied`·`write_conflict` 판정조차 `write_failed`가 된다. fail closed 방향이지만
+ * 크래시 복구 멱등 판정의 범위가 좁아졌다(대장 `C-64`).
  */
 function judgeWriteFile(auth: DispatchAuthority, op: TypedWriteFileOperation): WriteEffectOutcome {
   const approved = resolveWriteAuthority(op, auth);

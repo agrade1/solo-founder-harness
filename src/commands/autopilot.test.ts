@@ -24,7 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS } from "../exec/orchestrationTypes.js";
 import type { OrchestrationTask } from "../exec/orchestrationTypes.js";
-import { createOrchestrationRun, openOrchestrationRun } from "../exec/orchestrationKernel.js";
+import { __setPublicationSeamsForTest, createOrchestrationRun, openOrchestrationRun } from "../exec/orchestrationKernel.js";
 import type { OrchestrationKernel, TaskSeed } from "../exec/orchestrationKernel.js";
 import { REQUIRED_BODY_HEADINGS } from "../exec/orchestrationTypes.js";
 import { AutopilotEvent, runAutopilot } from "./autopilot.js";
@@ -873,4 +873,44 @@ test("[M5d] operation을 요구하는 turn의 취소도 미확정 pending을 남
   // 없어 이 테스트가 덮지 못한다(대장에 C로 남긴다 — 없는 커버리지를 있다고 적지 않는다).
   assert.equal(task.execution.chargedPlanDigest, null, "집행 전 취소인데 원장에 생산 turn이 있다");
   assert.equal(task.execution.dispatchTurnId, null, "집행 전 취소인데 turn claim이 남았다");
+});
+
+test("[M5d] B-16: 쓰기 도중 fault는 outcome_unknown으로 닫히고 미확정 pending을 남기지 않는다", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "before\n");
+  const before = createHash("sha256").update("before\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "after\n", expectedBeforeSha256: before },
+    ],
+    result: { summary: "쓰기 도중 죽는다", outputs: [] },
+  });
+
+  // 집행 경계 **안에서** fault를 주입한다 → `write_apply_incomplete`. 그 pending은 이미 attemptedAt이
+  // 찍혀 있어 평범한 실패로 지울 수 없고 `outcome_unknown`으로만 정직하게 닫혀야 한다.
+  const restore = __setPublicationSeamsForTest({
+    contentWrite: () => {
+      throw new Error("fault");
+    },
+  });
+  let report;
+  try {
+    report = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
+  } finally {
+    restore();
+  }
+
+  const task = taskOf(f.ws, "root");
+  // ⓐ 미아 pending이 없다 — 착지가 막히지 않았다.
+  assert.deepEqual(task.execution.pendingOperations, [], "미확정 operation이 남았다(착지가 막힌다)");
+  // ⓑ **성공도 평범한 실패도 아니다**: 외부 효과가 일어났을 수 있다는 사실이 durable에 남는다.
+  assert.deepEqual(
+    task.execution.operationReceipts.map((r) => ({ operationId: r.operationId, marker: r.marker })),
+    [{ operationId: "op-1", marker: "outcome_unknown" }],
+    "torn 가능성이 있는 집행이 정직하게 닫히지 않았다",
+  );
+  // ⓒ turn은 완료가 아니고 task는 복구 가능한 paused로 착지한다(hang 없음).
+  assert.equal(report.tasks[0].state, "paused");
+  assert.equal(task.state, "paused");
+  assert.equal(reopen(f.ws).getState().artifacts.length, 0, "torn 가능성이 있는 turn이 결과를 발행했다");
 });

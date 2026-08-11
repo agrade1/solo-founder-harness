@@ -1827,8 +1827,8 @@ test("[M5d] B-16: 쓰기 도중 실패는 write_apply_incomplete이고 재시도
   // **성공도 아니고 "아무 일 없었다"도 아니다** — torn일 수 있다고 정직하게 말한다.
   assert.equal(code, "write_apply_incomplete");
 
-  // torn 상태 자체는 이 turn의 pending으로 남는다(kernel이 `outcome_unknown`으로만 닫는다 —
-  // autopilot 쪽 테스트가 그 경로를 덮는다). 여기서 고정하는 것은 **효과 계층의 회복 성질**이다.
+  // 이 테스트가 고정하는 것은 **효과 계층**의 코드 하나다. 그 pending이 durable하게 어떻게 닫히는지는
+  // autopilot 경로의 테스트가 덮는다("쓰기 도중 fault는 outcome_unknown으로 닫히고…", autopilot.test.ts).
 });
 
 test("[M5d] B-16: torn 상태 위에서 같은 operation을 다시 시도하면 conflict로 막힌다", () => {
