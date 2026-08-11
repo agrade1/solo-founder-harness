@@ -48,10 +48,12 @@ import {
   constants as fsConstants,
   fstatSync,
   fsyncSync,
+  ftruncateSync,
   lstatSync,
   openSync,
   readSync,
   realpathSync,
+  writeSync,
   type Stats,
 } from "node:fs";
 import { isAbsolute, join as joinPath } from "node:path";
@@ -1643,6 +1645,12 @@ export const WRITE_EFFECT_CODES = [
   "write_failed",
   "write_replace_unsupported",
   "write_publish_unsupported",
+  /**
+   * **M5d `B-16` 부분 개방** — 고정한 대상 fd에 바이트를 쓰는 도중 실패했다. 내용이 **torn일 수 있다**:
+   * 이 코드가 뜻하는 것은 "대상이 의도한 내용도 원래 내용도 아닐 수 있다"이며, 재시도는 preimage
+   * 불일치로 `write_conflict`가 되어 **사람이 개입할 때까지 fail closed**다. 조용한 오염이 아니다.
+   */
+  "write_apply_incomplete",
   "write_durability_unconfirmed",
   "write_cleanup_unconfirmed",
 ] as const;
@@ -1762,7 +1770,7 @@ function requireNoFollow(): void {
  * 코드는 프레임 문자열을 위조할 수 있다 — 그 정도 권한이면 모듈 자체를 갈아끼울 수 있으므로 새로운
  * 권한 상승은 아니다. ⓒ hook이 할 수 있는 일의 상한은 위 문단 그대로다(DoS + ambient 권한 canonical).
  */
-export type PublicationSeam = "parentWalk" | "targetOpen" | "publish" | "dirFsync";
+export type PublicationSeam = "parentWalk" | "targetOpen" | "publish" | "contentWrite" | "contentFsync" | "dirFsync";
 
 let SEAMS: Partial<Record<PublicationSeam, () => void>> = {};
 
@@ -1926,7 +1934,7 @@ function judgeWriteFile(auth: DispatchAuthority, op: TypedWriteFileOperation): W
   const status = { cleanupFailed: false };
   let result: WriteEffectOutcome;
   try {
-    result = judgeWriteTransaction(auth, op, sha256Hex(bytes), status);
+    result = judgeWriteTransaction(auth, op, bytes, sha256Hex(bytes), status);
   } catch (e) {
     // **1차 오류가 정리 미확인을 가리지 않는다**(3A 3차 리비전 B1): 둘 다 있으면 정리 미확인이 이기고
     // 1차 안정 **코드**만 메시지에 싣는다(경로·내용은 담지 않는다).
@@ -1956,6 +1964,7 @@ function cleanupUnconfirmed(primaryCode: string | null): OrchestrationError {
 function judgeWriteTransaction(
   auth: DispatchAuthority,
   op: TypedWriteFileOperation,
+  bytes: Buffer,
   intended: string,
   status: { cleanupFailed: boolean },
 ): WriteEffectOutcome {
@@ -1974,6 +1983,8 @@ function judgeWriteTransaction(
     seam("targetOpen");
     let before: string | null = null;
     let targetExists = false;
+    /** 신원·preimage를 확정한 대상 fd. **발행은 이 fd로만** 한다(경로 재해석 0). */
+    let targetFdRef: number | null = null;
     const seen = lstatOrNull(walk.target);
     if (seen !== null) {
       targetExists = true;
@@ -1981,7 +1992,11 @@ function judgeWriteTransaction(
       if (!seen.isFile()) throw notRegular("대상이 일반 파일이 아니다");
       let targetFd: number;
       try {
-        targetFd = openSync(walk.target, fsConstants.O_RDONLY | O_NOFOLLOW);
+        // **M5d `B-16`**: 교체가 가능해졌으므로 대상은 `O_RDWR`로 연다. 이 fd 하나가 preimage 판정과
+        // 발행에 **모두** 쓰이며, 발행 syscall에 pathname이 등장하지 않는 이유가 바로 이것이다.
+        // 쓰기 능력은 §"교체" 분기 밖에서는 **한 번도 사용되지 않는다**(`already_applied`·`write_conflict`
+        // 경로는 읽기만 한다) — 분기 실수를 테스트가 mutation으로 지킨다.
+        targetFd = openSync(walk.target, fsConstants.O_RDWR | O_NOFOLLOW);
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         if (code === "ELOOP") throw symlinkRefused("대상이 symlink다(따라가지 않는다)");
@@ -1989,6 +2004,7 @@ function judgeWriteTransaction(
         throw writeFailed("대상을 열 수 없다");
       }
       fds.push(targetFd);
+      targetFdRef = targetFd;
       const st = fstatSync(targetFd);
       if (!st.isFile()) throw notRegular("대상이 일반 파일이 아니다");
       if (!sameIdent(identOf(st), identOf(seen))) throw writeFailed("대상이 판정 중에 다른 파일로 바뀌었다");
@@ -2014,6 +2030,10 @@ function judgeWriteTransaction(
     // **단 부모 fsync에 성공해야 `already_applied`다**(3A 2차 리비전 A4): 앞선 시도가 fsync에서 실패했다면
     // 디렉터리 엔트리는 아직 durable하지 않고, "다시 보니 있더라"는 durability의 증거가 아니다.
     if (before === intended) {
+      // **내용 fsync도 요구한다**(M5d): 앞선 시도가 바이트를 다 쓰고 `fsync` 전에 죽었을 수 있다 —
+      // "다시 보니 의도한 내용이더라"는 durability의 증거가 아니다. 부모 fsync만 보던 기존 기준을
+      // 낮추지 않고 **높인다**(대상 fd가 이미 열려 있으므로 추가 비용은 syscall 하나다).
+      if (targetFdRef !== null) confirmContentDurability(targetFdRef);
       confirmDirDurability(dirFd);
       return writeOutcome("already_applied", op.path, intended);
     }
@@ -2021,12 +2041,12 @@ function judgeWriteTransaction(
     if (op.expectedBeforeSha256 === null ? before !== null : before !== op.expectedBeforeSha256) {
       return writeOutcome("write_conflict", op.path, null);
     }
-    // **교체는 여기서 끝난다**(3A 2차 리비전 A3): 최종 pathname `rename(2)` 직전 창을 0으로 만들 수 없다.
-    if (targetExists) {
-      throw new OrchestrationError(
-        "write_replace_unsupported",
-        "기존 경로 교체는 예방 안전한 원자성을 보장할 수 없어 거부한다",
-      );
+    // **교체는 여기서 일어난다**(M5d — 대장 `B-16` 부분 개방). 3A 2차 리비전 A3이 이 분기를 닫은
+    // 이유는 "temp → 최종 pathname `rename(2)`" 형태의 발행에서 **부모 이름 교체 경쟁**을 예방할 수
+    // 없다는 것이었다. 그 이유는 **여기에 더는 적용되지 않는다**: 우리는 rename하지 않고, 이미 신원과
+    // preimage를 확정해 둔 **바로 그 fd**에 쓴다 → 발행 경로에 pathname이 **하나도 없다**.
+    if (targetExists && targetFdRef !== null) {
+      return applyToFixedTarget(targetFdRef, dirFd, bytes, intended, op.path);
     }
     // **신규 발행도 여기서 끝난다**(3A 3차 리비전 A4): 최종 `link(2)`도 pathname이므로 부모 교체 경쟁을
     // 예방할 수 없고, 사후 inode 검증은 그 창을 닫지 못한다(발행된 inode는 우리 것이 맞기 때문이다).
@@ -2054,6 +2074,71 @@ function judgeWriteTransaction(
  * 발행된 이름의 **디렉터리 durability를 확인**한다. 실패는 `write_durability_unconfirmed`이고,
  * 재시도가 이 확인을 다시 지나지 못하면 계속 같은 코드다("다시 보니 있더라"는 durability가 아니다).
  */
+/**
+ * **고정한 대상 fd에 승인된 바이트를 발행한다**(M5d — 대장 `B-16` 부분 개방).
+ *
+ * **무엇에 대해 안전한가(정확히)**: 발행 syscall이 `write`/`ftruncate`/`fsync`뿐이고 **전부 fd를 받는다**.
+ * 경로 문자열이 커널에 다시 들어가지 않으므로, 판정 이후 부모나 대상의 **이름**이 무엇으로 바뀌든
+ * 바이트는 우리가 신원(dev+ino)까지 확인한 **그 inode에만** 간다. 3A 2차 리비전이 교체를 닫은 이유
+ * ("최종 pathname `rename(2)` 직전 창")는 이 형태에 성립하지 않는다.
+ *
+ * **무엇이 남는가(정직 — 없앴다고 주장하지 않는다)**:
+ * 1. **원자성이 없다.** `write`가 절반만 나간 채로 죽으면 대상은 torn이다. 그 상태는 다음 시도에서
+ *    preimage 불일치(`write_conflict`)로 **fail closed**가 되고 자동 복구되지 않는다 — 사람이 본다.
+ *    성공 영수증은 fsync까지 확인한 뒤에만 나오므로 **거짓 성공은 없다**.
+ * 2. **같은 uid 경쟁자**는 여전히 막지 못한다(`verifyCodexHome`과 같은 선언된 threat model). 다만 막는
+ *    것이 있다: 바이트가 **다른 파일·다른 디렉터리로 새는 일**은 예방된다. 같은 uid가 그 inode의
+ *    도달 경로(이름)를 바꾸는 것은 막지 못한다.
+ * 3. **durability는 기존 전제와 같은 수준**이다 — macOS의 `fsync` vs `F_FULLFSYNC` 논쟁은 이 slice가
+ *    바꾸지 않는다(기존 디렉터리 fsync도 같은 전제 위에 있다). 더 강하다고 주장하지 않는다.
+ *
+ * 순서: 내용 write → 남은 꼬리 절단(`ftruncate`) → 내용 fsync → 부모 fsync. 어느 단계든 실패하면
+ * 성공 영수증이 없다.
+ */
+function applyToFixedTarget(
+  targetFd: number,
+  dirFd: number,
+  bytes: Buffer,
+  intended: string,
+  path: string,
+): WriteEffectOutcome {
+  let written = 0;
+  try {
+    while (written < bytes.byteLength) {
+      const n = writeSync(targetFd, bytes, written, bytes.byteLength - written, written);
+      if (n <= 0) throw new Error("short write");
+      written += n;
+      seam("contentWrite");
+    }
+    // 새 내용이 이전보다 짧으면 꼬리가 남는다 → 절단까지 해야 "의도한 내용"이다.
+    ftruncateSync(targetFd, bytes.byteLength);
+  } catch {
+    // **torn일 수 있다**고 정직하게 말한다. 성공도 아니고 "아무 일 없었다"도 아니다.
+    throw new OrchestrationError(
+      "write_apply_incomplete",
+      "승인된 바이트를 끝까지 쓰지 못했다(대상 내용이 확정되지 않았다 — 재시도는 preimage 불일치로 막힌다)",
+    );
+  }
+  confirmContentDurability(targetFd);
+  // 디렉터리 엔트리 자체는 바뀌지 않았지만(같은 inode·같은 이름), 부모 fsync는 기존 `already_applied`
+  // 계약과 **같은 기준**을 유지하기 위해 그대로 지난다 — 성공 판정의 durability 기준을 낮추지 않는다.
+  confirmDirDurability(dirFd);
+  return writeOutcome("applied", path, intended);
+}
+
+/** 내용 durability. 실패하면 바이트는 나갔을 수 있어도 **성공 영수증을 내지 않는다**. */
+function confirmContentDurability(targetFd: number): void {
+  try {
+    seam("contentFsync");
+    fsyncSync(targetFd);
+  } catch {
+    throw new OrchestrationError(
+      "write_durability_unconfirmed",
+      "내용 durability를 확인하지 못했다(재시도도 fsync에 성공해야 성공 영수증이 된다)",
+    );
+  }
+}
+
 function confirmDirDurability(dirFd: number): void {
   try {
     seam("dirFsync");

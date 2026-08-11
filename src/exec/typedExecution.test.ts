@@ -1755,18 +1755,120 @@ test("[M5c] A4: 신규 발행 경로는 도달하지 않는다(예방 — 파일
   assert.ok(TYPED_EXECUTION_CODES.includes("write_publish_unsupported"));
 });
 
-test("[M5c] A3: 기존 대상 교체도 손대기 전에 거부되고 경쟁자 바이트는 그대로다", () => {
+test("[M5d] B-16: 기존 대상 교체는 고정한 fd로 발행되고 inode가 유지된다", () => {
   const f = fixture();
   const target = join(f.ws, "docs/out.md");
   writeFileSync(target, "원래 내용");
   const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
   const inoBefore = lstatSync(target).ino;
-  assert.equal(codeOf(() => applyWriteFile(op, grant)), "write_replace_unsupported");
-  assert.equal(readFileSync(target, "utf8"), "원래 내용", "거부인데 바이트가 바뀌었다");
-  assert.equal(lstatSync(target).ino, inoBefore);
+
+  const outcome = applyWriteFile(op, grant);
+
+  // ⓐ 실제로 바이트가 나갔고 marker는 kernel이 만든 `applied`다.
+  assert.equal(outcome.marker, "applied");
+  assert.equal(outcome.resultSha256, sha256("우리 내용"));
+  assert.equal(readFileSync(target, "utf8"), "우리 내용");
+  // ⓑ **같은 inode에 썼다** — rename하지 않았다는 관측 가능한 증거다(발행 경로에 pathname이 없다).
+  assert.equal(lstatSync(target).ino, inoBefore, "교체가 inode를 갈아끼웠다(rename 경로가 살아났다)");
+  // ⓒ temp·고아 잔재가 없다.
   assert.deepEqual(readdirSync(join(f.ws, "docs")), ["out.md"]);
   assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
-  assert.ok(TYPED_EXECUTION_CODES.includes("write_replace_unsupported"));
+});
+
+test("[M5d] B-16: 더 짧은 내용으로 교체하면 꼬리가 남지 않는다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "아주 긴 원래 내용입니다");
+  const [op, grant] = writePermit(f, { content: "짧다", expectedBeforeSha256: sha256("아주 긴 원래 내용입니다") });
+  assert.equal(applyWriteFile(op, grant).marker, "applied");
+  assert.equal(readFileSync(target, "utf8"), "짧다", "ftruncate 없이 꼬리가 남았다");
+});
+
+test("[M5d] B-16: preimage가 다르면 교체도 한 바이트도 쓰지 않는다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "원래 내용");
+  // 승인·경로는 맞지만 기대한 preimage가 아니다 → 게이트는 그대로 산다.
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("다른 preimage") });
+  // conflict는 **던지지 않고** 영수증 marker로 온다(한 바이트도 쓰지 않은 정직한 결과다).
+  assert.equal(applyWriteFile(op, grant).marker, "write_conflict");
+  assert.equal(readFileSync(target, "utf8"), "원래 내용", "conflict인데 바이트가 바뀌었다");
+});
+
+test("[M5d] B-16: 판정 중 부모가 교체되면 발행하지 않는다(바이트 불변)", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "원래 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
+
+  // `publish` seam은 **부모 재확인 직전**에 발화한다 → 그 순간 부모 이름을 갈아끼운다.
+  const docs = join(f.ws, "docs");
+  const code = withSeams(
+    {
+      publish: () => {
+        renameSync(docs, join(f.ws, "docs-moved"));
+        mkdirSync(docs, { recursive: true });
+      },
+    },
+    () => codeOf(() => applyWriteFile(op, grant)),
+  );
+
+  assert.equal(code, "write_failed", "부모 교체를 지나 발행했다");
+  assert.equal(readFileSync(join(f.ws, "docs-moved/out.md"), "utf8"), "원래 내용", "거부인데 바이트가 바뀌었다");
+});
+
+test("[M5d] B-16: 쓰기 도중 실패는 write_apply_incomplete이고 재시도는 conflict로 막힌다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "원래 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
+
+  const code = withSeams({ contentWrite: () => { throw new Error("fault"); } }, () => codeOf(() => applyWriteFile(op, grant)));
+  // **성공도 아니고 "아무 일 없었다"도 아니다** — torn일 수 있다고 정직하게 말한다.
+  assert.equal(code, "write_apply_incomplete");
+
+  // torn 상태 자체는 이 turn의 pending으로 남는다(kernel이 `outcome_unknown`으로만 닫는다 —
+  // autopilot 쪽 테스트가 그 경로를 덮는다). 여기서 고정하는 것은 **효과 계층의 회복 성질**이다.
+});
+
+test("[M5d] B-16: torn 상태 위에서 같은 operation을 다시 시도하면 conflict로 막힌다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  // 앞선 시도가 절반만 쓰고 죽은 상태를 그대로 재현한다.
+  writeFileSync(target, "우리 내");
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
+  assert.equal(applyWriteFile(op, grant).marker, "write_conflict", "torn 위에 조용히 덮어썼다");
+  assert.equal(readFileSync(target, "utf8"), "우리 내", "conflict인데 바이트가 바뀌었다");
+});
+
+test("[M5d] B-16: 내용 fsync에 실패하면 성공 영수증이 없다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  writeFileSync(target, "원래 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("원래 내용") });
+
+  const code = withSeams({ contentFsync: () => { throw new Error("fault"); } }, () => codeOf(() => applyWriteFile(op, grant)));
+  assert.equal(code, "write_durability_unconfirmed", "durability 미확인이 성공으로 삼켜졌다");
+});
+
+test("[M5d] B-16: 이미 의도한 내용이어도 내용 fsync에 실패하면 already_applied가 아니다", () => {
+  const f = fixture();
+  const target = join(f.ws, "docs/out.md");
+  // 앞선 시도가 바이트를 다 쓰고 fsync 전에 죽은 상황 — "다시 보니 있더라"는 durability가 아니다.
+  writeFileSync(target, "우리 내용");
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: sha256("우리 내용") });
+  const code = withSeams({ contentFsync: () => { throw new Error("fault"); } }, () => codeOf(() => applyWriteFile(op, grant)));
+  assert.equal(code, "write_durability_unconfirmed");
+});
+
+test("[M5d] B-16: 신규 발행은 여전히 닫혀 있다(부작용 0)", () => {
+  const f = fixture();
+  const [op, grant] = writePermit(f, { content: "우리 내용", expectedBeforeSha256: null });
+  assert.equal(codeOf(() => applyWriteFile(op, grant)), "write_publish_unsupported");
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), [], "부재 대상에 부작용이 생겼다");
+  assert.deepEqual(orphanTemps(join(f.ws, "docs")), []);
+  assert.ok(TYPED_EXECUTION_CODES.includes("write_publish_unsupported"));
+  assert.ok(TYPED_EXECUTION_CODES.includes("write_apply_incomplete"));
 });
 
 test("[M5c] 크래시 창 멱등: 이미 의도한 내용이면 already_applied이고 다시 쓰지 않는다", () => {

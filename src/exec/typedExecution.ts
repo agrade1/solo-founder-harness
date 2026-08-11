@@ -23,8 +23,9 @@
  *
  * 이 모듈이 하는 것:
  * 1. `resolveWriteFileAuthority()` — 승인 레코드 대조(deny-by-default · 파일 시스템 무접촉).
- * 2. `applyWriteFile()` — kernel 고정 진입점에 대한 **얇은 이름**(계획·계약 그대로). 발행(신규 파일 생성)은
- *    3A 3차 리비전 A4에서 **fail closed**가 됐고(대장 `B-16`), 남은 것은 바이트를 만들지 않는 판정뿐이다.
+ * 2. `applyWriteFile()` — kernel 고정 진입점에 대한 **얇은 이름**(계획·계약 그대로). **M5d에서 `B-16`이
+ *    부분 개방됐다**: 승인된 **기존 파일 교체**는 고정한 대상 fd에 직접 써서 실제 바이트를 낸다(원자성은
+ *    없고 torn은 fail closed로 표면화된다). **신규 파일 생성은 여전히 fail closed**다.
  * 3. `resolveProcessLaunchCapability()` — 승인 레코드에서만 나오는 **opaque 일회용 실행 권능**.
  *    **spawn하지 않고**, 실행 대상·argv·digest를 밖으로 드러내지도 않는다(3A 3차 리비전 B2).
  *
@@ -94,8 +95,12 @@ export const TYPED_EXECUTION_CODES = [
    * - `write_bytes_exceeded` — 본문이 `min(승인 maxBytes, LIMITS.maxWriteBytes)`를 넘는다.
    * - `write_path_symlink` / `write_target_not_regular` — symlink는 따라가지 않고 비일반 파일은 쓰지 않는다.
    * - `write_failed` — 그 밖의 집행 실패(부모 부재 · I/O · 신원 불일치). 내용은 담지 않는다.
-   * - `write_replace_unsupported` / `write_publish_unsupported` — 예방 안전한 발행 primitive가 없어
-   *   **판정 단계에서** 거부한다(3A 2차 A3 · 3차 A4 · 대장 `B-16`).
+   * - `write_publish_unsupported` — **부재 대상 발행**은 여전히 fail closed다(3A 3차 A4 · 대장 `B-16`
+   *   잔여): 고정할 fd가 없어 최종 `link(2)`가 pathname을 지나야 하고 그 창을 예방할 수 없다.
+   * - `write_apply_incomplete` — **M5d `B-16` 부분 개방**: 고정한 대상 fd에 쓰는 도중 실패했다.
+   *   내용이 torn일 수 있고 재시도는 preimage 불일치로 막힌다(사람이 개입할 때까지 fail closed).
+   * - `write_replace_unsupported` — **더 이상 발생하지 않는다**(M5d 이전 계약의 잔존 코드).
+   *   기존 대상 교체는 이제 고정한 fd에 직접 써서 집행한다 — 발행 경로에 pathname이 없다.
    * - `write_durability_unconfirmed` — 디렉터리 fsync를 확인하지 못했다(성공 영수증 없음).
    * - `write_cleanup_unconfirmed` — fd 반납을 확인하지 못했다(1차 오류에 가려지지 않는다).
    */

@@ -756,7 +756,7 @@ test("[M5d] 승인된 write_file operation은 집행 경계를 지나 applied �
   assert.ok(events.some((e) => e.kind === "task_completed"));
 });
 
-test("[M5d] 바이트를 만드는 write는 승인돼 있어도 여전히 fail closed다 (B-16 미개봉)", async () => {
+test("[M5d] 승인된 기존 파일 교체는 autopilot 경로에서도 실제로 바이트를 낸다 (B-16 부분 개방)", async () => {
   const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
   writeOutput(f.ws, "docs/x.md", "before\n");
   const before = createHash("sha256").update("before\n").digest("hex");
@@ -769,11 +769,28 @@ test("[M5d] 바이트를 만드는 write는 승인돼 있어도 여전히 fail c
 
   const report = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
 
-  // 집행 게이트를 연 것이 **바이트 발행을 연 것은 아니다**(`B-16`은 별도 승인이다).
-  assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "before\n", "닫힌 게이트가 바이트를 만들었다");
+  // 승인된 경로의 **기존 파일**은 실제로 바뀐다 — self-hosting의 implement 단계가 여기서 열린다.
+  assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "after\n", "승인된 교체가 집행되지 않았다");
+  assert.deepEqual(report.tasks, [{ taskId: "root", state: "completed", marker: "turn_completed" }]);
+  const task = taskOf(f.ws, "root");
+  assert.equal(task.execution.operationReceipts[0].marker, "applied");
+  assert.deepEqual(task.execution.pendingOperations, [], "미확정 operation이 남았다");
+});
+
+test("[M5d] 신규 파일 발행은 autopilot 경로에서도 여전히 fail closed다 (B-16 잔여)", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/new.md", maxBytes: 64 }] } });
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/new.md", content: "new\n", expectedBeforeSha256: null },
+    ],
+    result: { summary: "신규 발행 시도", outputs: [] },
+  });
+
+  const report = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
+
+  assert.equal(existsSync(join(f.ws, "docs/new.md")), false, "닫힌 발행 게이트가 파일을 만들었다");
   assert.equal(report.tasks[0].state, "paused");
   assert.equal(report.tasks[0].marker, "operation_denied");
-  assert.deepEqual(taskOf(f.ws, "root").execution.pendingOperations, [], "미확정 operation이 남았다");
 });
 
 test("[M5d] 승인된 authorityId라도 경로가 다르면 집행하지 않는다 (승인 레코드가 정본)", async () => {

@@ -29,9 +29,10 @@
  *   승인 레코드 대조·소유권·`writableRoots`·digest 재검증·spawn 상한·deadline·멱등 pending은 전부
  *   kernel 안에서 일어나고, autopilot이 고를 수 있는 것은 **계획에 이미 있는 operationId의 순서**뿐이다.
  *   승인되지 않은 operation은 여전히 `operation_denied`로 닫히고 task는 `paused`로 착지한다.
- * - **`B-16`(real typed-write 산출물 발행)** — 소비하지 않는다. 발행(신규 파일 생성)은 집행기 **판정
- *   단계에서** 여전히 fail closed다(`write_publish_unsupported`). 발행되는 artifact는 **이미 디스크에
- *   있고 그 task가 소유한 파일**뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
+ * - **`B-16`(real typed-write 산출물 발행)** — **부분 개방**(M5d): 승인된 **기존 파일의 교체**는 이제
+ *   실제로 바이트를 낸다(고정한 대상 fd에 직접 쓴다 — 발행 경로에 pathname이 없다). **신규 파일 생성은
+ *   여전히 fail closed**다(`write_publish_unsupported`). artifact로 발행되는 것은 그 task가 소유한
+ *   파일뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
  * - **`B-7`/`B-9`(live)** — 소비하지 않는다. 유일한 backend는 `offline-plan`이고 `claude`·`codex`는
  *   worker가 hard reject한다. 네트워크 호출 0 · 추론 0 · spawn 0.
  *
