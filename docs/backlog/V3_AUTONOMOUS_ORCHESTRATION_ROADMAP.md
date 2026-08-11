@@ -1816,6 +1816,32 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **첫 live 실행 성공** — `B-23` 마감 · `B-9` live 재확인 (2026-08-11 · 이 절이 현행이다)
+
+> 사용자가 `CODEX_HOME=~/harness-codex-home codex login`(codex-cli `0.146.0-alpha.3`)을 1회 실행했고,
+> `scripts/m5-live-probe.mjs`로 **실제 Codex 추론 1회**를 돌렸다. **이 레포 최초의 live 실행이다.**
+
+**실측 usage**: `input 13,049 · output 5 · cacheRead 9,984 · cacheWrite 0`.
+**관측 이벤트**: `init` → `status(turn_started)` → `assistant` → `result`. 파서 계약과 일치 →
+**`B-9`(JSONL 필드명 live 확인)는 live 경로로 재확인됐다.**
+
+- **`B-23` → fixed**: `codex login` 산출물은 `auth.json` 하나가 아니었다(`log/`·`log/codex-login.log`·
+  `tmp/`·`tmp/arg0`). 허용 목록을 **최상위 이름 2개(`log`·`tmp`)만** 넓혔고 `config.toml`·`AGENTS.md`·
+  MCP 정의는 여전히 거부된다. 실측 구조로 첫 invocation이 통과하는 것을 live로 확인했다.
+- **A급 발견 — `which codex`를 승인하면 trust root가 비어 있다**: `codex`는 **Node wrapper**
+  (`@openai/codex/bin/codex.js`, 7KB)이고 런타임에 `require.resolve`로 native 바이너리
+  (`codex-darwin-arm64/vendor/aarch64-apple-darwin/bin/codex`, **267MB**)를 찾아 spawn한다.
+  wrapper digest를 승인하면 **실제 추론 바이너리가 고정되지 않는다** — 이 레포가 여러 리비전에 걸쳐
+  닫은 "승인된 실행 파일이 유일한 trust root" 계약에 그대로 구멍이 난다.
+  → **승인 대상은 native 바이너리다**(`5ab45f8f9819c120…`). live probe가 native 직접 실행으로 성공해
+  wrapper가 기능적으로 불필요함도 함께 확인했다(wrapper가 더하는 env 2개는 업데이트 안내용이다).
+- probe 스크립트는 **과금이 있으므로 `acceptance.sh`에 등록하지 않는다**(수동 실행 전용).
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-27` | B (P1) | **승인 문서 작성자가 wrapper 경로를 승인하면 실행 권위가 무력화된다.** `which codex`가 가리키는 것은 Node wrapper이고 실제 추론 바이너리는 런타임 해석된다 → wrapper digest는 아무것도 고정하지 않는다. 지금은 **사람이 올바른 경로를 넣어야만** 성립하는 규율이고 런타임 가드가 없다(harness는 승인된 경로를 그대로 믿는다 — 그것이 설계다). 최소한 승인 문서 생성 절차·문서에 못박아야 하고, 가능하면 "승인된 실행 파일이 다른 실행 파일을 spawn하는 wrapper인지"를 사람 검토 항목으로 남겨야 한다 | 중 — 다른 사람이 manifest를 쓰면 | live 실행 전부의 trust root | 높음 — 무력화된 채로 돌면 승인 계약이 서류상으로만 존재한다 | 소(문서·절차) ~ 중(런타임 휴리스틱) | **다음 live manifest를 사람이 작성하기 전** | live 운영 slice | 2026-08-11 live probe 준비 중 실측 · `@openai/codex/bin/codex.js` `findCodexExecutable`/`spawn` | open |
+| `C-66` | C (P3) | **승인된 codex 바이너리가 267MB라 spawn 직전 digest 재검증 비용이 크다.** 계약상 매 spawn 직전 전체 내용 해싱이 필요하다(같은 inode 제자리 덮어쓰기까지 잡기 위한 설계). 측정은 하지 않았으나 수백 MB 해싱은 무시할 수 없다 — live 반복 실행 전에 실측하고, 필요하면 캐시가 아니라 **계약을 유지하는 방식**으로 개선안을 찾아야 한다(캐시는 그 자체가 우회로다) | 확실 | 매 spawn 지연 | 낮음 | 중 | live 반복 실행 착수 전 | live 운영 slice | 2026-08-11 live probe · 바이너리 267,867,408 bytes | open |
+
 ##### `B-24` 마감 — deadline·cancellation 자손 정리 end-to-end (2026-08-11 · **M5 완료 게이트 3건 전부 닫힘** · 이 절이 현행이다)
 
 > 범위 `69cd089..3742ff6`. 구현은 **격리 worktree 병렬 slice**(파일 소유권: 신규 스크립트 1개만),
@@ -2056,7 +2082,7 @@ DAG 전진 mutation에 red가 된다 · ⑥은 승인·경로·소유권이 전�
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-23` | B (P1) | **`codex login`의 실제 산출물이 `auth.json` 하나라는 가정이 미확인이다.** `CODEX_CREDENTIAL_FILES`가 `["auth.json"]` 하나인데 실제 로그인이 `config.toml`·버전 파일 등을 함께 쓰면 첫 invocation이 `codex_home_not_empty`로 죽어 **live가 실사용 불가**가 된다. 지금 테스트는 전부 **합성 홈**이라 이 가정을 검증하지 못한다. 반대 방향(허용 목록을 미리 넓히기)은 하지 않는다 — 넓히는 순간 `config.toml`·MCP 정의가 자격증명 뒤에 묻어 들어오는 통로가 열린다. 실측 후 **정확히 관측된 파일만** 추가한다 | 중 | 첫 live 실행 | 낮음(offline 0 · live에서 즉시 발견) | 소(실제 `CODEX_HOME=<path> codex login` 1회 실행 후 항목 목록 실측) | **첫 live 실행 착수 전(하드 게이트 — `B-7`을 대체한다)** | 사용자 + live 활성화 slice | `B-7ⓐ` 독립 리뷰 B · `codexCliProvider.ts` `CODEX_CREDENTIAL_FILES` | open |
+| `B-23` | B (P1) | **[fixed 2026-08-11 — live probe]** **`codex login`의 실제 산출물이 `auth.json` 하나라는 가정이 미확인이다.** `CODEX_CREDENTIAL_FILES`가 `["auth.json"]` 하나인데 실제 로그인이 `config.toml`·버전 파일 등을 함께 쓰면 첫 invocation이 `codex_home_not_empty`로 죽어 **live가 실사용 불가**가 된다. 지금 테스트는 전부 **합성 홈**이라 이 가정을 검증하지 못한다. 반대 방향(허용 목록을 미리 넓히기)은 하지 않는다 — 넓히는 순간 `config.toml`·MCP 정의가 자격증명 뒤에 묻어 들어오는 통로가 열린다. 실측 후 **정확히 관측된 파일만** 추가한다 | 중 | 첫 live 실행 | 낮음(offline 0 · live에서 즉시 발견) | 소(실제 `CODEX_HOME=<path> codex login` 1회 실행 후 항목 목록 실측) | **첫 live 실행 착수 전(하드 게이트 — `B-7`을 대체한다)** | 사용자 + live 활성화 slice | `B-7ⓐ` 독립 리뷰 B · `codexCliProvider.ts` `CODEX_CREDENTIAL_FILES` | open |
 | `C-57` | C (P3) | **provider 재시작 후 홈 재사용이 막힐 수 있다.** codex가 첫 run에서 홈에 세션·캐시 파일을 쓴다면(**미확인**) `homeId`가 없는 새 provider의 첫 검증이 `codex_home_not_empty`로 거부하고, 사람이 `auth.json`만 남기고 수동 청소해야 한다. 운영 마찰이며 안전 결함은 아니다. `B-23` 실측에서 같이 관측될 항목이다 | 미확인 | 운영 절차 | 낮음 | 소(문서화 또는 실측 기반 목록 확장) | `B-23`과 함께 | live 활성화 slice | `B-7ⓐ` 독립 리뷰 C-1 | open |
 | `C-58` | C (P3) | **자격증명 파일 자체는 dev+ino가 고정되지 않는다.** 홈은 첫 invocation에서 dev+ino로 핀되지만 `auth.json`은 `lstat` 1회뿐이라 검증~codex 읽기 사이 교체가 가능하다. 다만 **같은 uid만** 가능하고 그건 이 계층이 명시적으로 선언한 threat model 밖이다(소유자 자신은 언제든 자기 홈을 쓸 수 있다) | 매우 낮음 | 자격증명 1건 | 낮음 | 중(fd 기반 고정) | 없음(선언된 범위 밖) | — | `B-7ⓐ` 독립 리뷰 C-3 | open |
 
