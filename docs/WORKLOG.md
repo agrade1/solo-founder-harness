@@ -48,8 +48,25 @@
   - 신규 `C-63`(torn을 artifact로 선언하는 승인 plan은 막지 않는다) · `C-64`(0444 대상은 멱등 판정 불가) ·
     `C-65`("pathname 없음"을 집행하는 테스트가 없다 — 보증은 코드 리뷰뿐).
   - 실측: `tsc` 0 · **538 pass / 0 fail** · 테스트 삭제·완화 0(1건 갱신 + **11건 추가**).
-- **남은 것**: Task 3(offline self-hosting acceptance) — implement 단계가 열렸으므로 이제 "기존 파일
-  수정" 형태의 루프를 실제로 증명할 수 있다. Task 5(최종 handoff · 전체 suite 직렬 1회)는 그 뒤다.
+- **Task 3 — offline self-hosting acceptance**(`f53c967`·`462e1c9`): `scripts/m5d-offline-acceptance.mjs`
+  (acceptance.sh **Test 16**). 승인 1건으로 gate된 durable run에서 **수동 복사 0회**로 autopilot이
+  fixture repo의 **실제 파일을 고쳐** DAG를 완주시킨다. 시나리오 8종 · 내부 체크 **27건**.
+  - **적대적 리뷰 `REVISE — A=2`**, 둘 다 과대주장이었고 즉시 수정했다.
+    **A1**: ⑦ 예산 체크가 항등식이라 어떤 mutation으로도 red가 안 됐다(offline worker는 0 토큰 신고) →
+    "durable 재수화" 증명으로 교체하고 토큰은 `=== 0`을 사실 그대로 단언.
+    **A2**: ⑧ "생존 자손 0"은 spawn 0회 loop라 cleanup을 지워도 green → 라벨에 한정어를 달고 헤더
+    "증명하지 않는다" 절에 3건 추가(자손 정리 · 배타 자원 동시 실행 0 · 예산 소진).
+  - **커밋 메시지에도 과대주장 1건**("전체 acceptance PASS=102")을 스스로 냈고 amend로 정정했다 —
+    acceptance 총계는 99 그대로였고 늘어난 건 스크립트 내부 체크였다. 같은 병이 반복된다는 뜻이라 기록한다.
+  - 신규 `B-24`(자손 정리 acceptance 부재 — **M5 완료 선언 전 하드 게이트**) · `B-25`(배타 자원 동시
+    실행 0 미검) · `B-26`(별도 프로세스 재시작 미검).
+- **Task 5 — 전체 suite 직렬 1회**(예약돼 있던 그 1회): `test:exec` **510/510** · `test:core` **402/402** ·
+  acceptance **PASS=99 / FAIL=0**. `f53c967`에서 측정했고 이후 두 커밋은 `scripts/`만 건드렸다(재실행 green).
+- **작업 방침 문서화**(`0b9d3fb`): 사용자 방침을 CLAUDE.md · AGENTS.md · `.claude/skills/harness-dev` ·
+  `templates/`(대상 프로젝트) 4곳에 기록했다 — 배송 우선(MVP-first, A급 즉시·B/C 기록 후 진행) ·
+  모델 분업(Fable 5 = 맥락·계획·적대적 리뷰 / Opus 5 = 구현) · 병렬 규율. 세션이 바뀌어도 유지된다.
+- **M5d 상태**: task 1·2·3·4·5 완료 + `B-16` 부분 개방. **M5 완료는 아니다** — `B-24`(자손 정리) ·
+  `B-25` · `B-26`이 완료 선언 전 게이트이고, live는 `B-23`이 그대로 막고 있다.
 
 ## 2026-08-10 (V3 **live 하드 게이트 4건 마감 — `B-9` · `B-7ⓑ` · `B-22` · `B-7ⓐ`. `B-7ⓐ` 독립 리뷰 `APPROVE — A=0, B=1, C=2`. live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 

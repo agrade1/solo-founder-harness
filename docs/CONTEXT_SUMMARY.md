@@ -19,8 +19,16 @@
   재시도 시 preimage 불일치로 fail closed이고 자동 복구하지 않는다. 적대적 리뷰 `APPROVE A=0/B=1/C=3`.
   → **self-hosting 루프의 implement 단계가 "기존 파일 수정" 범위에서 열렸다.**
 - 신규 유예: `C-59`·`C-60`(task 1) · `C-61`·`C-62`(task 2·4) · `C-63`~`C-65`(`B-16`). 열린 A·B는 **0건**.
-- **다음**: Task 3(offline self-hosting acceptance — fixture repo에서 plan→implement→test→review→revise를
-  수동 복사 0회로) → Task 5(최종 handoff · **전체 suite 직렬 1회**). M5d 완료 ≠ M5 완료(live는 `B-23`).
+- **Task 3·5 완료**: `scripts/m5d-offline-acceptance.mjs`(acceptance.sh **Test 16**, 내부 체크 27건) —
+  승인 1건 · 수동 복사 0회로 autopilot이 fixture repo의 **실제 파일을 고쳐** DAG 완주. 적대적 리뷰
+  `REVISE A=2`(둘 다 공허한 체크의 과대주장) → **즉시 수정 후 재검증**.
+  **전체 suite 직렬 1회**: `test:exec` **510/510** · `test:core` **402/402** · acceptance **99/99**.
+- **작업 방침 문서화 완료**(CLAUDE.md · AGENTS.md · harness-dev 스킬 · templates/): 배송 우선(MVP-first,
+  A급 즉시 수정 / B·C 기록 후 진행) · 모델 분업(Fable 5 계획·적대적 리뷰 / Opus 5 구현) · 병렬 규율.
+- **M5d는 완료. M5는 완료가 아니다** — 완료 선언 전 하드 게이트 3건이 남았다: `B-24`(deadline·cancellation
+  자손 정리 acceptance 부재) · `B-25`(배타 자원 동시 실행 0 미검) · `B-26`(별도 프로세스 재시작 미검).
+  live는 `B-23`(실제 `codex login` 산출물 실측 — 사용자 1회 로그인 필요)이 그대로 막고 있다.
+- 신규 유예: `C-59`~`C-65` · `B-24`~`B-26`. **열린 A는 0건.**
 
 ## 이전 (2026-08-10 — **live 하드 게이트 4건 마감(`B-9`·`B-7ⓑ`·`B-22`·`B-7ⓐ`) · live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 

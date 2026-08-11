@@ -1816,6 +1816,45 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5d task 3·5 — offline self-hosting acceptance + 전체 suite 1회 (2026-08-11 — **적대적 리뷰 `REVISE — A=2` → A 2건 즉시 수정 후 재검증** · 이 절이 현행이다)
+
+> 범위 `c66b88f..462e1c9`. **배송 우선(MVP-first) 방침**(사용자 2026-08-11) 아래 진행했다:
+> A급·크리티컬은 즉시 수정, B/C는 대장에 기록하고 진행을 멈추지 않는다.
+
+**Task 3 — `scripts/m5d-offline-acceptance.mjs`(acceptance.sh Test 16).** 승인 manifest **1건**으로
+gate된 durable run에서 사람이 프롬프트를 **한 번도 복사하지 않고** autopilot이 fixture repo의 **실제
+파일을 고쳐** task DAG를 완주시키는 것을 증명한다. 시나리오 8종 · 내부 체크 **27건**.
+
+**적대적 리뷰가 A 2건을 잡았고 둘 다 과대주장이었다 — 즉시 수정했다**(`462e1c9`):
+
+- **A1**: ⑦의 예산 체크가 **구조적으로 공허**했다. offline worker는 usage를 항상 0으로 신고하므로
+  `tokensUsed`는 언제나 0이고, `remainingBudget <= maxTokens - tokensUsed`는 `remainingBudget`의
+  **정의식 그대로라 항등식**이었다(어떤 mutation으로도 red가 되지 않는다). → ⑦을 **durable 재수화**
+  증명으로 바꿨다(task 상태·산출물·집행 영수증·revision·경과 예산 deadline이 디스크에서 복원되는지).
+  토큰은 `=== 0`을 **사실 그대로** 단언하고 "예산 소진 미증명"을 라벨에 박았다.
+- **A2**: ⑧("생존 자손 0")은 **spawn 0회 loop**에서 직계 자식을 세는 것이라 cleanup 코드를 통째로
+  지워도 red가 되지 않는다. 그런데 라벨·커밋이 무조건부로 "잔존 프로세스 0"을 증명 목록에 올렸다.
+  → 라벨에 "(spawn 0회 — 자손 정리 증명 아님)" 한정어를 달고, 헤더 "증명하지 않는다" 절에 **3건을
+  추가**했다(자손 정리 · 배타 resource class 동시 실행 0 · 토큰 예산 소진).
+- C1(발행 hash를 실제로 대조 — mutation으로 red 확인) · C2(중복 제거)도 함께 처리했다.
+- **커밋 메시지 자체에도 과대주장이 1건 있었다**("전체 acceptance PASS=102") — acceptance.sh 총계는
+  99로 변동이 없고 늘어난 것은 스크립트 **내부** 체크였다. amend로 정정했다.
+
+**리뷰가 확인한 방어(깨려다 실패한 것)**: ②③은 workspace의 **실제 바이트**를 단언하므로 write 경로·
+DAG 전진 mutation에 red가 된다 · ⑥은 승인·경로·소유권이 전부 갖춰진 신규 발행이 fail closed임을 파일
+부재로 단언한다 · `grep -q` 단언은 fail-closed다(미매치 → FAIL) · ⑤가 ②보다 먼저 도는 순서 공유는
+오염을 오히려 먼저 검출한다.
+
+**Task 5 — 전체 suite 직렬 1회**(예약돼 있던 그 1회): `npm test` → `test:exec` **510/510** ·
+`test:core` **402/402** · `scripts/acceptance.sh` **PASS=99 / FAIL=0**. 이 수치는 `f53c967`에서 측정했고
+이후 두 커밋은 `scripts/`만 건드렸다(acceptance는 HEAD에서 재실행해 green 재확인).
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-24` | B (P1) | **deadline·cancellation 시 descendant 정리 acceptance가 없다.** M5 완료 조건의 명시 항목("잔존 프로세스 0")인데 M5d acceptance는 spawn 0회라 그것을 증명할 수 없고, 증명한 것처럼 읽히지 않도록 라벨을 한정했을 뿐이다. `managedProcess` 단위 테스트가 supervisor 계층은 덮지만 **autopilot→집행→자손**의 end-to-end는 미검이다 | 확실(미검) | M5 완료 판정의 정당성 | 중 — M5 done을 선언한 뒤 발견하면 판정을 되돌려야 한다 | 중(자손을 낳는 fixture + deadline 시나리오) | **M5 완료 선언 전(하드 게이트)** | live/lifecycle slice | Task 3 적대적 리뷰 A2·B2 · `m5d-offline-acceptance.mjs` ⑧ | open |
+| `B-25` | B (P2) | **배타 resource class 동시 실행 0이 M5d acceptance에 없다.** M5 완료 조건 항목이고 M4b acceptance가 scheduler 층을 부분적으로 덮지만, autopilot loop를 통과하는 경로는 미검이다(이 run의 task들은 자원 class를 선언하지 않는다) | 중 | M5 완료 판정의 정당성 | 중 | 소~중(자원 class를 선언한 task 2건 시나리오) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 4번 | open |
+| `B-26` | B (P2) | **"재시작"이 같은 프로세스 안에서의 `openOrchestrationRun` 재호출이다.** 디스크 rehydrate는 실측이지만 프로세스 전역 `clockTick` 공유로 시계 단조성이 인위적으로 유지된다 → **별도 프로세스 재시작(시계 되감김 포함)** 은 미검이다 | 중 | 재시작 복구 계약 | 중 | 소(child process로 2단계 실행) | **M5 완료 선언 전** | 다음 acceptance slice | Task 3 적대적 리뷰 B1 | open |
+
 ##### M5d — **`B-16` 부분 개방**: 고정한 fd로 기존 파일 교체 발행 (2026-08-11 — **적대적 독립 리뷰 `APPROVE — A=0, B=1, C=3`** · B-1 즉시 수정 · 이 절이 현행이다)
 
 > 범위 `b3226fc..7e5a966`. **사용자가 명시 승인한 slice**다("2번으로 진행" = `B-16`을 여는 slice를 먼저).
