@@ -229,7 +229,8 @@ echo "$M5D_OUT" | grep -q "신규 파일 발행은 fail closed"
 check "M5d B-16 잔여(신규 발행 차단) 확인 출력" $?
 echo "$M5D_OUT" | grep -q "paused로 착지한다(hang 없음)"
 check "M5d hang 대신 pause 확인 출력" $?
-echo "$M5D_OUT" | grep -q "생존 자손 0";           check "M5d 잔존 프로세스 0 확인 출력" $?
+echo "$M5D_OUT" | grep -q "spawn 0회 — deadline/cancellation 자손 정리 증명 아님"
+check "M5d spawn 0회 확인 출력(자손 정리 증명 아님)" $?
 
 echo ""
 echo "==================================="

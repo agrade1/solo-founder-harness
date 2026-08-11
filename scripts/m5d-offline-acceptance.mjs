@@ -20,8 +20,16 @@
  *   "test → fresh review → verify"의 *실행* 부분은 이 acceptance의 범위 밖이다.
  * - **신규 파일 발행 없음** — `B-16`은 **부분 개방**이다(승인된 기존 파일 교체만). 신규 생성은 여전히
  *   fail closed이며 시나리오 ⑥이 그것을 단정한다.
- * - reviewer 왕복은 **kernel API 직접 호출**로 증명한다 — autopilot loop는 inbox 전달을 하지 않는다
- *   (`B-17` 미소비). 라우팅 계약 자체는 M4c acceptance가 이미 덮는다.
+ * - reviewer 왕복은 이 스크립트가 **전혀 다루지 않는다** — autopilot loop는 inbox 전달을 하지 않는다
+ *   (`B-17` 미소비). 라우팅 계약 자체는 M4c acceptance가 덮는다.
+ * - **deadline·cancellation 시 descendant 정리 없음** — 이 loop는 프로세스를 **0회** spawn하므로
+ *   시나리오 ⑧의 "생존 자손 0"은 **cleanup의 증명이 아니라 spawn 부재의 확인**이다. M5 완료 조건의
+ *   그 항목은 별도 시나리오가 필요하다(대장 `B-24`).
+ * - **배타 resource class 동시 실행 0 미증명** — 이 run의 task들은 자원 class를 선언하지 않는다.
+ *   M5 완료 조건의 해당 항목은 M4b acceptance가 부분적으로 덮고 여기서는 다루지 않는다(대장 `B-25`).
+ * - **토큰 예산 소진 경로 미증명** — offline worker는 usage를 **항상 0으로 신고**한다. 따라서 이
+ *   acceptance의 `tokensUsed`는 0이고, 예산 소진·경과 예산 집행은 여기서 검증되지 않는다
+ *   (mock 단위 테스트가 덮는다). 시나리오 ⑦이 증명하는 것은 **durable 상태의 재수화**뿐이다.
  *
  * 시나리오:
  *   ① 승인 게이트: milestone이 다르면 durable state를 한 바이트도 바꾸지 않는다 →
@@ -30,8 +38,8 @@
  *   ④ 관측: 진행 이벤트가 남고 durable에도 기록된다(조용한 세션이 없다) →
  *   ⑤ hang 대신 pause: 승인 밖 operation은 paused로 착지하고 사람이 계획을 고치면 이어진다 →
  *   ⑥ 닫힌 게이트: 신규 파일 발행 · 승인 밖 경로 · 승인 밖 authority는 전부 바이트 0으로 거부된다 →
- *   ⑦ 재시작: 프로세스를 다시 열어도 예산이 새로 생기지 않고 상태가 그대로다 →
- *   ⑧ 잔존 프로세스 0.
+ *   ⑦ 재시작: kernel을 다시 열면 durable 상태(task·산출물·영수증·예산 deadline)가 그대로 복원된다 →
+ *   ⑧ spawn 0회 확인(자손 정리의 증명이 **아니다**).
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -231,7 +239,12 @@ try {
       `${k.getTask("implement").state}/${k.getTask("verify").state}`);
     check("영수증 marker는 kernel이 만든 applied다",
       k.getTask("implement").execution.operationReceipts.every((r) => r.marker === "applied"));
-    check("산출물이 hash와 함께 발행됐다", k.getState().artifacts.length >= 2, String(k.getState().artifacts.length));
+    // 라벨이 "hash와 함께"라고 적으려면 실제로 hash를 봐야 한다(리뷰 C-1).
+    const artifacts = k.getState().artifacts;
+    const calc = artifacts.find((a) => a.path === "src/calc.js");
+    check("산출물 2건이 발행됐다", artifacts.length >= 2, String(artifacts.length));
+    check("발행된 hash가 디스크 내용과 일치한다", calc !== undefined && calc.sha256 === sha256(FIXED),
+      calc ? calc.sha256.slice(0, 12) : "없음");
     // ④ 조용한 세션이 없다.
     check("진행 이벤트가 관측된다", events.some((e) => e.kind === "task_progress"));
     check("진행이 durable에도 남는다", k.getTask("implement").execution.progressCount > 0);
@@ -255,25 +268,43 @@ try {
     check("승인이 다 있어도 신규 파일 발행은 fail closed다(B-16 잔여)", existsSync(join(ws, "src/new.js")) === false);
     const t = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock }).getTask("closed");
     check("닫힌 게이트도 hang 없이 paused다", t.state === "paused", t.state);
-    check("승인 밖 경로에 바이트가 없다", existsSync(join(ws, "src/new.js")) === false);
   }
 
-  console.log("\n⑦ 재시작 안정성");
+  console.log("\n⑦ 재시작 — durable 재수화");
   {
-    const before = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock }).getAccounting();
-    const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock });
-    const after = reopened.getAccounting();
-    check("재시작이 토큰 회계를 되살린다", after.tokensUsed === before.tokensUsed, `${before.tokensUsed} → ${after.tokensUsed}`);
-    check("재시작이 예산을 새로 만들지 않는다", reopened.remainingBudget().tokens <= manifest().maxTokens - before.tokensUsed);
-    check("완료된 task가 완료로 남는다", reopened.getTask("implement").state === "completed");
+    const before = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock });
+    const beforeState = before.getState();
+    const beforeAcc = before.getAccounting();
+    const beforeReceipts = JSON.stringify(before.getTask("implement").execution.operationReceipts);
+
+    // 같은 프로세스에서 다시 여는 것이지만 **디스크에서 rehydrate**한다(in-memory 재사용이 아니다).
+    // 별도 프로세스 재시작(시계 되감김 포함)은 이 acceptance가 다루지 않는다(대장 `B-26`).
+    const after = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock });
+    const afterState = after.getState();
+
+    check("완료된 task 상태가 복원된다", after.getTask("implement").state === "completed" && after.getTask("verify").state === "completed");
+    check("발행된 산출물이 복원된다", afterState.artifacts.length === beforeState.artifacts.length && afterState.artifacts.length > 0,
+      `${beforeState.artifacts.length} → ${afterState.artifacts.length}`);
+    check("집행 영수증이 복원된다(marker·operationId 그대로)",
+      JSON.stringify(after.getTask("implement").execution.operationReceipts) === beforeReceipts);
+    check("revision이 되감기지 않는다", afterState.revision === beforeState.revision, `${beforeState.revision} → ${afterState.revision}`);
+    // **경과 예산 deadline은 durable하게 고정된 값**이다 — 다시 열었다고 새로 생기지 않는다.
+    check("경과 예산 deadline이 새로 생기지 않는다", after.getAccounting().budgetDeadlineAt === beforeAcc.budgetDeadlineAt,
+      `${beforeAcc.budgetDeadlineAt} → ${after.getAccounting().budgetDeadlineAt}`);
+    // **정직한 한정**: offline worker는 0 토큰을 신고하므로 토큰 회계는 이 acceptance에서 항상 0이다.
+    // 이것을 "예산이 새로 생기지 않는다"의 증명으로 읽으면 안 된다 — 그래서 사실 그대로 단언한다.
+    check("토큰 회계는 0이다(offline worker가 0을 신고한다 — 예산 소진 미증명)", after.getAccounting().tokensUsed === 0,
+      String(after.getAccounting().tokensUsed));
     check("고친 바이트가 그대로다", readFileSync(join(ws, "src/calc.js"), "utf8") === FIXED);
   }
 
-  console.log("\n⑧ 잔존 프로세스");
+  console.log("\n⑧ spawn 0회 확인 (자손 정리의 증명이 아니다)");
   {
+    // **이 체크는 구조적으로 상시 green이다** — 이 loop는 프로세스를 0회 spawn한다. 그래서 라벨에
+    // 한정어를 단다: cleanup 코드를 통째로 지워도 이 체크는 red가 되지 않는다(대장 `B-24`).
     const first = childPids();
     const survivors = [...childPids()].filter((pid) => first.has(pid) && !baselinePids.has(pid));
-    check("생존 자손 0(이 loop는 프로세스를 띄우지 않는다)", survivors.length === 0, survivors.join(","));
+    check("직계 자식 0 (spawn 0회 — deadline/cancellation 자손 정리 증명 아님)", survivors.length === 0, survivors.join(","));
   }
 } catch (e) {
   fail += 1;
