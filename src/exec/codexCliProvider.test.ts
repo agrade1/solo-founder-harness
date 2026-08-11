@@ -37,6 +37,8 @@ import {
   compileCodexEnv,
   resolveCodexOptions,
   verifyCodexHome,
+  CODEX_CREDENTIAL_FILES,
+  CODEX_RUNTIME_DIRS,
   type SpawnFn,
 } from "./codexCliProvider.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
@@ -2383,10 +2385,22 @@ test("[M5a] 시각 권위 계약: 함수 아닌 nowMs는 start에서 거부되�
 // 좁혀진다. 승인이 홈을 담지 않으면 기존 계약 그대로 완전히 빈 홈을 요구한다(아래 마지막 테스트).
 
 /** 사람이 1회 로그인해 둔 상태를 흉내 낸다 — **내용은 의미가 없다**(harness는 열지 않는다). */
+/**
+ * 사람이 `CODEX_HOME=<path> codex login`을 1회 끝낸 홈. **2026-08-11 실측 구조 그대로**다
+ * (codex-cli `0.146.0-alpha.3` · 대장 `B-23`): `auth.json`만 생기는 것이 아니라 `log/`·`tmp/`가
+ * 함께 만들어지고 그 안에 런타임 산출물이 남는다. 합성 fixture가 실제와 다르면 첫 live가 죽는다 —
+ * 그래서 관측된 이름·권한을 그대로 만든다.
+ */
 function humanLoggedInHome(): string {
   const home = codexHome();
   writeFileSync(join(home, "auth.json"), "{}\n");
   chmodSync(join(home, "auth.json"), 0o600);
+  // 실측: log/ 와 tmp/ 는 **0755**이고 그 안에 파일·디렉터리가 있다.
+  mkdirSync(join(home, "log"), { recursive: true, mode: 0o755 });
+  writeFileSync(join(home, "log", "codex-login.log"), "x\n");
+  chmodSync(join(home, "log", "codex-login.log"), 0o600);
+  mkdirSync(join(home, "tmp", "arg0"), { recursive: true });
+  chmodSync(join(home, "tmp"), 0o755);
   return home;
 }
 
@@ -2400,8 +2414,9 @@ test("[M5c B-7ⓐ] 승인된 격리 홈 + 사람이 넣어 둔 자격증명이�
     await drain(provider.events(handle));
     assert.equal(calls.length, 1, "승인된 홈 + 자격증명은 첫 invocation을 통과해야 한다");
     assert.deepEqual(calls[0].env, { CODEX_HOME: home }, "자식 env는 여전히 CODEX_HOME 하나뿐이다");
-    // 자격증명은 **홈 안에 그대로 있고** harness는 복사본을 만들지 않는다.
-    assert.deepEqual(readdirSync(home).sort(), ["auth.json"]);
+    // 자격증명은 **홈 안에 그대로 있고** harness는 복사본을 만들지 않는다. 목록이 실측 구조
+    // (`B-23`: auth.json + log/ + tmp/) **그대로**라는 것이 곧 "harness가 아무것도 더하지 않았다"이다.
+    assert.deepEqual(readdirSync(home).sort(), ["auth.json", "log", "tmp"]);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(repo.root, { recursive: true, force: true });
@@ -2534,5 +2549,69 @@ test("[M5c B-7ⓐ] 자격증명 계약은 순수 함수 수준에서도 같다(�
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(other, { recursive: true, force: true });
+  }
+});
+
+test("[M5 B-23] 실측된 로그인 홈 구조(auth.json + log/ + tmp/)를 그대로 받아들인다", async () => {
+  const repo = await initRepo();
+  const home = humanLoggedInHome();
+  const calls: FakeCall[] = [];
+  try {
+    // **이것이 `B-23`의 핵심**: 2026-08-11 실측에서 `codex login`은 `auth.json` 하나만 만들지 않았다.
+    // 허용 목록을 실측 **이후에** 정확히 그만큼만 넓혔다 — 넓히지 않으면 첫 live가 codex_home_not_empty로 죽고,
+    // 미리 넓혔으면 그것이 곧 구멍이었다.
+    const provider = providerWith(repo, repo.root, calls, { approvedCodexHome: home });
+    await provider.start(specFor(repo.root, home), "p");
+    assert.equal(calls.length, 1, "실측 구조의 홈에서 프로세스가 뜨지 않았다");
+    // 자식 env는 여전히 CODEX_HOME 하나뿐이다(런타임 디렉터리를 허용했다고 env가 넓어지지 않는다).
+    assert.deepEqual(calls[0].env, { CODEX_HOME: home });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(repo.root, { recursive: true, force: true });
+  }
+});
+
+test("[M5 B-23] 넓힌 것은 이름 2개뿐이다 — 동작을 바꾸는 항목은 여전히 거부된다", async () => {
+  const home = humanLoggedInHome();
+  try {
+    const approved = { path: home };
+    assert.equal(verifyCodexHome(home, { approved }).path, home, "실측 구조가 거부됐다");
+
+    // **거부되어야 하는 것들**: 이것이 이 게이트의 존재 이유다(설정·규칙·MCP 정의가 자격증명 뒤에
+    // 묻어 들어오는 통로). 실측에서도 이 이름들은 생기지 않았다.
+    for (const name of ["config.toml", "AGENTS.md", "mcp.json", "rules"]) {
+      const path = join(home, name);
+      writeFileSync(path, "x\n");
+      assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", `${name}이 통과했다`);
+      rmSync(path, { force: true });
+    }
+    // 넓힌 이름은 정확히 2개다(집합이 조용히 자라면 여기서 걸린다).
+    assert.deepEqual([...CODEX_RUNTIME_DIRS], ["log", "tmp"]);
+    assert.deepEqual([...CODEX_CREDENTIAL_FILES], ["auth.json"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("[M5 B-23] 런타임 디렉터리 자리에 symlink를 놓으면 거부한다", async () => {
+  const home = humanLoggedInHome();
+  const outside = realpathSync(mkdtempSync(join(tmpdir(), "m5-outside-")));
+  try {
+    rmSync(join(home, "log"), { recursive: true, force: true });
+    symlinkSync(outside, join(home, "log"));
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved: { path: home } })), "codex_home_invalid");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(outside, { recursive: true, force: true });
+  }
+});
+
+test("[M5 B-23] 런타임 디렉터리는 없어도 된다(첫 로그인 전 상태는 여전히 자격증명 부재로 거부)", async () => {
+  const home = codexHome();
+  try {
+    // log/·tmp/가 없는 것 자체는 문제가 아니다 — 자격증명이 없는 것이 문제다.
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved: { path: home } })), "codex_home_credentials_missing");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

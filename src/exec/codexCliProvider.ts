@@ -220,6 +220,22 @@ export interface CodexHomeIdentity {
  */
 export const CODEX_CREDENTIAL_FILES = ["auth.json"] as const;
 
+/**
+ * **승인된 격리 홈의 최상위에서 허용되는 codex 런타임 디렉터리**(대장 `B-23` 실측, 2026-08-11).
+ *
+ * `codex login`(v0.146.0-alpha.3) 실측 결과 홈에 생기는 것은 `auth.json` 하나가 아니었다:
+ * `log/`(+`log/codex-login.log`) · `tmp/`(+`tmp/arg0`)가 함께 만들어지고, 이후 실행마다 **내용이 자란다**.
+ * 그래서 계약을 "파일 하나 허용"에서 **"최상위 이름 allowlist"** 로 넓히되 성질은 그대로 유지한다:
+ *
+ * - **내용을 재귀 검사하지 않는다** — 이 두 디렉터리 안은 codex가 소유하는 런타임 산출물이고 harness가
+ *   의미를 알지 못한다. 열지도 해싱하지도 않는다.
+ * - **넓힌 것은 이름 2개뿐이다.** `config.toml` · `AGENTS.md` · MCP 정의처럼 **동작을 바꾸는 항목**은
+ *   최상위에서 여전히 거부된다 — 그것이 이 게이트의 존재 이유이고 실측으로도 그 이름들은 생기지 않았다.
+ * - 실측에서 두 디렉터리는 **0755**였다. 홈 자체가 0700이라 다른 uid는 홈을 통과하지 못하므로 여기서
+ *   0700을 강제하지 않는다(강제하면 정상 codex 사용이 매번 거부될 뿐 얻는 것이 없다).
+ */
+export const CODEX_RUNTIME_DIRS = ["log", "tmp"] as const;
+
 /** `verifyCodexHome`에 넘기는 기대치. 세 축이 **독립**이다: 신원 일치 / 비어 있음 / 승인된 홈. */
 export interface CodexHomeExpectation {
   /**
@@ -320,15 +336,36 @@ export function verifyCodexHome(path: unknown, expect: CodexHomeExpectation = {}
     fail("codex_home_invalid", "codexHome을 읽을 수 없다");
   }
   // 승인이 홈을 고정하지 않았다 = live 인증 미승인 → **완전히 비어 있어야** 한다(기존 계약 그대로).
-  const allowed = approved ? (CODEX_CREDENTIAL_FILES as readonly string[]) : [];
+  // 승인된 홈이면 자격증명 + codex 런타임 디렉터리(`B-23` 실측)만 허용한다.
+  const allowed: readonly string[] = approved ? [...CODEX_CREDENTIAL_FILES, ...CODEX_RUNTIME_DIRS] : [];
   const extra = entries.filter((e) => !allowed.includes(e)).length;
   if (extra > 0) {
     // 개수만 알린다 — 파일 이름은 오류 문자열에 싣지 않는다.
     fail("codex_home_not_empty", `codexHome에 승인되지 않은 설정/자격증명 항목이 있다(${extra}건)`);
   }
   // 승인된 홈은 **자격증명이 실제로 있어야** 한다: 없으면 인증 없이 프로세스를 띄우지 않는다(fail closed).
-  if (approved) for (const name of CODEX_CREDENTIAL_FILES) verifyCredentialFile(join(p, name));
+  // 런타임 디렉터리는 **있어도 되고 없어도 된다**(첫 로그인 전에는 없다) — 있으면 타입만 본다.
+  if (approved) {
+    for (const name of CODEX_CREDENTIAL_FILES) verifyCredentialFile(join(p, name));
+    for (const name of CODEX_RUNTIME_DIRS) verifyRuntimeDir(join(p, name));
+  }
   return { path: p, id };
+}
+
+/**
+ * 허용된 codex 런타임 디렉터리 1건(`B-23`). **없으면 통과**(첫 로그인 전에는 존재하지 않는다).
+ * 있으면 ⓐ symlink가 아닌 디렉터리이고 ⓑ 이 프로세스 소유여야 한다 — 다른 uid가 만든 디렉터리를
+ * 승인된 홈에 갖다 놓는 형태를 막는다. **내용은 열지도 세지도 않는다**(codex 소유 산출물이다).
+ */
+function verifyRuntimeDir(dir: string): void {
+  let st: ReturnType<typeof lstatSync>;
+  try {
+    st = lstatSync(dir);
+  } catch {
+    return; // 아직 없다 — 정상이다.
+  }
+  if (st.isSymbolicLink() || !st.isDirectory()) fail("codex_home_invalid", "codex 런타임 항목은 symlink 아닌 디렉터리여야 한다");
+  assertOwnedByThisUser(st.uid, "codex 런타임 디렉터리");
 }
 
 /** 현재 프로세스 uid 소유가 아니면 거부. uid를 노출하지 않는다(대상 이름만 알린다). */
