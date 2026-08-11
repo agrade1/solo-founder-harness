@@ -1,8 +1,23 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-10
+최종 갱신: 2026-08-11
 
-## 최신 (2026-08-10 — **live 하드 게이트 4건 마감(`B-9`·`B-7ⓑ`·`B-22`·`B-7ⓐ`) · live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-11 — **V3 M5d 착수: task 1·2·4 완료 · 독립 리뷰 3건 `APPROVE A=0` · `B-16` 결정 대기** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · `work/m5c-autopilot` · HEAD `2b49a36`.
+  계획=fresh Fable 5 · 구현=fresh Opus 5 · 리뷰=fresh Fable 5 read-only.
+- **M5d 승인 범위**: offline typed execution 소비 게이트 개방(live 유지) · self-hosting = 작은 fixture repo.
+- **완료**: task 1(`B-21`·`C-55`) · task 2(`B-10` 소비면) · task 4(`C-1`, **격리 worktree 병렬**).
+  `tsc` 0 · exec+autopilot **528 pass / 0 fail** · 기존 테스트 삭제·완화 0.
+- **⚠️ 핵심 발견**: **typed execution은 지금 바이트를 하나도 만들 수 없다.** write는 신규 생성·내용 교체가
+  둘 다 fail closed이고 성공 경로는 멱등(`already_applied`) 하나, run_process action은 읽기 전용
+  `validate-plan` 하나다. 열린 것은 **집행 lifecycle**이고 **implement 능력이 아니다** —
+  self-hosting 루프를 말 그대로 돌리려면 **`B-16`(예방 안전한 발행 primitive)** 을 여는 별도 승인이 필요하다.
+- **다음(사용자 결정)**: ⓐ `B-16`을 열지 않고 Task 3 acceptance를 "루프 골격·승인 경계·복구·관측" 증명으로
+  한정 · ⓑ `B-16`을 여는 slice를 먼저. 어느 쪽이든 M5d 완료 ≠ M5 완료(live는 `B-23`이 그대로 막고 있다).
+- 신규 유예: `C-59`·`C-60`(task 1) · `C-61`·`C-62`(task 2·4). 열린 A·B는 **0건**.
+
+## 이전 (2026-08-10 — **live 하드 게이트 4건 마감(`B-9`·`B-7ⓑ`·`B-22`·`B-7ⓐ`) · live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · `work/m5c-autopilot` · HEAD `fc0a528`.
 - **닫힌 게이트 4건**: `B-9`(실측 JSONL usage 필드명) · `B-7ⓑ`(자식 stderr를 fd 단계에서 폐기 —

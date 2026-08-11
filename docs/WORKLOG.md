@@ -1,5 +1,41 @@
 # WORKLOG.md
 
+## 2026-08-11 (V3 **M5d 착수 — task 1·2·4 완료. 독립 리뷰 3건 전부 `APPROVE — A=0`. typed execution이 바이트를 만들 수 없다는 사실을 실측으로 확인** · 이 블록이 가장 최신이다)
+
+- **M5d 범위 승인 2건**(사용자): ⓐ **offline typed execution 소비 게이트를 연다**(live는 닫힌 채 유지)
+  ⓑ self-hosting 대상은 **작은 fixture repo**(하네스 레포 자신이 아니다).
+- **계획은 fresh Fable 5**, 구현은 fresh Opus 5, 리뷰는 **fresh Fable 5 read-only** — 이 분업으로 진행했다.
+- **Task 0(read-only 실측)**: 계획의 미확인 4건을 확인 — no-progress deadline은 **이미 있고**(`autopilot.ts`
+  `attemptDeadline` · `maxNoProgressMs`), 자손 정리·wall deadline은 M5c 3C `superviseProcess`가 제공한다
+  → `C-18` 잔여는 live provider 쪽뿐이다. typed execution kernel API도 전부 존재 → Task 2는 배선이다.
+- **Task 1**(`f76b6f3`·`1cbfe9a`) — `B-21`·`C-55` fixed. 독립 리뷰 `APPROVE A=0/B=0/C=3`.
+  `prepared` 잔여 되찾기(새 attempt 미소모) · 계획 없는 잔여는 pause로 자원 반납 · turn 중간 kernel
+  throw를 `turn_aborted`로 받아 loop 정지. 신규 `C-59`·`C-60` 등록.
+- **Task 2**(`0f11a02`) — `B-10` **소비면 배선**. 독립 리뷰 `APPROVE A=0/B=0/C=3`.
+  배선하며 kernel 계약 3건을 실측으로 알아냈다: **권위 과금 → grant → 효과** 순서(`budget_turn_unaccounted`) ·
+  operation은 **permit이 쥔 kernel 검증 사본**에서 꺼내야 함(`dispatch_operation_unbound`) ·
+  승인 여부는 **등록 전에** facade 순수 판정으로 봐야 함(아니면 효과 없는 거부가 `outcome_unknown`이 된다).
+- **⚠️ Task 2의 최대 발견 — typed execution은 지금 바이트를 하나도 만들 수 없다.**
+  `write_file`은 신규 생성(`write_publish_unsupported` = **`B-16`**)도 내용 교체(`write_replace_unsupported`)도
+  fail closed이고 성공 경로는 **크래시 창 멱등(`already_applied`) 하나뿐**이다. `run_process`의 action은
+  닫힌 enum `validate-plan` 하나이며 읽기 전용이다. → **연 것은 집행 lifecycle이지 코드를 쓸 능력이 아니다.**
+  self-hosting 루프의 **implement 단계는 `B-16`을 여는 별도 승인 slice 없이는 불가능**하다.
+  계획 단계에서는 몰랐고 구현해 봐야 드러났다 — M5d 완료 조건의 의미가 여기 달려 있다(사용자 결정 대기).
+- **Task 4**(`95fdb4e`, **격리 worktree 병렬**) — `C-1` fixed. 독립 리뷰 `APPROVE A=0/B=0/C=3`.
+  seam setter를 production 표면에서 제거(facade 재수출 삭제 + 호출자 프레임 `*.test.ts` 요구, `dist/`에는
+  그 조건을 만족할 프레임이 없다 · 파싱이 깨지면 **fail closed**). 남은 표면 3종은 **없앴다고 주장하지 않고**
+  코드 주석에 그대로 적었다. Task 2와 파일 소유권이 겹치지 않아 병렬로 돌렸고 통합·최종 실측은 직렬.
+- **리뷰 C 5건 전부 이번에 반영**(`2b49a36`). 그중 Task 2 C-1은 **내 주석이 틀린 정지 경로를 가리키던 것**이다:
+  집행 경계 이후 pending이 남으면 turn은 이미 권위 과금돼 있어 `chargeTurnUsage`를 건너뛰므로, 실제 정지는
+  착지 전이의 `assertNoPendingOperations`(`operation_pending_unreconciled`) → `C-55` catch다. `B-22`가 아니다.
+  신규 `C-61`(operation 사이 취소 창 미검증 — 관측 hook이 없어 **덮지 못했다고 정직하게 기록**) ·
+  `C-62`(seam 가드의 `.test.ts` suffix 매칭) 등록.
+- **검증**: `tsc --noEmit` 0 · `src/exec/*.test.ts` + `autopilot.test.ts` **528 pass / 0 fail**.
+  기존 테스트 **삭제·완화 0건**(기존 "B-10 미소비" 테스트 1건은 사용자가 연 게이트라 **더 강한 새 계약으로
+  갱신**했고, `B-16` 미개봉 테스트를 추가했다). `test:core`·acceptance·stress·live는 **미실행**.
+- **남은 것**: Task 3(offline self-hosting acceptance) — 그 범위가 `B-16` 결정에 달려 있어 사용자 판단 대기.
+  Task 5(최종 handoff · 전체 suite 직렬 1회)는 그 뒤다.
+
 ## 2026-08-10 (V3 **live 하드 게이트 4건 마감 — `B-9` · `B-7ⓑ` · `B-22` · `B-7ⓐ`. `B-7ⓐ` 독립 리뷰 `APPROVE — A=0, B=1, C=2`. live 실행은 여전히 0회** · 이 블록이 가장 최신이다)
 
 - **스킬 자산 설치**(`82a890b`): 형제 체크아웃 `solo-founder-harness`의 `2600c13` 자산 3개를 이 worktree에도

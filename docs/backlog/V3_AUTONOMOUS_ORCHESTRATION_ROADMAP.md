@@ -1816,6 +1816,63 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### M5d task 2·4 — `B-10` 소비면 · `C-1` 마감 (2026-08-11 — **독립 리뷰 2건 병렬 `APPROVE — A=0, B=0` · C 5건 전부 이번에 반영** · 이 절이 현행이다)
+
+> 범위 `d7bcdc9..2b49a36`. Task 2(autopilot)와 Task 4(kernel seam)는 **파일 소유권이 겹치지 않아
+> 격리 worktree에서 병렬**로 진행했고(AGENTS.md 병렬 조건 충족), 통합·최종 실측은 직렬로 했다.
+
+**⚠️ 이 slice의 가장 중요한 발견 — typed execution은 지금 바이트를 하나도 만들 수 없다.**
+게이트를 열고 실제로 배선해 보니 그 뒤에 있는 능력이 예상과 달랐다. 계획 단계에서는 몰랐고
+**구현해 봐야 드러난** 사실이라 그대로 적는다:
+
+| 경로 | 오늘의 결과 |
+|---|---|
+| `write_file` 신규 생성 | `write_publish_unsupported` — **`B-16`**(열지 않은 별도 게이트) |
+| `write_file` 내용 교체 | `write_replace_unsupported`(3A 2차 리비전 A3에서 닫음) |
+| `write_file` 성공 경로 | **크래시 창 멱등(`already_applied`) 하나뿐** |
+| `run_process` action | 닫힌 enum **`validate-plan` 하나** · 읽기 전용 |
+
+→ **Task 2가 연 것은 "집행 lifecycle"이지 "코드를 쓸 능력"이 아니다.** permit → 권위 과금 → grant →
+고정 집행기 → 영수증 / 거부 / 불확실 정합화가 전부 실제로 도는 것은 증명했고 그것이 M5d의 절반이지만,
+**self-hosting 루프의 implement 단계는 여전히 불가능**하다. 그러려면 `B-16`(예방 안전한 발행 primitive)을
+여는 별도 승인 slice가 필요하다 — **사용자가 승인한 범위 밖이므로 이 slice는 열지 않았다.**
+
+- **`B-10` 소비면 → 배선 완료**(`0f11a02`): 권위는 **하나도 autopilot에 없다**. 배선하며 kernel 계약 3건을
+  실측으로 확인했다: ⓐ **순서가 계약이다** — 권위 과금(`chargeDispatchTurnUsage`)이 grant보다 먼저가
+  아니면 `budget_turn_unaccounted`다(효과를 승인하는 것은 **과금된 생산 turn**이지 호출자의 선언이 아니다).
+  ⓑ operation은 **permit이 쥔 kernel 검증 사본**에서 꺼내야 한다(호출자 객체는 `dispatch_operation_unbound`
+  — 이 결박이 곧 "계획 밖 operation은 표현할 수 없다"이다). ⓒ 승인 여부는 **등록 전에** facade 순수 판정으로
+  봐야 한다 — 집행기는 pending을 `attemptedAt`으로 먼저 찍은 뒤 승인을 다시 읽으므로, 사전 판정이 없으면
+  **효과가 한 번도 없었던 거부**가 `outcome_unknown`으로 기록된다(승인 밖 요청과 진짜 불확실이 같은
+  marker를 받아서는 안 된다). 독립 리뷰가 ⓒ에 대해 "승인 해석 이중화 아님"을 확인했다(같은
+  `resolveWriteAuthority` 하나를 쓴다).
+- **`C-1` → fixed**(`95fdb4e`): 발행 seam setter를 production 표면에서 제거했다. 두 겹이다 —
+  ⓐ facade(`typedExecution.ts`)에서 런타임 재수출 삭제(타입만 잔존) ⓑ 등록 시 **직접 호출자 프레임이
+  `*.test.ts`** 여야 하고, `tsconfig` exclude가 모든 `.test.ts`를 build에서 빼므로 `dist/`에는 그 조건을
+  만족할 프레임이 **존재하지 않는다**. 프레임 파싱이 깨지면 **fail closed**임을 리뷰가 확인했다.
+  **남은 표면은 없앴다고 주장하지 않는다**: 소스 체크아웃을 `tsx`로 돌리는 개발 환경 · 같은 프로세스에서
+  `Error.prepareStackTrace`를 바꿀 수 있는 코드(그 권한이면 모듈 자체를 교체할 수 있어 신규 상승 아님) ·
+  hook 등록 **이후**의 상한은 기존과 동일(이번 변경은 **등록 경로만** 좁혔다).
+- **리뷰 C 5건 전부 반영**(`2b49a36`): Task 2 C-1(정지 경로 서술이 틀렸다 — 실제로는 착지 전이의
+  `assertNoPendingOperations` → `C-55` catch이지 `B-22`가 아니다) · C-2(거부된 생산 turn도 원장에
+  들어가는지 단언) · C-3(취소 테스트 추가) · Task 4 C-a(등록 거부가 집행 taxonomy를 빌리지 않는다) ·
+  C-c(스택 가드는 동기 호출 전제).
+- **검증**: `tsc --noEmit` 0 · `src/exec/*.test.ts` + `autopilot.test.ts` **528 pass / 0 fail**.
+  기존 테스트 **삭제·완화 0건**. 프로세스 spawn 0 · 네트워크 0 · live 0.
+- **기존 테스트 1건은 갱신했다(약화가 아니다)**: "typed operation을 요구하는 계획은 집행하지 않고 paused로
+  착지한다 (B-10/B-16 미소비)"는 **사용자가 명시 승인해 연 게이트**를 고정하고 있었다. 지금은 같은 자리에서
+  더 강한 것을 단언한다 — 승인 밖 요청은 **등록 전에** 거부돼 durable 흔적이 0이고, 바이트 발행은 승인된
+  authority 아래에서도 여전히 fail closed다(`B-16` 미개봉 테스트를 **추가**했다).
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-61` | C (P3) | **operation과 operation 사이의 취소 창이 미검증이다.** 집행 loop는 매 operation 앞에서 abort를 보지만, 그 창을 결정론적으로 때릴 **관측 hook이 없어** 테스트가 덮지 못한다(현재 취소 테스트는 terminal **이전** 창을 덮는다). 코드상 pending 0으로 반환하나 실행으로 확인되지 않았다 | 미확인 | 취소 1건의 pending 정합성 | 낮음 — 남은 pending은 착지 전이가 막는다 | 소(operation 경계 진행 이벤트 추가 후 barrier) | 집행 loop에 관측 이벤트를 추가하는 다음 slice | 다음 autopilot slice | Task 2 독립 리뷰 C-3 · `autopilot.ts` `dispatchOperations` abort 체크 | open |
+| `C-62` | C (P3) | **seam 등록 가드의 `.test.ts` 판정이 suffix 매칭이다** — 경로 어디에 있든 `.test.ts`로 끝나면 통과한다(`/tmp/evil.test.ts`). 그 조건 자체가 이미 임의 코드 실행 능력을 전제하므로 등급은 "남은 표면 ⓐ"와 같다. repo 경로 prefix 검사 추가는 선택 | 낮음 | 개발 환경 | 낮음 | 소 | 없음(bounded) | — | Task 4 독립 리뷰 C-b | open |
+
+> **`B-16`은 미개봉이다** — 이 slice가 그 판단을 바꾸지 않았고, 오히려 **M5d 완료 조건의 의미가 그것에
+> 달려 있다**는 사실을 드러냈다(위 표). `B-11`·`B-12`·`B-13`·`B-17`·`B-18`·`B-19`·`B-20`·`B-21`(fixed) ·
+> live 게이트(`B-23`·`B-7`/`B-9` fixed)는 **변화 없음**.
+
 ##### M5d task 1 — `B-21`·`C-55` 마감 (2026-08-10 — **독립 리뷰 `APPROVE — A=0, B=0, C=3`** · 이 절이 현행이다)
 
 > 범위 `fc0a528..1cbfe9a`. M5d는 **offline self-hosting acceptance**이고 사용자가 두 결정을 승인했다:
