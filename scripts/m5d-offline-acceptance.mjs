@@ -25,8 +25,7 @@
  * - **deadline·cancellation 시 descendant 정리 없음** — 이 loop는 프로세스를 **0회** spawn하므로
  *   시나리오 ⑧의 "생존 자손 0"은 **cleanup의 증명이 아니라 spawn 부재의 확인**이다. M5 완료 조건의
  *   그 항목은 별도 시나리오가 필요하다(대장 `B-24`).
- * - **배타 resource class 동시 실행 0 미증명** — 이 run의 task들은 자원 class를 선언하지 않는다.
- *   M5 완료 조건의 해당 항목은 M4b acceptance가 부분적으로 덮고 여기서는 다루지 않는다(대장 `B-25`).
+ * - reviewer 왕복·live·테스트 실행은 위 항목 그대로 이 스크립트 밖이다.
  * - **토큰 예산 소진 경로 미증명** — offline worker는 usage를 **항상 0으로 신고**한다. 따라서 이
  *   acceptance의 `tokensUsed`는 0이고, 예산 소진·경과 예산 집행은 여기서 검증되지 않는다
  *   (mock 단위 테스트가 덮는다). 시나리오 ⑦이 증명하는 것은 **durable 상태의 재수화**뿐이다.
@@ -39,7 +38,9 @@
  *   ⑤ hang 대신 pause: 승인 밖 operation은 paused로 착지하고 사람이 계획을 고치면 이어진다 →
  *   ⑥ 닫힌 게이트: 신규 파일 발행 · 승인 밖 경로 · 승인 밖 authority는 전부 바이트 0으로 거부된다 →
  *   ⑦ 재시작: kernel을 다시 열면 durable 상태(task·산출물·영수증·예산 deadline)가 그대로 복원된다 →
- *   ⑧ spawn 0회 확인(자손 정리의 증명이 **아니다**).
+ *   ⑧ spawn 0회 확인(자손 정리의 증명이 **아니다**) →
+ *   ⑨ 배타 resource class: 같은 class를 요구하는 두 task가 **동시에 자원을 잡지 않는다**(대장 `B-25`) →
+ *   ⑩ **별도 프로세스** 재시작: 자식 프로세스로 이어 돌려도 durable 상태로 완주한다(대장 `B-26`).
  */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -82,8 +83,15 @@ const sha256 = (s) => createHash("sha256").update(s).digest("hex");
 
 // tick은 **프로세스 전역으로 단조**다: 커밋 시각이 durable `updatedAt`보다 이르면 모든 mutation이
 // `clock_invalid`이므로 kernel을 다시 열 때 시각이 되돌아가면 안 된다.
+//
+// **기준을 실제 시각으로 잡는다**(고정 날짜가 아니라): 시나리오 ⑩이 **자식 프로세스의 진짜 시계**로
+// 같은 run을 이어받기 때문이다. 합성 시계가 실제 시각과 동떨어져 있으면 자식이 durable 예산 창 밖으로
+// 벗어나 `budget_elapsed_exhausted`가 된다 — 그건 제품 결함이 아니라 fixture 결함이다.
+// 1 tick = 1ms라 이 프로세스가 앞서 나가는 폭은 수십 ms에 그치고, 뒤이어 도는 자식의 실제 시계가
+// 언제나 그보다 뒤에 온다(= durable `updatedAt`보다 미래 → `clock_invalid` 없음).
+const T0 = Date.now();
 let clockTick = 0;
-const clock = () => new Date(Date.UTC(2026, 7, 11, 0, 0, clockTick++));
+const clock = () => new Date(T0 + clockTick++);
 
 /** fixture repo: 버그 있는 함수 1 + 그 버그를 설명하는 노트 1. **신규 생성이 필요 없게** 미리 존재한다. */
 const BUGGY = "export const add = (a, b) => a - b;\n";
@@ -96,7 +104,15 @@ function manifest() {
     milestoneId: MILESTONE,
     approvedCommit: "a".repeat(40),
     writableRoots: ["src", "docs"],
-    ownershipByTask: { implement: ["src"], verify: ["docs"], closed: ["src"] },
+    ownershipByTask: {
+      implement: ["src"],
+      verify: ["docs"],
+      closed: ["src"],
+      // ⑨ 배타 resource class · ⑩ 별도 프로세스 재시작용
+      "excl-a": ["src"],
+      "excl-b": ["src"],
+      restarted: ["docs"],
+    },
     allowedCommands: [],
     allowedDependencies: [],
     allowedNetworkDomains: [],
@@ -306,6 +322,59 @@ try {
     const survivors = [...childPids()].filter((pid) => first.has(pid) && !baselinePids.has(pid));
     check("직계 자식 0 (spawn 0회 — deadline/cancellation 자손 정리 증명 아님)", survivors.length === 0, survivors.join(","));
   }
+  console.log("\n⑨ 배타 resource class 동시 실행 0 (B-25)");
+  {
+    // 같은 배타 class를 요구하는 task 2건. scheduler는 **한 번에 하나만** 고를 수 있어야 한다.
+    const k = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock });
+    k.createRootTask({ ...seed("excl-a", ["src"]), resourceClasses: ["repo-lock"] });
+    k.createRootTask({ ...seed("excl-b", ["src"]), resourceClasses: ["repo-lock"] });
+
+    const batch = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock }).planRunnableBatch();
+    const picked = batch.items.filter((t) => t.taskId.startsWith("excl-")).map((t) => t.taskId);
+    check("같은 배타 class의 두 task가 같은 batch에 함께 들어가지 않는다", picked.length <= 1, picked.join(","));
+
+    // 두 task 모두 계획을 주고 loop를 돌린다 — 한쪽이 끝나야 다른 쪽이 자원을 잡는다.
+    // 계획은 승인된 operation이 없는(=operation 0건) 완주 가능한 turn이다.
+    for (const id of ["excl-a", "excl-b"]) writePlan(planDir, id, { operations: [], result: { summary: `${id} 완료`, outputs: [] } });
+    await runAutopilot({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, planDir, clock });
+
+    const after = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock });
+    const states = ["excl-a", "excl-b"].map((id) => after.getTask(id).state);
+    check("두 task 모두 완주했다(직렬로 이어 돈다 — 굶지 않는다)", states.every((st) => st === "completed"), states.join(","));
+    // **동시에 자원을 잡은 적이 없다**: 자원 점유 상태(prepared/running/cleaning)가 겹치면 scheduler가
+    // 두 번째를 고르지 못하므로, 완주했다는 것은 직렬로 돌았다는 뜻이다. 그 사실을 batch 크기로도 봤다.
+    check("종료 시점에 자원 점유 상태가 남지 않는다",
+      after.getState().tasks.filter((t) => ["prepared", "running", "cleaning"].includes(t.state)).length === 0);
+  }
+
+  console.log("\n⑩ 별도 프로세스 재시작 (B-26)");
+  {
+    // ⑦은 같은 프로세스에서 다시 연 것이라 시계 단조성이 인위적으로 유지됐다. 여기서는 **진짜 자식
+    // 프로세스**를 띄워 durable 파일만으로 이어 돌린다(이 프로세스의 in-memory 상태는 하나도 안 넘어간다).
+    const k = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock });
+    k.createRootTask(seed("restarted", ["docs"]));
+    writePlan(planDir, "restarted", { operations: [], result: { summary: "다른 프로세스가 완주시켰다", outputs: [] } });
+
+    const driver = join(planDir, "driver.mjs");
+    writeFileSync(
+      driver,
+      `import { runAutopilot } from ${JSON.stringify(join(REPO_ROOT, "src/commands/autopilot.ts"))};\n` +
+        `const r = await runAutopilot({ workspaceRoot: ${JSON.stringify(ws)}, runId: ${JSON.stringify(RUN_ID)},\n` +
+        `  milestoneId: ${JSON.stringify(MILESTONE)}, planDir: ${JSON.stringify(planDir)} });\n` +
+        `process.stdout.write(JSON.stringify(r));\n`,
+    );
+    const out = execFileSync(process.execPath, ["--import", "tsx", driver], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const childReport = JSON.parse(out);
+
+    check("자식 프로세스가 durable 상태만으로 run을 이어받았다", childReport.blocked === null, String(childReport.blocked));
+    const after = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: () => new Date(Date.UTC(2026, 7, 12)) });
+    check("다른 프로세스가 만든 완료가 이 프로세스에 보인다", after.getTask("restarted").state === "completed",
+      after.getTask("restarted").state);
+    // 자식은 **자기 시계**(실제 시각)를 썼다 → durable 기록이 이 프로세스의 합성 시계보다 앞선다.
+    // 그래도 이후 mutation이 `clock_invalid`로 죽지 않아야 재시작 계약이 성립한다.
+    check("다른 시계로 쓴 durable 기록 뒤에도 run이 계속 열린다", after.getState().tasks.length > 0);
+  }
+
 } catch (e) {
   fail += 1;
   console.log(`  FAIL 예외 발생 — ${e && e.stack ? e.stack : String(e)}`);

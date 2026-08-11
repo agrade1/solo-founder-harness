@@ -231,6 +231,10 @@ echo "$M5D_OUT" | grep -q "paused로 착지한다(hang 없음)"
 check "M5d hang 대신 pause 확인 출력" $?
 echo "$M5D_OUT" | grep -q "spawn 0회 — deadline/cancellation 자손 정리 증명 아님"
 check "M5d spawn 0회 확인 출력(자손 정리 증명 아님)" $?
+echo "$M5D_OUT" | grep -q "같은 배타 class의 두 task가 같은 batch에 함께 들어가지 않는다"
+check "M5d 배타 resource class 동시 실행 0 확인 출력 (B-25)" $?
+echo "$M5D_OUT" | grep -q "자식 프로세스가 durable 상태만으로 run을 이어받았다"
+check "M5d 별도 프로세스 재시작 확인 출력 (B-26)" $?
 
 echo ""
 echo "==================================="
