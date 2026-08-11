@@ -1,5 +1,25 @@
 # WORKLOG.md
 
+## 2026-08-11 (V3 **M5 완료** — offline 전부 + **첫 live 실행 1회 성공** · 이 블록이 가장 최신이다)
+
+- **첫 live 실행**(`e03008b`): 사용자가 `CODEX_HOME=~/harness-codex-home codex login`을 1회 실행했고
+  `scripts/m5-live-probe.mjs`로 실제 Codex 추론 1회를 돌렸다. **이 레포 최초의 live다.**
+  실측 usage `input 13,049 / output 5 / cacheRead 9,984`. 이벤트 `init → status → assistant → result`가
+  파서 계약과 일치 → **`B-9` live 재확인**.
+- **`B-23` 마감**(`0986383`): `codex login` 산출물이 `auth.json` 하나가 **아니었다**(`log/`·`tmp/` 동반).
+  허용 목록을 **최상위 이름 2개만** 넓혔고 `config.toml`·MCP 정의는 계속 거부. 양방향 mutation 확인.
+  **미리 넓히지 않고 실측을 기다린 판단이 맞았다.**
+- **A급 발견 — `which codex`는 Node wrapper다**: 런타임에 `require.resolve`로 native 바이너리(267MB)를
+  찾아 spawn하므로 **wrapper digest를 승인하면 실제 추론 바이너리가 고정되지 않는다.** 승인 대상은
+  native다. 신규 `B-27`(P1)로 등록 — 다음 live manifest를 사람이 작성하기 전 절차로 못박아야 한다.
+- **M5 완료 판정**: 로드맵 §10 완료 조건을 항목별로 증명/미증명으로 갈라 대장에 적었다.
+  **증명**: 수동 복사 0회 자동 진행 · hang 없는 pause 복구 · 진행 관측 · 자손 정리(잔존 0) ·
+  배타 자원 동시 실행 0 · live 1회. **미증명(의도적 잔여)**: 테스트 실행(`run_process` action이
+  읽기 전용 하나) · 신규 파일 발행(`B-16` 잔여) · Claude↔Codex 자동 전달(`B-17` 미소비 — M6 범위).
+- **최종 실측**: `test:exec` **514/514** · `test:core` **402/402** · acceptance **PASS=108 / FAIL=0**.
+- **M5에서 닫은 것**: `B-7ⓐ`·`B-7ⓑ`·`B-9`·`B-10`(소비면)·`B-16`(부분)·`B-21`·`B-22`·`B-23`·`B-24`·
+  `B-25`·`B-26`·`C-1`·`C-55`. **열린 A 0건.** 새로 등록: `B-27`·`C-59`~`C-66`.
+
 ## 2026-08-11 (V3 **M5 완료 게이트 3건 전부 마감 — `B-24`·`B-25`·`B-26`. 남은 것은 `B-23`(사용자 `codex login` 1회)뿐** · 이 블록이 가장 최신이다)
 
 - **`B-25`·`B-26`**(`69cd089`, 중앙 직렬) — M5d acceptance에 시나리오 2종 추가(내부 체크 27 → 33).

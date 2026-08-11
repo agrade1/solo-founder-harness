@@ -1,6 +1,24 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-11
+최종 갱신: 2026-08-11 (M5 완료)
+
+## 최신 (2026-08-11 — **V3 M5 완료. 다음은 M6** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
+- **M5 완료**: offline 전부 + **첫 live 실행 1회 성공**(input 13,049/output 5).
+  실측 `test:exec` **514/514** · `test:core` **402/402** · acceptance **PASS=108 / FAIL=0**.
+- **M5에서 닫은 대장**: `B-7ⓐ`·`B-7ⓑ`·`B-9`·`B-10`(소비면)·`B-16`(부분 — 승인된 **기존 파일 교체만**)·
+  `B-21`·`B-22`·`B-23`·`B-24`·`B-25`·`B-26`·`C-1`·`C-55`. **열린 A는 0건.**
+- **의도적 잔여(M6+ 범위)**: 테스트 *실행* 불가(`run_process` action은 읽기 전용 `validate-plan` 하나) ·
+  신규 파일 발행 fail closed(`B-16` 잔여) · Claude↔Codex 자동 전달 없음(`B-17` 미소비).
+- **live 규율**: 승인 대상은 **native 바이너리**다. `which codex`는 Node wrapper이고 승인해봐야 실제
+  추론 바이너리가 고정되지 않는다(`B-27` P1 — 다음 live manifest 작성 전 절차화 필요).
+  live는 과금이므로 probe는 `acceptance.sh`에 **등록하지 않았다**(수동 실행 전용).
+- **작업 방침**(CLAUDE.md·AGENTS.md·harness-dev 스킬·templates/에 기록됨): 배송 우선(MVP-first) —
+  A급·크리티컬(과대주장 포함) 즉시 수정, B/C는 대장 기록 후 진행. 모델 분업(Fable 5 계획·적대적 리뷰 /
+  Opus 5 구현). 파일 소유권 분리되면 병렬. **acceptance는 만들 때마다 mutation으로 red 확인**.
+- **다음: M6**(Hierarchical Orchestrator + Fresh Context Rotation). 착수 문서는
+  `docs/handoff/M6_KICKOFF.md`.
 
 ## 최신 (2026-08-11 — **V3 M5d 착수: task 1·2·4 완료 · 독립 리뷰 3건 `APPROVE A=0` · `B-16` 결정 대기** · 이 블록이 가장 최신이다)
 

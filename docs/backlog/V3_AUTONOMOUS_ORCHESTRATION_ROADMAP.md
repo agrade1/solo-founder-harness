@@ -1816,6 +1816,33 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **M5 완료 판정** (2026-08-11 — offline 전부 + live 1회 · 이 절이 M5의 최종 판정이다)
+
+**M5는 완료다.** 로드맵 §10의 M5 완료 조건을 항목별로 어디서 증명했는지 적는다 — 증명하지 못한 항목도
+같은 무게로 적는다.
+
+| M5 완료 조건 | 증명 | 상태 |
+|---|---|---|
+| fixture repo에서 plan → implement → … 가 **수동 복사 0회 · 승인 1회**로 | acceptance **Test 16**(33건) — 승인 manifest 1건으로 gate된 run이 fixture repo의 **실제 파일을 고쳐** DAG 완주 | **증명** |
+| non-interactive 승인 불가 작업이 **hang 없이 paused**로 복구 가능 | Test 16 ⑤ · autopilot focused 테스트 | **증명** |
+| 진행 이벤트 스트리밍 관측 | Test 16 ④(이벤트 + durable `progressCount`) | **증명** |
+| deadline·cancellation 시 **descendant까지 정리 · 잔존 프로세스 0** | acceptance **Test 17**(15건) — 실제 spawn · SIGTERM 견디는 손자 · SIGKILL 경로 · reparent 유출까지 확인 | **증명** |
+| 전역 상태 관찰 작업 **동시 실행 0** | Test 16 ⑨(배타 resource class) | **증명** |
+| `CodexCliProvider` live | 2026-08-11 **첫 live 실행 1회 성공**(input 13,049 / output 5 · 이벤트 4종이 파서 계약과 일치) | **증명(1회)** |
+| **test → fresh review → verify의 *실행*** | `run_process` action enum이 `validate-plan` 하나(읽기 전용)라 **표현할 수 없다** | **미증명 — M6+ 범위** |
+| **신규 파일 발행** | `B-16` **부분 개방**(승인된 기존 파일 교체만) · 신규 생성은 fail closed | **미증명 — 의도적 잔여** |
+| Claude worker ↔ Codex planner/reviewer **자동 전달** | autopilot은 inbox 전달을 하지 않는다(`B-17` 미소비). 라우팅 계약 자체는 M4c가 덮는다 | **미증명 — M6 범위** |
+
+**최종 실측**: `test:exec` **514/514** · `test:core` **402/402** · `scripts/acceptance.sh` **PASS=108 / FAIL=0**
+· live 실행 **1회**(과금 있음 — probe는 acceptance에 등록하지 않는다).
+
+**M5에서 닫은 대장 항목**: `B-7ⓐ`·`B-7ⓑ`·`B-9`·`B-10`(소비면)·`B-16`(부분)·`B-21`·`B-22`·`B-23`·`B-24`·
+`B-25`·`B-26`·`C-1`·`C-55`. **열린 A는 0건.**
+**M5에서 새로 등록한 것**: `B-27`(wrapper 승인 함정) · `C-59`~`C-66`.
+
+**M5가 아닌 것(다음 마일스톤으로 넘긴다)**: 위 표의 미증명 3항목 · live 반복 실행 · stress · build/dist
+갱신 이후의 배포 검증. **M6는 이 위에서 시작한다.**
+
 ##### **첫 live 실행 성공** — `B-23` 마감 · `B-9` live 재확인 (2026-08-11 · 이 절이 현행이다)
 
 > 사용자가 `CODEX_HOME=~/harness-codex-home codex login`(codex-cli `0.146.0-alpha.3`)을 1회 실행했고,
