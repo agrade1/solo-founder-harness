@@ -47,7 +47,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, linkSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, rmSync, statSync, truncateSync, unlinkSync, writeFileSync, } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { AGENT_MESSAGE_TYPES, EVENT_TYPES, GENESIS_HASH, LIMITS, ORCHESTRATION_SCHEMA_VERSION, OrchestrationError, SUMMARY_REQUIRED, TASK_STATES, TRANSITION_REASONS, assertSha256, assertSlug, assertText, assertTimestamp, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
+import { AGENT_MESSAGE_TYPES, APPROVED_OPERATION_KINDS, ARTIFACT_ROLES, AUTOPILOT_MARKERS, CLEANUP_STATUSES, DELIVERY_MARKERS, EVENT_TYPES, GENESIS_HASH, LIMITS, PAUSE_REASONS, RUN_STATE_SCHEMA_VERSION, SUMMARY_REQUIRED, TASK_STATES, TRANSITION_REASONS, OrchestrationError, assertSha256, assertSlug, assertText, assertTimestamp, holdsResources, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
 import { validateArtifactPointer } from "./agentMessage.js";
 import { SPECIALIST_ROLES, assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 /** production 기본 root: `<workspace>/outputs/orchestration`. */
@@ -171,6 +171,90 @@ export const TASK_KEYS = [
     "resultSummary",
     "blockerSummary",
     "artifactRefs",
+    "execution",
+];
+/** M5c — `task.execution`의 닫힌 key 집합. */
+export const TASK_EXECUTION_KEYS = [
+    "attemptNo",
+    "attemptId",
+    "turnId",
+    "dispatchTurnId",
+    "dispatchPlanDigest",
+    "chargedPlanDigest",
+    "preflightDigest",
+    "phaseStartedAt",
+    "wallDeadlineAt",
+    "lastProgressAt",
+    "progressCount",
+    "processLeaseMarker",
+    "terminalMarker",
+    "cleanupStatus",
+    "cleanupAttempts",
+    "cancelRequestedAt",
+    "pauseReason",
+    "retryAt",
+    "retryDeadlineAt",
+    "pendingResult",
+    "pendingOperations",
+    "operationReceipts",
+];
+/** M5c 3A 2차 리비전 — 미확정 operation 레코드의 닫힌 key 집합. */
+export const PENDING_OPERATION_KEYS = [
+    "operationId",
+    "kind",
+    "authorityId",
+    "attemptId",
+    "turnId",
+    "planDigest",
+    "beganAt",
+    // M5c 3A 4차 리비전 A2 — 일회용 집행 경계 진입 시각(null이면 아직 아무 효과도 시도되지 않았다).
+    "attemptedAt",
+];
+export const OPERATION_RECEIPT_KEYS = [
+    "operationId",
+    "kind",
+    "authorityId",
+    // M5c 3A 3차 리비전 A2 — 영수증에도 실행 신원을 남긴다(claim이 닫힌 뒤에도 재구성 가능).
+    "attemptId",
+    "turnId",
+    "planDigest",
+    "path",
+    "resultSha256",
+    "exitCode",
+    "marker",
+    "at",
+];
+/**
+ * operation 영수증의 닫힌 marker 집합.
+ * `outcome_unknown`은 3A 4차 리비전 A3의 fail-safe 종결이다(성공도 실패도 단정하지 않는다).
+ */
+export const OPERATION_RECEIPT_MARKERS = [
+    "applied",
+    "already_applied",
+    "write_conflict",
+    "denied",
+    "failed",
+    "outcome_unknown",
+];
+export const PENDING_RESULT_KEYS = ["summary", "outputs"];
+/** M5c — run 단위 durable 회계의 닫힌 key 집합. */
+export const ACCOUNTING_KEYS = [
+    "approvalDigest",
+    "budgetStartedAt",
+    "budgetDeadlineAt",
+    "tokensUsed",
+    "elapsedMsUsed",
+    "chargedTurnIds",
+];
+/** M5c — 메시지 전달 재시도 메타데이터의 닫힌 key 집합. */
+export const DELIVERY_KEYS = [
+    "attempts",
+    "activeAttemptId",
+    "firstAttemptAt",
+    "lastAttemptAt",
+    "nextAttemptAt",
+    "deadlineAt",
+    "lastMarker",
 ];
 export const MESSAGE_KEYS = [
     "messageId",
@@ -188,6 +272,7 @@ export const MESSAGE_KEYS = [
     "summary",
     "routeToTaskId",
     "acknowledgedAt",
+    "delivery",
 ];
 export const ARTIFACT_RECORD_KEYS = [
     "artifactId",
@@ -212,12 +297,22 @@ export const EVENT_KEYS = [
     "toState",
     "reason",
     "artifactId",
+    // ── M5c 닫힌 감사 필드 ──
+    "actionId",
+    "attemptId",
+    "turnId",
+    "operationId",
+    "planDigest",
+    "marker",
+    "tokenDelta",
+    "elapsedMs",
 ];
 export const STATE_KEYS = [
     "schemaVersion",
     "runId",
     "milestoneId",
     "manifest",
+    "accounting",
     "revision",
     "lastEventId",
     "lastEventHash",
@@ -234,6 +329,11 @@ function validateTask(raw) {
     // 없는 task를 "병렬 안전"으로 오해할 여지도 남는다. 마이그레이션 프레임워크는 만들지 않는다.
     if (!("resourceClasses" in o)) {
         throw new OrchestrationError("state_pre_m4b_unsupported", "M4b 이전 orchestration state다(task.resourceClasses 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다");
+    }
+    // M5c 이전 state에는 실행 lifecycle 메타데이터가 없다. 기본값으로 채우면 "정리해야 할 프로세스가
+    // 없다"고 **거짓으로 주장**하게 되므로 채우지 않고 거부한다(마이그레이션 프레임워크도 만들지 않는다).
+    if (!("execution" in o)) {
+        throw new OrchestrationError("state_pre_m5c_unsupported", "M5c 이전 orchestration state다(task.execution 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다");
     }
     closedKeys(o, TASK_KEYS, "task");
     return {
@@ -254,6 +354,242 @@ function validateTask(raw) {
         resultSummary: o.resultSummary === null ? null : assertText(o.resultSummary, "task.resultSummary", LIMITS.maxSummaryLength),
         blockerSummary: o.blockerSummary === null ? null : assertText(o.blockerSummary, "task.blockerSummary", LIMITS.maxSummaryLength),
         artifactRefs: validatePointerArray(o.artifactRefs, "task.artifactRefs"),
+        execution: validateTaskExecution(o.execution, enumValue(o.state, TASK_STATES, "task.state")),
+    };
+}
+/** `{path, role}` 산출물 1건(pendingResult용) — 등록 전이므로 포인터가 아니다. */
+function validatePendingOutput(raw, what) {
+    const o = asObject(raw, what);
+    closedKeys(o, ["path", "role"], what);
+    if (typeof o.role !== "string" || !ARTIFACT_ROLES.includes(o.role)) {
+        throw new OrchestrationError("invalid_state", `${what}.role은 ${ARTIFACT_ROLES.join("|")} 중 하나여야 한다`);
+    }
+    return { path: normalizeWorkspacePath(o.path, `${what}.path`), role: o.role };
+}
+function validatePendingResult(raw) {
+    const o = asObject(raw, "task.execution.pendingResult");
+    closedKeys(o, PENDING_RESULT_KEYS, "task.execution.pendingResult");
+    if (!Array.isArray(o.outputs)) {
+        throw new OrchestrationError("invalid_state", "task.execution.pendingResult.outputs는 배열이어야 한다");
+    }
+    if (o.outputs.length > LIMITS.maxArtifactRefs) {
+        throw new OrchestrationError("invalid_state", `pendingResult.outputs는 ${LIMITS.maxArtifactRefs}개 이하여야 한다`);
+    }
+    return {
+        summary: assertText(o.summary, "pendingResult.summary", LIMITS.maxSummaryLength),
+        outputs: o.outputs.map((x, i) => validatePendingOutput(x, `pendingResult.outputs[${i}]`)),
+    };
+}
+function validateOperationReceipt(raw, what) {
+    const o = asObject(raw, what);
+    closedKeys(o, OPERATION_RECEIPT_KEYS, what);
+    return {
+        operationId: assertSlug(o.operationId, `${what}.operationId`),
+        kind: enumValue(o.kind, APPROVED_OPERATION_KINDS, `${what}.kind`),
+        authorityId: assertSlug(o.authorityId, `${what}.authorityId`),
+        attemptId: assertSlug(o.attemptId, `${what}.attemptId`),
+        turnId: assertSlug(o.turnId, `${what}.turnId`),
+        planDigest: assertSha256(o.planDigest, `${what}.planDigest`),
+        path: o.path === null ? null : normalizeWorkspacePath(o.path, `${what}.path`),
+        resultSha256: o.resultSha256 === null ? null : assertSha256(o.resultSha256, `${what}.resultSha256`),
+        exitCode: o.exitCode === null ? null : boundedInt(o.exitCode, `${what}.exitCode`, -255, 255),
+        marker: enumValue(o.marker, OPERATION_RECEIPT_MARKERS, `${what}.marker`),
+        at: assertTimestamp(o.at, `${what}.at`),
+    };
+}
+/** M5c 3A 2차 리비전 — 미확정 operation 1건(집행 전에 durable해지고 영수증 커밋으로 사라진다). */
+function validatePendingOperation(raw, what) {
+    const o = asObject(raw, what);
+    closedKeys(o, PENDING_OPERATION_KEYS, what);
+    return {
+        operationId: assertSlug(o.operationId, `${what}.operationId`),
+        kind: enumValue(o.kind, APPROVED_OPERATION_KINDS, `${what}.kind`),
+        authorityId: assertSlug(o.authorityId, `${what}.authorityId`),
+        attemptId: assertSlug(o.attemptId, `${what}.attemptId`),
+        turnId: assertSlug(o.turnId, `${what}.turnId`),
+        planDigest: assertSha256(o.planDigest, `${what}.planDigest`),
+        beganAt: assertTimestamp(o.beganAt, `${what}.beganAt`),
+        attemptedAt: o.attemptedAt === null ? null : assertTimestamp(o.attemptedAt, `${what}.attemptedAt`),
+    };
+}
+/**
+ * **M5c 실행 lifecycle 메타데이터 검증**(closed). 여기서 state와의 정합성도 함께 본다:
+ * ⓐ `running`은 attempt를 배정받았어야 한다 ⓑ `cleaning`은 정리가 필요하다고 기록돼 있어야 한다
+ * ⓒ `paused`는 사유가 있어야 한다 ⓓ `retry_wait`은 예약 시각이 있어야 한다
+ * ⓔ **cleanup이 확인되지 않았으면 `completed`가 될 수 없다**(대장 `B-13` — 커밋과 load가 같은 검사 하나를 지난다).
+ */
+function validateTaskExecution(raw, state) {
+    const o = asObject(raw, "task.execution");
+    closedKeys(o, TASK_EXECUTION_KEYS, "task.execution");
+    if (!Array.isArray(o.operationReceipts)) {
+        throw new OrchestrationError("invalid_state", "task.execution.operationReceipts는 배열이어야 한다");
+    }
+    if (o.operationReceipts.length > LIMITS.maxOperationReceipts) {
+        throw new OrchestrationError("invalid_state", `operationReceipts는 ${LIMITS.maxOperationReceipts}개 이하여야 한다`);
+    }
+    const seenOps = new Set();
+    const receipts = o.operationReceipts.map((x, i) => {
+        const r = validateOperationReceipt(x, `task.execution.operationReceipts[${i}]`);
+        if (seenOps.has(r.operationId)) {
+            throw new OrchestrationError("invalid_state", `operationReceipts에 중복 operationId가 있다: ${r.operationId}`);
+        }
+        seenOps.add(r.operationId);
+        return r;
+    });
+    if (!Array.isArray(o.pendingOperations)) {
+        throw new OrchestrationError("invalid_state", "task.execution.pendingOperations는 배열이어야 한다");
+    }
+    if (o.pendingOperations.length > LIMITS.maxPendingOperations) {
+        throw new OrchestrationError("invalid_state", `pendingOperations는 ${LIMITS.maxPendingOperations}개 이하여야 한다`);
+    }
+    const seenPending = new Set();
+    const pendingOperations = o.pendingOperations.map((x, i) => {
+        const p = validatePendingOperation(x, `task.execution.pendingOperations[${i}]`);
+        if (seenPending.has(p.operationId)) {
+            throw new OrchestrationError("invalid_state", `pendingOperations에 중복 operationId가 있다: ${p.operationId}`);
+        }
+        // 같은 operationId가 pending과 영수증에 동시에 있으면 정합화가 이미 끝난 것을 다시 여는 셈이다.
+        if (seenOps.has(p.operationId)) {
+            throw new OrchestrationError("invalid_state", `이미 영수증이 있는 operation이 pending으로 남아 있다: ${p.operationId}`);
+        }
+        seenPending.add(p.operationId);
+        return p;
+    });
+    // **모든 pending은 닫을 자리(영수증 slot)를 갖고 있어야 한다**(M5c 3A 5차 리비전 A5). operation은 turn
+    // 단위, 영수증은 attempt 단위로 상한이 있으므로 이 교차 불변식이 없으면 영수증 용량이 소진된 attempt에
+    // pending이 남을 수 있고, 그 pending은 영수증 커밋도 handle-free 정합화도 상한에서 거부되는데
+    // attempt 이탈 전이는 전부 pending 0을 요구한다 → **영구 미아**다. 커밋(`beginOperation`의 예약)과
+    // load가 같은 불변식 하나를 지난다.
+    if (receipts.length + pendingOperations.length > LIMITS.maxOperationReceipts) {
+        throw new OrchestrationError("invalid_state", `operationReceipts + pendingOperations는 ${LIMITS.maxOperationReceipts}건 이하여야 한다(닫을 수 없는 pending 금지)`);
+    }
+    const exec = {
+        attemptNo: boundedInt(o.attemptNo, "task.execution.attemptNo", 0, LIMITS.maxTaskAttempts),
+        attemptId: o.attemptId === null ? null : assertSlug(o.attemptId, "task.execution.attemptId"),
+        turnId: o.turnId === null ? null : assertSlug(o.turnId, "task.execution.turnId"),
+        dispatchTurnId: o.dispatchTurnId === null ? null : assertSlug(o.dispatchTurnId, "task.execution.dispatchTurnId"),
+        dispatchPlanDigest: o.dispatchPlanDigest === null ? null : assertSha256(o.dispatchPlanDigest, "task.execution.dispatchPlanDigest"),
+        chargedPlanDigest: o.chargedPlanDigest === null ? null : assertSha256(o.chargedPlanDigest, "task.execution.chargedPlanDigest"),
+        preflightDigest: o.preflightDigest === null ? null : assertSha256(o.preflightDigest, "task.execution.preflightDigest"),
+        phaseStartedAt: o.phaseStartedAt === null ? null : assertTimestamp(o.phaseStartedAt, "task.execution.phaseStartedAt"),
+        wallDeadlineAt: o.wallDeadlineAt === null ? null : assertTimestamp(o.wallDeadlineAt, "task.execution.wallDeadlineAt"),
+        lastProgressAt: o.lastProgressAt === null ? null : assertTimestamp(o.lastProgressAt, "task.execution.lastProgressAt"),
+        progressCount: boundedInt(o.progressCount, "task.execution.progressCount", 0, LIMITS.maxProgressEvents),
+        processLeaseMarker: o.processLeaseMarker === null ? null : assertLeaseMarker(o.processLeaseMarker),
+        terminalMarker: o.terminalMarker === null ? null : enumValue(o.terminalMarker, AUTOPILOT_MARKERS, "task.execution.terminalMarker"),
+        cleanupStatus: enumValue(o.cleanupStatus, CLEANUP_STATUSES, "task.execution.cleanupStatus"),
+        cleanupAttempts: boundedInt(o.cleanupAttempts, "task.execution.cleanupAttempts", 0, LIMITS.maxCleanupAttempts),
+        cancelRequestedAt: o.cancelRequestedAt === null ? null : assertTimestamp(o.cancelRequestedAt, "task.execution.cancelRequestedAt"),
+        pauseReason: o.pauseReason === null ? null : enumValue(o.pauseReason, PAUSE_REASONS, "task.execution.pauseReason"),
+        retryAt: o.retryAt === null ? null : assertTimestamp(o.retryAt, "task.execution.retryAt"),
+        retryDeadlineAt: o.retryDeadlineAt === null ? null : assertTimestamp(o.retryDeadlineAt, "task.execution.retryDeadlineAt"),
+        pendingResult: o.pendingResult === null ? null : validatePendingResult(o.pendingResult),
+        pendingOperations,
+        operationReceipts: receipts,
+    };
+    const bad = (why) => {
+        throw new OrchestrationError("invalid_state", `task.execution이 상태 ${state}와 어긋난다: ${why}`);
+    };
+    if ((state === "prepared" || state === "running") && (exec.attemptNo < 1 || exec.attemptId === null)) {
+        bad("attempt가 배정되지 않았다");
+    }
+    if (state === "prepared" && exec.preflightDigest === null)
+        bad("preflight digest가 없다");
+    // `cleaning`은 세 단계를 지난다: 정리 필요(`required`) → 실패해 격리(`failed`) 또는 확인(`confirmed`).
+    // 확인된 뒤에도 상태는 `cleaning`이다 — 다음 상태는 결과에 맞춰 별도 reducer가 정한다. `none`은 없다.
+    if (state === "cleaning" && exec.cleanupStatus === "none") {
+        bad("cleaning은 cleanupStatus가 required|failed|confirmed여야 한다");
+    }
+    if (state === "paused" && exec.pauseReason === null)
+        bad("paused는 사유가 있어야 한다");
+    // **과금 권위 증거는 그 turn의 과금 없이 존재할 수 없다**(M5c 3A 4차 리비전 A1): 손으로 심은
+    // `chargedPlanDigest` 하나로 효과 게이트를 지나가는 경로를 load에서도 막는다.
+    if (exec.chargedPlanDigest !== null && exec.turnId === null) {
+        bad("chargedPlanDigest가 있는데 과금된 turn이 없다");
+    }
+    if (state === "retry_wait" && (exec.retryAt === null || exec.retryDeadlineAt === null))
+        bad("retry 예약 시각이 없다");
+    // **cleanup 미확인 상태로는 종료 상태에 갈 수 없다**(프로세스가 남은 채로 자원을 놓는 경로를 닫는다).
+    if ((state === "completed" || state === "cancelled") && exec.cleanupStatus === "required") {
+        bad("cleanup이 확인되지 않았다");
+    }
+    if (state === "completed" && exec.pendingResult !== null)
+        bad("완료된 task에 미확정 결과가 남아 있다");
+    // **미확정 operation은 활성 attempt에만 존재할 수 있다**(M5c 3A 3차 리비전 A3). 그 밖의 상태는
+    // 전부 attempt를 떠났거나 리셋되는 상태이므로, 거기 pending이 남아 있다는 것은 곧 "효과 기록을
+    // 잃어버릴 수 있는 state"라는 뜻이다 → 커밋과 load가 같은 검사 하나로 막는다.
+    if (exec.pendingOperations.length > 0) {
+        if (state !== "running" && state !== "cleaning") {
+            bad("미확정 typed operation은 running|cleaning에만 존재할 수 있다");
+        }
+        for (const p of exec.pendingOperations) {
+            // pending은 **자기 attempt/turn/계획에 묶여** 있어야 한다. 이 셋이 갈라지면 어떤 영수증이 어떤
+            // 효과를 닫는지 durable에서 판정할 수 없다(그리고 dispatch claim이 닫혀 있으면 정합화가 불가능하다).
+            if (p.attemptId !== exec.attemptId)
+                bad(`pending operation ${p.operationId}이 현재 attempt의 것이 아니다`);
+            if (p.turnId !== exec.dispatchTurnId)
+                bad(`pending operation ${p.operationId}의 turn이 열린 dispatch claim과 다르다`);
+            if (p.planDigest !== exec.dispatchPlanDigest)
+                bad(`pending operation ${p.operationId}의 계획이 claim된 계획과 다르다`);
+        }
+    }
+    return exec;
+}
+/** lease marker는 **비밀이 아닌 충돌 저항 난수 slug**다(PID·argv가 아니다). */
+function assertLeaseMarker(v) {
+    if (typeof v !== "string" || !/^lease\.[0-9a-f]{32}$/.test(v)) {
+        throw new OrchestrationError("invalid_state", "processLeaseMarker는 `lease.<32 hex>` 형태여야 한다");
+    }
+    return v;
+}
+/** M5c — 메시지 전달 재시도 메타데이터(closed). */
+function validateDelivery(raw, routed, acknowledged) {
+    const o = asObject(raw, "message.delivery");
+    closedKeys(o, DELIVERY_KEYS, "message.delivery");
+    const d = {
+        attempts: boundedInt(o.attempts, "message.delivery.attempts", 0, LIMITS.maxDeliveryAttempts),
+        activeAttemptId: o.activeAttemptId === null ? null : assertSlug(o.activeAttemptId, "message.delivery.activeAttemptId"),
+        firstAttemptAt: o.firstAttemptAt === null ? null : assertTimestamp(o.firstAttemptAt, "message.delivery.firstAttemptAt"),
+        lastAttemptAt: o.lastAttemptAt === null ? null : assertTimestamp(o.lastAttemptAt, "message.delivery.lastAttemptAt"),
+        nextAttemptAt: o.nextAttemptAt === null ? null : assertTimestamp(o.nextAttemptAt, "message.delivery.nextAttemptAt"),
+        deadlineAt: o.deadlineAt === null ? null : assertTimestamp(o.deadlineAt, "message.delivery.deadlineAt"),
+        lastMarker: o.lastMarker === null ? null : enumValue(o.lastMarker, DELIVERY_MARKERS, "message.delivery.lastMarker"),
+    };
+    if (!routed && d.attempts !== 0) {
+        throw new OrchestrationError("invalid_state", "전달 대상이 없는 메시지에 전달 시도 기록이 있다");
+    }
+    // 수령했으면 마지막 marker는 `delivered`여야 한다 — 실패한 전달이 수령으로 남는 경로를 닫는다.
+    if (acknowledged && d.lastMarker !== "delivered") {
+        throw new OrchestrationError("invalid_state", "수령된 전달의 lastMarker가 delivered가 아니다");
+    }
+    return d;
+}
+/** M5c — run 단위 durable 회계(closed). monotonic·bounded·정렬 계약을 여기서 강제한다. */
+function validateAccounting(raw) {
+    const o = asObject(raw, "run_state.accounting");
+    closedKeys(o, ACCOUNTING_KEYS, "run_state.accounting");
+    if (!Array.isArray(o.chargedTurnIds)) {
+        throw new OrchestrationError("invalid_state", "accounting.chargedTurnIds는 배열이어야 한다");
+    }
+    if (o.chargedTurnIds.length > LIMITS.maxChargedTurnIds) {
+        throw new OrchestrationError("invalid_state", `accounting.chargedTurnIds는 ${LIMITS.maxChargedTurnIds}개 이하여야 한다`);
+    }
+    const ids = slugArray(o.chargedTurnIds, "accounting.chargedTurnIds", LIMITS.maxChargedTurnIds);
+    if (!ids.every((v, i) => i === 0 || ids[i - 1] < v)) {
+        throw new OrchestrationError("invalid_state", "accounting.chargedTurnIds는 오름차순이어야 한다");
+    }
+    const budgetStartedAt = assertTimestamp(o.budgetStartedAt, "accounting.budgetStartedAt");
+    const budgetDeadlineAt = assertTimestamp(o.budgetDeadlineAt, "accounting.budgetDeadlineAt");
+    if (budgetDeadlineAt <= budgetStartedAt) {
+        throw new OrchestrationError("invalid_state", "accounting.budgetDeadlineAt은 budgetStartedAt보다 뒤여야 한다");
+    }
+    return {
+        approvalDigest: assertSha256(o.approvalDigest, "accounting.approvalDigest"),
+        budgetStartedAt,
+        budgetDeadlineAt,
+        tokensUsed: boundedInt(o.tokensUsed, "accounting.tokensUsed", 0, LIMITS.maxAccountedTokens),
+        elapsedMsUsed: boundedInt(o.elapsedMsUsed, "accounting.elapsedMsUsed", 0, LIMITS.maxAccountedElapsedMs),
+        chargedTurnIds: ids,
     };
 }
 function validatePointerArray(v, what) {
@@ -265,6 +601,9 @@ function validatePointerArray(v, what) {
 }
 function validateMessage(raw) {
     const o = asObject(raw, "message");
+    if (!("delivery" in o)) {
+        throw new OrchestrationError("state_pre_m5c_unsupported", "M5c 이전 orchestration state다(message.delivery 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다");
+    }
     closedKeys(o, MESSAGE_KEYS, "message");
     const messageId = assertSlug(o.messageId, "message.messageId");
     const bodyPath = normalizeWorkspacePath(o.bodyPath, "message.bodyPath");
@@ -300,6 +639,7 @@ function validateMessage(raw) {
         summary,
         routeToTaskId,
         acknowledgedAt,
+        delivery: validateDelivery(o.delivery, routeToTaskId !== null, acknowledgedAt !== null),
     };
 }
 function validateArtifactRecord(raw) {
@@ -330,6 +670,9 @@ function validateArtifactRecord(raw) {
 }
 export function validateEvent(raw) {
     const o = asObject(raw, "event");
+    if (!("actionId" in o)) {
+        throw new OrchestrationError("state_pre_m5c_unsupported", "M5c 이전 event log다(감사 필드 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다");
+    }
     closedKeys(o, EVENT_KEYS, "event");
     return {
         eventId: boundedInt(o.eventId, "event.eventId", 1, 1_000_000),
@@ -344,8 +687,30 @@ export function validateEvent(raw) {
         toState: o.toState === null ? null : enumValue(o.toState, TASK_STATES, "event.toState"),
         reason: o.reason === null ? null : enumValue(o.reason, TRANSITION_REASONS, "event.reason"),
         artifactId: o.artifactId === null ? null : assertText(o.artifactId, "event.artifactId", LIMITS.maxPathLength + 16),
+        // M5c 감사 필드 — 전부 닫힌 형태이고 자유 payload가 없다. `marker`는 결과/전달/정리/영수증 marker의
+        // 합집합만 허용한다(새 문자열은 자동 편입되지 않는다).
+        actionId: o.actionId === null ? null : assertSlug(o.actionId, "event.actionId"),
+        attemptId: o.attemptId === null ? null : assertSlug(o.attemptId, "event.attemptId"),
+        turnId: o.turnId === null ? null : assertSlug(o.turnId, "event.turnId"),
+        operationId: o.operationId === null ? null : assertSlug(o.operationId, "event.operationId"),
+        planDigest: o.planDigest === null ? null : assertSha256(o.planDigest, "event.planDigest"),
+        marker: o.marker === null ? null : enumValue(o.marker, EVENT_MARKERS, "event.marker"),
+        tokenDelta: o.tokenDelta === null ? null : boundedInt(o.tokenDelta, "event.tokenDelta", 0, LIMITS.maxAccountedTokens),
+        elapsedMs: o.elapsedMs === null ? null : boundedInt(o.elapsedMs, "event.elapsedMs", 0, LIMITS.maxAccountedElapsedMs),
     };
 }
+/**
+ * event `marker`의 **닫힌 합집합**(대장 `C-33`). autopilot 결과 · pause 사유 · 전달 결과 · 정리 결과 ·
+ * operation 영수증 marker만 감사 이벤트에 실린다 — 자유 문자열은 없고 새 코드는 자동 편입되지 않는다.
+ */
+export const EVENT_MARKERS = [
+    ...AUTOPILOT_MARKERS,
+    ...PAUSE_REASONS,
+    ...DELIVERY_MARKERS,
+    ...OPERATION_RECEIPT_MARKERS,
+    "cleanup_confirmed",
+    "cleanup_unconfirmed",
+];
 /**
  * run state 전체 검증 — 필드 형태 + 참조 무결성(parent/child 대칭, dependsOn 실재, cycle 없음,
  * artifact/message 참조 실재, 정렬 순서)까지 본다. 통과하면 정규화된 사본을 돌려준다.
@@ -357,9 +722,17 @@ export function validateRunState(raw) {
     if (!("manifest" in o)) {
         throw new OrchestrationError("state_pre_m4c_unsupported", "M4c 이전 orchestration state다(승인 manifest 없음). 자동 승인하지 않으며 새 run을 만들어야 한다");
     }
+    // M5c 이전 state(v1)는 durable 회계가 없다 → 재시작이 예산을 리셋하는 상태다. 마이그레이션하지 않는다.
+    if (!("accounting" in o)) {
+        throw new OrchestrationError("state_pre_m5c_unsupported", "M5c 이전 orchestration state다(durable accounting 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다");
+    }
     closedKeys(o, STATE_KEYS, "run_state");
-    if (o.schemaVersion !== ORCHESTRATION_SCHEMA_VERSION) {
-        throw new OrchestrationError("invalid_state", `run_state.schemaVersion은 "${ORCHESTRATION_SCHEMA_VERSION}"이어야 한다`);
+    if (o.schemaVersion !== RUN_STATE_SCHEMA_VERSION) {
+        // v1 바이트는 여기서 안정 코드로 닫힌다(기본값 채우기·자동 변환 없음).
+        if (o.schemaVersion === "1") {
+            throw new OrchestrationError("state_pre_m5c_unsupported", 'run_state.schemaVersion "1"은 M5c에서 지원하지 않는다');
+        }
+        throw new OrchestrationError("invalid_state", `run_state.schemaVersion은 "${RUN_STATE_SCHEMA_VERSION}"이어야 한다`);
     }
     if (!Array.isArray(o.tasks) || !Array.isArray(o.messages) || !Array.isArray(o.artifacts)) {
         throw new OrchestrationError("invalid_state", "tasks/messages/artifacts는 배열이어야 한다");
@@ -372,11 +745,17 @@ export function validateRunState(raw) {
     if (manifest.milestoneId !== milestoneId) {
         throw new OrchestrationError("manifest_milestone_mismatch", `manifest.milestoneId(${manifest.milestoneId})가 run(${milestoneId})과 다르다`);
     }
+    const accounting = validateAccounting(o.accounting);
+    // 회계는 **이 승인**에 묶여 있다 — 승인이 바뀌면 예산 이력을 이어 쓰지 않고 거부한다.
+    if (accounting.approvalDigest !== manifestDigest(manifest)) {
+        throw new OrchestrationError("accounting_approval_mismatch", "durable 회계가 이 run의 승인 manifest에 묶여 있지 않다(승인이 바뀌면 예산을 이어 쓰지 않는다)");
+    }
     const state = {
-        schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
+        schemaVersion: RUN_STATE_SCHEMA_VERSION,
         runId: assertSlug(o.runId, "run_state.runId"),
         milestoneId,
         manifest,
+        accounting,
         revision: boundedInt(o.revision, "run_state.revision", 1, 1_000_000),
         lastEventId: boundedInt(o.lastEventId, "run_state.lastEventId", 0, 1_000_000),
         lastEventHash: assertSha256(o.lastEventHash, "run_state.lastEventHash"),
@@ -440,6 +819,7 @@ export function assertReferentialIntegrity(state) {
     }
     assertNoDependencyCycle(state.tasks);
     assertExclusiveResourceClaims(state.tasks);
+    assertUniqueDispatchClaims(state.tasks);
     assertManifestOwnership(state);
     assertSessionLimit(state);
     for (const m of state.messages) {
@@ -518,31 +898,67 @@ export function assertManifestOwnership(state) {
         }
     }
 }
-/** M4c 핵심 불변식 ②: 동시에 `running`인 task 수는 manifest `maxSessions`를 넘지 않는다. */
+/**
+ * 승인 manifest의 **canonical digest**. 정규화된 사본을 정렬된 key 순서로 직렬화하므로 같은 승인은
+ * 언제나 같은 값이다. durable 회계를 이 승인에 묶는 데 쓴다(`accounting.approvalDigest`).
+ */
+export function manifestDigest(manifest) {
+    return sha256Hex(JSON.stringify(manifest));
+}
+/**
+ * M4c 핵심 불변식 ②: **자원을 점유하는 상태**의 task 수는 manifest `maxSessions`를 넘지 않는다.
+ *
+ * M5c 정정(대장 `B-11`/`B-13`): 이전 판은 `running`만 셌으므로 ⓐ preflight를 통과해 attempt·worktree를
+ * 배정받은 `prepared` task와 ⓑ 아직 자손 프로세스가 남아 있을 수 있는 `cleaning` task가 **승인된 동시
+ * 세션 예산 밖에서** 자원을 붙잡았다. 점유 상태 목록은 `RESOURCE_HOLDING_STATES` 하나가 정본이다.
+ */
 export function assertSessionLimit(state) {
-    const running = state.tasks.filter((t) => t.state === "running").length;
-    if (running > state.manifest.maxSessions) {
-        throw new OrchestrationError("max_sessions_exceeded", `동시 running task ${running}건이 승인된 maxSessions(${state.manifest.maxSessions})를 넘는다`);
+    const holders = state.tasks.filter((t) => holdsResources(t.state)).length;
+    if (holders > state.manifest.maxSessions) {
+        throw new OrchestrationError("max_sessions_exceeded", `자원 점유 task ${holders}건이 승인된 maxSessions(${state.manifest.maxSessions})를 넘는다`);
     }
 }
 /**
- * M4b 핵심 불변식: **같은 배타 자원 class를 `running` task 둘이 동시에 점유할 수 없다.**
- * 점유는 `running` 동안만이고 `waiting_children`은 중단 상태라 점유하지 않는다.
+ * M4b 핵심 불변식: **같은 배타 자원 class를 점유 상태 task 둘이 동시에 가질 수 없다.**
+ * 점유 상태는 `prepared`·`running`·`cleaning`이고(M5c) `waiting_children`은 중단 상태라 점유하지 않는다.
  * kernel이 만든 state와 디스크에서 읽은 state 모두 이 검사를 통과해야 하므로,
  * scheduler를 우회한 전이나 손으로 고친 state는 커밋·load 어느 쪽에서도 통과하지 못한다.
  */
 export function assertExclusiveResourceClaims(tasks) {
     const holder = new Map();
     for (const t of tasks) {
-        if (t.state !== "running")
+        if (!holdsResources(t.state))
             continue;
         for (const r of t.resourceClasses) {
             const other = holder.get(r);
             if (other !== undefined) {
-                throw new OrchestrationError("resource_conflict", `배타 자원 class '${r}'를 running task 둘이 점유한다: ${other}, ${t.taskId}`);
+                throw new OrchestrationError("resource_conflict", `배타 자원 class '${r}'를 점유 상태 task 둘이 가진다: ${other}, ${t.taskId}`);
             }
             holder.set(r, t.taskId);
         }
+    }
+}
+/**
+ * **turn ID는 run 전역에서 유일하게 claim된다**(3A 6차 리비전 A1).
+ *
+ * 과금 namespace(`accounting.chargedTurnIds`)가 run 전역인데 claim은 task-local이었다 → task A가 turn X를
+ * claim한 상태에서 task B도 같은 X를 genuine permit으로 claim할 수 있었고, B가 먼저 과금하면 A의 진짜
+ * 과금이 `turn_already_charged`로 영구히 막혀 A의 claim은 다시는 정산되지 못했다(교착).
+ * claim namespace를 과금 namespace와 같은 폭으로 맞춘다: **한 turn ID는 한 task만 claim한다.**
+ *
+ * kernel 커밋과 디스크 load 양쪽이 이 검사를 지나므로 손으로 만든 중복 claim state도 `open()`에서 거부된다.
+ */
+export function assertUniqueDispatchClaims(tasks) {
+    const holder = new Map();
+    for (const t of tasks) {
+        const turnId = t.execution.dispatchTurnId;
+        if (turnId === null)
+            continue;
+        const other = holder.get(turnId);
+        if (other !== undefined) {
+            throw new OrchestrationError("invalid_state", `dispatch turn '${turnId}'을 task 둘이 동시에 claim한다: ${other}, ${t.taskId}`);
+        }
+        holder.set(turnId, t.taskId);
     }
 }
 /** dependsOn + parent/child를 함께 본 DAG cycle 검사(반복 DFS — 재귀 깊이 무관). */
@@ -629,6 +1045,31 @@ export function renderSnapshot(state) {
         lines.push(`- ownership[${taskId}]: ${m.ownershipByTask[taskId].join(", ")}`);
     }
     lines.push("");
+    // M5c autopilot 정책·typed operation 권위: **bounded 선언만** 싣는다(파일 내용·argv 값은 담지 않는다).
+    const p = m.autopilotPolicy;
+    lines.push("## Autopilot Policy");
+    lines.push(`- maxTaskAttempts: ${p.maxTaskAttempts} · maxDeliveryAttempts: ${p.maxDeliveryAttempts}`);
+    lines.push(`- retryBackoffMs: ${p.retryBackoffMs} · deliveryDeadlineMs: ${p.deliveryDeadlineMs}`);
+    lines.push(`- maxNoProgressMs: ${p.maxNoProgressMs} · maxAttemptElapsedMs: ${p.maxAttemptElapsedMs}`);
+    lines.push(`- cleanupTermGraceMs: ${p.cleanupTermGraceMs} · cleanupKillGraceMs: ${p.cleanupKillGraceMs}`);
+    const opTaskIds = Object.keys(m.operationAuthorityByTask).sort();
+    if (opTaskIds.length === 0)
+        lines.push("- operationAuthority: (none — typed write/process 권위가 승인되지 않았다)");
+    for (const taskId of opTaskIds) {
+        // authorityId와 kind만 — 승인된 경로/argv는 승인 문서에 있고 snapshot은 그것을 복제하지 않는다.
+        const kinds = m.operationAuthorityByTask[taskId].map((op) => `${op.authorityId}:${op.kind}`).join(", ");
+        lines.push(`- operationAuthority[${taskId}]: ${kinds.length > 0 ? kinds : "(none)"}`);
+    }
+    lines.push("");
+    // durable 예산 회계 — 재시작이 이 값을 이어 쓴다(대장 `B-12`). 카운터만이고 raw는 없다.
+    const acc = state.accounting;
+    lines.push("## Budget Accounting (durable)");
+    lines.push(`- budgetStartedAt: ${acc.budgetStartedAt}`);
+    lines.push(`- budgetDeadlineAt: ${acc.budgetDeadlineAt}`);
+    lines.push(`- tokensUsed: ${acc.tokensUsed}${m.maxTokens === null ? "" : ` / ${m.maxTokens}`}`);
+    lines.push(`- elapsedMsUsed: ${acc.elapsedMsUsed} / ${m.maxElapsedMs}`);
+    lines.push(`- chargedTurns: ${acc.chargedTurnIds.length}`);
+    lines.push("");
     lines.push("## Specialist Registry");
     for (const r of SPECIALIST_ROLES)
         lines.push(`- ${r.roleId} — ${r.title}`);
@@ -655,6 +1096,19 @@ export function renderSnapshot(state) {
         lines.push(`- resourceClasses: ${t.resourceClasses.length > 0 ? t.resourceClasses.join(", ") : "(none — 병렬 안전)"}`);
         lines.push(`- resultSummary: ${t.resultSummary ?? "(none)"}`);
         lines.push(`- blockerSummary: ${t.blockerSummary ?? "(none)"}`);
+        // M5c lifecycle — **marker와 카운터만**. PID/PGID/argv/transcript는 state에 없으므로 여기에도 없다.
+        const e = t.execution;
+        lines.push(`- execution: attempt=${e.attemptNo} progress=${e.progressCount} cleanup=${e.cleanupStatus}` +
+            ` marker=${e.terminalMarker ?? "(none)"} pause=${e.pauseReason ?? "(none)"}`);
+        if (e.wallDeadlineAt !== null)
+            lines.push(`- wallDeadlineAt: ${e.wallDeadlineAt}`);
+        if (e.retryAt !== null)
+            lines.push(`- retryAt: ${e.retryAt} (deadline ${e.retryDeadlineAt ?? "(none)"})`);
+        if (e.processLeaseMarker !== null)
+            lines.push(`- processLease: ${e.processLeaseMarker}`);
+        for (const r of e.operationReceipts) {
+            lines.push(`- operation: ${r.operationId} ${r.kind} ${r.marker}${r.path === null ? "" : ` path=${r.path}`}`);
+        }
         for (const a of t.artifactRefs) {
             lines.push(`- artifact: ${a.path}@${a.revision} sha256=${a.sha256} role=${a.role}`);
         }
@@ -674,6 +1128,9 @@ export function renderSnapshot(state) {
         lines.push(`- ${msg.messageId} type=${msg.type} task=${msg.taskId} ${msg.sender}→${msg.recipient} body=${msg.bodyPath} sha256=${msg.bodySha256}`);
         if (msg.routeToTaskId !== null) {
             lines.push(`  - routedTo: ${msg.routeToTaskId} ack=${msg.acknowledgedAt ?? "(pending)"}`);
+            const d = msg.delivery;
+            lines.push(`  - delivery: attempts=${d.attempts} marker=${d.lastMarker ?? "(none)"}` +
+                ` next=${d.nextAttemptAt ?? "(none)"} deadline=${d.deadlineAt ?? "(none)"}`);
         }
         if (msg.summary !== null)
             lines.push(`  - summary: ${msg.summary}`);
@@ -766,6 +1223,8 @@ export function stateContentDigest(state) {
         milestoneId: state.milestoneId,
         // manifest도 digest에 들어간다 → 승인 범위를 손으로 넓히면 state↔event binding에서 거부된다.
         manifest: state.manifest,
+        // 회계도 들어간다 → **토큰·경과 사용량을 손으로 되돌리는 것**도 binding 검사에서 거부된다(`B-12`).
+        accounting: state.accounting,
         revision: state.revision,
         createdAt: state.createdAt,
         updatedAt: state.updatedAt,

@@ -103,8 +103,6 @@ import { verifyApprovedExecutable, verifyExecutionBoundary, } from "./executionB
 import { OrchestrationError } from "./orchestrationTypes.js";
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
 export const MAX_PROMPT_CHARS = 262_144;
-/** stderr 버퍼 상한(문자) — 요약 전에도 무제한으로 쌓지 않는다. */
-const MAX_STDERR_BUFFER = 8_192;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
 const EFFORTS = ["low", "medium", "high", "xhigh"];
 /** 리뷰 기본값 — 로드맵 §6 모델 정책·§7.1 실행 계약. sandbox는 M5a에서 이 값 외에 없다. */
@@ -146,13 +144,34 @@ const GIT_BIN_CODES = {
  * 교체되는 창까지 막는다(Node에 `fexecve`가 없어 창은 0이 아니고 syscall 몇 개로 줄인 것이다).
  */
 export function verifyCodexExecutable(approved, pinned) {
+    // **승인이 codex를 담지 않았으면 fail closed다**(V3 M5c): M5c offline manifest는 `codex: null`로
+    // "live 추론은 승인되지 않았다"를 정직하게 표현한다. 그 승인으로는 provider가 만들어지지 않는다.
+    if (approved === null) {
+        throw new OrchestrationError("codex_not_approved", "이 승인 manifest는 codex 실행 권위를 담지 않는다(live 추론 미승인)");
+    }
     return verifyApprovedExecutable(approved, "승인된 codex 실행 파일", CODEX_BIN_CODES, pinned);
 }
+/**
+ * **승인된 격리 `CODEX_HOME`에서 허용되는 유일한 항목**(대장 `B-7ⓐ`). 사람이 1회 `codex login`으로
+ * 만드는 자격증명 파일 이름이며, harness는 **존재·타입·권한·소유자만** 본다(열지 않는다).
+ * 목록에 없는 항목이 하나라도 있으면 첫 invocation은 여전히 `codex_home_not_empty`다 —
+ * `config.toml`·MCP 정의·AGENTS 파일이 자격증명 뒤에 묻어 들어올 통로를 열지 않는다.
+ */
+export const CODEX_CREDENTIAL_FILES = ["auth.json"];
 /**
  * 격리 `CODEX_HOME` 검증 — **provider 소유 수명**이다.
  *
  * - **첫 invocation**: 절대·정규·비-symlink 디렉터리 · 0700 · **비어 있음** · 사용자 홈 아님.
  *   비어 있음을 요구하는 이유는 첫 프로세스가 ambient config·auth·MCP 정의를 하나도 못 보게 하려는 것이다.
+ *   **`B-7ⓐ`(live 인증)**: 승인 manifest가 `executionAuthority.codexHome`으로 홈을 고정한 경우에만
+ *   "비어 있음"이 **"승인된 자격증명 파일(`auth.json`) 외에는 비어 있음"** 으로 좁혀진다. 이때
+ *   ⓐ 경로가 승인된 홈과 **정확히 같아야** 하고 ⓑ 홈·자격증명 모두 **이 프로세스 소유**여야 하며
+ *   ⓒ 자격증명은 정규 파일·비symlink·group/other 비트 0이어야 하고 ⓓ **없으면 거부**한다
+ *   (`codex_home_credentials_missing` — 인증 없이 프로세스를 띄우지 않는다). 그 밖의 항목이 하나라도
+ *   있으면 여전히 `codex_home_not_empty`이므로 `config.toml`·MCP 정의·AGENTS 파일이 자격증명 뒤에
+ *   묻어 들어오지 못한다. 승인이 홈을 담지 않았으면 **완전히 비어 있어야** 한다(자식 env는 `CODEX_HOME`
+ *   하나뿐이라 ambient 자격증명이 도달할 통로가 없다 → 인증 없이 fail closed이고, `~/.codex`로의
+ *   fallback은 어느 경로에도 존재하지 않는다). 자격증명은 **열지 않는다** — 존재·타입·권한·소유자만 본다.
  *   여기서 확보한 신원(dev+ino)이 그 홈에 대한 provider의 **소유권**이고, **spawn 직전 동기 게이트에서
  *   같은 신원 + 여전히 비어 있음**을 다시 확인한다(비동기 경계 작업 중 교체·오염을 막는다).
  * - **resume**: 경로 계약·권한·사용자 홈 금지는 **그대로** 요구하고 **소유 신원이 같아야** 한다.
@@ -161,14 +180,22 @@ export function verifyCodexExecutable(approved, pinned) {
  *   (그 경로는 첫 검증에서 `codex_home_not_empty`로 막힌다).
  *
  * 어느 경우에도 `--strict-config`·`--ignore-user-config`·`--ignore-rules`·`mcp_servers={}`는 유지되므로
- * 홈에 무엇이 생기든 ambient MCP·사용자 설정을 상속하지 않는다. **auth를 복사하지 않는다** — live 인증은 `B-7`.
+ * 홈에 무엇이 생기든 ambient MCP·사용자 설정을 상속하지 않는다. **auth를 복사·영속화·해싱·기록하지 않는다**
+ * — live 인증(`B-7ⓐ`)은 사람이 승인된 홈에 **1회** 로그인해 두는 방식이고 harness는 그 로그인을 대행·
+ * 자동화·프록시하지 않는다.
  * 같은 uid로 동작하는 공격자를 막지는 못한다(소유자 자신은 언제든 홈을 쓸 수 있다) — 막는 것은 **경로 교체·
  * 권한 완화·소유하지 않은 상태로의 resume**이다.
  */
 export function verifyCodexHome(path, expect = {}) {
     const owned = expect.identity;
+    const approved = expect.approved ?? null;
     const requireEmpty = expect.requireEmpty ?? owned === undefined;
     const p = requireAbsolute(path, "spec.codex.codexHome");
+    // `B-7ⓐ`: 승인이 홈을 고정했으면 **그 경로 하나뿐**이다. 다른 홈으로의 fallback이 없다
+    // (경로만 대조하고 값은 오류에 싣지 않는다). 승인이 홈을 담지 않았으면 자격증명도 허용되지 않는다.
+    if (approved && p !== approved.path) {
+        fail("codex_home_not_approved", "codexHome이 승인 manifest가 고정한 격리 홈이 아니다");
+    }
     let real;
     try {
         real = realpathSync(p);
@@ -199,6 +226,10 @@ export function verifyCodexHome(path, expect = {}) {
         fail("codex_home_invalid", "codexHome은 symlink 아닌 디렉터리여야 한다");
     if ((st.mode & 0o077) !== 0)
         fail("codex_home_permissive", "codexHome은 0700(소유자 전용)이어야 한다");
+    // 승인된(=자격증명이 들어 있는) 홈은 **이 프로세스 소유**여야 한다. 다른 uid가 만든 홈을 승인 경로에
+    // 갖다 놓는 형태의 hijack을 막는다(비승인 홈에는 기존 계약을 그대로 두어 관측 가능한 변화가 없다).
+    if (approved)
+        assertOwnedByThisUser(st.uid, "codexHome");
     const id = { dev: st.dev, ino: st.ino };
     if (owned && (id.dev !== owned.dev || id.ino !== owned.ino)) {
         fail("codex_home_identity_changed", "codexHome의 디렉터리 신원이 검증 이후 바뀌었다");
@@ -212,11 +243,43 @@ export function verifyCodexHome(path, expect = {}) {
     catch {
         fail("codex_home_invalid", "codexHome을 읽을 수 없다");
     }
-    if (entries.length > 0) {
+    // 승인이 홈을 고정하지 않았다 = live 인증 미승인 → **완전히 비어 있어야** 한다(기존 계약 그대로).
+    const allowed = approved ? CODEX_CREDENTIAL_FILES : [];
+    const extra = entries.filter((e) => !allowed.includes(e)).length;
+    if (extra > 0) {
         // 개수만 알린다 — 파일 이름은 오류 문자열에 싣지 않는다.
-        fail("codex_home_not_empty", `codexHome에 기존 설정/자격증명 항목이 있다(${entries.length}건)`);
+        fail("codex_home_not_empty", `codexHome에 승인되지 않은 설정/자격증명 항목이 있다(${extra}건)`);
     }
+    // 승인된 홈은 **자격증명이 실제로 있어야** 한다: 없으면 인증 없이 프로세스를 띄우지 않는다(fail closed).
+    if (approved)
+        for (const name of CODEX_CREDENTIAL_FILES)
+            verifyCredentialFile(join(p, name));
     return { path: p, id };
+}
+/** 현재 프로세스 uid 소유가 아니면 거부. uid를 노출하지 않는다(대상 이름만 알린다). */
+function assertOwnedByThisUser(uid, what) {
+    const self = typeof process.getuid === "function" ? process.getuid() : undefined;
+    if (self === undefined || uid !== self)
+        fail("codex_home_not_owned", `${what}은 이 프로세스 소유여야 한다`);
+}
+/**
+ * 승인된 자격증명 파일 1건(대장 `B-7ⓐ`). **내용은 절대 열지 않는다** — `lstat` 한 번으로 존재 · 정규 파일 ·
+ * symlink 아님 · group/other 비트 0 · 소유자만 본다. 내용을 읽거나 해싱하면 그 순간 digest·로그·기록이
+ * 자격증명 유출 경로가 되므로(`B-7ⓑ`가 stderr에서 막은 것과 같은 종류) 이 함수는 fd를 열지 않는다.
+ */
+function verifyCredentialFile(file) {
+    let st;
+    try {
+        st = lstatSync(file);
+    }
+    catch {
+        fail("codex_home_credentials_missing", "승인된 격리 홈에 자격증명이 없다(사람이 1회 `codex login`을 해야 한다)");
+    }
+    if (st.isSymbolicLink() || !st.isFile())
+        fail("codex_home_invalid", "자격증명은 symlink 아닌 정규 파일이어야 한다");
+    if ((st.mode & 0o077) !== 0)
+        fail("codex_home_permissive", "자격증명 파일에 group/other 권한이 있으면 안 된다");
+    assertOwnedByThisUser(st.uid, "자격증명 파일");
 }
 /** 최초 상태(비어 있어야 하는) 검증만 필요한 호출자용 shim. */
 export function assertIsolatedCodexHome(path) {
@@ -771,9 +834,12 @@ export class CodexCliProvider {
         // ── 사전 검증(빠른 거부 + 신원 고정) ──────────────────────────────────
         // turn 사이 변조는 여기서 먼저 걸린다(`C-23`): 호출자 객체가 새 baseline이 되지 못한다.
         assertNoSpecDrift(s, state.spec, this.#optsRef);
+        // `B-7ⓐ`: 승인된 격리 홈은 **봉인된 manifest**에서만 온다(ambient env·호출자 옵션 통로가 없다).
+        // manifestDigest가 봉인 대상이므로 turn 사이에 승인된 홈을 갈아끼우면 `codex_spec_mutated`다.
+        const approvedHome = s.manifest.executionAuthority.codexHome ?? null;
         const homeExpect = state.homeId
-            ? { identity: state.homeId } // resume: 소유 홈(상태 있음이 정상)
-            : { requireEmpty: true }; // 첫 invocation: 빈 홈
+            ? { identity: state.homeId, approved: approvedHome } // resume: 소유 홈(상태 있음이 정상)
+            : { requireEmpty: true, approved: approvedHome }; // 첫 invocation: 승인된 자격증명 외에는 빈 홈
         const preHome = verifyCodexHome(s.codexHome, homeExpect);
         // **생성 시점에 고정된 실행 파일 신원**으로 대조한다(5차 리뷰 A1) — 첫 invocation이 새 baseline을
         // 세우지 않으므로, 증명 이후 같은 경로가 다른 실행 파일로 교체되면 여기서 fail closed다.
@@ -846,17 +912,21 @@ export class CodexCliProvider {
         state.status = "running";
         let child;
         try {
-            child = this.#spawn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "pipe"] });
+            // `B-7ⓑ`: stderr는 **fd 단계에서 버린다**(`"ignore"`). 아래 settle이 stderr를 절대 싣지 않는 것과
+            // 합쳐, 자식이 무엇을 찍든 이 프로세스의 메모리에 들어오지 않는다 — redaction 패턴이 그 토큰을
+            // 아는지 여부에 의존하지 않는 구조적 차단이다(패턴은 "대개" 맞을 뿐이고 이 게이트는 그것을 거부한다).
+            child = this.#spawn(bin.path, args, { cwd, env: compileCodexEnv(home.path), stdio: ["pipe", "pipe", "ignore"] });
         }
         catch (err) {
             // 동기 spawn 예외: 큐를 열어둔 채 두지 않고 종료 결과 1건으로 닫는다.
-            settle({ code: null, signal: null, stderr: err?.message ?? "", spawnError: true });
+            // 오류 메시지도 싣지 않는다 — 경로·argv가 섞일 수 있고 `spawn_error` 코드로 진단은 충분하다.
+            void err;
+            settle({ code: null, signal: null, spawnError: true });
             fail("codex_spawn_failed", "codex 실행을 시작하지 못했다");
         }
         // 프로세스를 띄운 뒤부터 그 홈은 provider 소유다 — 이후 invocation은 신원이 같은 홈만 쓴다.
         state.homeId = home.id;
         state.child = child;
-        let stderr = "";
         child.stdout?.setEncoding("utf8");
         child.stdout?.on("data", (chunk) => {
             for (const e of parser.push(chunk)) {
@@ -873,16 +943,12 @@ export class CodexCliProvider {
                 queue.push(e);
             }
         });
-        // stderr는 요약·redaction 후에만 쓰인다(원문은 큐·상태로 나가지 않는다).
-        child.stderr?.setEncoding("utf8");
-        child.stderr?.on("data", (d) => {
-            if (stderr.length < MAX_STDERR_BUFFER)
-                stderr += d;
-        });
+        // stderr는 읽지 않는다(`stdio[2] = "ignore"`). 주입된 spawn이 stdio를 무시하고 stream을 주더라도
+        // 여기서 구독하지 않으므로 내용이 어디에도 축적되지 않는다. 상한·redaction은 더 이상 방어선이 아니다.
         // stdin EPIPE 등은 프로세스 종료 경로로 수렴시킨다(여기서 던지면 unhandled가 된다).
         child.stdin?.on("error", () => parser.protocolFail("stdin_error"));
-        child.on("error", (err) => settle({ code: null, signal: null, stderr: err.message, spawnError: true }));
-        child.on("close", (code, signal) => settle({ code, signal, stderr }));
+        child.on("error", () => settle({ code: null, signal: null, spawnError: true }));
+        child.on("close", (code, signal) => settle({ code, signal }));
         try {
             child.stdin?.write(prompt);
             child.stdin?.end();

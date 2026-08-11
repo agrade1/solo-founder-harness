@@ -4,7 +4,8 @@
  * 이것은 durable M4 orchestration task를 **기존 `ExecutionProvider`** 로 한 걸음 전진시키는 얇은 다리다.
  * **두 번째 스케줄러·DAG·큐·상태 파일·상태 기계를 만들지 않는다**: `OrchestrationKernel`이 여전히
  * 유일한 scheduler이며 상태 전이 권위(SoR)다. 이 모듈이 kernel에 대고 하는 일은 좁은 API 호출뿐이고
- * (`scheduleReady` → `startScheduledBatch` → `completeTaskWithArtifacts` / `acknowledgeDelivery`),
+ * (M5c: `planRunnableBatch` → `commitPreflightBatch` → `startPreparedTask` → `recordTerminal` →
+ * `confirmCleanup` → `completeTaskWithArtifacts` / `beginDeliveryAttempt` → `acknowledgeDelivery`),
  * provider 출력이 다른 task나 durable state를 직접 바꾸는 경로는 없다.
  * `runParallelMission`을 부르거나 감싸거나 복제하지 않는다.
  *
@@ -130,6 +131,7 @@
  * 사람·M5c에 판단을 넘긴다 — 조용한 진행 금지) · live provider 추론(`B-7`/`B-9`).
  * API는 M5c가 이 controller를 **교체하지 않고** 그 관심사를 얹을 수 있게 잡았다.
  */
+import { randomBytes } from "node:crypto";
 import { LIMITS, OrchestrationError, formatTimestamp } from "./orchestrationTypes.js";
 import { ORCHESTRATION_SCHEMA_VERSION, ORCHESTRATOR_ID, normalizeWorkspacePath } from "./orchestrationTypes.js";
 import { commandAllowed, dependencyAllowed, networkDomainAllowed, pathWithin, validateApprovalManifest, } from "./approvalManifest.js";
@@ -407,9 +409,13 @@ const KERNEL_METHODS = [
     "getState",
     "getManifest",
     "getTask",
-    "scheduleReady",
-    "startScheduledBatch",
+    "planRunnableBatch",
+    "commitPreflightBatch",
+    "startPreparedTask",
     "listPendingInbox",
+    "beginDeliveryAttempt",
+    "recordTerminal",
+    "confirmCleanup",
     "completeTaskWithArtifacts",
     "acknowledgeDelivery",
 ];
@@ -528,33 +534,41 @@ export class StableController {
         const pre = this.#preflight();
         if (pre)
             return { blocked: pre, started: [], tasks: [] };
-        // kernel은 호출자 객체다 — 조회·시작 커밋의 오류도 taxonomy를 고르지 못한다(3차 리뷰 A2).
+        // kernel은 호출자 객체다 — 조회·preflight 커밋의 오류도 taxonomy를 고르지 못한다(3차 리뷰 A2).
+        //
+        // **M5c 시작 경로**(대장 `B-11`): `planRunnableBatch` → `commitPreflightBatch` → (task마다)
+        // `startPreparedTask`. 이전 판의 `startScheduledBatch`는 batch 전체를 먼저 `running`으로 올렸으므로
+        // 예산이 batch 중간에 소진되면 남은 task가 provider 호출 0으로 자원을 붙잡은 채 `running`에 남았다.
+        // 지금 preflight 커밋은 **아무 프로세스도 뜨지 않은 `prepared`** 까지만 원자적으로 간다.
         let plannedIds;
-        let started;
-        let startedIds;
         try {
-            const batch = atKernel(() => this.#sealed.kernel.scheduleReady());
-            if (batch.length === 0)
+            const plan = atKernel(() => this.#sealed.kernel.planRunnableBatch());
+            if (plan.items.length === 0)
                 return { blocked: null, started: [], tasks: [] };
-            if (batch.length > this.#sealed.manifest.maxSessions) {
+            if (plan.items.length > this.#sealed.manifest.maxSessions) {
                 return { blocked: "session_budget_exceeded", started: [], tasks: [] };
             }
-            plannedIds = idsOf(batch).join(",");
-            // 시작 커밋은 **오직 이 API**로 한다(직접 `startTask`로 우회하지 않는다).
-            started = atKernel(() => this.#sealed.kernel.startScheduledBatch());
-            startedIds = idsOf(started);
-            if (startedIds.join(",") !== plannedIds) {
+            plannedIds = idsOf(plan.items);
+            const outcomes = atKernel(() => this.#sealed.kernel.commitPreflightBatch({
+                // 결정은 **이 batch를 고른 그 revision**에 대한 것이다 — 낡으면 kernel이 거부한다.
+                baseRevision: plan.revision,
+                actionId: this.#actionId("preflight"),
+                decisions: plannedIds.map((taskId) => ({ taskId, outcome: "prepared", attemptId: this.#actionId("attempt") })),
+            })).outcomes;
+            const preparedIds = outcomes.filter((o) => o.to === "prepared").map((o) => o.taskId);
+            if (preparedIds.join(",") !== plannedIds.join(",")) {
                 // 같은 state에서 같은 결정이어야 한다. 다르면 판정 근거가 흔들린 것이므로 진행하지 않는다.
-                return { blocked: "schedule_nondeterministic", started: startedIds, tasks: [] };
+                return { blocked: "schedule_nondeterministic", started: preparedIds, tasks: [] };
             }
         }
         catch (err) {
             return { blocked: codeOf(err), started: [], tasks: [] };
         }
+        const startedIds = plannedIds;
         const tasks = [];
         // **예산·봉인 게이트를 task마다 다시 본다**(독립 리뷰 A3). 소진을 한 번 확인하면 남은 task는
-        // provider를 **한 번도 부르지 않고** 같은 marker로 닫는다(kernel은 이미 running으로 올려 뒀고,
-        // 그 lifecycle 정리는 대장 `B-11`/`B-13`으로 M5c 소유다 — 조용한 진행은 하지 않는다).
+        // provider를 **한 번도 부르지 않고** 같은 marker로 닫는다. M5c에서 그 task는 `prepared`에 남는다
+        // (`startPreparedTask`를 부르지 않았으므로 프로세스도 running lease도 없다 — `B-11`이 닫은 창이다).
         let gate = null;
         for (const taskId of startedIds) {
             gate ??= this.#preflight();
@@ -633,6 +647,9 @@ export class StableController {
             usage: { inputTokens: 0, outputTokens: 0 },
         };
         const { kernel, provider } = this.#sealed;
+        // 이 attempt의 durable lease. `startPreparedTask`가 봉인하고 `confirmCleanup`이 같은 값을 요구한다 —
+        // 다른 attempt의 정리 영수증으로 이 attempt를 닫을 수 없다(`cleanup_lease_mismatch`).
+        const leaseMarker = `lease.${randomBytes(16).toString("hex")}`;
         let handle = null;
         try {
             const task = this.#requireTask(taskId);
@@ -645,6 +662,10 @@ export class StableController {
             // 경계가 확인한 `targetRoot`로 **새 불변 spec**을 만든다(호출자 cwd 문자열을 다시 쓰지 않는다).
             const spec = frozenClone({ ...h.spec, cwd: boundary.targetRoot }, "spec");
             this.#syncGate(boundary, inputs); // ← 이 다음 문장이 provider 호출이다(사이에 await 없음)
+            // **`prepared → running`은 여기서, 프로세스가 뜨기 직전에, task 하나씩 커밋한다**(대장 `B-11`).
+            // 동기 커밋이므로 게이트와 provider 호출 사이에 await 창이 생기지 않는다. 게이트가 먼저 닫히면
+            // 이 task는 `prepared`에 남고 lease도 attempt 자원도 잡지 않는다.
+            atKernel(() => kernel.startPreparedTask({ taskId, actionId: this.#actionId("start"), leaseMarker }));
             handle = await atBoundaryAsync("provider_start_failed", () => provider.start(spec, h.prompt));
             await this.#consumeTurn(handle, outcome);
             // inbox: durable 순서 그대로. 경계·게이트·포인터를 **전달 직전에** 다시 확인하고,
@@ -657,6 +678,14 @@ export class StableController {
                 const b = await this.#verifyBoundary(spec.cwd);
                 this.#syncGate(b, refs); // ← 이 다음 문장이 send다(사이에 await 없음)
                 const message = deliveryPrompt(entry);
+                // **시도를 먼저 durable하게 남긴다**(대장 `C-12→B`): kernel은 시도 없는 ack를 거부하므로
+                // "실패한 전달을 성공으로 적는" 경로가 존재하지 않는다.
+                atKernel(() => kernel.beginDeliveryAttempt({
+                    taskId,
+                    messageId: entry.messageId,
+                    actionId: this.#actionId("deliver"),
+                    attemptId: this.#actionId("attempt"),
+                }));
                 await atBoundaryAsync("provider_send_failed", () => provider.send(handle, message));
                 await this.#consumeTurn(handle, outcome);
                 atKernel(() => kernel.acknowledgeDelivery({ taskId, messageId: entry.messageId }));
@@ -667,10 +696,23 @@ export class StableController {
             // 산출물이 없거나 무효하거나 경로가 겹치면 **앞선 artifact·event·revision만 durable에 남고**
             // task는 미완료였다(재시도마다 revision 찌꺼기). 경로 소유권·writableRoots·파일 신원은 여전히
             // kernel(권위)이 집행한다(`artifact_not_owned` 등) — controller의 선언이 아니다.
+            // **완료 전에 정리 단계를 지난다**(V3 M5c · 대장 `B-13`): `running → cleaning`에서 결과를 봉인하고
+            // (`recordTerminal`), 생존 자손 0을 확인한 뒤에야(`confirmCleanup`) 결과를 발행할 수 있다.
+            // kernel이 이 순서를 집행한다(`completeTaskWithArtifacts`는 confirmed된 `cleaning` task만 받는다) —
+            // controller가 그것을 우회하는 경로는 없다. 두 커밋 모두 safety-only이므로 만료 뒤에도 지나간다
+            // (이미 태운 자원을 정리하는 일을 막으면 자원이 영원히 붙잡힌다).
+            const summary = this.#boundedSummary(outcome);
+            atKernel(() => kernel.recordTerminal({
+                taskId,
+                actionId: this.#actionId("terminal"),
+                marker: "turn_completed",
+                pendingResult: { summary, outputs: h.outputs },
+            }));
+            atKernel(() => kernel.confirmCleanup({ taskId, actionId: this.#actionId("cleanup"), leaseMarker }));
             const done = atKernel(() => kernel.completeTaskWithArtifacts({
                 envelope: this.#resultEnvelope(this.#requireTask(taskId)),
                 body: resultBody(taskId, outcome, h.outputs),
-                summary: this.#boundedSummary(outcome),
+                summary,
                 outputs: h.outputs,
             }));
             outcome.artifacts = frozenClone(done.artifacts, "등록된 포인터", "controller_internal_error").map((p) => `${p.path}@${p.revision}`);
@@ -694,6 +736,14 @@ export class StableController {
                     .catch(() => undefined);
             }
         }
+    }
+    /**
+     * kernel 커밋 하나의 **멱등 신원**(대장 `C-37`). 충돌하지 않는 새 값이면 되고 durable state에 의미를
+     * 싣지 않는다 — `hasCommittedAction()`이 "내 요청이 durable해졌는가"를 판정할 수 있는 근거일 뿐이다.
+     * 시각·카운터가 아니라 난수로 만든다(재시작·병렬 controller가 같은 id를 만들지 않는다).
+     */
+    #actionId(kind) {
+        return `${kind}.${randomBytes(8).toString("hex")}`;
     }
     /** kernel(호출자 객체)이 준 task를 **읽는 즉시 봉인 사본**으로 굳힌다(throwing getter도 여기서 닫힌다). */
     #requireTask(taskId) {
@@ -962,6 +1012,21 @@ const KERNEL_MARKERS = new Set([
     "invalid_summary",
     "delivery_not_addressed",
     "delivery_already_acknowledged",
+    // M5c lifecycle(대장 `B-11`/`B-13`/`C-12→B`) — 이 controller가 부르는 reducer가 실제로 낼 수 있는 코드만.
+    "preflight_required",
+    "preflight_drift",
+    "preflight_stale_batch",
+    "preflight_batch_mismatch",
+    "attempt_limit_exceeded",
+    "operation_pending_unreconciled",
+    "terminal_already_recorded",
+    "cleanup_unconfirmed",
+    "cleanup_lease_mismatch",
+    "delivery_attempt_missing",
+    "delivery_attempts_exhausted",
+    "delivery_deadline_exceeded",
+    "budget_elapsed_exhausted",
+    "clock_invalid",
     // 승인·동시 writer
     "manifest_expired",
     "stale_writer",

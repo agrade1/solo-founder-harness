@@ -1,0 +1,681 @@
+/**
+ * V3 M5c — **`harness autopilot`**: M5c 오케스트레이션 loop의 운영자 진입점.
+ *
+ * 이 명령이 하는 일은 한 문장이다: **승인 manifest 하나로 gate된 durable run을, 사람이 프롬프트를
+ * 한 번도 복사하지 않고, offline plan worker로 전진시킨다.** 두 번째 scheduler·상태 파일·상태 기계를
+ * 만들지 않는다 — `OrchestrationKernel`이 여전히 유일한 SoR이고 이 모듈은 좁은 API 호출과
+ * **관측 가능한 진행 출력**뿐이다.
+ *
+ * ## 열려 있는 게이트에 대한 입장 (이 slice가 **소비하지 않은** 것들)
+ *
+ * - **`B-11`(무인 advance 전 per-task preflight)** — 소비하지 않는다. kernel이 이미 닫은 경로만 쓴다:
+ *   `planRunnableBatch` → `commitPreflightBatch`(batch 전체가 결정을 받고 **아무 프로세스도 뜨지 않는**
+ *   `prepared`까지만) → **turn 직전에 task 하나씩** `startPreparedTask`. 계획 입력이 없는 task는
+ *   `deferred`다 — `ready`에 그대로 두고 attempt·자원·상태를 **하나도** 건드리지 않는다.
+ * - **`B-12`(재시작 시 예산 리셋)** — 소비하지 않는다. 이 loop는 **controller in-memory 카운터를
+ *   쓰지 않는다**: 예산의 진실은 durable `state.accounting`이고(`remainingBudget()` · `budgetDeadlineAt`),
+ *   turn마다 `chargeTurnUsage`로 durable하게 적는다. 그래서 프로세스를 다시 띄워도 같은 승인 아래
+ *   예산이 새로 생기지 않는다. **`--resume` 같은 재예산 플래그를 만들지 않았다.**
+ * - **`B-13`(정리 확인보다 durable 완료가 먼저)** / **`B-18`·`B-20`·`C-18`** — 소비하지 않는다.
+ *   이 loop는 **프로세스를 하나도 띄우지 않는다**(worker는 in-memory 데이터 어댑터다) → 자손이
+ *   구조적으로 0이고, 그럼에도 kernel의 순서 계약을 그대로 지난다:
+ *   `recordTerminal`(→`cleaning`) → `confirmCleanup` → 완료/pause.
+ * - **`B-17`(실패한 전달이 `activeAttemptId`를 남긴다)** — 소비하지 않는다. 이 loop는
+ *   `beginDeliveryAttempt`를 **부르지 않는다**(inbox 전달은 provider 세션 계약이며 이 slice 밖이다) →
+ *   열린 채 남을 attempt가 생기지 않는다. inbox가 있는 task도 여기서는 그냥 pause될 뿐이다.
+ * - **`B-10`(타입 있는 edit 가능 실행 집행)** — **M5d task 2에서 소비한다**(사용자 승인:
+ *   "offline typed execution 소비 게이트를 연다"). `issueOperationDispatchPermit` → `beginOperation` →
+ *   고정 집행기 → `recordOperationReceipt`를 계획 순서대로 부른다. **권위는 하나도 이 파일에 없다**:
+ *   승인 레코드 대조·소유권·`writableRoots`·digest 재검증·spawn 상한·deadline·멱등 pending은 전부
+ *   kernel 안에서 일어나고, autopilot이 고를 수 있는 것은 **계획에 이미 있는 operationId의 순서**뿐이다.
+ *   승인되지 않은 operation은 여전히 `operation_denied`로 닫히고 task는 `paused`로 착지한다.
+ * - **`B-16`(real typed-write 산출물 발행)** — **부분 개방**(M5d): 승인된 **기존 파일의 교체**는 이제
+ *   실제로 바이트를 낸다(고정한 대상 fd에 직접 쓴다 — 발행 경로에 pathname이 없다). **신규 파일 생성은
+ *   여전히 fail closed**다(`write_publish_unsupported`). artifact로 발행되는 것은 그 task가 소유한
+ *   파일뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
+ * - **`B-7`/`B-9`(live)** — 소비하지 않는다. 유일한 backend는 `offline-plan`이고 `claude`·`codex`는
+ *   worker가 hard reject한다. 네트워크 호출 0 · 추론 0 · spawn 0.
+ *
+ * ## 이 slice가 하지 않는 것
+ *
+ * inbox 전달 · typed operation 집행 · worktree 자동화 · live provider. 그 각각은 위 게이트를 여는
+ * 별도 승인 slice다.
+ */
+import { randomBytes } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { isAbsolute, join, resolve } from "node:path";
+import { LIMITS, ORCHESTRATOR_ID, OrchestrationError, REQUIRED_BODY_HEADINGS, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, assertSlug, formatTimestamp, } from "../exec/orchestrationTypes.js";
+import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
+import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
+import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
+import { openOrchestrationRun } from "../exec/orchestrationKernel.js";
+// **집행 진입점은 facade 하나만 쓴다** — kernel 사설 집행기에 직접 닿는 통로를 만들지 않는다.
+import { applyWriteFile, executeRunProcessOperation, resolveProcessLaunchCapability, resolveWriteFileAuthority, } from "../exec/typedExecution.js";
+/** 한 번의 `autopilot` 실행이 도는 iteration 상한(무인 loop는 언제나 bounded다). */
+export const DEFAULT_MAX_ITERATIONS = 16;
+/** 이 모듈이 낼 수 있는 run 수준 거부 코드(닫힌 집합). */
+export const AUTOPILOT_BLOCKED_CODES = [
+    "approval_milestone_mismatch",
+    "manifest_expired",
+    "budget_elapsed_exhausted",
+    "budget_tokens_exhausted",
+    "run_unavailable",
+];
+// ── 진입점 ──────────────────────────────────────────────────────────────────
+export async function runAutopilot(opts) {
+    const emit = opts.onEvent ?? (() => undefined);
+    const clock = opts.clock ?? (() => new Date());
+    const tasks = [];
+    let kernel;
+    try {
+        kernel = openOrchestrationRun({ workspaceRoot: opts.workspaceRoot, runId: opts.runId, clock });
+    }
+    catch (err) {
+        return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
+    }
+    // **승인 게이트**: 운영자가 지목한 승인과 durable run의 승인이 같아야 한다. 다르면 아무것도 하지 않는다.
+    const state = kernel.getState();
+    if (state.milestoneId !== opts.milestoneId) {
+        return { blocked: "approval_milestone_mismatch", iterations: 0, tasks, stoppedBecause: "approval_milestone_mismatch" };
+    }
+    const entry = budgetGate(kernel, clock);
+    if (entry)
+        return { blocked: entry, iterations: 0, tasks, stoppedBecause: entry };
+    emit({ kind: "run_started", detail: `${state.runId}@${state.milestoneId}` });
+    const maxIterations = boundedIterations(opts.maxIterations);
+    let iterations = 0;
+    let stoppedBecause = "iteration_limit";
+    for (; iterations < maxIterations; iterations++) {
+        if (opts.signal?.aborted) {
+            stoppedBecause = "cancelled";
+            break;
+        }
+        const gate = budgetGate(kernel, clock);
+        if (gate) {
+            stoppedBecause = gate;
+            break;
+        }
+        // **`B-21`: 중단된 batch가 남긴 `prepared`를 먼저 되찾는다.** `prepared`는 자원 점유 상태
+        // (`RESOURCE_HOLDING_STATES`)인데 `selectSchedulable`은 `ready`/`retry_wait`만 고르므로, 되찾지
+        // 않으면 그 task가 배타 class와 `maxSessions` 자리를 영구히 붙잡아 **이후 모든 batch가 조용히
+        // 줄어든다**. 되찾기는 `startPreparedTask`가 봉인된 preflight를 다시 대조하므로(`preflight_drift`)
+        // 안전하고 **새 attempt를 태우지 않는다**(`commitPreflightBatch`를 다시 지나지 않는다).
+        // 계획이 없는 잔여는 `paused`로 접어 자원을 놓아준다 — 조용히 붙잡는 것보다 사람이 보는 편이 낫다.
+        const reclaimed = new Map();
+        for (const task of kernel.getState().tasks) {
+            if (task.state !== "prepared")
+                continue;
+            const doc = readPlanDocument(opts.planDir, task.taskId);
+            if (doc) {
+                reclaimed.set(task.taskId, doc);
+                continue;
+            }
+            kernel.pauseTask({ taskId: task.taskId, actionId: id("pause"), pauseReason: "approval_required" });
+            emit({ kind: "task_paused", taskId: task.taskId, marker: "plan_missing", detail: "prepared_reclaimed" });
+            tasks.push({ taskId: task.taskId, state: "paused", marker: "plan_missing" });
+        }
+        const batch = kernel.planRunnableBatch();
+        if (batch.items.length === 0 && reclaimed.size === 0) {
+            stoppedBecause = "no_runnable_tasks";
+            break;
+        }
+        emit({ kind: "batch_planned", detail: batch.items.map((t) => t.taskId).join(",") });
+        // **무인 전진의 자격은 "offline 계획이 실제로 있는가" 하나다**(`B-11`). 없으면 `deferred` —
+        // 상태·attempt·자원을 건드리지 않으므로 사람이 계획을 넣고 다시 부르면 그대로 이어진다.
+        // 되찾은 `prepared`가 먼저 들어가 있다(같은 turn loop 하나가 둘을 함께 진행한다).
+        const plans = new Map(reclaimed);
+        for (const task of batch.items) {
+            const doc = readPlanDocument(opts.planDir, task.taskId);
+            if (doc)
+                plans.set(task.taskId, doc);
+        }
+        // batch가 비어 있어도(되찾은 `prepared`만 있을 때) preflight를 부르지 않는다 — 빈 batch에
+        // 결정을 커밋하는 것은 아무 의미 없는 revision 증가일 뿐이다.
+        if (batch.items.length > 0) {
+            kernel.commitPreflightBatch({
+                baseRevision: batch.revision,
+                actionId: id("pf"),
+                decisions: batch.items.map((t) => plans.has(t.taskId)
+                    ? { taskId: t.taskId, outcome: "prepared", attemptId: id("att") }
+                    : { taskId: t.taskId, outcome: "deferred" }),
+            });
+        }
+        for (const task of batch.items) {
+            if (!plans.has(task.taskId)) {
+                emit({ kind: "task_deferred", taskId: task.taskId, marker: "plan_missing" });
+                tasks.push({ taskId: task.taskId, state: "deferred", marker: "plan_missing" });
+            }
+        }
+        if (plans.size === 0) {
+            stoppedBecause = "no_plans_available";
+            break;
+        }
+        for (const [taskId, planDoc] of plans) {
+            // 예산·만료는 **task마다 다시** 본다. 소진을 알게 된 뒤에는 남은 task를 시작하지 않는다
+            // (`prepared`에 남으므로 프로세스도 lease도 잡지 않는다).
+            const perTask = budgetGate(kernel, clock);
+            if (perTask) {
+                stoppedBecause = perTask;
+                break;
+            }
+            // **`C-55`**: turn 중간에 kernel이 예기치 않게 throw하면(시계 역행 · durable 쓰기 오류) 지금까지는
+            // CLI 프로세스가 그대로 죽어 task가 `running`/`cleaning`에 durable lease를 쥔 채 남았다. 여기서
+            // 잡아 **loop를 소리나게 멈추고** 남은 task를 시작하지 않는다. 그 task 자체는 여전히 크래시 등가라
+            // durable `processLeaseMarker`로 복구한다 — 이 catch가 정리를 대신 해줄 수는 없다(lease는
+            // `runTaskTurn` 안에 있다). 바뀌는 것은 **나머지 batch를 조용히 계속 밀지 않는다**는 점이다.
+            let outcome;
+            try {
+                outcome = await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit });
+            }
+            catch (err) {
+                const marker = codeOf(err);
+                emit({ kind: "task_aborted", taskId, marker, detail: "turn_aborted" });
+                tasks.push({ taskId, state: "aborted", marker });
+                stoppedBecause = "turn_aborted";
+                break;
+            }
+            tasks.push(outcome);
+            // 시작이 거부된 잔여(`preflight_drift` 등)를 `prepared`에 두면 그것이 곧 `B-21`을 다시 만든다 —
+            // 자원을 놓아주고 사람이 보게 한다. attempt는 이미 소모된 뒤이므로 여기서 더 태우지 않는다.
+            if (outcome.state === "prepared") {
+                kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+                emit({ kind: "task_paused", taskId, marker: outcome.marker, detail: "start_rejected" });
+                outcome.state = "paused";
+            }
+            // `B-22`: 원장에 들어가지 않은 turn이 있으면 이후 예산 판정은 낡은 총량을 본다 → 멈춘다.
+            // 이미 지난 task는 `paused`로 착지해 있으므로 사람이 회계를 맞춘 뒤 그대로 이어서 부를 수 있다.
+            if (outcome.chargeFailed !== undefined) {
+                stoppedBecause = "usage_unaccounted";
+                break;
+            }
+            if (opts.signal?.aborted) {
+                stoppedBecause = "cancelled";
+                break;
+            }
+        }
+        if (stoppedBecause !== "iteration_limit")
+            break;
+    }
+    emit({ kind: "run_finished", marker: stoppedBecause });
+    return { blocked: null, iterations, tasks, stoppedBecause };
+}
+/**
+ * `prepared → running → cleaning → (completed | paused | cancelled)`.
+ *
+ * **hang이 구조적으로 불가능하다**: worker 스트림은 bounded in-memory iterable이고, 모든 실패·거부·
+ * deadline·취소는 `recordTerminal` → `confirmCleanup` → 착지로 접힌다. 어떤 경로에서도 task를
+ * `running`에 남겨두지 않는다.
+ */
+async function runTaskTurn(ctx) {
+    const { kernel, taskId, clock, emit } = ctx;
+    const leaseMarker = `lease.${randomBytes(16).toString("hex")}`;
+    const turnId = id("turn");
+    const startedMs = clock().getTime();
+    let started;
+    try {
+        started = kernel.startPreparedTask({ taskId, actionId: id("start"), leaseMarker });
+    }
+    catch (err) {
+        // 시작 자체가 거부되면 attempt도 lease도 없다 — 상태는 `prepared` 그대로다(정리할 것이 없다).
+        emit({ kind: "task_deferred", taskId, marker: codeOf(err) });
+        return { taskId, state: "prepared", marker: codeOf(err) };
+    }
+    emit({ kind: "task_started", taskId, marker: turnId });
+    const attemptId = started.task.execution.attemptId ?? "";
+    let plan = null;
+    let dispatchCharged = false;
+    let dispatchChargeFailed = null;
+    let marker = "worker_failed";
+    let usage = { inputTokens: 0, outputTokens: 0 };
+    try {
+        const stream = startOfflinePlanTurn({
+            backend: OFFLINE_PLAN_BACKEND,
+            planJson: encodePlan(ctx.planDoc, { runId: kernel.getState().runId, taskId, attemptId, turnId }),
+            binding: { runId: kernel.getState().runId, taskId, attemptId, turnId },
+        });
+        let seq = 0;
+        for await (const ev of stream) {
+            const deadline = attemptDeadline(kernel, taskId, clock);
+            if (deadline) {
+                marker = deadline;
+                plan = null;
+                break;
+            }
+            if (ctx.signal?.aborted) {
+                marker = "cancelled";
+                plan = null;
+                break;
+            }
+            const applied = applyWorkerEvent(kernel, started.progress, ev, ++seq);
+            if (applied.progress)
+                emit({ kind: "task_progress", taskId, detail: applied.step });
+            if (ev.kind === "terminal") {
+                usage = boundedUsage(ev.usage);
+                plan = validateTypedExecutionPlan(ev.plan, { runId: kernel.getState().runId, taskId, attemptId, turnId });
+                // **M5d task 2 — `B-10` 소비면.** operation이 있으면 승인 경계 안에서 **집행한다**.
+                // 하나라도 닫히지 않으면 `turn_completed`가 아니며, 그 turn은 결과를 발행하지 않는다.
+                if (plan.operations.length > 0) {
+                    const dispatched = await dispatchOperations({
+                        kernel,
+                        taskId,
+                        turnId,
+                        plan,
+                        usage,
+                        elapsedMs: Math.max(0, clock().getTime() - startedMs),
+                        signal: ctx.signal,
+                    });
+                    marker = dispatched.marker;
+                    // 생산 turn은 **집행보다 먼저** 권위 있게 과금된다 → 여기서 다시 적지 않는다.
+                    dispatchCharged = dispatched.charged;
+                    dispatchChargeFailed = dispatched.chargeFailed;
+                    if (marker !== "turn_completed")
+                        plan = null;
+                }
+                else {
+                    marker = "turn_completed";
+                }
+            }
+        }
+    }
+    catch (err) {
+        marker = workerMarker(err);
+        plan = null;
+    }
+    // **실패한 turn의 usage도 durable하게 적는다** — 그래야 다음 판정이 최신 총량을 본다(`B-12`).
+    let chargeFailed = null;
+    try {
+        // 생산 turn은 `dispatchOperations`가 이미 권위 있게 적었다(순서가 계약이다). 그 경우 여기서 다시
+        // 적으면 `turn_already_charged`다 — 같은 turn은 정확히 한 번만 원장에 들어간다.
+        if (dispatchCharged)
+            throw new SkipCharge();
+        kernel.chargeTurnUsage({
+            taskId,
+            turnId,
+            actionId: id("charge"),
+            inputTokens: usage.inputTokens,
+            outputTokens: usage.outputTokens,
+            elapsedMs: Math.max(0, clock().getTime() - startedMs),
+        });
+    }
+    catch (err) {
+        // `B-22`: 정리는 여전히 막지 않는다(아래 recordTerminal → confirmCleanup은 그대로 지난다). 다만
+        // **삼키지 않는다**: 이 turn의 토큰이 durable 회계에 없으므로 다음 `budgetGate`는 낡은 총량을 보고
+        // 통과한다 = live backend에서 계량되지 않은 지출이다. 정리를 지난 뒤 pause + loop 정지로 접는다.
+        //
+        // "예산 소진" 실패와 그 외를 나누지 않는 이유: `chargeTurnUsage`에는 소진 실패 모드가 **없다**
+        // (총량은 상한으로 clamp되고 소진 판정은 `budgetGate`가 나중에 한다). 거부 코드는 전부 신원·중복·
+        // 기록 상한(`turn_already_charged` · `turn_conflict` · `dispatch_identity_stale` ·
+        // `dispatch_plan_conflict` · `charged_turns_exhausted`)이며, 어느 쪽이든 결과는 하나 —
+        // **이 turn의 토큰이 원장에 없다**. 그래서 같은 처분을 받는다.
+        chargeFailed = err instanceof SkipCharge ? null : codeOf(err);
+    }
+    if (dispatchChargeFailed !== null)
+        chargeFailed = dispatchChargeFailed;
+    const sealed = marker === "turn_completed" && plan !== null ? { summary: plan.result.summary, outputs: [...plan.result.outputs] } : null;
+    kernel.recordTerminal({ taskId, actionId: id("term"), marker, pendingResult: sealed });
+    // 이 loop는 프로세스를 띄우지 않으므로 생존 자손이 **구조적으로 0**이다 → 정리는 언제나 확인된다.
+    kernel.confirmCleanup({ taskId, actionId: id("clean"), leaseMarker });
+    if (marker === "cancelled") {
+        kernel.requestCancel({ taskId, actionId: id("cancel") });
+        kernel.settleCleanedAttempt({ taskId, actionId: id("settle") });
+        emit({ kind: "task_cancelled", taskId, marker });
+        return { taskId, state: "cancelled", marker, ...(chargeFailed ? { chargeFailed } : {}) };
+    }
+    // `B-22`: 회계 실패는 turn 자체의 marker보다 **먼저** 착지를 결정한다. 정리는 이미 확인됐고(위),
+    // pause는 kernel이 cleanup 확인을 요구하므로 B1(cleanup_unconfirmed 우선)은 그대로 산다.
+    if (chargeFailed !== null) {
+        kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+        emit({ kind: "task_paused", taskId, marker: chargeFailed, detail: "usage_unaccounted" });
+        return { taskId, state: "paused", marker: chargeFailed, chargeFailed };
+    }
+    if (marker !== "turn_completed" || plan === null) {
+        const reason = pauseReasonFor(marker);
+        kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: reason });
+        emit({ kind: "task_paused", taskId, marker, detail: reason });
+        return { taskId, state: "paused", marker };
+    }
+    try {
+        kernel.completeTaskWithArtifacts({
+            envelope: resultEnvelope(kernel, started.task),
+            body: resultBody(taskId, plan),
+            summary: plan.result.summary,
+            outputs: [...plan.result.outputs],
+        });
+    }
+    catch (err) {
+        // 발행이 거부되면(소유권·hash·경로) 결과를 만들지 않고 **복구 가능한 pause**로 착지한다.
+        kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+        emit({ kind: "task_paused", taskId, marker: codeOf(err), detail: "publish_rejected" });
+        return { taskId, state: "paused", marker: codeOf(err) };
+    }
+    emit({ kind: "task_completed", taskId, marker });
+    return { taskId, state: "completed", marker };
+}
+// ── typed operation 집행 (M5d task 2 — `B-10` 소비면) ───────────────────────
+/**
+ * **승인된 typed operation을 계획 순서대로 집행한다.**
+ *
+ * 이 함수가 여는 것은 **집행 하나뿐**이다 — 권위는 전부 kernel이 쥐고 있고 여기에는 판정이 없다:
+ * 승인 레코드 대조 · 소유권 · `writableRoots` · digest 재검증 · spawn 상한 · deadline · 멱등 pending은
+ * 전부 `beginOperation`/집행기 안에서 일어난다. autopilot이 고를 수 있는 것은 **계획에 이미 있는
+ * operationId의 순서**뿐이고, 실행 대상·argv·경로·바이트를 고르는 통로는 존재하지 않는다.
+ *
+ * **하나라도 닫히지 않으면 turn이 완료가 아니다.** 실패한 operation은 열린 pending으로 남지 않는다:
+ * 집행 경계에 들어가지 않았으면 `failOperation`, 들어갔으면(외부 효과가 있었을 수 있다)
+ * `reconcileUncertainOperation`의 `outcome_unknown`으로 **정직하게** 닫는다.
+ *
+ * 둘 다 실패해 pending이 남으면 **`chargeTurnUsage`가 아니라** 착지 전이가 막는다(이 turn은 이미 권위
+ * 있게 과금돼 있어 뒤쪽 과금은 건너뛴다): `recordTerminal`/`pauseTask`의 `assertNoPendingOperations`가
+ * `operation_pending_unreconciled`로 던지고, 그 throw는 `C-55` catch가 `turn_aborted`로 받아 loop를
+ * 멈춘다. 어느 쪽이든 **조용한 진행은 없다** — 다만 정지 경로는 `B-22`가 아니라 이쪽이다.
+ *
+ * live·네트워크는 이 경로로도 열리지 않는다 — `run_process`가 실행하는 것은 승인 manifest가 digest로
+ * 고정한 `node <controllerEntrypoint>`뿐이고 action은 닫힌 enum이다.
+ */
+async function dispatchOperations(ctx) {
+    const { kernel, taskId, turnId, plan, signal } = ctx;
+    let permit;
+    try {
+        permit = kernel.issueOperationDispatchPermit({ taskId, turnId, actionId: id("permit"), plan });
+    }
+    catch (err) {
+        // permit이 없으면 claim도 없다 — 이 turn은 평범한 과금으로 닫힌다.
+        return { marker: operationMarker(err), charged: false, chargeFailed: null };
+    }
+    // **순서가 계약이다: 권위 과금 → grant → 효과.** kernel은 "이 계획의 turn을 kernel 발급 권위로
+    // 과금했는가"를 효과 게이트에서 본다(`budget_turn_unaccounted`) — 효과를 승인하는 것은 **과금된
+    // 생산 turn**이지 호출자의 선언이 아니다. 그래서 여기서 먼저 적는다.
+    try {
+        kernel.chargeDispatchTurnUsage({
+            permit,
+            actionId: id("charge"),
+            inputTokens: ctx.usage.inputTokens,
+            outputTokens: ctx.usage.outputTokens,
+            elapsedMs: ctx.elapsedMs,
+        });
+    }
+    catch (err) {
+        // `B-22`와 같은 처분: 원장에 없는 turn으로는 효과를 승인하지 않는다(operation 0건 · pending 0건).
+        return { marker: operationMarker(err), charged: false, chargeFailed: codeOf(err) };
+    }
+    // **operation은 permit이 쥔 계획에서 꺼낸다.** kernel이 계획을 다시 검증하면서 자기 사본을 만들므로,
+    // 호출자가 들고 있던 객체를 그대로 넘기면 grant 결박 검사에서 `dispatch_operation_unbound`다.
+    // (이 결박이 곧 "계획 밖 operation·치환된 operation은 표현할 수 없다"는 계약이다.)
+    for (const op of permit.plan.operations) {
+        if (signal?.aborted)
+            return { marker: "cancelled", charged: true, chargeFailed: null };
+        // **승인 여부는 등록보다 먼저 본다.** facade의 권위 해석은 순수 판정이고(파일 시스템 무접촉 ·
+        // grant 미소비) 집행기는 durable pending을 `attemptedAt`으로 먼저 찍은 **뒤에** 승인을 다시 읽는다.
+        // 그래서 이 사전 판정이 없으면 **한 번도 효과가 없었던 거부**가 `outcome_unknown`으로 기록된다 —
+        // 승인 밖 요청과 "정말 결과를 모르는" 요청이 같은 marker를 받아서는 안 된다.
+        try {
+            if (op.kind === "write_file")
+                resolveWriteFileAuthority(op, permit);
+            else
+                resolveProcessLaunchCapability(op, permit);
+        }
+        catch (err) {
+            return { marker: operationMarker(err), charged: true, chargeFailed: null };
+        }
+        let grant;
+        try {
+            grant = kernel.beginOperation({ permit, operationId: op.operationId, actionId: id("op") });
+        }
+        catch (err) {
+            // 등록 자체가 거부되면 durable pending도 효과도 없다 — 닫을 것이 없다.
+            return { marker: operationMarker(err), charged: true, chargeFailed: null };
+        }
+        try {
+            const outcome = op.kind === "write_file"
+                ? applyWriteFile(op, grant)
+                : await executeRunProcessOperation(grant, op, resolveProcessLaunchCapability(op, grant), { signal });
+            kernel.recordOperationReceipt({ outcome, actionId: id("rcpt") });
+        }
+        catch (err) {
+            closePendingOperation(kernel, grant, taskId, op.operationId, err);
+            return { marker: operationMarker(err), charged: true, chargeFailed: null };
+        }
+    }
+    return { marker: "turn_completed", charged: true, chargeFailed: null };
+}
+/**
+ * 실패한 operation의 durable pending을 닫는다. **성공을 만들 수 없는 두 경로뿐이다.**
+ *
+ * `failOperation`은 집행 경계에 들어가지 않은 pending만 받는다(들어간 것을 평범한 실패로 지우면 부분
+ * 외부 효과가 기록에서 사라진다). 그래서 거부되면 durable 신원으로 `reconcileUncertainOperation`을 부른다 —
+ * marker는 호출자 입력이 아니라 durable 진실에서 파생되므로 여기서 결과를 지어낼 수 없다.
+ * 둘 다 실패하면 **삼키지 않는다**: pending이 남아 turn을 닫을 수 없고 loop가 멈춘다.
+ */
+function closePendingOperation(kernel, grant, taskId, operationId, cause) {
+    try {
+        kernel.failOperation({ grant, actionId: id("failop"), marker: isDenial(cause) ? "denied" : "failed" });
+        return;
+    }
+    catch {
+        /* 집행 경계에 들어간 pending이다 — 아래 정합화로만 정직하게 닫힌다. */
+    }
+    const task = kernel.getTask(taskId);
+    const exec = task?.execution;
+    if (!task || exec?.attemptId == null || exec.dispatchTurnId == null || exec.dispatchPlanDigest == null)
+        return;
+    const op = task.execution.pendingOperations.find((p) => p.operationId === operationId);
+    if (op === undefined)
+        return;
+    try {
+        kernel.reconcileUncertainOperation({
+            runId: kernel.getState().runId,
+            taskId,
+            attemptId: exec.attemptId,
+            turnId: exec.dispatchTurnId,
+            planDigest: exec.dispatchPlanDigest,
+            operationId,
+            kind: op.kind,
+            authorityId: op.authorityId,
+            actionId: id("recon"),
+        });
+    }
+    catch {
+        /* 남은 pending은 착지 전이(`assertNoPendingOperations`)가 막는다 → `C-55` 경로로 loop가 멈춘다. */
+    }
+}
+/** 이미 권위 있게 과금된 turn을 두 번 적지 않기 위한 내부 신호(오류가 아니다). */
+class SkipCharge extends Error {
+}
+/** 거부(승인 밖·권위 위반)와 집행 실패를 나눈다 — 전자만 `denied` 영수증을 받는다. */
+function isDenial(err) {
+    const code = codeOf(err);
+    return code.startsWith("dispatch_") || code.startsWith("operation_") || code === "plan_invalid";
+}
+/** 집행 단계 오류 → 닫힌 `AutopilotMarker`. 데이터가 marker를 고르지 못한다. */
+function operationMarker(err) {
+    const code = codeOf(err);
+    if (code === "process_cleanup_unconfirmed")
+        return "cleanup_unconfirmed";
+    if (code.startsWith("process_"))
+        return "process_failed";
+    if (code === "plan_invalid")
+        return "plan_invalid";
+    return "operation_denied";
+}
+/**
+ * worker 이벤트 1건을 durable 진행으로 반영한다. `progress`만 no-progress 시계를 되돌린다
+ * (`heartbeat`·`started`·`terminal`은 kernel이 거부하므로 아예 보내지 않는다).
+ */
+function applyWorkerEvent(kernel, channel, ev, seq) {
+    if (ev.kind !== "progress")
+        return { progress: false };
+    kernel.recordProgress({ channel, actionId: id("prog"), event: { kind: "progress", seq, step: ev.step } });
+    return { progress: true, step: ev.step };
+}
+// ── 게이트 ──────────────────────────────────────────────────────────────────
+/**
+ * **run 수준 deadline·예산.** 전부 **durable** 값에서 나온다(`accounting.budgetDeadlineAt` ·
+ * `manifest.expiresAt` · `remainingBudget()`) → 프로세스를 다시 띄워도 예산이 새로 생기지 않는다(`B-12`).
+ */
+function budgetGate(kernel, clock) {
+    const now = formatTimestamp(clock());
+    const manifest = kernel.getManifest();
+    if (now >= manifest.expiresAt)
+        return "manifest_expired";
+    const remaining = kernel.remainingBudget(now);
+    if (remaining.elapsedMs <= 0)
+        return "budget_elapsed_exhausted";
+    if (remaining.tokens !== null && remaining.tokens <= 0)
+        return "budget_tokens_exhausted";
+    return null;
+}
+/**
+ * **attempt 수준 deadline**: wall-clock(`execution.wallDeadlineAt` — kernel이 계산한 값)과
+ * no-progress(`lastProgressAt ?? phaseStartedAt` + `autopilotPolicy.maxNoProgressMs`).
+ * 등호 경계는 kernel의 효과 게이트와 같은 `>=`다.
+ *
+ * ponytail: 타이머 race가 아니라 **이벤트 사이의 시각 판정**이다 — 이 slice의 유일한 backend가
+ * blocking하지 않는 in-memory 스트림이라 그것으로 bounded가 보장된다(스트림 길이도 상한이 있다).
+ * blocking backend를 붙이는 slice가 타이머를 가져와야 한다.
+ */
+function attemptDeadline(kernel, taskId, clock) {
+    const task = kernel.getTask(taskId);
+    if (!task)
+        return "worker_failed";
+    const now = formatTimestamp(clock());
+    const exec = task.execution;
+    if (exec.wallDeadlineAt !== null && now >= exec.wallDeadlineAt)
+        return "wall_deadline_exceeded";
+    const base = exec.lastProgressAt ?? exec.phaseStartedAt;
+    if (base !== null) {
+        const limit = Date.parse(base) + kernel.getManifest().autopilotPolicy.maxNoProgressMs;
+        if (Date.parse(now) >= limit)
+            return "no_progress_timeout";
+    }
+    return null;
+}
+/** 실패 marker → 닫힌 `PauseReason`. 모르는 marker는 사람 판단이 필요하다는 뜻이다. */
+function pauseReasonFor(marker) {
+    switch (marker) {
+        case "wall_deadline_exceeded":
+        case "no_progress_timeout":
+            return "budget_elapsed_exhausted";
+        case "cancelled":
+            return "interrupted";
+        default:
+            return "approval_required";
+    }
+}
+/** `<planDir>/<taskId>.json`. taskId는 kernel이 검증한 slug이므로 경로 탈출이 표현되지 않는다. */
+function readPlanDocument(planDir, taskId) {
+    try {
+        const file = join(planDir, `${assertSlug(taskId, "taskId")}.json`);
+        const bytes = readFileSync(file);
+        if (bytes.byteLength > MAX_PLAN_JSON_BYTES)
+            return null;
+        // `JSON.parse`의 결과는 평범한 데이터다(accessor·proxy·함수가 없다). 형태 판정은 전부 worker의
+        // 닫힌 validator가 한다 — 여기서는 두 field를 옮기기만 한다.
+        const doc = JSON.parse(bytes.toString("utf8"));
+        if (doc === null || typeof doc !== "object" || Array.isArray(doc))
+            return null;
+        return { operations: doc.operations, result: doc.result };
+    }
+    catch {
+        return null;
+    }
+}
+/** 계획 문서 + durable binding → worker 입력 바이트. 검증은 worker가 정확히 한 번 한다. */
+function encodePlan(doc, binding) {
+    return new TextEncoder().encode(JSON.stringify({
+        schemaVersion: TYPED_EXECUTION_PLAN_SCHEMA_VERSION,
+        ...binding,
+        operations: doc.operations,
+        result: doc.result,
+    }));
+}
+function boundedIterations(v) {
+    if (typeof v !== "number" || !Number.isFinite(v) || v < 1)
+        return DEFAULT_MAX_ITERATIONS;
+    return Math.min(Math.floor(v), DEFAULT_MAX_ITERATIONS);
+}
+function boundedUsage(raw) {
+    const clamp = (n) => (typeof n === "number" && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0);
+    return { inputTokens: clamp(raw?.inputTokens), outputTokens: clamp(raw?.outputTokens) };
+}
+/** worker·계획 검증 오류를 닫힌 marker로 접는다(호출자·데이터가 marker를 고르지 못한다). */
+function workerMarker(err) {
+    const code = codeOf(err);
+    return code.startsWith("worker_") ? "worker_failed" : "plan_invalid";
+}
+function codeOf(err) {
+    return err instanceof OrchestrationError ? err.code : "autopilot_internal_error";
+}
+function id(kind) {
+    return `${kind}.${randomBytes(8).toString("hex")}`;
+}
+function resultEnvelope(kernel, task) {
+    const state = kernel.getState();
+    return {
+        schemaVersion: ORCHESTRATION_SCHEMA_VERSION,
+        messageId: `res.${task.taskId}`,
+        runId: state.runId,
+        milestoneId: state.milestoneId,
+        taskId: task.taskId,
+        parentTaskId: task.parentTaskId,
+        sender: task.roleId,
+        recipient: ORCHESTRATOR_ID,
+        type: "result",
+        createdAt: formatTimestamp(new Date()),
+        dependsOn: [],
+        artifactRefs: [],
+        supersedes: null,
+    };
+}
+/**
+ * §5.2 `result` 필수 heading 전부 + **bounded 안정 서술만**. raw 출력·프롬프트·토큰 카운터는 들어가지
+ * 않는다. heading 목록을 상수에서 **파생**하므로 계약이 바뀌면 자동으로 따라간다(하드코딩 사본 없음).
+ */
+function resultBody(taskId, plan) {
+    const deliverables = plan.result.outputs.length === 0 ? "- (없음)" : plan.result.outputs.map((o) => `- ${o.path} (${o.role})`).join("\n");
+    const filled = {
+        "Result Summary": `- task: ${taskId}\n- backend: ${OFFLINE_PLAN_BACKEND}`,
+        "Work Performed": "- autopilot이 승인 경계 안에서 offline plan turn 1회를 진행했다.",
+        "Decisions and Assumptions": "- typed operation은 집행하지 않았다(계획에 operation이 없는 turn만 발행된다).",
+        Deliverables: deliverables,
+        "Tests and Evidence": `- 검증된 산출물 ${plan.result.outputs.length}건 · kernel이 소유권·hash를 재확인했다.`,
+        "Risks / Known Limitations": "- 중앙은 bounded 요약과 검증된 포인터만 옮긴다 — 원문·계측값은 durable에 남기지 않는다.",
+        "Unresolved Questions": "- (없음)",
+        "Recommended Next Action": "- 다음 ready batch를 진행한다.",
+    };
+    return REQUIRED_BODY_HEADINGS.result.map((h) => `## ${h}\n\n${filled[h] ?? "- (없음)"}`).join("\n\n");
+}
+/** `harness autopilot` 명령 본체. 출력은 stdout, run 수준 거부는 exit 2다. */
+export async function runAutopilotCommand(opts) {
+    const workspaceRoot = resolve(opts.workspace ?? process.cwd());
+    const planDir = isAbsolute(opts.planDir) ? opts.planDir : resolve(opts.planDir);
+    const ac = new AbortController();
+    const onSigint = () => ac.abort();
+    process.on("SIGINT", onSigint);
+    try {
+        const report = await runAutopilot({
+            workspaceRoot,
+            runId: opts.run,
+            milestoneId: opts.milestone,
+            planDir,
+            maxIterations: opts.maxIterations === undefined ? undefined : Number(opts.maxIterations),
+            signal: ac.signal,
+            onEvent: (e) => {
+                process.stdout.write(opts.json
+                    ? `${JSON.stringify(e)}\n`
+                    : `[autopilot] ${e.kind}${e.taskId ? ` ${e.taskId}` : ""}${e.marker ? ` ${e.marker}` : ""}${e.detail ? ` (${e.detail})` : ""}\n`);
+            },
+        });
+        process.stdout.write(opts.json
+            ? `${JSON.stringify(report)}\n`
+            : `[autopilot] 종료: ${report.stoppedBecause} · iterations=${report.iterations} · tasks=${report.tasks.length}\n`);
+        if (report.blocked !== null) {
+            process.stdout.write(`[autopilot] 실행 거부: ${report.blocked}\n`);
+            process.exitCode = 2;
+        }
+    }
+    finally {
+        process.off("SIGINT", onSigint);
+    }
+}
+/** 상한 상수를 테스트가 계약으로 단정할 수 있게 내보낸다. */
+export const AUTOPILOT_LIMITS = Object.freeze({ maxIterations: DEFAULT_MAX_ITERATIONS, maxSummaryLength: LIMITS.maxSummaryLength });

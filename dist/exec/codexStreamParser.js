@@ -26,9 +26,17 @@
  *   의도적으로 전달한다** — 상한을 지난 본문이 `assistant.text`와 `result.text`로 나간다(리뷰 판정
  *   `--output-schema` 본문이 여기로 온다). 이 모듈은 디스크에 아무것도 쓰지 않는다.
  *
- * ⚠ JSONL 필드명은 supervisor가 실측한 `codex exec --help`(0.146.0-alpha.3)의 **플래그**까지만 확정됐고
- * 이벤트 payload 필드명은 provider live 경로로 확인하지 않았다 — 그래서 `thread_id`/`session_id` 같은
- * 별칭을 함께 받는다. live 확정은 M5b 게이트다.
+ * ⚠ live 확인 범위(B-9, codex-cli **0.145.0-alpha.27** 실측 1회: `codex exec --json --sandbox read-only`,
+ * 도구·파일변경·오류·resume·MCP를 하나도 타지 않는 사소한 turn).
+ * - **확인됨**: `thread.started` + `thread_id`(소문자 정규 UUIDv7 — `CODEX_SESSION_ID_RE` 통과) ·
+ *   `turn.started` · `item.completed` + `item.type`(스네이크 `item_type`이 아니라 **`type`**) + `item.text` ·
+ *   `item.type: "agent_message"` · `turn.completed` + `usage` · usage 필드명
+ *   `input_tokens` · `cached_input_tokens` · **`cache_write_input_tokens`** · `output_tokens` ·
+ *   `reasoning_output_tokens`(= `output_tokens`의 **부분집합**. `usageOf()` 주석 참고 — 더하지 않는다).
+ * - **여전히 미확인**: `item.started`/`item.updated`의 존재와 형태, `command_execution`·`file_change`·
+ *   `reasoning` item payload, `turn.failed`·`error` 형태, resume(`thread.started`의 재현), MCP 이벤트,
+ *   `session_id`/`id` 별칭이 실제로 쓰이는 CLI 버전. 이들은 관측된 적이 없으므로 별칭 수용을 유지한다.
+ * 필드명은 alpha 사이에서 움직인다 — 별칭은 **지우지 않고 추가만** 한다.
  */
 import { redactSecrets } from "../tools/redact.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
@@ -63,12 +71,21 @@ export function summarizeError(v) {
     const raw = typeof v === "string" ? v : "";
     return redactSecrets(bounded(raw.replace(/\s+/g, " ").trim(), MAX_ERROR_CHARS));
 }
+/**
+ * `reasoning_output_tokens`를 **더하지 않는** 이유(B-9):
+ * 실측(0.145.0-alpha.27) `usage`는 `output_tokens: 20`, `reasoning_output_tokens: 13`이었다.
+ * "Reply with exactly: OK"의 응답 본문은 1~2 토큰이므로, 둘이 배타적이라면 총 청구 output이 33이 되어야
+ * 하는데 이는 성립하지 않는다. `reasoning_output_tokens`는 Responses API의
+ * `output_tokens_details.reasoning_tokens`에서 오는 **`output_tokens`의 내역(부분집합)**이다.
+ * 따라서 더하면 예산이 추론 토큰만큼 **이중 계상**된다. 여기서는 `output_tokens`만 채택한다.
+ */
 function usageOf(v) {
     const o = (v ?? {});
     return {
         inputTokens: clampInt(o.input_tokens ?? o.inputTokens),
         outputTokens: clampInt(o.output_tokens ?? o.outputTokens),
-        cacheCreationInputTokens: clampInt(o.cache_creation_input_tokens),
+        // 별칭은 추가만 한다 — CLI 버전 사이에서 이름이 움직인다. live(0.145.0-alpha.27)는 cache_write_*다.
+        cacheCreationInputTokens: clampInt(o.cache_write_input_tokens ?? o.cache_creation_input_tokens),
         cacheReadInputTokens: clampInt(o.cached_input_tokens ?? o.cache_read_input_tokens),
     };
 }

@@ -11,6 +11,7 @@ import { runTaskPrompt } from "./commands/taskPrompt.js";
 import { runExec } from "./commands/exec.js";
 import { runMissionCommand } from "./commands/mission.js";
 import { runHandoffCommand } from "./commands/handoff.js";
+import { runAutopilotCommand } from "./commands/autopilot.js";
 // 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
 // import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
 const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
@@ -117,5 +118,17 @@ program
     .option("--concurrency <n>", "병렬 모드 동시 세션 상한 (기본 3)", (v) => parseInt(v, 10))
     .action(async (opts) => {
     await runMissionCommand({ goal: opts.goal, base: opts.base, yes: opts.yes, maxTasks: opts.maxTasks, reviewRounds: opts.reviewRounds, parallel: opts.parallel, concurrency: opts.concurrency });
+});
+program
+    .command("autopilot")
+    .description("[v3-M5c] 승인 manifest 하나로 gate된 durable run을 offline plan worker로 전진시킨다 (추론·네트워크·프로세스 0)")
+    .requiredOption("--run <runId>", "대상 orchestration run id")
+    .requiredOption("--milestone <id>", "이 실행이 근거로 삼는 승인 milestone (durable run과 다르면 시작하지 않는다)")
+    .requiredOption("--plan-dir <path>", "task별 offline 계획 JSON 디렉터리 (<planDir>/<taskId>.json)")
+    .option("--workspace <path>", "orchestration workspace 루트 (기본: 현재 디렉터리)")
+    .option("--max-iterations <n>", `loop 상한 (기본·최대 ${16})`)
+    .option("--json", "진행 이벤트를 NDJSON으로 출력", false)
+    .action(async (opts) => {
+    await runAutopilotCommand(opts);
 });
 program.parse();
