@@ -215,6 +215,23 @@ if [ -d "outputs/orchestration" ]; then false; else true; fi
 check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
 
 echo ""
+echo "== Test 16: M5d offline self-hosting (승인 1건 · 실제 파일 수정 · 수동 복사 0회) =="
+# 임시 workspace 전용. 상세 체크는 스크립트가 자체 출력한다.
+M5D_OUT="$(node scripts/m5d-offline-acceptance.mjs 2>&1)"
+M5D_RC=$?
+[ "$M5D_RC" -eq 0 ];                              check "M5d offline acceptance exit 0" $?
+echo "$M5D_OUT" | grep -q " FAIL=0";              check "M5d 내부 체크 전부 통과" $?
+echo "$M5D_OUT" | grep -q "버그 파일이 실제로 고쳐졌다"
+check "M5d implement 단계가 실제 바이트를 냈다" $?
+echo "$M5D_OUT" | grep -q "의존 task도 같은 실행에서 완주했다"
+check "M5d DAG 전진(수동 개입 0) 확인 출력" $?
+echo "$M5D_OUT" | grep -q "신규 파일 발행은 fail closed"
+check "M5d B-16 잔여(신규 발행 차단) 확인 출력" $?
+echo "$M5D_OUT" | grep -q "paused로 착지한다(hang 없음)"
+check "M5d hang 대신 pause 확인 출력" $?
+echo "$M5D_OUT" | grep -q "생존 자손 0";           check "M5d 잔존 프로세스 0 확인 출력" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
