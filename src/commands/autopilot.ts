@@ -457,8 +457,12 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
  *
  * **하나라도 닫히지 않으면 turn이 완료가 아니다.** 실패한 operation은 열린 pending으로 남지 않는다:
  * 집행 경계에 들어가지 않았으면 `failOperation`, 들어갔으면(외부 효과가 있었을 수 있다)
- * `reconcileUncertainOperation`의 `outcome_unknown`으로 **정직하게** 닫는다. 둘 다 실패하면 pending이
- * 남아 `chargeTurnUsage`가 거부하고, 그것은 `B-22` 경로로 pause + loop 정지가 된다(조용한 진행 없음).
+ * `reconcileUncertainOperation`의 `outcome_unknown`으로 **정직하게** 닫는다.
+ *
+ * 둘 다 실패해 pending이 남으면 **`chargeTurnUsage`가 아니라** 착지 전이가 막는다(이 turn은 이미 권위
+ * 있게 과금돼 있어 뒤쪽 과금은 건너뛴다): `recordTerminal`/`pauseTask`의 `assertNoPendingOperations`가
+ * `operation_pending_unreconciled`로 던지고, 그 throw는 `C-55` catch가 `turn_aborted`로 받아 loop를
+ * 멈춘다. 어느 쪽이든 **조용한 진행은 없다** — 다만 정지 경로는 `B-22`가 아니라 이쪽이다.
  *
  * live·네트워크는 이 경로로도 열리지 않는다 — `run_process`가 실행하는 것은 승인 manifest가 digest로
  * 고정한 `node <controllerEntrypoint>`뿐이고 action은 닫힌 enum이다.
@@ -581,7 +585,7 @@ function closePendingOperation(
       actionId: id("recon"),
     });
   } catch {
-    /* 남은 pending은 `chargeTurnUsage`가 거부한다 → `B-22` 경로(pause + 정지). 조용히 진행하지 않는다. */
+    /* 남은 pending은 착지 전이(`assertNoPendingOperations`)가 막는다 → `C-55` 경로로 loop가 멈춘다. */
   }
 }
 

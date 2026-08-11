@@ -325,8 +325,10 @@ test("[M5d] 승인되지 않은 typed operation은 denied 영수증으로 닫히
   // 승인 밖 요청은 **등록 전에** 거부된다 → durable 영수증도 pending도 없다. `outcome_unknown`은
   // "정말 결과를 모르는" 경우에만 쓰인다(승인 밖 요청과 같은 marker를 받아서는 안 된다).
   assert.deepEqual(task.execution.operationReceipts, [], "승인 밖 거부가 durable 영수증을 남겼다");
-  // 집행을 시도했다는 사실은 turn claim으로 정직하게 남는다.
+  // 집행을 시도했다는 사실은 turn claim으로 정직하게 남고, **거부된 turn의 토큰도 원장에 들어간다**
+  // (효과는 0이지만 worker turn은 실제로 일어났다 — 회계에서 사라지면 `B-22`가 막은 그 구멍이다).
   assert.notEqual(task.execution.dispatchTurnId, null, "집행 시도가 turn claim으로 남지 않았다");
+  assert.equal(task.execution.chargedPlanDigest, task.execution.dispatchPlanDigest, "거부된 생산 turn이 원장에 없다");
   // 파일도 만들어지지 않았다 — 승인 밖 경로에 바이트가 생기지 않는다.
   assert.equal(existsSync(join(f.ws, "docs/x.md")), false, "승인되지 않은 operation이 파일을 만들었다");
   assert.equal(reopen(f.ws).getState().artifacts.length, 0);
@@ -816,4 +818,42 @@ test("[M5d] 앞 operation이 거부되면 뒤 operation은 집행되지 않는�
   assert.equal(readFileSync(join(f.ws, "docs/second.md"), "utf8"), "second\n", "거부 이후의 operation이 집행됐다");
   assert.equal(report.tasks[0].marker, "operation_denied");
   assert.equal(taskOf(f.ws, "root").state, "paused");
+});
+
+test("[M5d] operation을 요구하는 turn의 취소도 미확정 pending을 남기지 않는다", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "same\n");
+  const same = createHash("sha256").update("same\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "same\n", expectedBeforeSha256: same },
+      { operationId: "op-2", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "same\n", expectedBeforeSha256: same },
+    ],
+    result: { summary: "두 건", outputs: [] },
+  });
+
+  // **관측 barrier**: 진행 이벤트를 본 순간 abort → 집행 loop 안에서 취소가 관측된다.
+  const ac = new AbortController();
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    signal: ac.signal,
+    onEvent: (e) => {
+      if (e.kind === "task_progress") ac.abort();
+    },
+  });
+
+  const task = taskOf(f.ws, "root");
+  assert.deepEqual(task.execution.pendingOperations, [], "취소가 미확정 operation을 남겼다");
+  assert.equal(task.execution.cleanupStatus, "confirmed", "취소가 정리를 건너뛰었다");
+  assert.equal(report.tasks[0].marker, "cancelled");
+  assert.equal(task.state, "cancelled");
+  // 이 barrier(첫 진행 이벤트)는 terminal **이전**에 발화하므로 집행은 시작조차 하지 않는다 —
+  // 그래서 원장에도 claim에도 흔적이 없어야 한다. **operation 사이**의 취소 창은 관측 가능한 hook이
+  // 없어 이 테스트가 덮지 못한다(대장에 C로 남긴다 — 없는 커버리지를 있다고 적지 않는다).
+  assert.equal(task.execution.chargedPlanDigest, null, "집행 전 취소인데 원장에 생산 turn이 있다");
+  assert.equal(task.execution.dispatchTurnId, null, "집행 전 취소인데 turn claim이 남았다");
 });

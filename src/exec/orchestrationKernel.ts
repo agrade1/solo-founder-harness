@@ -1775,10 +1775,18 @@ function callerIsTestFile(stack: string | undefined): boolean {
   return /\.test\.ts(:\d+:\d+)?\)?\s*$/.test(caller);
 }
 
-/** 테스트 전용. 돌려주는 함수를 부르면 원상복구된다(테스트 사이에 상태가 새지 않는다). */
+/**
+ * 테스트 전용. 돌려주는 함수를 부르면 원상복구된다(테스트 사이에 상태가 새지 않는다).
+ *
+ * **동기 호출만 통과한다**: 스택에서 호출자를 보므로 `setTimeout`·`queueMicrotask` 같은 비동기 경계
+ * **안에서** 부르면 `.test.ts` 프레임이 남아 있지 않아 정당한 테스트도 거부된다. 보안이 아니라 사용
+ * 제약이다 — 등록은 테스트 본문에서 동기적으로 하고, hook 안에서 비동기를 쓰는 것은 자유다.
+ */
 export function __setPublicationSeamsForTest(seams: Partial<Record<PublicationSeam, () => void>>): () => void {
   if (!callerIsTestFile(new Error().stack)) {
-    throw writeFailed("발행 seam은 테스트 파일에서만 등록할 수 있다");
+    // **집행 taxonomy를 빌리지 않는다**: 이것은 typed 쓰기의 실패가 아니라 **등록 거부**다.
+    // `write_failed`를 쓰면 진짜 쓰기 실패 로그와 섞여 진단이 흐려진다(대장 `C-1` 리뷰 C-a).
+    throw new Error("발행 seam은 테스트 파일에서 동기적으로만 등록할 수 있다");
   }
   const previous = SEAMS;
   SEAMS = seams;

@@ -1918,8 +1918,9 @@ test("[M5d] C-1: 발행 seam은 production import 경로에서 등록할 수 없
   const fromNonTestFrame = new Function("set", "return set({});") as (set: unknown) => unknown;
   assert.throws(
     () => fromNonTestFrame(__setPublicationSeamsForTest),
-    (err: unknown) => (err as { code?: string }).code === "write_failed",
-    "테스트 파일 밖에서 seam 등록이 통과했다",
+    // 등록 거부는 **집행 오류 코드를 빌리지 않는다** — 쓰기 실패 진단과 섞이면 안 된다.
+    (err: unknown) => err instanceof Error && (err as { code?: string }).code === undefined,
+    "테스트 파일 밖에서 seam 등록이 통과했거나 집행 taxonomy를 빌렸다",
   );
 
   // 거부가 기존 seam 상태를 건드리지 않았는지도 본다(실패 경로가 상태를 오염시키면 안 된다).
