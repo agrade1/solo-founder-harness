@@ -1703,3 +1703,22 @@ fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES) 지적을 문서로 무마하지 �
      가용분 ~70k). M7이 tool을 늘리는 첫 마일스톤이므로 상한을 코드 상수로 두고 초과를 fail-closed로.
      **그 숫자를 그대로 쓰지 않는다** — 착수 시 우리 프로파일에서 재측정한 값으로 적는다.
 - 다른(이 레포와 무관한) 프로젝트에서 전역으로 쓰는 것은 사용자가 별도 판단한다 — 이 레포 계약과 무관.
+
+## 2026-08-12 (V3 M6 T3~T6 — 설계 판단 4건)
+
+- **context bundle을 `briefGenerator.ts`에 넣지 않았다**(kickoff와 다르다). ⓐ 그 파일은 v2 mission 계층이라
+  kernel 타입을 끌어오면 계층이 섞이고 ⓑ **offline plan worker에는 프롬프트 채널 자체가 없어** kickoff가
+  말한 "autopilot 주입 지점"이 존재하지 않는다. 그래서 순수 모듈(`contextBundle.ts`) + kernel 읽기 전용
+  접근자로 만들고 **주입은 하지 않았다**. 현재 소비자는 rotation 증명이며, 프롬프트 소비는 live backend
+  슬라이스의 몫이다. 로드맵 M6 절에 **미증명**으로 적었다.
+- **`decisionHash`의 run 사이 동일성을 주장하지 않는다.** `messageId`는 durable 신원이고 autopilot이 turn마다
+  난수로 발급하므로 서로 다른 두 run은 반드시 다르다. 교체 전후(같은 run)만 동일하다고 적고, 교체 run vs
+  대조 run은 **신원을 뺀 결정 내용**을 비교했다. messageId를 다이제스트에서 빼서 억지로 같게 만들지 않았다 —
+  그러면 서로 다른 두 메시지가 한 해시로 붕괴한다.
+- **다이제스트에 시각·revision을 넣지 않는다.** 넣으면 교체 전후가 구조적으로 절대 같을 수 없어 ③이 공허한
+  체크가 된다. 대신 "시각만 바꾼 state는 다이제스트가 그대로"를 **별도 체크**로 두었다 — 처음 판은
+  "교체 전후 동일" 하나뿐이었고 재개해도 `updatedAt`이 같아 **시각이 섞여도 green이었다**(mutation으로 실측).
+- **`attempt_id_reused`는 직전 한 칸만 막는다.** 두 attempt 이전 값의 재사용은 durable state가 과거
+  attemptId를 보관하지 않아 볼 수 없다(event log는 state 밖 파일). 효과 경로는 durable `chargedTurnIds`가
+  이미 닫으므로 잔여는 감사 추적성이며 대장 `C-68`로 남겼다. kernel이 `attemptNo`에서 attemptId를 **파생**하면
+  구조적으로 종결되지만 `PreflightDecision` 계약과 모든 호출부가 바뀌어 M6 범위로 넣지 않았다.
