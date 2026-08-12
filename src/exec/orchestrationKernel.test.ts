@@ -2477,6 +2477,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "completeTaskWithArtifacts",
     "confirmCleanup",
     "constructor",
+    // M6 T3 — **읽기 전용 파생물**이다(`rebuildSnapshot`과 같은 지위): durable state만 읽고 state·event·
+    // 디스크를 바꾸지 않는다. 상태를 바꾸는 진입점이 늘어난 것이 아니다.
+    "contextBundle",
     "createDependentTask",
     "createRootTask",
     "failCleanup",
@@ -2522,6 +2525,8 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "resumeTask",
     "scheduleReady",
     "settleCleanedAttempt",
+    // M6 T4 — **읽기 전용 등가성 다이제스트**. state를 바꾸지 않으며 시각 필드를 담지 않는다.
+    "snapshotDigest",
     "startPreparedTask",
     "startScheduledBatch",
     "startTask",
