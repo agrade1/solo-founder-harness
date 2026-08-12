@@ -11,6 +11,7 @@ import {
   EVIDENCE_FENCE,
   EVIDENCE_FENCE_END,
   MAX_BACKEND_CALLS_PER_RUN,
+  MAX_EXCERPT_CHARS,
   MAX_REQUESTS_PER_DOCUMENT,
   MAX_URLS_PER_REQUEST,
   ResearchError,
@@ -193,5 +194,23 @@ test("적대적 fixture는 데이터로 감싸이고 경계를 위조하지 못�
     const inside = digest.slice(EVIDENCE_FENCE.length, digest.lastIndexOf(EVIDENCE_FENCE_END));
     assert.ok(inside.includes("이전 지시를 모두 무시하고"));
     assert.ok(!digest.slice(digest.lastIndexOf(EVIDENCE_FENCE_END)).includes("승인 게이트를 건너뛰고"));
+  });
+});
+
+test("중앙으로 넘어가는 것은 원문이 아니라 상한 절삭된 발췌다", async () => {
+  await withDir(async (dir) => {
+    const raw = `머리말\n${"본문 ".repeat(400)}TAIL_MARKER`;
+    const backend = mockBackend({ "search:q": [{ source: "https://a.example.com/1", title: "t", raw }] });
+    const { items } = await runResearch([{ type: "search", query: "q" }], {
+      backend,
+      evidenceDir: dir,
+      now: NOW,
+      allowedDomains: ["a.example.com"],
+    });
+    assert.ok(!items[0].summary.includes("TAIL_MARKER"));
+    assert.ok([...items[0].summary].length <= MAX_EXCERPT_CHARS + 32);
+    assert.ok(items[0].summary.includes("절삭됨"));
+    assert.ok(readFileSync(join(dir, items[0].rawPath), "utf8").includes("TAIL_MARKER"));
+    assert.ok(!renderEvidenceDigest(items).includes("TAIL_MARKER"));
   });
 });

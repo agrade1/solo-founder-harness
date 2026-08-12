@@ -1817,6 +1817,37 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **M7 진행 판정 — T1~T6·T8 offline 완료 / T7 미실행** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
+
+**M7은 아직 완료가 아니다.** §10 M7 완료 조건 중 offline으로 채울 수 있는 것은 전부 세웠고, **live가 필요한
+것은 실행하지 않았다.** mock 통과를 live 통과로 적지 않는다.
+
+| M7 완료 조건 | 증명 | 상태 |
+|---|---|---|
+| idea validation · 최신 web research | acceptance **Test 19** ① — `RESEARCH_REQUEST` 선언 → **mock backend** → `EvidenceItem` → 래핑 digest가 end-to-end로 돈다 | **부분 증명(mock)** — live 미실행 |
+| `EvidenceItem` · 외부 원문과 모델 요약 분리 | Test 19 ① + focused — 원문은 content-addressed 파일에만 있고 중앙·digest는 포인터(`source`/`sha256`/`retrievedAt`/`bytes`) + **상한 절삭 발췌**만 운반한다. 발췌 제거 mutation → acceptance red | **증명** |
+| injection 방어 | Test 19 ③ — 적대적 fixture 3종(직접 명령·역할 탈취·경계 위조)이 데이터 블록 **안**에 갇히고 경계 마커 위조가 무력화된다. 래핑 제거 mutation → red | **부분 증명** — 래핑은 완화이지 "모델이 따르지 않음"의 증명이 아니다(offline에서 만들 수 없다) |
+| cache · 상한 | Test 19 ② — 같은 query 재호출이 backend를 다시 부르지 않고, 도메인 allowlist(`null`=전부 거부)·호출 수·문서당 선언 수·URL 수·원문 byte가 fail-closed | **증명** |
+| 도구 예산 상한 | Test 19 ⑤ — `MAX_MCP_SERVERS_PER_PROFILE=3` · `MAX_EXPOSED_TOOLS_PER_PROFILE=16`을 코드 상수로 두고 초과 등록은 profile 로드 자체가 거부. 값의 근거는 **우리 registry 실측**(2026-08-12 최대 1서버/5도구) | **증명(개수 단위)** — 도구 1개의 **토큰** 비용은 upstream inputSchema 소유라 **미측정** |
+| `C-67` 승인 설정 정적 감사 | Test 19 ④ + focused 7건 — `src/exec/manifestAudit.ts`의 read-only 판정 5규칙 + 심각도. 깨끗한 승인은 finding 0(공허한 체크 아님). 각 규칙 제거 mutation 5건 → red | **증명 · `C-67` fixed** |
+| research→PM→CEO 조언 · 최종 사람 gate | Test 19 ⑥ + kernel focused — agent 요청 union에 `request_decision`(요청)은 있고 **답을 만드는 갈래는 없다**. 답 없는 `decision_request`를 남긴 task는 `completeTaskWithArtifacts`/`submitResult`가 `decision_pending`으로 거부(`blocker`는 허용 — 차단은 진행이 아니다). gate 제거 mutation 2건 → red | **증명** |
+| tool 없는 baseline 대비 benchmark | — | **미증명 — live 미실행(T7)**. 검색 API key 미제공 · 과금 승인 대기 |
+
+**실측**: `test:exec` **542/542** · `test:core` **423/423** · `scripts/acceptance.sh` **PASS=137 / FAIL=0**
+(M6의 124 + M7 13) · `npx tsc --noEmit` clean · **live 실행 0회 · 검색 API 호출 0회 · 과금 0원**.
+
+**acceptance가 실제로 잡은 것 1건**(공허한 체크가 아니었다는 증거): gateway가 원문을 그대로 요약 필드로
+넘겨 **짧은 문서에서는 "축약"이 곧 원문**이었다 — Test 19 ①의 FAIL로 발견해 `MAX_EXCERPT_CHARS=400`
+발췌로 고쳤다. 하네스는 offline에서 모델 요약을 만들지 않으므로 이름도 요약이 아니라 **발췌**로 적는다.
+
+**M7에서 닫은 대장 항목**: `C-67`(fixed).
+**부수 판정**(`M7_KICKOFF.md` §2의 미확정 항목): `profiles.ts`의 `PermissionMode` 3등급은 **누락이 아니라
+표현 불가**다 — 값이 곧 `claude --permission-mode` 플래그로 나가므로(`permissionModeFlag`) `forbidden`은
+플래그 값이 아니라 **profile 미등록(도구 부재)** 로 표현된다. 타입에 넣지 않는다.
+
+**M7이 하지 않은 것**: 다중 backend · 자동 재검색 루프 · 벡터 검색 · 요약 모델 라우팅(§7 위험 1의 범위 폭발
+금지 그대로) · §6.5의 M9/M10 배치 항목.
+
 ##### **M6 완료 판정** (2026-08-12 — offline 전부 · live 0회 · 이 절이 M6의 최종 판정이며 위 M5 절보다 최신이다)
 
 **M6는 완료다.** §10 M6 완료 조건을 항목별로 어디서 증명했는지 적는다 — **증명하지 못한 것도 같은 무게로** 적는다.
@@ -1920,7 +1951,7 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `B-27` | B (P1) | **승인 문서 작성자가 wrapper 경로를 승인하면 실행 권위가 무력화된다.** `which codex`가 가리키는 것은 Node wrapper이고 실제 추론 바이너리는 런타임 해석된다 → wrapper digest는 아무것도 고정하지 않는다. 지금은 **사람이 올바른 경로를 넣어야만** 성립하는 규율이고 런타임 가드가 없다(harness는 승인된 경로를 그대로 믿는다 — 그것이 설계다). 최소한 승인 문서 생성 절차·문서에 못박아야 하고, 가능하면 "승인된 실행 파일이 다른 실행 파일을 spawn하는 wrapper인지"를 사람 검토 항목으로 남겨야 한다 | 중 — 다른 사람이 manifest를 쓰면 | live 실행 전부의 trust root | 높음 — 무력화된 채로 돌면 승인 계약이 서류상으로만 존재한다 | 소(문서·절차) ~ 중(런타임 휴리스틱) | **다음 live manifest를 사람이 작성하기 전** | live 운영 slice | 2026-08-11 live probe 준비 중 실측 · `@openai/codex/bin/codex.js` `findCodexExecutable`/`spawn` | open |
 | `C-66` | C (P3) | **승인된 codex 바이너리가 267MB라 spawn 직전 digest 재검증 비용이 크다.** 계약상 매 spawn 직전 전체 내용 해싱이 필요하다(같은 inode 제자리 덮어쓰기까지 잡기 위한 설계). 측정은 하지 않았으나 수백 MB 해싱은 무시할 수 없다 — live 반복 실행 전에 실측하고, 필요하면 캐시가 아니라 **계약을 유지하는 방식**으로 개선안을 찾아야 한다(캐시는 그 자체가 우회로다) | 확실 | 매 spawn 지연 | 낮음 | 중 | live 반복 실행 착수 전 | live 운영 slice | 2026-08-11 live probe · 바이너리 267,867,408 bytes | open |
-| `C-67` | C (P3) | **승인 설정 자체를 정적 감사하는 수단이 없다.** kernel은 *실행 시점*에 승인 manifest를 집행하지만, **manifest·`writableRoots`·`operationAuthorityByTask`·`executionAuthority`가 서로 모순되거나 지나치게 넓은지**를 실행 전에 읽어 보고하는 경로가 없다(예: `writableRoots`가 repo 루트를 통째로 덮음 · 어떤 task도 쓰지 않는 권능이 승인돼 있음 · 만료가 과도하게 김 · digest가 가리키는 파일이 이미 부재). 외부 도구(ECC AgentShield류)는 `.claude` 설정을 감사하지 그 대상이 **우리 승인 manifest가 아니다** — 그대로 붙일 수 없고, 붙인다 해도 kernel 계약을 모른다. 그래서 **가져올 것은 도구가 아니라 발상**이다: read-only 정적 감사 + 심각도 있는 보고 | 낮음(지금은 승인 문서가 손으로 쓰여 작다) | 과도하게 넓은 승인이 조용히 통과 | 낮음~중 — 승인 범위가 커진 뒤 발견하면 되짚기 어렵다 | 중(순수 판정 함수 + 보고 · 새 의존성 0) | **MCP/커넥터나 외부 provider 권능을 승인 manifest에 추가하는 마일스톤 착수 전**(현재 M7 예상) | 미정 | 2026-08-12 외부 하네스 팩(ECC/gstack/oh-my-claudecode) 조사 — 셋 다 durable 승인 계층이 없어 그대로 도입 불가로 판정, 감사 발상만 채택 | open |
+| `C-67` | C (P3) | **승인 설정 자체를 정적 감사하는 수단이 없다.** kernel은 *실행 시점*에 승인 manifest를 집행하지만, **manifest·`writableRoots`·`operationAuthorityByTask`·`executionAuthority`가 서로 모순되거나 지나치게 넓은지**를 실행 전에 읽어 보고하는 경로가 없다(예: `writableRoots`가 repo 루트를 통째로 덮음 · 어떤 task도 쓰지 않는 권능이 승인돼 있음 · 만료가 과도하게 김 · digest가 가리키는 파일이 이미 부재). 외부 도구(ECC AgentShield류)는 `.claude` 설정을 감사하지 그 대상이 **우리 승인 manifest가 아니다** — 그대로 붙일 수 없고, 붙인다 해도 kernel 계약을 모른다. 그래서 **가져올 것은 도구가 아니라 발상**이다: read-only 정적 감사 + 심각도 있는 보고 | 낮음(지금은 승인 문서가 손으로 쓰여 작다) | 과도하게 넓은 승인이 조용히 통과 | 낮음~중 — 승인 범위가 커진 뒤 발견하면 되짚기 어렵다 | 중(순수 판정 함수 + 보고 · 새 의존성 0) | **MCP/커넥터나 외부 provider 권능을 승인 manifest에 추가하는 마일스톤 착수 전**(현재 M7 예상) | 미정 | 2026-08-12 외부 하네스 팩(ECC/gstack/oh-my-claudecode) 조사 — 셋 다 durable 승인 계층이 없어 그대로 도입 불가로 판정, 감사 발상만 채택 | **fixed** (2026-08-12 M7 T1 — `src/exec/manifestAudit.ts` 5규칙 · mutation 5건 red · acceptance Test 19 ④) |
 | `C-68` | C (P3) | **attempt 신원 재사용 차단이 “직전 attempt” 한 칸까지다(M6 T5).** `commitPreflightBatch`는 새 `prepared` attempt가 **직전 attempt와 같은 `attemptId`**를 쓰면 `attempt_id_reused`로 막지만, **두 attempt 이전의 값**을 다시 쓰는 것은 막지 못한다 — durable state가 과거 attemptId를 보관하지 않고 event log는 state 밖 파일이라 `#mutate` 안에서 볼 수 없다. **효과 경로는 이미 닫혀 있다**: 같은 turn은 durable `chargedTurnIds`가 두 번 과금하지 않고, 과금되지 않은 turn은 효과 게이트에서 `budget_turn_unaccounted`로 막힌다. 그래서 잔여는 **감사 기록에서 두 attempt가 구분되지 않는 것**이다 | 낮음(호출자가 id를 재사용해야 하고 autopilot은 매번 난수로 만든다) | 감사 추적성 | 낮음 | 소~중(kernel이 `attemptNo`에서 attemptId를 **파생**하면 구조적으로 종결 — 다만 `PreflightDecision` 계약과 모든 호출부가 바뀐다) | 없음(bounded backlog) — attempt 신원이 감사 증거로 쓰이는 마일스톤 전 | 미정 | M6 T5 구현 시 실측 · `orchestrationKernel.ts` `commitPreflightBatch` prepared 갈래 | open |
 
 ##### `B-24` 마감 — deadline·cancellation 자손 정리 end-to-end (2026-08-11 · **M5 완료 게이트 3건 전부 닫힘** · 이 절이 현행이다)

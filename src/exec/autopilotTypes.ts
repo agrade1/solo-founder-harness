@@ -77,6 +77,19 @@ export type AgentRequest =
       deliverTo: string;
       /** 옮길 bounded 서술. 원문·프롬프트·계측값은 담지 않는다. */
       note: string;
+    }
+  | {
+      /**
+       * [V3 M7 T6] 사람에게 결정을 **요청**한다(로드맵 §6 — Founder 판단이 최종 승인 게이트다).
+       * 이 갈래는 `decision_request`만 만든다. **`decision`을 만드는 갈래는 이 union에 없다** —
+       * 답은 사람이 중앙 API(`recordDecision`)로만 넣을 수 있고, 답 없는 요청을 남긴 task는
+       * `completeTaskWithArtifacts`/`submitResult`가 `decision_pending`으로 거부한다.
+       */
+      kind: "request_decision";
+      /** 무엇이 막혔는가(bounded 서술). */
+      question: string;
+      /** 답을 기다리는 동안의 안전 기본값 — §5.2 body의 필수 heading이다. */
+      safeDefault: string;
     };
 
 /** turn 하나가 낼 수 있는 오케스트레이션 요청 수 상한. */

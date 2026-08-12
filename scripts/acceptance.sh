@@ -290,6 +290,35 @@ check "M6 ③ 다이제스트가 시각에 둔감함 확인 출력" $?
 if [ -d "outputs/orchestration" ]; then false; else true; fi
 check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
 
+echo "== Test 19: M7 research gateway · evidence · 승인 감사 · 사람 gate (offline · 무과금) =="
+# 임시 디렉터리 전용 · 검색 API 0회 · live LLM 0회. 상세 체크는 스크립트가 자체 출력한다.
+M7_OUT="$(node scripts/m7-offline-acceptance.mjs 2>&1)"
+M7_RC=$?
+[ "$M7_RC" -eq 0 ];                               check "M7 offline acceptance exit 0" $?
+echo "$M7_OUT" | grep -q "FAIL=0";                check "M7 내부 체크 전부 통과" $?
+echo "$M7_OUT" | grep -q "선언 밖 본문은 요청이 되지 않는다"
+check "M7 ① 선언 파서가 본문을 요청으로 삼지 않음" $?
+echo "$M7_OUT" | grep -q "중앙이 운반하는 것은 원문 전체가 아니라 상한 절삭된 발췌다"
+check "M7 ① 원문/발췌 분리 확인 출력" $?
+echo "$M7_OUT" | grep -q "같은 query 재호출이 backend를 다시 부르지 않는다"
+check "M7 ② 캐시 확인 출력" $?
+echo "$M7_OUT" | grep -q "allowedDomains=null은 전부 거부한다"
+check "M7 ② 도메인 fail-closed 확인 출력" $?
+echo "$M7_OUT" | grep -q "적대적 문장이 데이터 블록 안에 있다"
+check "M7 ③ 주입 fixture가 데이터로 갇힘 확인 출력" $?
+echo "$M7_OUT" | grep -q "본문의 경계 위조가 무력화된다"
+check "M7 ③ 경계 위조 차단 확인 출력" $?
+echo "$M7_OUT" | grep -q "깨끗한 승인은 finding 0"
+check "M7 ④ 감사가 공허하지 않음(깨끗하면 0건) 확인 출력" $?
+echo "$M7_OUT" | grep -q "digest가 가리키는 부재 경로를 잡는다"
+check "M7 ④ C-67 규칙 동작 확인 출력" $?
+echo "$M7_OUT" | grep -q "상한 초과 도구 등록은 로드 자체가 거부된다"
+check "M7 ⑤ 도구 예산 상한 fail-closed 확인 출력" $?
+echo "$M7_OUT" | grep -q "답(decision)을 만드는 요청 갈래는 존재하지 않는다"
+check "M7 ⑥ 사람 gate — 결정 위조 경로 부재 확인 출력" $?
+echo "$M7_OUT" | grep -q "live 검색 API 실호출 0회"
+check "M7 미증명(live 미실행)을 스스로 밝힘" $?
+
 echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"

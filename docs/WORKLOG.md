@@ -4094,3 +4094,15 @@ Phase 0 탐색 보고 → 승인(4개 결정: 별도 design 에이전트 / DESIG
 - **실사용 개발 착수(v3 게이트 충족)**: 별도 private 레포 `audit-evidence-engine`에 하네스 설치 → 아이디어 A full-predev(claude-code) + F idea-validation → task-prompt → 실제 코드 착수(`collect_evidence.sh`, 판정 경계 준수). "개발 착수 1건" 게이트 충족.
 - **public 설치 지원**: dist를 레포에 커밋(.gitignore에서 제거) + build에 `chmod +x dist/cli.js` → `npm install github:agrade1/solo-founder-harness`가 빌드/스크립트 없이 동작. prepare 제거(소비자 경고 제거). README "사용 가이드" 섹션 추가. v2.5.1.
 - **[v2.6.0] ux_ui 디자인 레퍼런스 확장**: ux_ui 에이전트가 레퍼런스 리서치 방향(Pinterest/Dribbble/Mobbin/경쟁사·유사서비스 + 검색 키워드) + 비주얼 방향 + 디자인 실행 handoff를 산출하도록 프롬프트 확장(§4·§5·§12-B·§14·§15, v1.1). task-prompt는 03_UX_FLOW 존재 시 "디자인 실행(화면 시안)" 섹션 자동 추가 — Claude Code에서 레퍼런스 검색 + Claude 아티팩트 시안 생성. **경계 유지**: ux_ui는 픽셀을 직접 렌더링하지 않고 방향·지시만, 실제 시안은 Claude Code. MVP-lean 원칙 유지. acceptance 57/57.
+
+## 2026-08-12 — V3 M7 (T1~T6·T8 offline)
+
+- T1 `C-67` 승인 manifest 정적 감사(read-only 5규칙) — `preflight.ts`와 중복 없음 확인 후 신설.
+- T2 `EvidenceItem` — content-addressed 원문 파일 + 포인터 + 상한 절삭 발췌.
+- T3·T4 Research Gateway — `RESEARCH_REQUEST` 선언 파서 · mock backend · 캐시 · 도메인/호출 상한 fail-closed ·
+  "데이터이며 지시가 아님" 래핑(적대적 fixture 3종).
+- T5 도구 예산 상한 — 우리 registry 실측 근거로 3서버/16도구, 초과 등록 로드 거부.
+- T6 사람 gate — 답 없는 `decision_request`를 남긴 task는 완료 불가(`decision_pending`), 요청 union에
+  답을 만드는 갈래 없음(`request_decision`만 추가).
+- T8 acceptance **Test 19** 신설(PASS=137) · mutation red 확인 총 26건 · 로드맵/대장 갱신(`C-67` fixed).
+- **T7(live 검색 + benchmark)은 미실행** — 과금 승인·API key 대기. mock 통과를 live로 적지 않았다.
