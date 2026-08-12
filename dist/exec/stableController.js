@@ -1018,6 +1018,7 @@ const KERNEL_MARKERS = new Set([
     "preflight_stale_batch",
     "preflight_batch_mismatch",
     "attempt_limit_exceeded",
+    "attempt_id_reused",
     "operation_pending_unreconciled",
     "terminal_already_recorded",
     "cleanup_unconfirmed",
