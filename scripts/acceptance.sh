@@ -255,6 +255,42 @@ echo "$M5CL_OUT" | grep -q "관측한 손자 전부가 사라졌다"
 check "M5 reparent된 유출까지 확인 출력" $?
 
 echo ""
+echo "== Test 18: M6 계층 오케스트레이션 · context bundle · coordinator rotation (offline) =="
+# 임시 workspace 전용 · spawn 0회 · live 0회. 상세 체크는 스크립트가 자체 출력한다.
+M6_OUT="$(node scripts/m6-offline-acceptance.mjs 2>&1)"
+M6_RC=$?
+[ "$M6_RC" -eq 0 ];                               check "M6 offline acceptance exit 0" $?
+echo "$M6_OUT" | grep -q " FAIL=0";               check "M6 내부 체크 전부 통과" $?
+echo "$M6_OUT" | grep -q "parent가 결과 대신 위임으로 착지한다"
+check "M6 ① spawn 배선 — 위임 착지 확인 출력" $?
+echo "$M6_OUT" | grep -q "child 결과가 parent inbox로 route됐다"
+check "M6 ① parent→child→parent 결과 라우팅 확인 출력" $?
+echo "$M6_OUT" | grep -q "중앙이 sibling inbox로 route했다"
+check "M6 ① child→중앙→sibling 전달 확인 출력" $?
+echo "$M6_OUT" | grep -q "요청에 상태·권능·경로·예산 필드가 없다"
+check "M6 ② 요청 union에 권능 필드 부재 확인 출력" $?
+echo "$M6_OUT" | grep -q "거부된 spawn 요청은 child를 만들지 않는다"
+check "M6 ② 승인은 kernel이 한다(요청만으로 생성 0) 확인 출력" $?
+echo "$M6_OUT" | grep -q "거부된 전달은 durable 메시지를 남기지 않는다"
+check "M6 ② 거부된 요청의 durable 흔적 0 확인 출력" $?
+echo "$M6_OUT" | grep -q "spawn turn이 산출물을 주장하면 plan_invalid다"
+check "M6 위임 turn의 산출물 조용한 유실 차단 확인 출력" $?
+echo "$M6_OUT" | grep -q "같은 revision에서 두 번 만들면 byte-identical이다"
+check "M6 context bundle 결정성 확인 출력" $?
+echo "$M6_OUT" | grep -q "교체 전후 graph·decision·artifact hash가 전부 같다"
+check "M6 ③ coordinator 교체 등가성 확인 출력" $?
+echo "$M6_OUT" | grep -q "교체 후 완주한 run이 무교체 대조 run과 같은 graph 다이제스트에 도달한다"
+check "M6 ③ 무교체 대조 run 대비 등가성 확인 출력" $?
+echo "$M6_OUT" | grep -q "task 하나를 위조하면 graph 다이제스트가 갈린다"
+check "M6 ③ 다이제스트가 위조에 반응함 확인 출력(공허한 체크 아님)" $?
+echo "$M6_OUT" | grep -q "서로 다른 run의 decisionHash는 다르다"
+check "M6 ③ decisionHash의 run 사이 동일성을 주장하지 않음 확인 출력" $?
+echo "$M6_OUT" | grep -q "시각·revision만 바뀐 state는 세 다이제스트가 전부 그대로다"
+check "M6 ③ 다이제스트가 시각에 둔감함 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
