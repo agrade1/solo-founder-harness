@@ -1,8 +1,31 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-11 (M5 완료)
+최종 갱신: 2026-08-12 (M6 완료)
 
-## 최신 (2026-08-11 — **V3 M5 완료. 다음은 M6** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-12 — **V3 M6 완료. 다음은 M7** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
+- **M6 완료**: 계층 오케스트레이션이 **실제로 돈다**. 판정은 로드맵 `M6 완료 판정` 절(증명/미증명 표).
+  실측 `test:exec` **531/531** · `test:core` **409/409** · acceptance **PASS=124 / FAIL=0** · **live 0회**.
+- **무엇이 새로 섰나**: ① agent 출력의 `spawn_child`/`deliver_status` 요청이 autopilot 경유로 kernel
+  게이트를 지난다(`src/exec/spawnRouting.ts`) · child `result`가 parent inbox로 route된다 ·
+  ② 요청 union에 state·권능 필드가 **없다** · ③ `snapshotDigest()` 3종으로 coordinator 교체 등가성을
+  증명한다 · `buildContextBundle`(durable state만 입력, byte-identical).
+- **kernel 계약 변경 2건**(근거: `docs/DECISIONS.md` 2026-08-11): `requestSpawn`이 **정리 확인된
+  `cleaning`** parent도 받는다(`recordTerminal → confirmCleanup → requestSpawn` 순서로 `B-13` 유지) ·
+  결과가 parent inbox로 route된다. **상태 게이트를 넓힌 것이지 우회로가 아니다.**
+- **M6에서 닫은 대장**: `B-19` · `C-44`. **새로 등록**: `C-67`(승인 설정 정적 감사, 기한 M7) ·
+  `C-68`(attempt 신원 재사용 차단이 직전 한 칸까지). **열린 A는 0건.**
+- **의도적 미증명(M6 절에 같은 무게로 적혀 있다)**: context bundle의 **프롬프트 주입 없음**(offline
+  worker에 프롬프트 채널 자체가 없다) · inbox ack 없음(`B-17`) · 실제 LLM이 spawn을 요청하는 경로 ·
+  `decisionHash`의 run 사이 동일성은 **주장하지 않는다**(messageId가 난수 신원).
+- **외부 하네스 팩(ECC/gstack/oh-my-claudecode)은 미도입 판정**(`docs/DECISIONS.md` 2026-08-12).
+  durable SoR·승인 manifest가 없는 프롬프트 층이라 역할 어휘가 충돌한다. 가져온 발상 둘만 로드맵에
+  배치: `C-67` · M7의 **도구 예산 상한**(tool/MCP 등록만으로 컨텍스트를 상시 소모 — 숫자는 M7 착수 시 재측정).
+- **다음: M7**(Planning & Evidence Research). 착수 전에 `C-67`을 닫는다(승인 manifest에 외부 provider
+  권능이 들어오기 전).
+
+## (2026-08-11 — V3 M5 완료 · 위 M6 블록이 더 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
 - **M5 완료**: offline 전부 + **첫 live 실행 1회 성공**(input 13,049/output 5).

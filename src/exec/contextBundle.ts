@@ -107,7 +107,10 @@ export function buildContextBundle(state: OrchestrationRunState, taskId: string)
 
   // 검증된 포인터만 — 본문은 workspace에 있고 kernel이 등록 시점 hash로 재확인한다.
   lines.push("## Artifacts");
-  const refs = [...task.artifactRefs, ...deps.flatMap((d) => state.tasks.find((t) => t.taskId === d)?.artifactRefs ?? [])];
+  // 자기 것 + 의존 task 것 + **child 것**. child를 빼면 위임한 parent가 다음 attempt에서 통합해야 할
+  // 산출물을 못 본다(M6 acceptance ⑥에서 실측으로 발견한 누락이다).
+  const related = [...deps, ...children];
+  const refs = [...task.artifactRefs, ...related.flatMap((d) => state.tasks.find((t) => t.taskId === d)?.artifactRefs ?? [])];
   const seen = new Set<string>();
   const pointers = refs
     .filter((r) => {

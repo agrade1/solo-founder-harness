@@ -1817,6 +1817,56 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **M6 완료 판정** (2026-08-12 — offline 전부 · live 0회 · 이 절이 M6의 최종 판정이며 위 M5 절보다 최신이다)
+
+**M6는 완료다.** §10 M6 완료 조건을 항목별로 어디서 증명했는지 적는다 — **증명하지 못한 것도 같은 무게로** 적는다.
+
+| M6 완료 조건 | 증명 | 상태 |
+|---|---|---|
+| parent→child→parent 전달 | acceptance **Test 18** ①② — 계획의 `spawn_child` 요청이 **autopilot 경유로** kernel `requestSpawn`을 지나 child를 만들고, child `result`가 `routeToTaskId=parent`로 parent inbox에 durable하게 남고, child 완료 뒤 parent가 같은 실행에서 완주 | **증명** |
+| child→orchestrator→sibling 전달 | Test 18 ③ — `deliver_status` 요청이 `submitStatusUpdate`를 지나 **중앙이 route를 정해** sibling inbox에 도착(발신 recipient는 `orchestrator`) | **증명** |
+| child가 직접 spawn/state 변경 불가 | Test 18 ④⑤ — 요청 union이 `spawn_child`·`deliver_status` **둘뿐**이고 상태·권능·경로·예산 필드가 **없다**(schema 정본 대조) · registry 밖 role과 관계 없는 수신자는 kernel이 거부하고 **durable 흔적 0** · 거부 turn은 `paused`로 착지 | **증명** |
+| Coordinator 교체 전후 task graph·결정·artifact hash 동일 | Test 18 ⑦ — `snapshotDigest()` 3종을 기록 → kernel 인스턴스 폐기 → **다른 clock으로** 재기동 → 재계산 **일치**. 추가로 교체 후 완주한 run이 **무교체 대조 run과 같은 graph·artifact 다이제스트**에 도달 | **증명** |
+| context bundle | Test 18 ⑥ + focused 18건 — `buildContextBundle`은 **durable state만** 입력이고 같은 revision에서 byte-identical, 시각·예산 미포함, state 무변경 | **증명** |
+| reviewer·worker·coordinator fresh-session 강제 | focused — `commitPreflightBatch`가 **직전 attempt와 같은 `attemptId`를 거부**(`attempt_id_reused`) · 교체된 coordinator가 이전 프로세스의 진행 채널을 이어받지 못함(`invalid_progress_channel`) | **증명(범위 한정 — 아래 참조)** |
+| **`decisionHash`의 run 사이 동일성** | `messageId`가 난수 durable 신원이라 **서로 다른 두 run은 반드시 다르다**. 교체 전후(같은 run)만 동일하며, 교체 run vs 대조 run은 **신원을 뺀 결정 내용**을 비교했다 | **주장하지 않음(의도적)** |
+| **context bundle의 프롬프트 주입** | offline plan worker에 **프롬프트 채널 자체가 없다** → 주입 지점이 존재하지 않는다. bundle은 kernel 읽기 전용 접근자로만 소비된다 | **미증명 — live/프롬프트 backend 슬라이스 범위** |
+| **attempt 신원 재사용 차단의 완전성** | 막는 것은 **직전 attempt** 한 칸까지다. 두 attempt 이전 값의 재사용은 durable state가 과거 attemptId를 보관하지 않아 막지 못한다. **효과 경로는 durable `chargedTurnIds`가 이미 닫는다**(잔여는 감사 추적성) → 대장 `C-68` | **부분 — 잔여 등록** |
+| **inbox 소비(전달 ack)** | autopilot은 여전히 전달을 ack하지 않는다(`B-17` 미소비) → ①이 증명하는 것은 **route가 durable하게 남는 것**까지이고, 수신 task가 그것을 읽어 행동을 바꾸는 것은 아니다 | **미증명 — `B-17` 범위** |
+| **live 실행** | M6는 offline+mock으로 ①②③을 증명할 수 있어 **live 계획을 두지 않았다**(무과금) | **해당 없음(의도적)** |
+| **실제 LLM이 spawn을 요청하는 경로** | worker는 사람이 authoring한 offline 계획을 읽는 in-memory 어댑터다 → 증명한 것은 **계약의 모양**이다 | **미증명 — live 슬라이스 범위** |
+
+**mutation 실측**(acceptance를 만들면 red를 확인한다 — M5에서 공허한 체크로 A급을 세 번 맞고 얻은 절차):
+
+| 제거·위조한 것 | Test 18 red |
+|---|---|
+| autopilot의 spawn 배선 호출 | 5건 |
+| 전달 배선 | 5건 |
+| child `result` → parent inbox route | 4건 |
+| spawn turn의 `result.outputs` 게이트 | 2건 |
+| 다이제스트에 시각 필드 주입 | 2건 |
+| bundle의 child artifact 포인터 | 1건 |
+| registry role 게이트(**2중 — `addTask` + 적재 검증 둘 다** 제거해야 red) | 4건 |
+
+**절차에서 실제로 잡아 고친 것**(이 두 건은 처음 판이 green이었다):
+- ③의 "교체 전후 동일" 체크는 재개해도 durable `updatedAt`이 같아 **시각이 섞여도 green으로 남았다** →
+  시각 필드만 바꾼 state 사본으로 다이제스트가 움직이지 않는지 보는 체크를 **추가**해 red를 확인했다.
+- context bundle이 **child의 artifact 포인터를 빠뜨리고 있었다**(위임한 parent가 다음 attempt에서 통합할
+  산출물을 못 본다) → acceptance ⑥의 FAIL로 발견해 고쳤다.
+
+**최종 실측**: `test:exec` **531/531** · `test:core` **409/409** · `scripts/acceptance.sh` **PASS=124 / FAIL=0**
+(M5의 108 + M6 16) · `npx tsc --noEmit` clean · **live 실행 0회 · 프로세스 spawn 0회**(Test 18 한정).
+
+**M6에서 닫은 대장 항목**: `B-19` · `C-44`.
+**M6에서 새로 등록한 것**: `C-67`(승인 설정 정적 감사 — 외부 팩 조사에서 발상만 채택) · `C-68`(attempt 신원
+재사용 차단 범위). **열린 A는 0건.**
+
+**M6 범위 밖으로 유예한 것**(조용히 버리지 않는다): `B-11`·`B-12`·`B-13`·`B-16`(신규 발행)·`B-17`·`B-18`·
+`B-20`·`B-27`(절차)·`C-15`(run별 registry — 트리거 미발화). M6 스펙 ①②③과 무관하므로 배송 우선 방침대로 보류.
+
+**`B-27` 절차 체크**: 이 마일스톤에서 승인 manifest 문서에 **wrapper 경로를 넣지 않았다** — Test 18의
+`executionAuthority`는 고정 fixture 경로이고 typed operation을 하나도 집행하지 않는다(프로세스 spawn 0회).
+
 ##### **M5 완료 판정** (2026-08-11 — offline 전부 + live 1회 · 이 절이 M5의 최종 판정이다)
 
 **M5는 완료다.** 로드맵 §10의 M5 완료 조건을 항목별로 어디서 증명했는지 적는다 — 증명하지 못한 항목도

@@ -273,6 +273,14 @@ test("[M6-T3] artifact는 검증된 포인터만 담고 본문은 담지 않는�
   assert.equal(c1.includes("# child 산출물"), false, "artifact 본문이 bundle에 실렸다");
 });
 
+test("[M6-T3] 위임한 parent의 bundle에 child 산출물 포인터가 들어간다", () => {
+  const { kernel } = scene();
+  const record = kernel.getState().artifacts[0]!;
+  // child가 낸 산출물은 **위임한 parent가 다음 attempt에서 통합해야 하는 입력**이다. 빠지면 parent가
+  // 자기 child의 결과물을 못 본 채 재개한다(M6 acceptance ⑥에서 실측으로 발견한 누락).
+  assert.match(kernel.contextBundle("root"), new RegExp(`- ${record.path}@${record.revision} \\(output\\) producer=c1`));
+});
+
 test("[M6-T3] 미상 task는 fail-closed다", () => {
   const { kernel } = scene();
   // slug 형태이지만 존재하지 않는 id → `unknown_task`. slug가 아닌 입력은 그 전에 `invalid_id`로 막힌다.

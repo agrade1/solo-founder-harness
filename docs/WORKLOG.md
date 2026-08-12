@@ -1,5 +1,28 @@
 # WORKLOG.md
 
+
+## 2026-08-12 — V3 M6 완료 (Hierarchical Orchestrator + Fresh Context Rotation)
+
+- **T1** `B-19`/`C-44`: `LIMITS.maxProcessesPerRun` 전용 상수 분리(프로세스 상한이 task 상한을 빌려 쓰고
+  있었다). `C-44`의 도달 불가능한 backstop 두 분기는 **주석 명시로 종결** — 여전히 red로 만들 수 없다는
+  사실을 대장에 적었다. 두 상수 각각의 mutation에 각자의 테스트만 red(교차 오염 없음).
+- **T2** spawn/message 배선: `AgentRequest` 닫힌 union 2갈래 + `src/exec/spawnRouting.ts`. kernel 계약
+  2건 변경(`requestSpawn`이 정리 확인된 `cleaning` parent 수용 · child `result`가 parent inbox로 route).
+  A급 1건 즉시 수정 — `B-17` 테스트가 없는 key를 읽어 **언제나 통과**하던 공허한 체크였다.
+- **T3** `src/exec/contextBundle.ts` — `buildContextBundle(state, taskId)` 순수 함수 + kernel 읽기 전용
+  접근자. kickoff와 달리 `briefGenerator.ts`(v2 계층)에 넣지 않았고 **autopilot 주입도 하지 않았다**
+  (offline worker에 프롬프트 채널이 없다).
+- **T4** `snapshotDigest()` 3종(graph/decision/artifact) — 시각·revision 미포함. 교체 전후 일치 + 무교체
+  대조 run 대비 graph·artifact 일치.
+- **T5** fresh 강제: `attempt_id_reused` 신설(직전 attempt 신원 재사용 차단, 잔여는 `C-68`) · 교체된
+  coordinator가 이전 프로세스의 진행 채널을 이어받지 못함을 테스트로 고정.
+- **T6** acceptance **Test 18**(45 내부 체크 / acceptance.sh 16 체크) + mutation 7종 red 확인.
+  **절차가 실제로 두 건을 잡았다**: 시각에 눈먼 rotation 체크 · bundle의 child artifact 포인터 누락.
+- **외부 팩 조사**(ECC/gstack/oh-my-claudecode): **미도입 판정**. 발상 둘만 로드맵에 배치(`C-67` ·
+  M7 도구 예산 상한).
+- 실측: `test:exec` 531/531 · `test:core` 409/409 · acceptance PASS=124/FAIL=0 · tsc clean · live 0회.
+- PR: #12 #13 #14 #15 (전부 merged, 각 1000줄 이하). Issue #11.
+
 ## 2026-08-11 (V3 **M5 완료** — offline 전부 + **첫 live 실행 1회 성공** · 이 블록이 가장 최신이다)
 
 - **첫 live 실행**(`e03008b`): 사용자가 `CODEX_HOME=~/harness-codex-home codex login`을 1회 실행했고
