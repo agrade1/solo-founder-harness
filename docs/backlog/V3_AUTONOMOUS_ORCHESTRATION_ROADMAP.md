@@ -3426,12 +3426,33 @@ authority/atomicity/timing subset(위 4파일) **3회 직렬 205/205** · `npx t
 - fresh Codex code/security/test review.
 - fresh Claude revise, fresh Codex verify, 직렬 로컬 병합.
 
+#### M9 선결 4건 (2026-08-12 추가 — **이것들 없이는 M9 완료 조건이 스펙상 닫히지 않는다**)
+
+M6까지의 "의도적 잔여"가 M9에서는 **전제 조건**이 된다. 개선 항목이 아니라 **빠진 기능**이므로 여기 배치한다.
+
+1. **`run_process` action enum 확장 — 하드 게이트.** 현재 `CONTROLLER_ACTIONS`는 `["validate-plan"]`
+   **하나이고 읽기 전용**이다(`orchestrationTypes.ts`). M9 완료 조건의 "**test** review"는 테스트를
+   *실행*해야 하는데 **표현할 타입이 없다**. M5 완료 판정 절이 이것을 "미증명 — M6+ 범위"로 적었고
+   M6에서도 열지 않았다. **M9 착수 전에 닫는다.** 확장은 여전히 닫힌 enum이며 argv·shell 문자열을
+   모델이 고르는 통로를 만들지 않는다(승인 레코드가 실행 파일·argv·timeout을 정한다).
+2. **`B-16` 신규 파일 발행** — 지금은 승인된 **기존 파일 교체만** 가능하다(신규 생성 `write_publish_unsupported`).
+   worker가 새 파일을 만드는 것이 구현 파이프라인의 기본 동작이므로 M9 전제다.
+3. **`B-17` inbox 전달 소비(ack)** — M6는 route가 durable하게 남는 것까지만 증명했다. "fresh Codex 검토 →
+   fresh Claude 수정"의 **자동 전달**은 수신 task가 inbox를 실제로 읽어야 성립한다.
+4. **F2 실행 가시성**(`V3_DESIGN_LEARN_PROGRESS_HANDOFF.md` F2 — 진행률·스피너·ETA, 신규 의존성 0).
+   M9는 **병렬 worker가 다수 도는 첫 마일스톤**이라 불투명함이 최대가 된다. FIELD_NOTES self-review가
+   관측성 통증 **1순위**로 지목한 항목이고, F1(프로젝트 간 학습)의 데이터 기반(step 타임스탬프)도 여기서 생긴다.
+
 완료: 아이디어에서 로컬 동작 MVP와 전체 테스트·최종 report까지 단일 실행.
 
 ### M10 — End-to-End Hardening & Release
 
 - resume/idempotency, crash recovery, timeout, rate limit, budget, deadlock, cancellation, cleanup.
 - context rotation/요약 변질/문서 누락/의존성 실패/권한 요청 통합 시나리오.
+- **F3 문서 완료 → Claude Code 자동 핸드오프**(`V3_DESIGN_LEARN_PROGRESS_HANDOFF.md` F3 — 2026-08-12 배치).
+  문서 파이프라인이 전부 선 뒤에야 "문서 완료 → 핸드오프"가 의미를 갖기 때문에 여기다. **headless
+  `execute --apply`가 아니다** — 대화형 Claude Code 세션을 여는 것까지이고, 코드 수정 권한은 Claude Code
+  자체 permission 시스템에 그대로 남는다. 그 경계를 넘는 변형은 만들지 않는다.
 - **승인 설정 정적 감사를 릴리스 게이트에 포함한다**(`C-67`): 도그푸딩하는 실제 프로젝트 2~3개의 승인
   manifest를 감사해 "과도하게 넓은 승인"이 실사용에서 실제로 생기는지 확인한다. 감사가 아무것도 못 찾으면
   그 사실을 그대로 적는다(공허한 게이트를 통과로 세지 않는다).
@@ -3448,7 +3469,9 @@ authority/atomicity/timing subset(위 4파일) **3회 직렬 205/205** · `npx t
 - stack별 QA/Next.js DevTools/Supabase dev branch.
 - preview/운영 read profile(Vercel/Sentry 등).
 - Anthropic provider parity.
-- F1 cross-project learn-from(프로젝트 축적 조건 충족 시).
+- F1 cross-project learn-from(프로젝트 축적 조건 충족 시 — `V3_DESIGN_LEARN_PROGRESS_HANDOFF.md` F1).
+  **같은 문서의 F2·F3는 선택적 확장이 아니다** — 2026-08-12에 F2는 M9 선결, F3는 M10으로 배치했다.
+  그 문서가 정한 순서(F2 → F3 → F1)는 그대로 유지된다.
 
 **외부 Claude Code 하네스 팩(ECC · gstack · oh-my-claudecode)은 선택적 확장에도 넣지 않는다**
 (2026-08-12 판정, `docs/DECISIONS.md`). 셋 다 프롬프트·스킬·훅 층이고 **durable SoR·승인 manifest·
