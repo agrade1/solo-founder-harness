@@ -17,6 +17,8 @@ import { LIMITS, } from "./orchestrationTypes.js";
 export function operationKind(op) {
     return op.kind;
 }
+/** turn 하나가 낼 수 있는 오케스트레이션 요청 수 상한. */
+export const MAX_PLAN_REQUESTS = 8;
 /** turn 하나에서 소비할 worker 이벤트 상한. */
 export const MAX_WORKER_EVENTS = 1_024;
 /** `progress` step 라벨 상한(코드 포인트) — 이 값은 durable state에 들어가지 않는다. */

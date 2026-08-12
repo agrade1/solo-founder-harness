@@ -1,6 +1,6 @@
 import { DISPATCH_AUTHORITY_CODES, PROCESS_EFFECT_CODES, WRITE_EFFECT_CODES, executeWriteFileOperation, readDispatchAuthority, resolveWriteAuthority, } from "./orchestrationKernel.js";
 // 계획 계약은 순수 모듈이 정본이다. 기존 호출부·테스트 호환을 위해 같은 이름으로 재수출한다.
-export { LONE_SURROGATE_PATTERN, NORMALIZED_WORKSPACE_PATH_PATTERN, RUN_PROCESS_OPERATION_KEYS, TYPED_PLAN_BINDING_KEYS, TYPED_PLAN_KEYS, TYPED_PLAN_OUTPUT_KEYS, TYPED_PLAN_RESULT_KEYS, WINDOWS_DRIVE_PATTERN, WRITE_FILE_OPERATION_KEYS, readOwnArray, readOwnData, validateTypedExecutionPlan, } from "./typedPlan.js";
+export { DELIVER_STATUS_REQUEST_KEYS, LONE_SURROGATE_PATTERN, NORMALIZED_WORKSPACE_PATH_PATTERN, RUN_PROCESS_OPERATION_KEYS, SPAWN_CHILD_REQUEST_KEYS, TYPED_PLAN_BINDING_KEYS, TYPED_PLAN_KEYS, TYPED_PLAN_KEYS_WITH_REQUESTS, TYPED_PLAN_OUTPUT_KEYS, TYPED_PLAN_RESULT_KEYS, WINDOWS_DRIVE_PATTERN, WRITE_FILE_OPERATION_KEYS, readOwnArray, readOwnData, validateTypedExecutionPlan, } from "./typedPlan.js";
 /**
  * 이 모듈이 낼 수 있는 **안정 오류 코드 전부**(닫힌 목록 — 대장 `C-33`과 같은 취지).
  * 호출자(worker·계획 작성자)가 **고를 수 없다**: getter/proxy가 던진 `OrchestrationError`까지 전부
