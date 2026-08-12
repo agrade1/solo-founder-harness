@@ -129,17 +129,22 @@ const run2 = await gw.runResearch([...requests, ...requests], {
   allowedDomains: ["a.example.com"],
 });
 check("같은 query 재호출이 backend를 다시 부르지 않는다", run2.backendCalls === 1 && run2.cacheHits === 1);
+const narrowed = await gw.runResearch(requests, {
+  backend,
+  evidenceDir: makeDir(),
+  now: NOW,
+  allowedDomains: ["other.example.org"],
+});
+check("search 후보는 allowlist로 좁혀지고 버린 수를 센다", narrowed.items.length === 0 && narrowed.droppedByDomain === 1);
 check(
-  "미허용 도메인은 거부된다",
+  "모델이 URL을 고르는 extract는 미허용 도메인이면 거부된다(allowedDomains=null이면 전부 거부)",
   await rejected(
-    gw.runResearch(requests, { backend, evidenceDir: makeDir(), now: NOW, allowedDomains: ["other.example.org"] }),
-    "domain_not_allowed",
-  ),
-);
-check(
-  "allowedDomains=null은 전부 거부한다(부재가 허용이 아니다)",
-  await rejected(
-    gw.runResearch(requests, { backend, evidenceDir: makeDir(), now: NOW, allowedDomains: null }),
+    gw.runResearch([{ type: "extract", query: "q", urls: ["https://a.example.com/1"] }], {
+      backend,
+      evidenceDir: makeDir(),
+      now: NOW,
+      allowedDomains: null,
+    }),
     "domain_not_allowed",
   ),
 );

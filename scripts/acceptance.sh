@@ -302,8 +302,8 @@ echo "$M7_OUT" | grep -q "중앙이 운반하는 것은 원문 전체가 아니�
 check "M7 ① 원문/발췌 분리 확인 출력" $?
 echo "$M7_OUT" | grep -q "같은 query 재호출이 backend를 다시 부르지 않는다"
 check "M7 ② 캐시 확인 출력" $?
-echo "$M7_OUT" | grep -q "allowedDomains=null은 전부 거부한다"
-check "M7 ② 도메인 fail-closed 확인 출력" $?
+echo "$M7_OUT" | grep -q "extract는 미허용 도메인이면 거부된다"
+check "M7 ② 도메인 fail-closed(extract) 확인 출력" $?
 echo "$M7_OUT" | grep -q "적대적 문장이 데이터 블록 안에 있다"
 check "M7 ③ 주입 fixture가 데이터로 갇힘 확인 출력" $?
 echo "$M7_OUT" | grep -q "본문의 경계 위조가 무력화된다"
