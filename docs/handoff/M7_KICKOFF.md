@@ -51,7 +51,7 @@ docs/CONTEXT_SUMMARY.md                                # 직전 상태 한 눈
 | **계층 spawn/전달 배선**(M6 T2) | 완료 | `src/exec/spawnRouting.ts` · `plan.requests` 닫힌 union |
 | **context bundle**(M6 T3) | 완료 | `src/exec/contextBundle.ts` `buildContextBundle` · kernel `contextBundle()` |
 | **rotation 등가성**(M6 T4) | 완료 | `computeSnapshotDigest` · kernel `snapshotDigest()` |
-| tool profile · capability · preflight | **이미 있다** | `src/tools/profiles.ts`(4등급 `PermissionMode`) · `capabilities.ts` · `preflight.ts` |
+| tool profile · capability · preflight | **이미 있다** | `src/tools/profiles.ts`(`PermissionMode` **3개** — 아래 실측 참조) · `capabilities.ts` · `preflight.ts` |
 | secret redaction · tool trace | **이미 있다** | `src/tools/redact.ts` · `toolTrace.ts` · `trace.ts` · `mcpEnv.ts` |
 | shadcn read 파일럿 | 있다 | `src/tools/shadcn*.ts` |
 | live acceptance evidence(metrics) | 있다 — **research `EvidenceItem`과 다른 것이다** | `src/tools/liveEvidence.ts` |
