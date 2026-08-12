@@ -48,7 +48,7 @@
 - **다음: M6**(Hierarchical Orchestrator + Fresh Context Rotation). 착수 문서는
   `docs/handoff/M6_KICKOFF.md`.
 
-## (2026-08-12 — **V3 M7: T1~T6·T8 offline 완료 / T7(live) 미실행** · 이 블록이 최신이다)
+## (2026-08-12 — **V3 M7: T1~T8 완료 — offline 전부 + live benchmark 1회** · 이 블록이 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
   PR `pr/v3-m7-01-gateway`(T1~T5) · `pr/v3-m7-02-human-gate`(T6·T8).
@@ -57,7 +57,9 @@
   `profiles.ts` 도구 예산 상한 · kernel **사람 gate**(`decision_pending`) · `AgentRequest.request_decision`.
 - 실측: `test:exec` 542 · `test:core` 423 · acceptance **PASS=137 / FAIL=0**(Test 19 신설) · tsc clean.
   **live 0회 · 검색 API 0회 · 과금 0원.**
-- **미증명(과장 금지)**: baseline 대비 benchmark · 실제 검색으로 만든 근거 = **T7 미실행**(API key·과금 승인 대기).
+- **T7 live 1회 실측**(2026-08-12): baseline 인용 5건 중 검증 가능 **0** vs research 인용 6건 중 **6**.
+  baseline 인용은 환각이 아니라 **검증 불가**였다(실재 주소). Tavily 무료 크레딧 6 소모 = $0.
+  표본 1건이므로 일반화하지 않는다. 실행: `scripts/m7-live-benchmark.mjs`(수동 전용 · acceptance 미등록).
   주입 방어는 완화이며 "모델이 안 따른다"의 증명이 아니다. 도구 예산의 **토큰** 비용은 미측정(개수 단위 상한).
 - 판정 정본은 로드맵 `M7 진행 판정` 절. `C-67`은 fixed로 전환했다.
 

@@ -1817,21 +1817,38 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M7 진행 판정 — T1~T6·T8 offline 완료 / T7 미실행** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
+##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
-**M7은 아직 완료가 아니다.** §10 M7 완료 조건 중 offline으로 채울 수 있는 것은 전부 세웠고, **live가 필요한
-것은 실행하지 않았다.** mock 통과를 live 통과로 적지 않는다.
+**offline 전부 + live 검색·benchmark 1회를 실행했다.** 아래 표의 "증명"은 어디서 증명됐는지를 가리키고,
+남은 한계는 같은 무게로 적는다.
 
 | M7 완료 조건 | 증명 | 상태 |
 |---|---|---|
-| idea validation · 최신 web research | acceptance **Test 19** ① — `RESEARCH_REQUEST` 선언 → **mock backend** → `EvidenceItem` → 래핑 digest가 end-to-end로 돈다 | **부분 증명(mock)** — live 미실행 |
+| idea validation · 최신 web research | acceptance **Test 19** ①(mock) + **live 1회**(2026-08-12 `scripts/m7-live-benchmark.mjs`) — 실제 모델이 `RESEARCH_REQUEST` 2건을 선언 → Tavily 2회 호출 → `EvidenceItem` **10건**(원문 11,740 bytes) → 래핑 digest 주입 → 최종 문서 | **증명(live)** |
 | `EvidenceItem` · 외부 원문과 모델 요약 분리 | Test 19 ① + focused — 원문은 content-addressed 파일에만 있고 중앙·digest는 포인터(`source`/`sha256`/`retrievedAt`/`bytes`) + **상한 절삭 발췌**만 운반한다. 발췌 제거 mutation → acceptance red | **증명** |
 | injection 방어 | Test 19 ③ — 적대적 fixture 3종(직접 명령·역할 탈취·경계 위조)이 데이터 블록 **안**에 갇히고 경계 마커 위조가 무력화된다. 래핑 제거 mutation → red | **부분 증명** — 래핑은 완화이지 "모델이 따르지 않음"의 증명이 아니다(offline에서 만들 수 없다) |
 | cache · 상한 | Test 19 ② — 같은 query 재호출이 backend를 다시 부르지 않고, 도메인 allowlist(`null`=전부 거부)·호출 수·문서당 선언 수·URL 수·원문 byte가 fail-closed | **증명** |
 | 도구 예산 상한 | Test 19 ⑤ — `MAX_MCP_SERVERS_PER_PROFILE=3` · `MAX_EXPOSED_TOOLS_PER_PROFILE=16`을 코드 상수로 두고 초과 등록은 profile 로드 자체가 거부. 값의 근거는 **우리 registry 실측**(2026-08-12 최대 1서버/5도구) | **증명(개수 단위)** — 도구 1개의 **토큰** 비용은 upstream inputSchema 소유라 **미측정** |
 | `C-67` 승인 설정 정적 감사 | Test 19 ④ + focused 7건 — `src/exec/manifestAudit.ts`의 read-only 판정 5규칙 + 심각도. 깨끗한 승인은 finding 0(공허한 체크 아님). 각 규칙 제거 mutation 5건 → red | **증명 · `C-67` fixed** |
 | research→PM→CEO 조언 · 최종 사람 gate | Test 19 ⑥ + kernel focused — agent 요청 union에 `request_decision`(요청)은 있고 **답을 만드는 갈래는 없다**. 답 없는 `decision_request`를 남긴 task는 `completeTaskWithArtifacts`/`submitResult`가 `decision_pending`으로 거부(`blocker`는 허용 — 차단은 진행이 아니다). gate 제거 mutation 2건 → red | **증명** |
-| tool 없는 baseline 대비 benchmark | — | **미증명 — live 미실행(T7)**. 검색 API key 미제공 · 과금 승인 대기 |
+| tool 없는 baseline 대비 benchmark | **live 1회 실측**(아래 §T7 결과) — 같은 아이디어·**같은 인용 지시**로 baseline(도구 차단) 1회 vs research 2단계 1회 | **증명(live 1회)** — 표본 1건이라 일반화하지 않는다 |
+
+###### T7 live 결과 (2026-08-12 · 1회 · 표본 1건)
+
+| | 인용 URL | **검증 가능**(우리가 가져와 해싱한 원문에 대응) |
+|---|---|---|
+| baseline (도구 차단 — `--tools "" --permission-mode plan --strict-mcp-config`) | 5건 | **0건** |
+| research (선언→Tavily→EvidenceItem→래핑 digest→2차) | 6건 | **6건** |
+
+**과장하지 않는다**: baseline이 인용한 5건은 **환각이 아니다** — `github.com/anthropics/claude-code`,
+`cursor.com` 같은 실재하는 유명 프로젝트 주소였다. 차이는 사실 여부가 아니라 **검증 가능성**이다:
+baseline 쪽은 하네스가 가진 바이트가 없어 나중에 "그 문서가 정말 그렇게 말했나"를 되짚을 수 없고,
+research 쪽은 6건 전부 `source`+`sha256`+`retrievedAt`이 남은 원문 파일을 가리킨다.
+
+**비용 실측**: Tavily 무료 크레딧 **6** 소모(probe 2 + 벤치 2회분 4 · basic search 1크레딧/회) = **$0**.
+LLM은 Claude Code 구독 경로(`claude -p`) 3회 왕복 × 2런 · 보고된 usage output 합계 7,713 토큰
+(input은 CLI가 2로 보고했다 — 그대로 적는다. 이 수치의 의미는 검증하지 않았다).
+**표본 1건이므로 "research가 항상 낫다"고 말하지 않는다.**
 
 **실측**: `test:exec` **542/542** · `test:core` **423/423** · `scripts/acceptance.sh` **PASS=137 / FAIL=0**
 (M6의 124 + M7 13) · `npx tsc --noEmit` clean · **live 실행 0회 · 검색 API 호출 0회 · 과금 0원**.
