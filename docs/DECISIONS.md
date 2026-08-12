@@ -1686,3 +1686,20 @@ fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES) 지적을 문서로 무마하지 �
 - **공허한 체크 1건 수정(A급)**: `autopilot.test.ts`의 `B-17` 테스트가 존재하지 않는 key
   (`m.activeAttemptId`)를 읽어 **언제나 통과**했다. `m.delivery.activeAttemptId`/`attempts`로 고치고
   "검사할 메시지가 0건이면 red" 가드를 넣었다.
+
+## 2026-08-12 (외부 Claude Code 하네스 팩 도입 판정 — ECC · gstack · oh-my-claudecode)
+
+- **도입하지 않는다.** 셋 다 스킬·서브에이전트·슬래시커맨드·훅을 얹는 **프롬프트 팩**이고(실측 규모:
+  ECC agents 16 / skills 65 / commands 40, gstack commands 23, oh-my-claudecode agents 19 / skills 39)
+  **durable SoR·승인 manifest·상태 기계가 없다.** 우리 v3와 같은 자리를 다른 계약으로 채우므로 얹으면
+  능력이 느는 게 아니라 **역할 어휘가 둘**이 된다(그쪽 planner/architect vs 우리 durable 7 specialist).
+  CLAUDE.md의 기존 금지(`OMC 연동`·`Agent Teams 연동`)와 같은 판정이며 새로 뒤집을 근거가 없다.
+- **훅은 특히 받지 않는다**: 편집 이벤트 훅은 `scripts/acceptance.sh`의 결정론과 **mutation으로 red를
+  확인하는** 절차를 흐린다. M5에서 공허한 체크로 A급을 세 번 맞고 얻은 절차라 속도와 바꾸지 않는다.
+- **가져온 것은 발상 둘뿐이고 둘 다 로드맵에 배치했다**:
+  ① `C-67` 승인 설정 **정적 감사**(read-only) — 외부 도구는 `.claude` 설정을 보지 우리 승인 manifest를
+     보지 않으므로 도구가 아니라 발상만 채택. 기한 = 외부 provider 권능이 manifest에 들어오는 M7 착수 전.
+  ② M7의 **도구 예산 상한** — tool/MCP 설명은 등록만으로 컨텍스트를 상시 소모한다는 수치 보고(200k 창에서
+     가용분 ~70k). M7이 tool을 늘리는 첫 마일스톤이므로 상한을 코드 상수로 두고 초과를 fail-closed로.
+     **그 숫자를 그대로 쓰지 않는다** — 착수 시 우리 프로파일에서 재측정한 값으로 적는다.
+- 다른(이 레포와 무관한) 프로젝트에서 전역으로 쓰는 것은 사용자가 별도 판단한다 — 이 레포 계약과 무관.

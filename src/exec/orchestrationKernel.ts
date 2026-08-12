@@ -129,6 +129,8 @@ import {
   writeSnapshot,
 } from "./orchestrationStore.js";
 import type { TypedRunProcessOperation, TypedWriteFileOperation } from "./typedPlan.js";
+import { buildContextBundle, computeSnapshotDigest } from "./contextBundle.js";
+import type { SnapshotDigest } from "./contextBundle.js";
 
 /** 새 task를 만들 때 공통으로 필요한 입력. */
 export interface TaskSeed {
@@ -2352,6 +2354,23 @@ export class OrchestrationKernel {
             if (task.execution.attemptNo >= draft.manifest.autopilotPolicy.maxTaskAttempts) {
               throw new OrchestrationError("attempt_limit_exceeded", `task ${id}의 attempt 상한을 넘었다`);
             }
+            // **attempt 신원을 재사용할 수 없다**(V3 M6 T5 — fresh-session 강제의 kernel 측면).
+            // `attemptId`는 호출자가 주는 slug인데 이전 판은 **직전 attempt와 같은 값도 받았다**. 같은
+            // 값이면 attempt가 바뀌었는데도 `dispatch_identity_stale` 판정이 통과해 앞선 attempt에서
+            // 발급된 permit/grant가 다음 attempt의 신원과 맞아떨어진다. 효과 자체는 durable
+            // `chargedTurnIds`가 한 번 더 막지만(같은 turn은 두 번 과금되지 않는다 →
+            // `budget_turn_unaccounted`로 효과 게이트가 닫힌다), **감사 기록에서 두 attempt가 구분되지
+            // 않는 것**은 그것과 별개의 손해다. 여기서 닫는다.
+            //
+            // **닫는 범위를 정확히 적는다**: 막는 것은 *직전* attempt와 같은 값이다. 두 attempt 이전의
+            // 값을 다시 쓰는 것은 durable state가 과거 attemptId를 보관하지 않아 이 자리에서 볼 수 없다
+            // (event log는 state 밖 파일이다). 그 잔여는 대장 `C-68`에 남겼다.
+            if (task.execution.attemptId !== null && d.attemptId === task.execution.attemptId) {
+              throw new OrchestrationError(
+                "attempt_id_reused",
+                `task ${id}의 새 attempt가 직전 attempt와 같은 attemptId를 쓴다: ${d.attemptId}`,
+              );
+            }
             // **미확정 operation을 지우면서 새 attempt를 시작하지 않는다**(3A 3차 리비전 A3):
             // 이 자리가 `emptyTaskExecution()`으로 실행 상태를 갈아끼우는 지점이다.
             assertNoPendingOperations(task, "preflight");
@@ -2476,6 +2495,37 @@ export class OrchestrationKernel {
   /** state에서 snapshot.md를 결정론적으로 재생성한다(파생물 — state/event 변경 없음). */
   rebuildSnapshot(): string {
     return writeSnapshot(this.paths, this.#state);
+  }
+
+  /**
+   * **task 하나의 context bundle**(V3 M6 T3 — 파생물이며 state/event/디스크를 바꾸지 않는다).
+   *
+   * `rebuildSnapshot`과 같은 지위다: 입력은 **현재 durable state뿐**이라 프로세스를 교체해도 같은
+   * revision이면 같은 바이트가 나온다. 이것이 coordinator rotation(M6 ③)에서 "새 coordinator가 맥락을
+   * 이어받을 수 있다"의 근거이며, 이 값을 어디에도 저장하지 않는 이유이기도 하다(파생물은 SoR이 아니다).
+   */
+  contextBundle(taskId: string): string {
+    return buildContextBundle(this.#state, assertSlug(taskId, "taskId"));
+  }
+
+  /**
+   * **coordinator 교체 등가성 다이제스트**(V3 M6 T4 — 로드맵 M6 완료 조건 ③).
+   *
+   * "교체 전후가 같다"를 사람 눈이 아니라 **세 해시**로 판정한다. 읽기 전용이며 state·event·디스크를
+   * 바꾸지 않는다(`rebuildSnapshot`·`contextBundle`과 같은 지위다).
+   *
+   * - `graphHash` — task 그래프의 모양: `[taskId, state, dependsOn, depth, parentTaskId]` **taskId 오름차순**.
+   * - `decisionHash` — 중앙이 내린 결정의 기록: message index를 `[messageId, type, taskId, routeToTaskId,
+   *   summary, bodySha256]`로 정규화해 **messageId 오름차순**.
+   * - `artifactHash` — 검증된 산출물 포인터: `[path, revision, sha256]` **artifactId 오름차순**.
+   *
+   * **시각 필드를 한 개도 넣지 않는다.** 넣으면 교체 전후가 구조적으로 절대 같을 수 없어 이 다이제스트가
+   * 곧 공허한 체크가 된다(M5에서 그 부류로 A급을 세 번 맞았다). 같은 이유로 revision·lastEventId도 넣지
+   * 않는다 — 그 둘은 "어떻게 여기 왔는가"이지 "지금 무엇인가"가 아니다. 진행 여부는 호출자가 revision을
+   * 따로 보고 판단한다.
+   */
+  snapshotDigest(): SnapshotDigest {
+    return computeSnapshotDigest(this.#state);
   }
 
   // ── 변경 (전부 kernel 경유) ─────────────────────────────────────────────
