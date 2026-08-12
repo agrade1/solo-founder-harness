@@ -58,6 +58,7 @@ import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
 import type { TypedExecutionPlan, WorkerEvent } from "../exec/autopilotTypes.js";
 import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
+import { applyAgentRequests, requestsOfKind, type AgentRequestOutcome } from "../exec/spawnRouting.js";
 import { openOrchestrationRun } from "../exec/orchestrationKernel.js";
 import type {
   OperationDispatchPermit,
@@ -85,6 +86,8 @@ export interface AutopilotEvent {
     | "task_started"
     | "task_progress"
     | "task_paused"
+    /** 계획의 `spawn_child` 요청이 kernel 게이트를 통과해 child가 만들어졌다(V3 M6 T2). */
+    | "task_spawned"
     /** turn 중간 kernel throw(`C-55`) — **paused가 아니다**: lease를 쥔 크래시 등가 상태다. */
     | "task_aborted"
     | "task_completed"
@@ -98,7 +101,10 @@ export interface AutopilotEvent {
 
 export interface AutopilotTaskOutcome {
   taskId: string;
-  /** `completed` · `paused` · `cancelled` · `deferred` · `aborted`(turn 중간 kernel throw — `C-55`). */
+  /**
+   * `completed` · `paused` · `cancelled` · `deferred` · `aborted`(turn 중간 kernel throw — `C-55`) ·
+   * `waiting_children`(계획이 child를 요청해 결과 발행 대신 위임으로 착지했다 — V3 M6 T2).
+   */
   state: string;
   marker: string;
   /**
@@ -369,6 +375,16 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
         } else {
           marker = "turn_completed";
         }
+        // **M6 T2 — 오케스트레이션 요청 배선.** 전달은 sender가 아직 살아 있어야 kernel이 수락하므로
+        // (`assertActive`) **turn 안에서** 부른다. spawn은 정리 확인 뒤에 부른다(아래 착지 직전) —
+        // 정리되지 않은 attempt를 남긴 채 위임으로 넘어가지 않는다(`B-13`).
+        if (marker === "turn_completed" && plan !== null) {
+          const gate = routeRequestsInTurn(kernel, taskId, turnId, plan, clock, emit);
+          if (gate !== null) {
+            marker = gate;
+            plan = null;
+          }
+        }
       }
     }
   } catch (err) {
@@ -429,6 +445,28 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
     return { taskId, state: "paused", marker };
   }
 
+  // **M6 T2 — spawn 배선.** 정리가 확인된 지금이 위임의 자리다: `requestSpawn`이 parent를
+  // `waiting_children`으로 내리며 lease와 봉인된 결과를 놓는다. child가 전부 completed되면 kernel의
+  // `recompute`가 parent를 다시 `ready`로 올리므로 **결과는 다음 attempt에서** 발행된다.
+  const spawns = requestsOfKind(plan.requests, "spawn_child");
+  if (spawns.length > 0) {
+    const outcomes = applyAgentRequests({ kernel, taskId, turnId, requests: spawns, nextId: id, clock });
+    const failed = outcomes.find((o) => o.code !== null);
+    if (failed === undefined) {
+      emit({ kind: "task_spawned", taskId, marker, detail: outcomes.map((o) => o.target).join(",") });
+      return { taskId, state: "waiting_children", marker };
+    }
+    // **부분 적용은 조용히 넘기지 않는다**: 앞선 요청으로 만들어진 child는 durable에 실재하고 parent는
+    // 이미 `waiting_children`이라 pause할 수도 없다 → `C-55` 경로로 loop를 멈추고 사람이 본다.
+    if (outcomes.some((o) => o.code === null)) {
+      throw new OrchestrationError(failed.code!, `spawn 요청이 부분 적용된 뒤 거부됐다: ${failed.target}`);
+    }
+    // 아무것도 적용되지 않았다 — task는 여전히 정리 확인된 `cleaning`이므로 평범하게 pause한다.
+    kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+    emit({ kind: "task_paused", taskId, marker: failed.code!, detail: "spawn_denied" });
+    return { taskId, state: "paused", marker: failed.code! };
+  }
+
   try {
     kernel.completeTaskWithArtifacts({
       envelope: resultEnvelope(kernel, started.task),
@@ -444,6 +482,45 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   }
   emit({ kind: "task_completed", taskId, marker });
   return { taskId, state: "completed", marker };
+}
+
+// ── 오케스트레이션 요청 배선 (V3 M6 T2) ────────────────────────────────────
+
+/**
+ * **turn 안에서 처리할 요청**(전달)과 **spawn turn의 사전 조건**을 본다. 통과하면 `null`, 아니면
+ * 이 turn을 완료로 접지 않는 marker를 돌려준다.
+ *
+ * spawn turn에 `result.outputs`가 있으면 거부하는 이유: spawn은 결과 발행이 아니라 **위임**이고
+ * (`requestSpawn`이 봉인된 결과를 놓는다) 그래서 그 turn의 artifact를 등록할 커밋이 없다. 그대로 두면
+ * 계획이 산출물을 주장했는데 아무 데도 등록되지 않는 **조용한 유실**이 된다 → 계획 단계에서 닫는다.
+ */
+function routeRequestsInTurn(
+  kernel: OrchestrationKernel,
+  taskId: string,
+  turnId: string,
+  plan: TypedExecutionPlan,
+  clock: () => Date,
+  emit: (e: AutopilotEvent) => void,
+): AutopilotMarker | null {
+  if (requestsOfKind(plan.requests, "spawn_child").length > 0 && plan.result.outputs.length > 0) {
+    emit({ kind: "task_progress", taskId, detail: "spawn_turn_outputs_rejected" });
+    return "plan_invalid";
+  }
+  const deliveries = requestsOfKind(plan.requests, "deliver_status");
+  if (deliveries.length === 0) return null;
+  const outcomes: AgentRequestOutcome[] = applyAgentRequests({
+    kernel,
+    taskId,
+    turnId,
+    requests: deliveries,
+    nextId: id,
+    clock,
+  });
+  const failed = outcomes.find((o) => o.code !== null);
+  if (failed === undefined) return null;
+  // 전달 거부는 **삼키지 않는다**: 이 turn은 완료가 아니고 결과도 발행되지 않는다(pause로 착지).
+  emit({ kind: "task_progress", taskId, detail: `deliver_denied:${failed.code}` });
+  return "delivery_failed";
 }
 
 // ── typed operation 집행 (M5d task 2 — `B-10` 소비면) ───────────────────────
@@ -686,6 +763,8 @@ function pauseReasonFor(marker: AutopilotMarker): PauseReason {
  */
 interface PlanDocument {
   operations: unknown;
+  /** 오케스트레이션 요청(V3 M6 T2). key가 없는 문서는 `undefined`로 남아 계획에도 실리지 않는다. */
+  requests: unknown;
   result: unknown;
 }
 
@@ -699,7 +778,8 @@ function readPlanDocument(planDir: string, taskId: string): PlanDocument | null 
     // 닫힌 validator가 한다 — 여기서는 두 field를 옮기기만 한다.
     const doc = JSON.parse(bytes.toString("utf8")) as unknown;
     if (doc === null || typeof doc !== "object" || Array.isArray(doc)) return null;
-    return { operations: (doc as PlanDocument).operations, result: (doc as PlanDocument).result };
+    const read = doc as PlanDocument;
+    return { operations: read.operations, requests: read.requests, result: read.result };
   } catch {
     return null;
   }
@@ -712,6 +792,8 @@ function encodePlan(doc: PlanDocument, binding: { runId: string; taskId: string;
       schemaVersion: TYPED_EXECUTION_PLAN_SCHEMA_VERSION,
       ...binding,
       operations: doc.operations,
+      // 요청이 없는 문서는 `requests` key **자체를 싣지 않는다** — 생략과 빈 배열을 계획 계약이 같게 본다.
+      ...(doc.requests === undefined ? {} : { requests: doc.requests }),
       result: doc.result,
     }),
   );
