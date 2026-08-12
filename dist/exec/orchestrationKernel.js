@@ -375,10 +375,16 @@ function launchedProcesses(task) {
         task.execution.pendingOperations.filter((p) => p.kind === "run_process").length);
 }
 /**
- * **spawn 상한 3종을 spawn 전에 닫는다**(로드맵 §5: task당 child 4 · child depth 최대 3(root=0) ·
- * run당 task 32). 세는 근거는 **현재 durable state**뿐이라 재시작해도 상한이 다시 열리지 않는다
- * (in-memory 카운터를 만들지 않는 이유다). 지금 집행하려는 operation의 pending은 이미 커밋돼 있으므로
- * 이 수에 포함되고, 그래서 비교는 `>`다(4번째까지 허용, 5번째 거부).
+ * **spawn 상한을 spawn 전에 닫는다**(로드맵 §5: task당 child 4 · child depth 최대 3(root=0) ·
+ * run당 프로세스 `maxProcessesPerRun`). 세는 근거는 **현재 durable state**뿐이라 재시작해도 상한이
+ * 다시 열리지 않는다(in-memory 카운터를 만들지 않는 이유다). 지금 집행하려는 operation의 pending은
+ * 이미 커밋돼 있으므로 이 수에 포함되고, 그래서 비교는 `>`다(4번째까지 허용, 5번째 거부).
+ *
+ * 아래 두 분기는 **도달 불가능한 최후 방어선**이다(`C-44`) — production 변경이나 hash chain 위조 없이는
+ * red로 만들 수 없다. depth 4 task도, `maxTasksPerRun` 초과 state도 durable에 존재할 수 없다:
+ * `requestSpawn`이 유일한 생성 경로이고 거기서 `depth_limit_exceeded`/`task_limit_exceeded`로 막으며,
+ * `addTask`는 private이고 `open()`이 schema로 재검증한다. 실제로 집행되는 경계 검사는 그 아래
+ * **task당 child**와 **run당 프로세스** 둘이며, 각각 자기 상수의 mutation으로 red가 확인됐다.
  */
 function assertSpawnLimits(state, task) {
     if (task.depth > LIMITS.maxDepth) {
@@ -393,8 +399,8 @@ function assertSpawnLimits(state, task) {
     let runTotal = 0;
     for (const t of state.tasks)
         runTotal += launchedProcesses(t);
-    if (runTotal > LIMITS.maxTasksPerRun) {
-        throw processDenied("process_spawn_limit_exceeded", `run당 child는 ${LIMITS.maxTasksPerRun}개까지다`);
+    if (runTotal > LIMITS.maxProcessesPerRun) {
+        throw processDenied("process_spawn_limit_exceeded", `run당 프로세스는 ${LIMITS.maxProcessesPerRun}개까지다`);
     }
 }
 /**
@@ -1839,8 +1845,21 @@ export class OrchestrationKernel {
             }
             const parent = requireTask(draft, envelope.taskId);
             // 이미 한 번 spawn해서 waiting_children인 parent도 상한 안에서 child를 더 요청할 수 있다.
-            if (parent.state !== "running" && parent.state !== "waiting_children") {
-                throw new OrchestrationError("invalid_transition", `spawn_request는 running/waiting_children task만 제출할 수 있다 (현재 ${parent.state})`);
+            //
+            // **`cleaning`도 받는다(V3 M6 T2)** — 다만 `requireCleanedTask`와 같은 조건에서만이다: turn을
+            // `recordTerminal`로 닫고 **자손 0을 확인한 뒤**(`confirmCleanup`) 미확정 operation이 없는 상태.
+            // 이 갈래가 필요한 이유는 autopilot turn의 lifecycle과 spawn 전이가 M5c까지 합성되지 않았기
+            // 때문이다: worker가 turn 안에서 spawn을 요청하면 parent는 `running`에서 곧바로
+            // `waiting_children`으로 가버려 그 attempt를 `recordTerminal`로 닫을 수 없었고(그 API는 `running`만
+            // 받는다), 반대로 turn을 먼저 닫으면 `cleaning`이라 spawn을 받을 수 없었다. 그래서 **정리 확인이
+            // 먼저**인 순서를 택했다 — `B-13`(확인된 정리 뒤에만 자원을 놓는다)을 spawn 경로에서도 지킨다.
+            // 이 갈래는 attempt 자원(lease·봉인된 결과)을 같은 커밋에서 놓는다.
+            const fromCleaning = parent.state === "cleaning";
+            if (fromCleaning) {
+                requireCleanedTask(draft, parent.taskId, "spawn_request");
+            }
+            else if (parent.state !== "running" && parent.state !== "waiting_children") {
+                throw new OrchestrationError("invalid_transition", `spawn_request는 running/waiting_children/정리 확인된 cleaning task만 제출할 수 있다 (현재 ${parent.state})`);
             }
             if (parent.childTaskIds.length >= LIMITS.maxChildrenPerTask) {
                 throw new OrchestrationError("child_limit_exceeded", `task당 child는 ${LIMITS.maxChildrenPerTask}개까지다`);
@@ -1853,6 +1872,11 @@ export class OrchestrationKernel {
             const child = addTask(draft, now, mutation, { ...input.child, dependsOn: input.child.dependsOn ?? [] }, parent.taskId, depth);
             parent.childTaskIds.push(child.taskId);
             parent.childTaskIds.sort();
+            // 정리 확인된 attempt를 떠나는 갈래는 lease와 봉인된 결과를 **같은 커밋에서** 놓는다 — 남겨 두면
+            // 재시작한 controller가 "정리해야 할 프로세스가 있다"고 읽는다(완료 커밋과 같은 규칙).
+            if (fromCleaning) {
+                parent.execution = { ...parent.execution, processLeaseMarker: null, pendingResult: null };
+            }
             setState(draft, now, mutation, parent, "waiting_children", "spawn_requested");
             acceptMessage(draft, now, mutation, this.paths, envelope, input.body, null);
             recompute(draft, now, mutation);
@@ -1935,7 +1959,10 @@ export class OrchestrationKernel {
             const mutation = { events: [], bodies: [] };
             const pointers = addArtifacts(draft, now, mutation, this.paths, task, input.outputs);
             // 채워 넣은 포인터는 `acceptMessage`가 registry·디스크에 대고 **다시** 검증한다(같은 커밋 안).
-            acceptMessage(draft, now, mutation, this.paths, { ...envelope, artifactRefs: pointers }, input.body, summary);
+            // **child의 결과는 parent inbox로 route된다**(V3 M6 T2 — 완료 조건 ①의 parent→child→parent 반쪽).
+            // 여전히 중앙 경유다: 발신은 orchestrator에게이고 route를 정하는 것은 이 커밋(중앙)이며, parent가
+            // 직접 child의 mailbox를 읽거나 쓰는 통로는 없다. route는 durable하므로 재시작해도 남는다.
+            acceptMessage(draft, now, mutation, this.paths, { ...envelope, artifactRefs: pointers }, input.body, summary, task.parentTaskId);
             task.artifactRefs = pointers.map(clone);
             task.resultSummary = summary;
             // 완료 커밋은 attempt 자원을 **같은 커밋에서** 놓는다: lease와 미확정 결과가 남아 있으면
@@ -1962,7 +1989,8 @@ export class OrchestrationKernel {
             const summary = assertText(input.summary, "result summary", LIMITS.maxSummaryLength);
             const task = requireCleanedTask(draft, envelope.taskId, "result");
             const mutation = { events: [], bodies: [] };
-            acceptMessage(draft, now, mutation, this.paths, envelope, input.body, summary);
+            // 산출물 없는 결과도 같은 규칙으로 parent inbox에 route된다(위 트랜잭션과 한 표를 쓴다).
+            acceptMessage(draft, now, mutation, this.paths, envelope, input.body, summary, task.parentTaskId);
             task.artifactRefs = envelope.artifactRefs.map(clone);
             task.resultSummary = summary;
             task.execution = { ...task.execution, processLeaseMarker: null, pendingResult: null };

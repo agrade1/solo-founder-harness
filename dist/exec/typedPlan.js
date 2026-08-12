@@ -16,9 +16,17 @@
  */
 import { isProxy } from "node:util/types";
 import { ARTIFACT_ROLES, LIMITS, OrchestrationError, SHA256_PATTERN, SLUG_PATTERN, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, assertText, isSlug, normalizeWorkspacePath, } from "./orchestrationTypes.js";
-import { MAX_PLAN_OPERATIONS } from "./autopilotTypes.js";
+import { MAX_PLAN_OPERATIONS, MAX_PLAN_REQUESTS, } from "./autopilotTypes.js";
 // ── 계획 계약(닫힌 key 집합 — JSON Schema와 동치) ─────────────────────────────
 export const TYPED_PLAN_KEYS = ["schemaVersion", "runId", "taskId", "attemptId", "turnId", "operations", "result"];
+/**
+ * `requests`가 실린 계획의 닫힌 key 집합(V3 M6 T2). **두 집합 모두 유효하다** — 요청이 없는 계획은
+ * `requests` key 자체를 적지 않아도 되고 그때는 빈 배열로 입양된다. 집합을 하나로 합쳐 필수로 만들면
+ * 기존에 승인된 모든 계획 문서가 한꺼번에 `plan_invalid`가 되므로 그렇게 하지 않는다.
+ */
+export const TYPED_PLAN_KEYS_WITH_REQUESTS = [...TYPED_PLAN_KEYS, "requests"];
+export const SPAWN_CHILD_REQUEST_KEYS = ["kind", "childTaskId", "roleId", "title", "scope", "dependsOn", "reason"];
+export const DELIVER_STATUS_REQUEST_KEYS = ["kind", "deliverTo", "note"];
 export const TYPED_PLAN_RESULT_KEYS = ["summary", "outputs"];
 export const TYPED_PLAN_OUTPUT_KEYS = ["path", "role"];
 export const TYPED_PLAN_BINDING_KEYS = ["runId", "taskId", "attemptId", "turnId"];
@@ -211,6 +219,53 @@ function planOperation(raw, index) {
     }
     throw planInvalid(`${what}는 write_file|run_process의 닫힌 key 집합이어야 한다`);
 }
+/** bounded 짧은 텍스트(title/scope/reason/note) — 상한은 durable state가 받는 것과 같다. */
+function planText(v, what, max) {
+    try {
+        return assertText(v, what, max);
+    }
+    catch {
+        throw planInvalid(`${what}는 1..${max}자 문자열이어야 한다`);
+    }
+}
+/**
+ * 오케스트레이션 요청 1건. **kind는 key 집합이 정한다**(operation과 같은 규칙 — 교대 getter가 갈래를
+ * 바꾸는 통로가 없다). 여기서 통과하는 것은 **요청의 모양**뿐이고, 실제 승인은 kernel이 한다:
+ * registry role · depth/개수 상한 · 미상 dependsOn · 전달 관계는 전부 kernel 게이트가 다시 본다.
+ */
+function planRequest(raw, index) {
+    const what = `requests[${index}]`;
+    const read = readOwnData(raw);
+    if (read === null)
+        throw planInvalid(`${what}는 닫힌 key 집합의 순수 데이터 객체여야 한다`);
+    const keys = Object.keys(read);
+    if (isSameKeySet(keys, SPAWN_CHILD_REQUEST_KEYS)) {
+        if (read.kind !== "spawn_child")
+            throw planInvalid(`${what}.kind가 key 집합과 맞지 않는다`);
+        const rawDeps = closedArray(read.dependsOn, `${what}.dependsOn`);
+        if (rawDeps.length > LIMITS.maxDependsOn)
+            throw planInvalid(`${what}.dependsOn은 ${LIMITS.maxDependsOn}개 이하여야 한다`);
+        return Object.freeze({
+            kind: "spawn_child",
+            childTaskId: planSlug(read.childTaskId, `${what}.childTaskId`),
+            roleId: planSlug(read.roleId, `${what}.roleId`),
+            title: planText(read.title, `${what}.title`, LIMITS.maxTextLength),
+            scope: planText(read.scope, `${what}.scope`, LIMITS.maxTextLength),
+            dependsOn: Object.freeze(rawDeps.map((d, i) => planSlug(d, `${what}.dependsOn[${i}]`))),
+            reason: planText(read.reason, `${what}.reason`, LIMITS.maxTextLength),
+        });
+    }
+    if (isSameKeySet(keys, DELIVER_STATUS_REQUEST_KEYS)) {
+        if (read.kind !== "deliver_status")
+            throw planInvalid(`${what}.kind가 key 집합과 맞지 않는다`);
+        return Object.freeze({
+            kind: "deliver_status",
+            deliverTo: planSlug(read.deliverTo, `${what}.deliverTo`),
+            note: planText(read.note, `${what}.note`, LIMITS.maxTextLength),
+        });
+    }
+    throw planInvalid(`${what}는 spawn_child|deliver_status의 닫힌 key 집합이어야 한다`);
+}
 function planOutput(raw, index) {
     const what = `result.outputs[${index}]`;
     const read = closedRead(raw, TYPED_PLAN_OUTPUT_KEYS, what);
@@ -234,7 +289,10 @@ export function validateTypedExecutionPlan(raw, binding) {
         attemptId: planSlug(b.attemptId, "binding.attemptId"),
         turnId: planSlug(b.turnId, "binding.turnId"),
     };
-    const read = closedRead(raw, TYPED_PLAN_KEYS, "plan");
+    // 요청이 실린 계획과 실리지 않은 계획 **둘 다** 닫힌 집합이다(어느 쪽도 여분 key를 허용하지 않는다).
+    const readAny = readOwnData(raw);
+    const hasRequests = readAny !== null && isSameKeySet(Object.keys(readAny), TYPED_PLAN_KEYS_WITH_REQUESTS);
+    const read = closedRead(raw, hasRequests ? TYPED_PLAN_KEYS_WITH_REQUESTS : TYPED_PLAN_KEYS, "plan");
     if (read.schemaVersion !== TYPED_EXECUTION_PLAN_SCHEMA_VERSION) {
         throw planInvalid(`plan.schemaVersion은 "${TYPED_EXECUTION_PLAN_SCHEMA_VERSION}"이어야 한다`);
     }
@@ -256,6 +314,24 @@ export function validateTypedExecutionPlan(raw, binding) {
         seen.add(op.operationId);
         operations.push(op);
     }
+    const requests = [];
+    if (hasRequests) {
+        const rawRequests = closedArray(read.requests, "plan.requests");
+        if (rawRequests.length > MAX_PLAN_REQUESTS)
+            throw planInvalid(`plan.requests는 ${MAX_PLAN_REQUESTS}건 이하여야 한다`);
+        const seenChild = new Set();
+        for (let i = 0; i < rawRequests.length; i++) {
+            const req = planRequest(rawRequests[i], i);
+            // 같은 계획이 같은 child를 두 번 요청하면 두 번째는 kernel에서 `duplicate_task_id`로 죽는다 —
+            // 그러면 첫 요청만 durable하게 남고 turn은 실패한다. 그 갈림을 만들지 않고 계획 단계에서 닫는다.
+            if (req.kind === "spawn_child") {
+                if (seenChild.has(req.childTaskId))
+                    throw planInvalid("plan.requests에 중복 childTaskId가 있다");
+                seenChild.add(req.childTaskId);
+            }
+            requests.push(req);
+        }
+    }
     const resultRead = closedRead(read.result, TYPED_PLAN_RESULT_KEYS, "plan.result");
     let summary;
     try {
@@ -276,6 +352,7 @@ export function validateTypedExecutionPlan(raw, binding) {
         attemptId: bound.attemptId,
         turnId: bound.turnId,
         operations: Object.freeze(operations),
+        requests: Object.freeze(requests),
         result: Object.freeze({ summary, outputs: Object.freeze(outputs) }),
     });
 }
