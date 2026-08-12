@@ -23,6 +23,14 @@
         "oneOf": [{ "$ref": "#/definitions/writeFileOperation" }, { "$ref": "#/definitions/runProcessOperation" }]
       }
     },
+    "requests": {
+      "description": "V3 M6 T2 — agent가 **요청만** 하는 오케스트레이션 행위. 생략 가능하며 생략은 빈 배열과 같은 뜻이다(런타임이 그렇게 입양한다). 승인·생성·전달은 orchestrator가 kernel API(requestSpawn/submitStatusUpdate)를 통과시켜야 일어나고 depth/개수 상한·registry role·전달 관계는 kernel 게이트가 본다. **state를 직접 바꾸는 kind는 이 union에 없다**(로드맵 M6 완료 조건 ②). **schema가 표현할 수 없어 런타임 전용인 불변식**: spawn_child의 childTaskId **계획 내 유일성**(draft-07은 배열 항목 사이 유일성을 표현할 수 없다).",
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "oneOf": [{ "$ref": "#/definitions/spawnChildRequest" }, { "$ref": "#/definitions/deliverStatusRequest" }]
+      }
+    },
     "result": {
       "type": "object",
       "additionalProperties": false,
@@ -90,6 +98,32 @@
         "expectedBeforeSha256": {
           "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
         }
+      }
+    },
+    "spawnChildRequest": {
+      "description": "child task를 만들어 달라는 **요청**. roleId는 registry(SPECIALIST_ROLES) 안에서만 유효하고 depth·task당 child 상한은 kernel requestSpawn이 집행한다. 만들어지는 task의 ownership·budget은 승인 manifest가 정한다 — 이 요청에는 그 필드가 없다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "childTaskId", "roleId", "title", "scope", "dependsOn", "reason"],
+      "properties": {
+        "kind": { "const": "spawn_child" },
+        "childTaskId": { "$ref": "#/definitions/slug" },
+        "roleId": { "$ref": "#/definitions/slug" },
+        "title": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "scope": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "dependsOn": { "type": "array", "maxItems": 16, "items": { "$ref": "#/definitions/slug" } },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 }
+      }
+    },
+    "deliverStatusRequest": {
+      "description": "sibling에게 bounded 서술을 **중앙 경유로** 전달해 달라는 요청. 직접 mailbox 쓰기가 아니며, 같은 parent이거나 의존 관계일 때만 kernel이 route를 남긴다(route_not_related).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "deliverTo", "note"],
+      "properties": {
+        "kind": { "const": "deliver_status" },
+        "deliverTo": { "$ref": "#/definitions/slug" },
+        "note": { "type": "string", "minLength": 1, "maxLength": 500 }
       }
     },
     "runProcessOperation": {

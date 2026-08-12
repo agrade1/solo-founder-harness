@@ -66,13 +66,16 @@ import {
   type TaskSeed,
   type WorkerProgressChannel,
 } from "./orchestrationKernel.js";
-import type { TypedOperation } from "./autopilotTypes.js";
+import { MAX_PLAN_REQUESTS, type TypedOperation } from "./autopilotTypes.js";
 import {
+  DELIVER_STATUS_REQUEST_KEYS,
   LONE_SURROGATE_PATTERN,
   NORMALIZED_WORKSPACE_PATH_PATTERN,
   RUN_PROCESS_OPERATION_KEYS,
+  SPAWN_CHILD_REQUEST_KEYS,
   TYPED_EXECUTION_CODES,
   TYPED_PLAN_KEYS,
+  TYPED_PLAN_KEYS_WITH_REQUESTS,
   TYPED_PLAN_OUTPUT_KEYS,
   TYPED_PLAN_RESULT_KEYS,
   WINDOWS_DRIVE_PATTERN,
@@ -3367,9 +3370,42 @@ test("[M5c] typed_execution_plan.schema.json의 key·enum·상한이 런타임 �
   const s = readSchema("typed_execution_plan.schema.json");
   assert.equal(s.$schema, "http://json-schema.org/draft-07/schema#");
   assert.equal(s.properties.schemaVersion.const, TYPED_EXECUTION_PLAN_SCHEMA_VERSION);
+  // `requests`는 **선택**이다 — required에는 없고 properties에는 있다(생략 = 빈 배열, M6 T2).
   assert.deepEqual(s.required, [...TYPED_PLAN_KEYS]);
-  assert.deepEqual(Object.keys(s.properties).sort(), [...TYPED_PLAN_KEYS].sort());
+  assert.deepEqual(Object.keys(s.properties).sort(), [...TYPED_PLAN_KEYS_WITH_REQUESTS].sort());
   assert.equal(s.additionalProperties, false);
+
+  // requests — 닫힌 2갈래 union. **state를 직접 바꾸는 갈래가 없다**(M6 완료 조건 ②).
+  assert.equal(s.properties.requests.maxItems, MAX_PLAN_REQUESTS);
+  assert.deepEqual(
+    s.properties.requests.items.oneOf.map((x: any) => x.$ref),
+    ["#/definitions/spawnChildRequest", "#/definitions/deliverStatusRequest"],
+  );
+  const sc = s.definitions.spawnChildRequest;
+  const ds = s.definitions.deliverStatusRequest;
+  assert.deepEqual(sc.required, [...SPAWN_CHILD_REQUEST_KEYS]);
+  assert.deepEqual(Object.keys(sc.properties).sort(), [...SPAWN_CHILD_REQUEST_KEYS].sort());
+  assert.deepEqual(ds.required, [...DELIVER_STATUS_REQUEST_KEYS]);
+  assert.deepEqual(Object.keys(ds.properties).sort(), [...DELIVER_STATUS_REQUEST_KEYS].sort());
+  assert.equal(sc.properties.kind.const, "spawn_child");
+  assert.equal(ds.properties.kind.const, "deliver_status");
+  assert.equal(sc.properties.dependsOn.maxItems, LIMITS.maxDependsOn);
+  for (const f of ["title", "scope", "reason"]) assert.equal(sc.properties[f].maxLength, LIMITS.maxTextLength);
+  assert.equal(ds.properties.note.maxLength, LIMITS.maxTextLength);
+  // 요청 union에 state 변경 갈래가 **없다**는 것을 이름으로 고정한다(새 갈래가 생기면 red다).
+  assert.deepEqual(Object.keys(s.definitions).filter((k) => k.endsWith("Request")).sort(), [
+    "deliverStatusRequest",
+    "spawnChildRequest",
+  ]);
+  assert.ok(s.properties.requests.description.includes("요청만"));
+  // 두 갈래 어디에도 **상태·권능·경로·예산을 직접 지정하는 key가 없다** — 있으면 child가 요청 한 줄로
+  // 자기 권능을 넓힐 수 있다(M6 완료 조건 ②의 "child가 직접 spawn/state 변경 불가"의 필드 측면).
+  const forbidden = ["state", "ownership", "writableRoots", "authorityId", "path", "content", "budget", "maxTokens", "expiresAt"];
+  for (const def of ["spawnChildRequest", "deliverStatusRequest"]) {
+    for (const key of Object.keys(s.definitions[def].properties)) {
+      assert.equal(forbidden.includes(key), false, `${def}.${key}는 요청이 가질 수 없는 권한 필드다`);
+    }
+  }
 
   // result / outputs.
   assert.deepEqual(s.properties.result.required, [...TYPED_PLAN_RESULT_KEYS]);
@@ -3486,7 +3522,9 @@ test("[M5c] 실제로 입양된 계획이 schema의 required·enum 범위 안에
   const plan = adopt();
   const json = JSON.parse(JSON.stringify(plan));
   for (const key of s.required) assert.ok(key in json, `required 누락: ${key}`);
-  assert.deepEqual(Object.keys(json).sort(), [...TYPED_PLAN_KEYS].sort());
+  // 입양된 계획은 `requests`를 **항상** 가진다(생략된 계획도 빈 배열로 입양된다 — M6 T2).
+  assert.deepEqual(Object.keys(json).sort(), [...TYPED_PLAN_KEYS_WITH_REQUESTS].sort());
+  assert.deepEqual(json.requests, []);
   assert.equal(json.schemaVersion, s.properties.schemaVersion.const);
   for (const op of json.operations as TypedOperation[]) {
     const def = op.kind === "write_file" ? s.definitions.writeFileOperation : s.definitions.runProcessOperation;

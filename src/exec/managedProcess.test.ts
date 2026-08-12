@@ -548,8 +548,9 @@ test("[M5c/3C] spawn 상한: depth 3(root=0)에서는 실행되고, depth 4 task
   assert.equal(f.kernel.getState().tasks.some((t) => t.depth > LIMITS.maxDepth), false);
 });
 
-test("[M5c/3C] spawn 상한: run 전체 child 32번째는 실행되고 33번째는 spawn 전에 닫힌다", async () => {
-  assert.equal(LIMITS.maxTasksPerRun, 32);
+test("[M5c/3C] spawn 상한: run 전체 프로세스 32번째는 실행되고 33번째는 spawn 전에 닫힌다", async () => {
+  // 이 경계는 **프로세스** 상한이다(`B-19`) — task 상한 상수를 빌려 쓰지 않는다.
+  assert.equal(LIMITS.maxProcessesPerRun, 32);
   // task당 4 상한이 먼저 걸리므로 run 전체 상한을 보려면 여러 task가 필요하다.
   // root(0) → c1..c4(1) → g1..g4(2). 9 task × 최대 4 = 36 > 32.
   const fill = ["c1", "c2", "c3", "c4", "g1", "g2", "g3", "g4"];

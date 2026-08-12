@@ -134,15 +134,44 @@ function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1
   return { ws, planDir, clock: clockFrom(T0 + 60_000, stepMs) };
 }
 
-/** 계획 문서를 쓴다. binding(run/task/attempt/turn)은 **문서에 없다** — autopilot이 durable에서 채운다. */
-function writePlan(planDir: string, taskId: string, plan: { operations?: unknown[]; result?: unknown }): void {
+/**
+ * 계획 문서를 쓴다. binding(run/task/attempt/turn)은 **문서에 없다** — autopilot이 durable에서 채운다.
+ * `requests`는 주지 않으면 **key 자체를 적지 않는다**(생략된 계획 경로를 그대로 쓰는 것이 기본값이다).
+ */
+function writePlan(
+  planDir: string,
+  taskId: string,
+  plan: { operations?: unknown[]; requests?: unknown[]; result?: unknown },
+): void {
   writeFileSync(
     join(planDir, `${taskId}.json`),
     JSON.stringify({
       operations: plan.operations ?? [],
+      ...(plan.requests === undefined ? {} : { requests: plan.requests }),
       result: plan.result ?? { summary: `${taskId} 완료`, outputs: [] },
     }),
   );
+}
+
+/** `spawn_child` 요청 1건(bounded 필드만 — ownership·budget을 요청으로 넓히는 통로가 없다). */
+function spawnRequest(childTaskId: string, roleId = "qa-security", dependsOn: string[] = []): Record<string, unknown> {
+  return {
+    kind: "spawn_child",
+    childTaskId,
+    roleId,
+    title: `${childTaskId} 제목`,
+    scope: `${childTaskId} bounded scope`,
+    dependsOn,
+    reason: "전문 분야가 달라 쪼갠다",
+  };
+}
+
+function deliverRequest(deliverTo: string, note = "진행 상황 공유"): Record<string, unknown> {
+  return { kind: "deliver_status", deliverTo, note };
+}
+
+async function pilot(f: Fixture): Promise<Awaited<ReturnType<typeof runAutopilot>>> {
+  return runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
 }
 
 /** workspace 안에 산출물 파일을 만든다(typed write가 아니라 **이미 있는 파일**이다 — `B-16` 무관). */
@@ -557,8 +586,12 @@ test("[M5c-3E] 전달 attempt를 열지 않는다 — 열린 채 남는 activeAt
   writePlan(f.planDir, "root", { result: { summary: "root 완료", outputs: [{ path: "docs/out.md", role: "output" }] } });
   await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock: f.clock });
 
-  for (const m of reopen(f.ws).getState().messages) {
-    assert.equal(m.activeAttemptId ?? null, null, `열린 전달 attempt가 남았다: ${m.messageId}`);
+  const messages = reopen(f.ws).getState().messages;
+  assert.ok(messages.length > 0, "검사할 메시지가 없다(공허한 체크)");
+  for (const m of messages) {
+    // 필드 경로를 정확히 짚는다: `m.activeAttemptId`는 존재하지 않는 key라 언제나 통과했다(공허한 체크).
+    assert.equal(m.delivery.activeAttemptId, null, `열린 전달 attempt가 남았다: ${m.messageId}`);
+    assert.equal(m.delivery.attempts, 0, `전달 시도가 열렸다: ${m.messageId}`);
   }
 });
 
@@ -913,4 +946,162 @@ test("[M5d] B-16: 쓰기 도중 fault는 outcome_unknown으로 닫히고 미확�
   assert.equal(report.tasks[0].state, "paused");
   assert.equal(task.state, "paused");
   assert.equal(reopen(f.ws).getState().artifacts.length, 0, "torn 가능성이 있는 turn이 결과를 발행했다");
+});
+
+// ── ⑦ V3 M6 T2 — spawn/message 배선 (완료 조건 ①②) ─────────────────────────
+//
+// 이 절이 고정하는 것은 **autopilot 경유 end-to-end**다(kernel 단위 테스트가 아니다): provider 출력의
+// `spawn_child`·`deliver_status` 요청이 kernel 게이트를 지나 durable graph와 inbox route로 나타나는가.
+
+test("[M6-T2] ①: 계획의 spawn 요청이 kernel 경유로 child를 만들고 parent는 위임으로 착지한다", async () => {
+  const f = boot();
+  writePlan(f.planDir, "root", { requests: [spawnRequest("child1")] });
+
+  const report = await pilot(f);
+
+  // parent는 **결과를 발행하지 않는다** — 위임했으므로 `waiting_children`이다.
+  assert.equal(report.tasks[0].state, "waiting_children");
+  const k = reopen(f.ws);
+  const root = k.getTask("root")!;
+  assert.equal(root.state, "waiting_children");
+  assert.deepEqual(root.childTaskIds, ["child1"]);
+  assert.equal(root.resultSummary, null, "위임 turn이 결과를 발행했다");
+  // 정리 확인 뒤에 위임했으므로 lease와 봉인된 결과가 남아 있지 않다(`B-13`).
+  assert.equal(root.execution.processLeaseMarker, null);
+  assert.equal(root.execution.pendingResult, null);
+
+  // child는 kernel이 만들었다: depth·parent·role·상태가 전부 kernel 계산값이다.
+  const child = k.getTask("child1")!;
+  assert.equal(child.depth, 1);
+  assert.equal(child.parentTaskId, "root");
+  assert.equal(child.roleId, "qa-security");
+  assert.equal(child.state, "ready");
+  // spawn_request 메시지가 durable하게 남았다(§5.2 heading 전부).
+  const spawnMsg = k.getState().messages.find((m) => m.type === "spawn_request");
+  assert.ok(spawnMsg, "spawn_request 메시지가 없다");
+  const spawnBody = readFileSync(join(f.ws, "outputs/orchestration", RUN_ID, spawnMsg.bodyPath), "utf8");
+  for (const h of REQUIRED_BODY_HEADINGS.spawn_request) assert.ok(spawnBody.includes(`## ${h}`), `heading 누락: ${h}`);
+});
+
+test("[M6-T2] ①: child 결과가 parent inbox로 route되고 parent가 다시 ready로 올라온다", async () => {
+  const f = boot();
+  writePlan(f.planDir, "root", { requests: [spawnRequest("child1")] });
+  await pilot(f);
+
+  // child의 turn — 산출물 하나를 발행한다.
+  writeOutput(f.ws, "docs/child.md", "# child 산출물\n");
+  writePlan(f.planDir, "child1", { result: { summary: "child1 완료", outputs: [{ path: "docs/child.md", role: "output" }] } });
+  writeFileSync(join(f.planDir, "root.json"), JSON.stringify({ operations: [], result: { summary: "root 통합 완료", outputs: [] } }));
+  const second = await pilot(f);
+
+  const k = reopen(f.ws);
+  assert.equal(k.getTask("child1")!.state, "completed");
+  // **결과 메시지가 parent에게 route됐다** — 중앙이 route를 정하고 parent inbox에 durable하게 남는다.
+  const result = k.getState().messages.find((m) => m.type === "result" && m.taskId === "child1");
+  assert.ok(result, "child result 메시지가 없다");
+  assert.equal(result.routeToTaskId, "root");
+  assert.deepEqual(
+    k.listPendingInbox("root").map((m) => m.messageId),
+    [result.messageId],
+    "parent inbox에 child 결과가 없다",
+  );
+  // child 완료 → parent는 kernel recompute로 ready가 되고, 같은 실행 안에서 결과까지 발행한다.
+  assert.equal(k.getTask("root")!.state, "completed");
+  assert.equal(k.getTask("root")!.resultSummary, "root 통합 완료");
+  assert.ok(
+    second.tasks.some((t) => t.taskId === "root" && t.state === "completed"),
+    "parent가 같은 실행에서 결과를 내지 못했다",
+  );
+});
+
+test("[M6-T2] ①: child→중앙→sibling 전달이 sibling inbox에 도착한다", async () => {
+  const f = boot();
+  // root가 형제 둘을 요청한다(같은 parent = 전달 가능한 관계).
+  writePlan(f.planDir, "root", { requests: [spawnRequest("c1"), spawnRequest("c2", "dev-lead")] });
+  await pilot(f);
+
+  writePlan(f.planDir, "c1", { requests: [deliverRequest("c2", "c1이 계약을 확정했다")] });
+  await pilot(f);
+
+  const k = reopen(f.ws);
+  const status = k.getState().messages.find((m) => m.type === "status_update");
+  assert.ok(status, "status_update가 없다");
+  // 발신은 **중앙에게**이고 route를 정한 것은 중앙이다(직접 mailbox 쓰기가 아니다).
+  assert.equal(status.taskId, "c1");
+  assert.equal(status.recipient, "orchestrator");
+  assert.equal(status.routeToTaskId, "c2");
+  assert.equal(status.summary, "c1이 계약을 확정했다");
+  assert.deepEqual(
+    k.listPendingInbox("c2").map((m) => m.type),
+    ["status_update"],
+    "sibling inbox에 전달이 없다",
+  );
+  // 전달한 task 자신은 그 turn을 정상 완료한다(전달이 결과 발행을 막지 않는다).
+  assert.equal(k.getTask("c1")!.state, "completed");
+});
+
+test("[M6-T2] ②: 관계 없는 대상으로의 전달은 kernel이 거부하고 turn은 완료가 아니다", async () => {
+  // root와 lone은 서로 무관한 두 root task다(같은 parent도 의존 관계도 아니다).
+  const f = boot({}, ["root", "lone"]);
+  writePlan(f.planDir, "root", { requests: [deliverRequest("lone")] });
+  writePlan(f.planDir, "lone", {});
+
+  const report = await pilot(f);
+
+  const root = report.tasks.find((t) => t.taskId === "root")!;
+  assert.equal(root.state, "paused");
+  assert.equal(root.marker, "delivery_failed");
+  const k = reopen(f.ws);
+  assert.equal(k.getTask("root")!.state, "paused");
+  assert.equal(k.getTask("root")!.resultSummary, null, "거부된 전달 turn이 결과를 발행했다");
+  assert.equal(k.getState().messages.some((m) => m.type === "status_update"), false, "거부된 전달이 durable에 남았다");
+  assert.deepEqual(k.listPendingInbox("lone"), []);
+});
+
+test("[M6-T2] ②: registry 밖 role의 spawn 요청은 kernel이 거부하고 child가 생기지 않는다", async () => {
+  const f = boot();
+  writePlan(f.planDir, "root", { requests: [spawnRequest("child1", "ceo")] });
+
+  const report = await pilot(f);
+
+  assert.equal(report.tasks[0].state, "paused");
+  assert.equal(report.tasks[0].marker, "unknown_role");
+  const k = reopen(f.ws);
+  assert.equal(k.getTask("child1"), null, "거부된 요청이 child를 만들었다");
+  assert.deepEqual(k.getTask("root")!.childTaskIds, []);
+  assert.equal(k.getTask("root")!.state, "paused");
+});
+
+test("[M6-T2] ②: depth 상한을 넘는 spawn 요청은 kernel이 거부한다", async () => {
+  const f = boot();
+  const chain = ["root", "d1", "d2", "d3"];
+  // depth 0→1→2→3까지 요청을 이어 붙인다. d3(depth 3)가 요청하는 d4는 상한 밖이다.
+  for (let i = 0; i < chain.length - 1; i++) {
+    writePlan(f.planDir, chain[i]!, { requests: [spawnRequest(chain[i + 1]!)] });
+  }
+  writePlan(f.planDir, "d3", { requests: [spawnRequest("d4")] });
+  for (let i = 0; i < 5; i++) await pilot(f);
+
+  const k = reopen(f.ws);
+  assert.equal(k.getTask("d3")!.depth, LIMITS.maxDepth);
+  assert.equal(k.getTask("d4"), null, "depth 상한을 넘은 child가 만들어졌다");
+  assert.equal(k.getState().tasks.some((t) => t.depth > LIMITS.maxDepth), false);
+  assert.equal(k.getTask("d3")!.state, "paused");
+});
+
+test("[M6-T2] ②: spawn turn이 산출물을 주장하면 조용히 유실되지 않고 계획 무효다", async () => {
+  const f = boot();
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  writePlan(f.planDir, "root", {
+    requests: [spawnRequest("child1")],
+    result: { summary: "root 완료", outputs: [{ path: "docs/out.md", role: "output" }] },
+  });
+
+  const report = await pilot(f);
+
+  assert.equal(report.tasks[0].marker, "plan_invalid");
+  assert.equal(report.tasks[0].state, "paused");
+  const k = reopen(f.ws);
+  assert.equal(k.getTask("child1"), null, "거부된 계획이 child를 만들었다");
+  assert.equal(k.getState().artifacts.length, 0, "거부된 계획이 artifact를 등록했다");
 });

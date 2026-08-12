@@ -1659,3 +1659,30 @@ fresh Codex Sol xhigh 리뷰(REQUEST_CHANGES) 지적을 문서로 무마하지 �
 - **dist 커밋으로 전환**: github 설치가 빌드 없이 동작하도록 `dist/`를 레포에 커밋(.gitignore 제거). 최신 npm이 install 스크립트(prepare)를 기본 차단하므로 prepare 빌드에 의존하지 않고 산출물을 직접 커밋하는 게 더 견고. build에 `chmod +x dist/cli.js` 추가(tsc가 644로 만들어 bin permission denied 발생하던 버그 해소). 소스 수정 시 `npm run build` 후 dist 커밋 필수.
 - **ux_ui 역할 경계 = "디자인 방향 지시자", 픽셀 렌더러 아님**: headless `claude -p`는 웹검색·렌더링 불가하므로, ux_ui는 레퍼런스 소스·검색 키워드·비주얼 방향만 산출하고 실제 레퍼런스 수집(WebSearch)·화면 시안(Claude 아티팩트)은 다음 단계 Claude Code에서 수행. 기존 "아트 디렉터 아니다/최소 화면" 철학과 충돌 없이 확장(MVP-lean: 레퍼런스는 명확성·속도용, 과설계 금지).
 - **task-prompt 디자인 실행 섹션**: 03_UX_FLOW.md 존재 시에만 조건부 추가 → idea-validation 등 UX 없는 워크플로우/acceptance 무영향.
+
+## 2026-08-11 (V3 M6 T1·T2 — spawn 상한 분리 · agent 출력 → kernel 배선)
+
+- **`LIMITS.maxProcessesPerRun` 분리(T1, `B-19`)**: run 전역 프로세스 상한이 `maxTasksPerRun`을 빌려 쓰고
+  있었다. 값이 같아도 개념이 다르므로 전용 상수로 갈랐다. 두 상수를 **각각** 바꾸는 mutation에 **각자의**
+  테스트만 red임을 실측(교차 오염 없음). `C-44`(도달 불가능한 depth backstop)는 **주석 명시로 종결** —
+  state 위조 harness는 만들지 않았고, 그 두 분기를 테스트로 red로 만들 수 없다는 사실을 대장에 그대로 적었다.
+- **`requestSpawn`이 "정리 확인된 `cleaning`" parent도 받는다(T2)**: M5c의 attempt lifecycle과 M4a의 spawn
+  전이가 **합성되지 않은 상태**였다. worker가 turn 안에서 spawn을 요청하면 parent가 `running` →
+  `waiting_children`으로 곧장 가버려 그 attempt를 `recordTerminal`(running만 받는다)로 닫을 수 없었고,
+  반대로 turn을 먼저 닫으면 `cleaning`이라 spawn을 받을 수 없었다. **정리 확인이 먼저**인 순서를 택했다:
+  `recordTerminal → confirmCleanup → requestSpawn`. 새 갈래는 `requireCleanedTask`와 **같은 조건**(자손 0
+  확인 + 미확정 operation 0)을 요구하고 lease·봉인된 결과를 같은 커밋에서 놓는다 → `B-13`을 spawn 경로에서도
+  지킨다. 상태 게이트를 넓힌 것이지 우회로를 만든 것이 아니다.
+- **child 결과는 parent inbox로 route된다(T2)**: `completeTaskWithArtifacts`/`submitResult`가
+  `routeToTaskId = task.parentTaskId`로 수락한다. 여전히 중앙 경유다(발신은 orchestrator에게, route를 정하는
+  것은 중앙 커밋). autopilot은 아직 inbox를 ack하지 않으므로(`B-17` 미소비) 그 route는 **미확인 상태로
+  durable에 남는다** — 이것은 결함이 아니라 T3 context bundle이 읽을 입력이다.
+- **spawn turn은 결과를 발행하지 않는다(T2)**: spawn은 위임이므로 그 turn의 artifact를 등록할 커밋이 없다.
+  그래서 `spawn_child` 요청이 있는 계획이 `result.outputs`를 주장하면 `plan_invalid`로 닫는다 —
+  조용한 산출물 유실을 만들지 않는다. parent의 결과는 child 전부 완료 후 **다음 attempt**에서 나온다.
+- **child ownership = parent ownership 위임**: 요청이 경로를 고르게 하면 child가 요청 한 줄로 쓰기 범위를
+  넓힐 수 있다. `AgentRequest`에는 ownership·authorityId·경로·예산 필드가 **없다**(schema 테스트가 그 부재를
+  고정한다). 위임은 부모 집합과 동일하며 넓힐 수 없고 `writableRoots` 게이트는 kernel 안에 그대로다.
+- **공허한 체크 1건 수정(A급)**: `autopilot.test.ts`의 `B-17` 테스트가 존재하지 않는 key
+  (`m.activeAttemptId`)를 읽어 **언제나 통과**했다. `m.delivery.activeAttemptId`/`attempts`로 고치고
+  "검사할 메시지가 0건이면 red" 가드를 넣었다.

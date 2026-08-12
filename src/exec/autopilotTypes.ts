@@ -51,6 +51,38 @@ export function operationKind(op: TypedOperation): ApprovedOperationKind {
 }
 
 /**
+ * agent가 **요청만** 할 수 있는 오케스트레이션 행위 1건(V3 M6 T2 — 로드맵 M6 완료 조건 ②).
+ *
+ * 여기 있는 것은 요청이지 권위가 아니다. 승인·생성·전달은 전부 orchestrator가 kernel API(`requestSpawn` ·
+ * `submitStatusUpdate`)를 통과시켜야 일어나며, depth/개수 상한 · registry role · 전달 관계 검증은 kernel
+ * 안에 그대로 있다. **child가 state를 직접 바꾸는 kind는 존재하지 않는다** — 이 union이 그 계약의 모양이다.
+ */
+export type AgentRequest =
+  | {
+      kind: "spawn_child";
+      /** 만들어 달라는 child의 taskId. 실제 생성은 kernel `requestSpawn`이 상한 안에서 한다. */
+      childTaskId: string;
+      /** registry role(`SPECIALIST_ROLES`). 밖의 값은 kernel이 거부한다. */
+      roleId: string;
+      title: string;
+      scope: string;
+      /** child가 기다려야 하는 기존 task. */
+      dependsOn: string[];
+      /** 왜 쪼개야 하는가 — `spawn_request` body의 bounded 서술이 된다. */
+      reason: string;
+    }
+  | {
+      kind: "deliver_status";
+      /** 전달 대상 taskId 또는 **유일하게 식별되는** roleId. 관계 검증은 kernel이 한다. */
+      deliverTo: string;
+      /** 옮길 bounded 서술. 원문·프롬프트·계측값은 담지 않는다. */
+      note: string;
+    };
+
+/** turn 하나가 낼 수 있는 오케스트레이션 요청 수 상한. */
+export const MAX_PLAN_REQUESTS = 8;
+
+/**
  * worker가 turn 하나에서 내는 **전부**. 이 객체 밖으로 나가는 통로가 없으므로 "무엇을 할 수 있는가"가
  * 이 타입의 모양으로 bounded된다. 미상 key·getter·proxy·함수는 `typedExecution.ts`의 닫힌 validator가 거부한다.
  */
@@ -61,6 +93,11 @@ export interface TypedExecutionPlan {
   attemptId: string;
   turnId: string;
   operations: TypedOperation[];
+  /**
+   * 오케스트레이션 요청. 계획에 없으면 **빈 배열**로 입양된다(생략된 계획과 `requests: []`는 같은 뜻이다).
+   * 이 배열은 kernel이 계산하는 계획 digest에 그대로 들어간다 — claim 뒤에 요청을 갈아끼울 수 없다.
+   */
+  requests: AgentRequest[];
   result: {
     summary: string;
     outputs: Array<{ path: string; role: ArtifactRole }>;
