@@ -4512,6 +4512,21 @@ function requireCleanedTask(state: OrchestrationRunState, taskId: unknown, what:
       `${what}: 정합화되지 않은 typed operation이 남아 있다 (${task.taskId})`,
     );
   }
+  // **[V3 M7 T6] 사람 gate**: 답 없는 `decision_request`를 남긴 채 **완료**할 수 없다(로드맵 §6 —
+  // "Founder 판단은 최종 사람 승인 게이트이고 모델 출력은 조언·요약이며 사람 권한을 대체하지 않는다").
+  // `decision`은 중앙 API(`recordDecision`)로만 생기고 agent 요청 union에는 그 갈래가 없다 → 결정을
+  // 기다리는 task가 스스로 완료로 넘어가는 경로를 여기서 닫으면 **사람 없이 진행하는 길이 없다.**
+  // `blocker`는 막지 않는다 — 차단은 진행이 아니라 정지이고, 결정 대기를 사람에게 드러내는 정상 경로다.
+  if (what === "result") {
+    const asked = state.messages.filter((m) => m.type === "decision_request" && m.taskId === task.taskId).length;
+    const answered = state.messages.filter((m) => m.type === "decision" && m.taskId === task.taskId).length;
+    if (answered < asked) {
+      throw new OrchestrationError(
+        "decision_pending",
+        `${what}: 답 없는 decision_request가 남아 있다 (${task.taskId}) — 사람 결정 없이 완료할 수 없다`,
+      );
+    }
+  }
   return task;
 }
 

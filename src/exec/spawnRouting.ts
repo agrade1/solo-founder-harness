@@ -73,11 +73,16 @@ export function requestsOfKind<K extends AgentRequest["kind"]>(
   return requests.filter((r): r is Extract<AgentRequest, { kind: K }> => r.kind === kind);
 }
 
+/** 감사 라벨 — 요청 갈래별 대상 표기. */
+function requestTarget(req: AgentRequest): string {
+  return req.kind === "spawn_child" ? req.childTaskId : req.kind === "deliver_status" ? req.deliverTo : ORCHESTRATOR_ID;
+}
+
 function applyOne(input: ApplyAgentRequestsInput, req: AgentRequest): AgentRequestOutcome {
   const { kernel, taskId } = input;
   const task = kernel.getTask(taskId);
   if (task === null) {
-    return { kind: req.kind, target: req.kind === "spawn_child" ? req.childTaskId : req.deliverTo, code: "unknown_task" };
+    return { kind: req.kind, target: requestTarget(req), code: "unknown_task" };
   }
   try {
     if (req.kind === "spawn_child") {
@@ -101,6 +106,15 @@ function applyOne(input: ApplyAgentRequestsInput, req: AgentRequest): AgentReque
       });
       return { kind: req.kind, target: req.childTaskId, code: null };
     }
+    if (req.kind === "request_decision") {
+      // **요청만 만든다.** 답(`decision`)은 사람이 중앙 API로만 넣는다 — 여기에 그 갈래는 없다.
+      kernel.submitDecisionRequest({
+        envelope: envelopeFor(kernel, task, "decision_request", input.nextId("dec"), input.clock),
+        body: decisionRequestBody(req, task.taskId),
+        summary: req.question,
+      });
+      return { kind: req.kind, target: ORCHESTRATOR_ID, code: null };
+    }
     kernel.submitStatusUpdate({
       envelope: envelopeFor(kernel, task, "status_update", input.nextId("stat"), input.clock),
       body: statusBody(req, task.taskId),
@@ -111,7 +125,7 @@ function applyOne(input: ApplyAgentRequestsInput, req: AgentRequest): AgentReque
   } catch (err) {
     return {
       kind: req.kind,
-      target: req.kind === "spawn_child" ? req.childTaskId : req.deliverTo,
+      target: requestTarget(req),
       code: err instanceof OrchestrationError ? err.code : "routing_internal_error",
     };
   }
@@ -172,6 +186,16 @@ function assignmentBody(req: Extract<AgentRequest, { kind: "spawn_child" }>): st
     "Definition of Done": "- 승인 경계 안에서 result를 발행한다.",
     "Budget and Permission Envelope": "- 승인 manifest의 예산·권능만 쓴다(이 body가 권한을 주지 않는다).",
     "Expected Deliverables": `- ${req.title}`,
+  });
+}
+
+function decisionRequestBody(req: Extract<AgentRequest, { kind: "request_decision" }>, senderTaskId: string): string {
+  return renderBody("decision_request", {
+    "Blocking Condition": `- ${req.question}`,
+    Evidence: `- ${senderTaskId}의 durable 산출물과 전달 기록을 근거로 한다(원문은 싣지 않는다).`,
+    "Options and Trade-offs": "- 사람이 판단한다. 이 요청은 선택지를 대신 고르지 않는다.",
+    "Required Authority": "- 사람(Founder) 결정. 모델 출력은 조언이며 사람 권한을 대체하지 않는다.",
+    "Safe Default While Waiting": `- ${req.safeDefault}`,
   });
 }
 

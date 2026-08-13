@@ -20,6 +20,13 @@ export const MAX_URLS_PER_REQUEST = 4;
 export const MAX_QUERY_CHARS = 200;
 /** run 1회의 backend 호출 수 상한(캐시 적중은 세지 않는다). */
 export const MAX_BACKEND_CALLS_PER_RUN = 8;
+/**
+ * 중앙·프롬프트로 넘어가는 **발췌** 길이 상한(코드 포인트).
+ *
+ * 정직하게: 하네스는 offline에서 모델 요약을 만들지 않는다. 여기서 만드는 것은 원문의 **앞부분 발췌**이며
+ * 그래서 이름도 요약이 아니라 발췌다. 원문 전체는 파일에만 있고 중앙이 운반하는 것은 이 상한까지다.
+ */
+export const MAX_EXCERPT_CHARS = 400;
 
 export class ResearchError extends Error {
   readonly code: string;
@@ -111,6 +118,12 @@ function parseOne(rest: string): ResearchRequest {
   return { type, query, urls };
 }
 
+/** 원문 앞부분을 상한까지 자른 발췌. 잘렸으면 그 사실을 표시한다(전체인 척하지 않는다). */
+export function excerpt(raw: string): string {
+  const chars = [...raw];
+  return chars.length <= MAX_EXCERPT_CHARS ? raw : `${chars.slice(0, MAX_EXCERPT_CHARS).join("")}…(절삭됨 · 원문은 파일에 있다)`;
+}
+
 function hostOf(url: string): string {
   try {
     return new URL(url).hostname;
@@ -165,7 +178,7 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
         throw new ResearchError("domain_not_allowed", `허용되지 않은 도메인이다: ${r.source}`);
       }
       try {
-        stored.push(storeEvidence(opts.evidenceDir, { ...r, retrievedAt: opts.now(), summary: r.raw }));
+        stored.push(storeEvidence(opts.evidenceDir, { ...r, retrievedAt: opts.now(), summary: excerpt(r.raw) }));
       } catch (e) {
         if (e instanceof EvidenceError) throw new ResearchError(e.code, e.message);
         throw e;

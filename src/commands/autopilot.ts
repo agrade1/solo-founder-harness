@@ -506,7 +506,12 @@ function routeRequestsInTurn(
     emit({ kind: "task_progress", taskId, detail: "spawn_turn_outputs_rejected" });
     return "plan_invalid";
   }
-  const deliveries = requestsOfKind(plan.requests, "deliver_status");
+  // [M7 T6] 전달과 사람 결정 요청은 **같은 자리**에서 처리한다(둘 다 sender가 active일 때만 수락된다).
+  // 결정 요청을 여기서 빠뜨리면 계획이 사람에게 물었는데 아무 데도 남지 않는 조용한 유실이 된다.
+  const deliveries = [
+    ...requestsOfKind(plan.requests, "deliver_status"),
+    ...requestsOfKind(plan.requests, "request_decision"),
+  ];
   if (deliveries.length === 0) return null;
   const outcomes: AgentRequestOutcome[] = applyAgentRequests({
     kernel,

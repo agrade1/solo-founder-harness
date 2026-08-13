@@ -4376,3 +4376,47 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
     assert.equal(new RegExp(rs.definitions.specialistRoleId.pattern).test(bad), false, bad);
   }
 });
+
+// ── [M7 T6] 사람 gate — 답 없는 decision_request를 남기고 완료할 수 없다 ─────────────
+test("[M7 T6] 답 없는 decision_request가 남으면 완료가 거부되고, 사람이 답한 뒤에야 열린다", () => {
+  const { ws, k } = bootRoot();
+  k.submitDecisionRequest({
+    envelope: envelope("decision_request", "root", "tech-lead", { messageId: "dreq-gate" }),
+    body: body("decision_request"),
+    summary: "이 근거로 진행해도 되는가",
+  });
+  cleanVia(k, "root");
+  const path = put(ws, "docs/gate.md", "gate\n");
+
+  // 결과 발행(진행)은 막힌다 — 사람 결정 없이 완료로 넘어가는 경로가 없다.
+  assert.equal(
+    codeOf(() => k.completeTaskWithArtifacts(completeInput([{ path, role: "output" }]))),
+    "decision_pending",
+  );
+  assert.equal(k.getTask("root")!.state, "cleaning");
+
+  // 사람이 중앙 API로 답한다. 그때서야 완료가 열린다.
+  k.recordDecision({
+    envelope: envelope("decision", "root", "tech-lead", { messageId: "dec-gate" }),
+    body: body("decision"),
+    summary: "승인한다",
+  });
+  const done = k.completeTaskWithArtifacts(completeInput([{ path, role: "output" }]));
+  assert.equal(done.task.state, "completed");
+});
+
+test("[M7 T6] blocker는 막지 않는다 — 차단은 진행이 아니라 사람에게 드러내는 정상 경로다", () => {
+  const { k } = bootRoot();
+  k.submitDecisionRequest({
+    envelope: envelope("decision_request", "root", "tech-lead", { messageId: "dreq-blk" }),
+    body: body("decision_request"),
+    summary: "결정 필요",
+  });
+  cleanVia(k, "root", "worker_failed");
+  const blocked = k.submitBlocker({
+    envelope: envelope("blocker", "root", "tech-lead", { messageId: "blk-1" }),
+    body: body("blocker"),
+    summary: "결정 대기 중 차단",
+  });
+  assert.equal(blocked.state, "blocked");
+});
