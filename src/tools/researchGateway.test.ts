@@ -138,11 +138,21 @@ test("같은 요청은 backend를 다시 부르지 않는다(캐시)", async () 
   });
 });
 
-test("미허용 도메인·호출 상한은 fail-closed (allowedDomains=null은 전부 거부)", async () => {
+test("도메인 게이트: extract는 fail-closed, search 후보는 좁힌다", async () => {
   await withDir(async (dir) => {
     const backend = mockBackend({ "search:q": [{ source: "https://evil.example.net/1", title: "t", raw: "본문" }] });
+    // search 후보는 목록 밖이면 **버린다**(질의 전에 후보 도메인을 알 수 없으므로 거부는 검색 자체를 막는다).
+    const narrowed = await runResearch([{ type: "search", query: "q" }], {
+      backend,
+      evidenceDir: dir,
+      now: NOW,
+      allowedDomains: ["a.example.com"],
+    });
+    assert.equal(narrowed.items.length, 0);
+    assert.equal(narrowed.droppedByDomain, 1);
+    // 모델이 URL을 고르는 extract는 목록 밖이면 **거부**다.
     await assert.rejects(
-      runResearch([{ type: "search", query: "q" }], {
+      runResearch([{ type: "extract", query: "q", urls: ["https://evil.example.net/1"] }], {
         backend,
         evidenceDir: dir,
         now: NOW,

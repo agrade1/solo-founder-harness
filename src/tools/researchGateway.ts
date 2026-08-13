@@ -136,7 +136,14 @@ export interface RunResearchOpts {
   backend: ResearchBackend;
   evidenceDir: string;
   now: () => string;
-  /** 허용 도메인. `null`이면 전부 거부한다 — 부재가 허용이 되는 경로는 없다. */
+  /**
+   * 허용 도메인. **두 경로에 다르게 적용된다**(M7 T7 live 착수 시 정정 — 근거는 아래).
+   *  - `extract`(**모델이 URL을 고른다**): 목록 안이어야 한다. `null`이면 **전부 거부**(fail-closed).
+   *    위협은 여기다 — 모델 출력 한 줄이 하네스에게 임의 URL을 가져오게 만드는 경로다.
+   *  - `search`(**벤더가 후보를 고른다**): 목록이 있으면 그 안으로 **좁히고**, `null`이면 좁히지 않는다.
+   *    검색 후보의 도메인은 질의 전에 알 수 없으므로 여기에 allowlist를 강제하면 검색이 성립하지 않는다.
+   *    좁히지 않는다고 신뢰하는 것은 아니다 — 후보도 원문은 파일로만 가고 프롬프트에는 래핑된 발췌만 간다.
+   */
   allowedDomains: string[] | null;
 }
 
@@ -144,6 +151,8 @@ export interface RunResearchResult {
   items: EvidenceItem[];
   backendCalls: number;
   cacheHits: number;
+  /** allowlist로 좁혀서 버린 search 후보 수(조용히 버리지 않고 센다). */
+  droppedByDomain: number;
 }
 
 /**
@@ -154,6 +163,7 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
   const seen = new Map<string, EvidenceItem[]>();
   let backendCalls = 0;
   let cacheHits = 0;
+  let droppedByDomain = 0;
   const items: EvidenceItem[] = [];
 
   const allowed = (url: string): boolean => {
@@ -161,7 +171,12 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
     return (opts.allowedDomains ?? []).includes(host);
   };
 
-  const call = async (key: string, fn: () => Promise<BackendResult[]>): Promise<EvidenceItem[]> => {
+  const call = async (
+    key: string,
+    fn: () => Promise<BackendResult[]>,
+    /** `true`면 목록 밖 결과를 **버리고**(search), `false`면 **거부한다**(extract). */
+    narrow: boolean,
+  ): Promise<EvidenceItem[]> => {
     const cached = seen.get(key);
     if (cached) {
       cacheHits++;
@@ -174,7 +189,14 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
     const results = await fn();
     const stored: EvidenceItem[] = [];
     for (const r of results) {
-      if (!allowed(r.source)) {
+      if (narrow) {
+        // search 후보: 목록이 있으면 좁히고, 없으면(=null) 좁히지 않는다.
+        if (opts.allowedDomains !== null && !allowed(r.source)) {
+          droppedByDomain++;
+          continue;
+        }
+      } else if (!allowed(r.source)) {
+        // extract: 벤더가 요청한 URL과 다른 곳을 돌려주면 거부한다(리다이렉트 우회 차단).
         throw new ResearchError("domain_not_allowed", `허용되지 않은 도메인이다: ${r.source}`);
       }
       try {
@@ -190,15 +212,15 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
 
   for (const req of requests) {
     if (req.type === "search") {
-      items.push(...(await call(`search:${req.query}`, () => opts.backend.search(req.query))));
+      items.push(...(await call(`search:${req.query}`, () => opts.backend.search(req.query), true)));
       continue;
     }
     for (const url of req.urls) {
       if (!allowed(url)) throw new ResearchError("domain_not_allowed", `허용되지 않은 도메인이다: ${url}`);
-      items.push(...(await call(`extract:${url}`, async () => [await opts.backend.extract(url)])));
+      items.push(...(await call(`extract:${url}`, async () => [await opts.backend.extract(url)], false)));
     }
   }
-  return { items, backendCalls, cacheHits };
+  return { items, backendCalls, cacheHits, droppedByDomain };
 }
 
 // ── T4: 주입 방어 — "데이터이며 지시가 아님" 래핑 ────────────────────────────────

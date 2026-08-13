@@ -27,6 +27,22 @@
       "secretRefs": []
     },
     {
+      "id": "research-tavily",
+      "capabilities": ["web_search", "page_extract"],
+      "bindings": {
+        "web_search": { "kind": "internal_adapter", "adapter": "research", "operations": ["search"] },
+        "page_extract": { "kind": "internal_adapter", "adapter": "research", "operations": ["extract"] }
+      },
+      "servers": [],
+      "preapprovedTools": [],
+      "deniedTools": [],
+      "permissionMode": "read_only",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 8, "maxResultChars": 8000, "maxElapsedMsPerCall": 30000 },
+      "secretRefs": ["TAVILY_API_KEY"],
+      "source": "official"
+    },
+    {
       "id": "handoff-shadcn-readonly",
       "capabilities": ["component_registry_read"],
       "bindings": {

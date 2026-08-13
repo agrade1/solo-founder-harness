@@ -42,6 +42,9 @@ const { auditApprovalManifest } = await import(join(REPO_ROOT, "src/exec/manifes
 const { validateApprovalManifest } = await import(join(REPO_ROOT, "src/exec/approvalManifest.ts"));
 const { parseToolProfiles, MAX_EXPOSED_TOOLS_PER_PROFILE } = await import(join(REPO_ROOT, "src/tools/profiles.ts"));
 const { validateTypedExecutionPlan } = await import(join(REPO_ROOT, "src/exec/typedPlan.ts"));
+const { loadToolProfiles } = await import(join(REPO_ROOT, "src/tools/profiles.ts"));
+const { adapterAvailable, KNOWN_ADAPTERS } = await import(join(REPO_ROOT, "src/tools/adapters.ts"));
+const tavily = await import(join(REPO_ROOT, "src/tools/tavilyBackend.ts"));
 
 let pass = 0;
 let fail = 0;
@@ -129,17 +132,22 @@ const run2 = await gw.runResearch([...requests, ...requests], {
   allowedDomains: ["a.example.com"],
 });
 check("같은 query 재호출이 backend를 다시 부르지 않는다", run2.backendCalls === 1 && run2.cacheHits === 1);
+const narrowed = await gw.runResearch(requests, {
+  backend,
+  evidenceDir: makeDir(),
+  now: NOW,
+  allowedDomains: ["other.example.org"],
+});
+check("search 후보는 allowlist로 좁혀지고 버린 수를 센다", narrowed.items.length === 0 && narrowed.droppedByDomain === 1);
 check(
-  "미허용 도메인은 거부된다",
+  "모델이 URL을 고르는 extract는 미허용 도메인이면 거부된다(allowedDomains=null이면 전부 거부)",
   await rejected(
-    gw.runResearch(requests, { backend, evidenceDir: makeDir(), now: NOW, allowedDomains: ["other.example.org"] }),
-    "domain_not_allowed",
-  ),
-);
-check(
-  "allowedDomains=null은 전부 거부한다(부재가 허용이 아니다)",
-  await rejected(
-    gw.runResearch(requests, { backend, evidenceDir: makeDir(), now: NOW, allowedDomains: null }),
+    gw.runResearch([{ type: "extract", query: "q", urls: ["https://a.example.com/1"] }], {
+      backend,
+      evidenceDir: makeDir(),
+      now: NOW,
+      allowedDomains: null,
+    }),
     "domain_not_allowed",
   ),
 );
@@ -262,6 +270,21 @@ try {
   decisionForged = true;
 }
 check("답(decision)을 만드는 요청 갈래는 존재하지 않는다", decisionForged);
+
+console.log("⑦ secret 취급 — 값을 요구하지 않고 registry에는 이름만 둔다");
+check("research 어댑터가 등록돼 있다", adapterAvailable("research", KNOWN_ADAPTERS));
+const rp = loadToolProfiles().get("research-tavily");
+check("registry profile이 secret을 **이름으로만** 선언한다", JSON.stringify(rp.secretRefs) === '["TAVILY_API_KEY"]');
+check("research 도구는 모델에 노출되지 않는다(internal_adapter)", Object.values(rp.bindings).every((b) => b.kind === "internal_adapter"));
+check("registry에 키 값이 들어 있지 않다", !JSON.stringify(rp).includes("tvly-"));
+const savedKey = process.env.TAVILY_API_KEY;
+delete process.env.TAVILY_API_KEY;
+check("키가 없으면 호출 전에 fail-closed다", !tavily.researchSecretAvailable() && threw(() => tavily.createTavilyBackend(), "secret_missing"));
+check(
+  "안내가 값을 요구하지 않고 셸 설정을 지시한다",
+  tavily.TAVILY_SETUP_HINT.includes("붙여넣지 마라") && !/tvly-[A-Za-z0-9_-]{10,}/.test(tavily.TAVILY_SETUP_HINT),
+);
+if (savedKey !== undefined) process.env.TAVILY_API_KEY = savedKey;
 
 console.log("");
 console.log(`PASS=${pass} FAIL=${fail}`);

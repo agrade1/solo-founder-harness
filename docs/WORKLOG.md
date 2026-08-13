@@ -4105,4 +4105,6 @@ Phase 0 탐색 보고 → 승인(4개 결정: 별도 design 에이전트 / DESIG
 - T6 사람 gate — 답 없는 `decision_request`를 남긴 task는 완료 불가(`decision_pending`), 요청 union에
   답을 만드는 갈래 없음(`request_decision`만 추가).
 - T8 acceptance **Test 19** 신설(PASS=137) · mutation red 확인 총 26건 · 로드맵/대장 갱신(`C-67` fixed).
-- **T7(live 검색 + benchmark)은 미실행** — 과금 승인·API key 대기. mock 통과를 live로 적지 않았다.
+- T7 live 1회 — Tavily backend 신설, live 첫 호출에서 search/extract 도메인 게이트 분리를 정정
+  (후보 도메인은 질의 전에 알 수 없다 → 위협이 있는 extract만 fail-closed 유지).
+  benchmark: baseline 검증 가능 0/5 vs research 6/6. 크레딧 6 소모($0), LLM은 구독 경로 3왕복×2런.
