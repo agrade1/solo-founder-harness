@@ -30,7 +30,7 @@ MVP-lean 원칙(공용 운영 프롬프트)을 지킨다: 과설계 금지, 첫 
 ## 디자인 토큰            — 아래 4절의 tokens.json 내용을 ```json 코드펜스로 그대로 포함
 ```
 
-## 4. tokens.json 구조 (3계층 강제)
+## 4. tokens.json 구조 (3계층 + a11y 강제)
 
 "## 디자인 토큰" 헤더 아래에 **정확히 하나의 ```json 코드펜스**로 아래 구조의 토큰을 출력하라. 하네스가 이 블록을 추출해 `docs/tokens.json`으로 저장한다.
 
@@ -46,14 +46,28 @@ MVP-lean 원칙(공용 운영 프롬프트)을 지킨다: 과설계 금지, 첫 
     "spacing": { "component-padding": "{primitive.spacing.4}" }
   },
   "component": {
-    "button": { "bg-primary": "{semantic.color.action-primary}", "padding-x": "{semantic.spacing.component-padding}" }
+    "button": { "bg-primary": "{semantic.color.action-primary}", "padding-x": "{semantic.spacing.component-padding}", "focus-ring": "{semantic.color.action-primary}" }
+  },
+  "a11y": {
+    "contrastPairs": [
+      { "fg": "semantic.color.text-primary", "bg": "semantic.color.surface-default", "min": 4.5 }
+    ]
   }
 }
 ```
 
 규칙:
 
+- **최상위 key는 정확히 `primitive`/`semantic`/`component`/`a11y` 넷**이다. 더하거나 빼면 하네스가 거부한다.
 - **계층 건너뛰기 금지**: primitive는 raw 값만, semantic은 primitive 참조만(`{primitive.*}`), component는 semantic 참조만(`{semantic.*}`).
+- **`a11y.contrastPairs`(필수)**: 검증받을 전경/배경 쌍을 **직접 선언**한다. `fg`/`bg`는 `semantic.*` 또는
+  `component.*` 색 토큰 경로, `min`은 `4.5`(본문) 또는 `3`(큰 텍스트·비텍스트)만 허용한다. 하네스가 참조를
+  primitive hex까지 해석해 **WCAG 대비비를 계산하고 `min` 미만이면 거부**한다. `semantic.color.text-*`
+  토큰은 **전부** 최소 한 쌍의 `fg`로 등장해야 한다(선언 누락으로 검사를 비울 수 없다).
+- **focus 토큰(필수)**: 컴포넌트 인벤토리의 대화형 컴포넌트(Button/Input/Select/Checkbox/Radio/Switch/
+  Textarea/Link/Tab/MenuItem)는 `component.<kebab-name>` group에 이름에 `focus`가 들어간 토큰을 둔다.
+- **컴포넌트 인벤토리 형식**: `## 컴포넌트 인벤토리` 섹션의 각 컴포넌트는 `- <PascalName>: <variant>, <variant>`
+  bullet 한 줄로 적는다(하네스가 이 형식으로 파싱한다).
 - **시맨틱 네이밍**: `blue` 금지, `action-primary` 형식. 값이 바뀌어도 이름이 유효해야 한다.
 - **다크 모드**: PRD 범위에 있으면 semantic 계층에서 `light`/`dark` 키로 분기. 없더라도 구조는 처음부터 모드 분기 가능하게(나중에 추가하면 전면 리팩토링).
 - **토큰화 범위**: 컬러/타이포/스페이싱/radius/shadow까지만. 모든 CSS 속성을 토큰화하지 말 것.
