@@ -55,7 +55,7 @@
 - 새로 선 것: `src/exec/manifestAudit.ts`(C-67 정적 감사 5규칙) · `src/tools/evidenceStore.ts`(원문=파일 /
   중앙=포인터+발췌) · `src/tools/researchGateway.ts`(선언 파서·mock backend·캐시·상한·주입 래핑) ·
   `profiles.ts` 도구 예산 상한 · kernel **사람 gate**(`decision_pending`) · `AgentRequest.request_decision`.
-- 실측: `test:exec` 542 · `test:core` 423 · acceptance **PASS=137 / FAIL=0**(Test 19 신설) · tsc clean.
+- 실측: `test:exec` 542 · `test:core` 426 · acceptance **PASS=140 / FAIL=0**(Test 19 신설) · tsc clean.
   **live 0회 · 검색 API 0회 · 과금 0원.**
 - **T7 live 1회 실측**(2026-08-12): baseline 인용 5건 중 검증 가능 **0** vs research 인용 6건 중 **6**.
   baseline 인용은 환각이 아니라 **검증 불가**였다(실재 주소). Tavily 무료 크레딧 6 소모 = $0.

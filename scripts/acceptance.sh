@@ -316,8 +316,14 @@ echo "$M7_OUT" | grep -q "상한 초과 도구 등록은 로드 자체가 거부
 check "M7 ⑤ 도구 예산 상한 fail-closed 확인 출력" $?
 echo "$M7_OUT" | grep -q "답(decision)을 만드는 요청 갈래는 존재하지 않는다"
 check "M7 ⑥ 사람 gate — 결정 위조 경로 부재 확인 출력" $?
+echo "$M7_OUT" | grep -q "registry profile이 secret을 \*\*이름으로만\*\* 선언한다"
+check "M7 ⑦ secret은 registry에 이름만(값 없음) 확인 출력" $?
+echo "$M7_OUT" | grep -q "키가 없으면 호출 전에 fail-closed다"
+check "M7 ⑦ 키 부재 fail-closed 확인 출력" $?
+echo "$M7_OUT" | grep -q "안내가 값을 요구하지 않고 셸 설정을 지시한다"
+check "M7 ⑦ 키 값을 사용자에게 요구하지 않음 확인 출력" $?
 echo "$M7_OUT" | grep -q "live 검색 API 실호출 0회"
-check "M7 미증명(live 미실행)을 스스로 밝힘" $?
+check "M7 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
 
 echo ""
 echo "==================================="

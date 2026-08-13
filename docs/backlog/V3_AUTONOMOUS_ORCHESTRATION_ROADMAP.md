@@ -1850,12 +1850,17 @@ LLM은 Claude Code 구독 경로(`claude -p`) 3회 왕복 × 2런 · 보고된 u
 (input은 CLI가 2로 보고했다 — 그대로 적는다. 이 수치의 의미는 검증하지 않았다).
 **표본 1건이므로 "research가 항상 낫다"고 말하지 않는다.**
 
-**실측**: `test:exec` **542/542** · `test:core` **423/423** · `scripts/acceptance.sh` **PASS=137 / FAIL=0**
-(M6의 124 + M7 13) · `npx tsc --noEmit` clean · **live 실행 0회 · 검색 API 호출 0회 · 과금 0원**.
+**실측**: `test:exec` **542/542** · `test:core` **426/426** · `scripts/acceptance.sh` **PASS=140 / FAIL=0**
+(M6의 124 + M7 16) · `npx tsc --noEmit` clean · **live 실행 0회 · 검색 API 호출 0회 · 과금 0원**.
 
 **acceptance가 실제로 잡은 것 1건**(공허한 체크가 아니었다는 증거): gateway가 원문을 그대로 요약 필드로
 넘겨 **짧은 문서에서는 "축약"이 곧 원문**이었다 — Test 19 ①의 FAIL로 발견해 `MAX_EXCERPT_CHARS=400`
 발췌로 고쳤다. 하네스는 offline에서 모델 요약을 만들지 않으므로 이름도 요약이 아니라 **발췌**로 적는다.
+
+**secret 취급**(Test 19 ⑦): 검색 호출은 **부모(하네스) 프로세스**에서 일어나므로 키가 모델 컨텍스트·자식
+세션에 들어가는 경로가 없다. registry `research-tavily` profile은 **이름만**(`secretRefs:["TAVILY_API_KEY"]`)
+선언하고 도구는 `internal_adapter`라 모델에 노출되지 않는다. 키가 없으면 **사용자에게 값을 요구하지 않고**
+셸 설정 안내를 내고 멈춘다(LLM 왕복 전에 검사 — 토큰을 태우고 실패하지 않는다).
 
 **M7에서 닫은 대장 항목**: `C-67`(fixed).
 **부수 판정**(`M7_KICKOFF.md` §2의 미확정 항목): `profiles.ts`의 `PermissionMode` 3등급은 **누락이 아니라

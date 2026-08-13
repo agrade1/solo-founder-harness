@@ -53,6 +53,32 @@ async function post(url: string, apiKey: string, body: Record<string, unknown>, 
   }
 }
 
+/** 환경변수 이름 정본 — registry profile `research-tavily`의 `secretRefs`와 같아야 한다. */
+export const TAVILY_SECRET_REF = "TAVILY_API_KEY";
+
+/**
+ * **사용자에게 값을 요구하지 않는다.** 키가 없을 때 내보내는 안내다 — 값을 프롬프트·채팅에 넣게 하면
+ * 그 순간 secret이 모델 컨텍스트와 대화 기록으로 들어간다. 사용자는 자기 셸에만 넣고, 하네스는
+ * 부모 프로세스에서 env로만 읽는다(자식 세션에는 전달하지 않는다).
+ */
+export const TAVILY_SETUP_HINT = [
+  `${TAVILY_SECRET_REF}가 설정돼 있지 않다. **키 값을 프롬프트나 채팅에 붙여넣지 마라.**`,
+  "셸에서 직접 설정한다:",
+  `  export ${TAVILY_SECRET_REF}=<발급받은 키>            # 이 셸에서만`,
+  `  echo 'export ${TAVILY_SECRET_REF}=<키>' >> ~/.zshrc  # 영구`,
+  "무료 키: https://tavily.com (1,000 크레딧/월 · 카드 불요)",
+  "설정한 뒤 같은 명령을 다시 실행하라.",
+].join("\n");
+
+/**
+ * 키가 있는지만 본다(값은 돌려주지 않는다). **LLM 왕복을 태우기 전에** 부르는 용도다 —
+ * 1차 실행에 토큰을 쓰고 나서 검색 단계에서 실패하면 그 비용이 그냥 버려진다.
+ */
+export function researchSecretAvailable(): boolean {
+  const v = process.env[TAVILY_SECRET_REF];
+  return typeof v === "string" && v.length > 0;
+}
+
 export interface TavilyOptions {
   /** 검색 1회가 돌려줄 후보 수(§6.3: 4~8건). */
   maxResults?: number;
@@ -64,9 +90,9 @@ export interface TavilyOptions {
  * (키 없이 조용히 빈 결과를 돌려주면 그것이 곧 거짓 근거다).
  */
 export function createTavilyBackend(opts: TavilyOptions = {}): ResearchBackend {
-  const apiKey = process.env.TAVILY_API_KEY;
+  const apiKey = process.env[TAVILY_SECRET_REF];
   if (typeof apiKey !== "string" || apiKey.length === 0) {
-    throw new TavilyError("secret_missing", "TAVILY_API_KEY 환경변수가 없다 — 검색 backend를 만들 수 없다");
+    throw new TavilyError("secret_missing", TAVILY_SETUP_HINT);
   }
   const maxResults = opts.maxResults ?? 5;
   const timeoutMs = opts.timeoutMs ?? 30_000;

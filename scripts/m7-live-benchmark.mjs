@@ -37,7 +37,15 @@ if (process.env.HARNESS_ACCEPTANCE_TSX !== "1") {
 const { parseResearchRequests, runResearch, renderEvidenceDigest } = await import(
   join(REPO_ROOT, "src/tools/researchGateway.ts")
 );
-const { createTavilyBackend } = await import(join(REPO_ROOT, "src/tools/tavilyBackend.ts"));
+const { createTavilyBackend, researchSecretAvailable, TAVILY_SETUP_HINT } = await import(
+  join(REPO_ROOT, "src/tools/tavilyBackend.ts")
+);
+
+// **LLM 왕복을 태우기 전에** 키를 본다 — 토큰을 쓰고 나서 검색에서 실패하면 그 비용이 버려진다.
+if (!researchSecretAvailable()) {
+  console.error(TAVILY_SETUP_HINT);
+  process.exit(1);
+}
 
 const IDEA =
   "1인 창업자용 AI 에이전트 오케스트레이션 하네스 — 승인 게이트와 durable state 위에서 " +
