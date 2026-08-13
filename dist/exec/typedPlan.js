@@ -27,6 +27,8 @@ export const TYPED_PLAN_KEYS = ["schemaVersion", "runId", "taskId", "attemptId",
 export const TYPED_PLAN_KEYS_WITH_REQUESTS = [...TYPED_PLAN_KEYS, "requests"];
 export const SPAWN_CHILD_REQUEST_KEYS = ["kind", "childTaskId", "roleId", "title", "scope", "dependsOn", "reason"];
 export const DELIVER_STATUS_REQUEST_KEYS = ["kind", "deliverTo", "note"];
+/** [M7 T6] 사람 결정 **요청**의 닫힌 key 집합. 답(`decision`)을 만드는 요청 갈래는 없다. */
+export const REQUEST_DECISION_REQUEST_KEYS = ["kind", "question", "safeDefault"];
 export const TYPED_PLAN_RESULT_KEYS = ["summary", "outputs"];
 export const TYPED_PLAN_OUTPUT_KEYS = ["path", "role"];
 export const TYPED_PLAN_BINDING_KEYS = ["runId", "taskId", "attemptId", "turnId"];
@@ -264,7 +266,16 @@ function planRequest(raw, index) {
             note: planText(read.note, `${what}.note`, LIMITS.maxTextLength),
         });
     }
-    throw planInvalid(`${what}는 spawn_child|deliver_status의 닫힌 key 집합이어야 한다`);
+    if (isSameKeySet(keys, REQUEST_DECISION_REQUEST_KEYS)) {
+        if (read.kind !== "request_decision")
+            throw planInvalid(`${what}.kind가 key 집합과 맞지 않는다`);
+        return Object.freeze({
+            kind: "request_decision",
+            question: planText(read.question, `${what}.question`, LIMITS.maxTextLength),
+            safeDefault: planText(read.safeDefault, `${what}.safeDefault`, LIMITS.maxTextLength),
+        });
+    }
+    throw planInvalid(`${what}는 spawn_child|deliver_status|request_decision의 닫힌 key 집합이어야 한다`);
 }
 function planOutput(raw, index) {
     const what = `result.outputs[${index}]`;
