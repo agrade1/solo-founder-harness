@@ -84,13 +84,30 @@ acceptance 마지막 번호는 **Test 19**(M7)다 — **M8은 Test 20**을 쓴�
 
 **§9.1 대장**: "M8" 기한·트리거를 가진 열린 항목은 **grep 기준 없다**(로드맵에서 `M8` 언급은 §10 M8 절뿐).
 
-**착수 시 직접 확인할 것(미확인)**:
-- `handoff-shadcn-readonly`의 `permissionMode: "approval_write"`가 M8 디자인 worker에 그대로 맞는지
-  (read 전용 흐름이면 `read_only`로 충분한지) — 판정하고 근거를 적어라.
-- ux_ui 기본 profile은 §5 표에서 `planning-none`이고 shadcn read는 **handoff** profile이다 —
-  M8에서 어느 role이 어느 profile을 받는지 배선을 확정해야 한다.
-- "design review는 fresh Codex"(로드맵 M8 절)의 실행 경로 — 기존 Codex 리뷰 흐름(AGENTS.md)을
-  그대로 쓰는지, 새 배선이 필요한지.
+**착수 시 확인할 것 — 2026-08-13 실측 판정 (M8 세션)**:
+
+1. **`handoff-shadcn-readonly`의 `permissionMode: "approval_write"` → 그대로 둔다.**
+   근거: 이 profile의 유일한 소비 경로인 `src/core/handoff.ts`는 `buildSpawnArgv`에서
+   `--permission-mode default`를 **하드코딩**하고 `compileToolProfile`을 쓰지 않는다. 즉
+   `profile.permissionMode`는 `assertShadcnReadonlyContract`(handoff.ts:90)의 **exact 계약 값**으로만
+   쓰인다 — `read_only`로 바꾸면 계약 검증이 red가 되고 argv는 하나도 바뀌지 않는다(이득 0, 파괴 1).
+   `profiles.ts:permissionModeFlag`에서 `read_only`는 `plan`으로 매핑되므로, 이 profile을
+   **문서를 쓰는** worker에게 주면 오히려 쓰기가 막힌다. M8에서 이 profile은 **registry 읽기 단계 전용**이고,
+   `DESIGN.md`/`tokens.json`은 kernel artifact 경로로 발행하므로 profile 쓰기 권한이 필요하지 않다.
+2. **role ↔ profile 배선**: `ux_ui`·`design` role은 §5대로 `planning-none`(도구 없음 — 산출물은 kernel
+   artifact). shadcn registry 읽기는 기존 `runHandoff({toolProfileId: "handoff-shadcn-readonly"})`
+   경로만 사용한다(M3c live 통과 경로). **신규 profile을 만들지 않는다.**
+3. **"design review는 fresh Codex" 실행 경로**: 새 배선 불필요. `src/exec/codexCliProvider.ts` +
+   승인 manifest `executionAuthority.codex`/`codexHome`(`approvalManifest.ts`)가 이미 실행 권위를 쥐고 있고,
+   fresh 세션 강제는 kernel `attemptId`(`orchestrationKernel.ts`) 재사용으로 성립한다.
+   (`src/exec/reviewer.ts`는 Opus 고정·`plan` 전용이라 **design review에 쓰지 않는다** — 별 경로다.)
+4. **문서 검증기 위치(기존 패턴)**: `src/core/validate.ts`(`validateAgentOutput` 필수 4헤더 +
+   registry `required_headers`, `extractTokensJson`) · `registry/agent_registry.json`의 `design` role은
+   이미 9개 필수 헤더(디자인 방향·컴포넌트 인벤토리·접근성 기준·디자인 토큰 …)를 갖고 있고,
+   `runWorkflow.ts`는 `design_gate` + `tokens_hash`까지 기록한다. **T1은 이것을 다시 만들지 않고**
+   그 위에 `tokens.json` **닫힌 형태 schema** + inventory 형식 + fail-closed 검증만 얹는다
+   (v1 검증은 경고 수준 — M8 산출물 계약은 fail-closed로 올린다).
+5. **§9.1 대장의 M8 기한 항목**: grep 기준 **없음**(재확인). 새로 등록되는 항목만 T7에서 기록한다.
 
 ---
 

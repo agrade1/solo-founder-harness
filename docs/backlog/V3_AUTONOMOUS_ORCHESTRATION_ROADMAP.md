@@ -1817,6 +1817,51 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **M8 진행 판정 — T1~T5·T7 완료(offline) · T6(live) 미실행** (2026-08-13 · 이 절이 M8의 현행이며 아래 M7 절보다 최신이다)
+
+**offline 전부를 세웠고 live는 돌리지 않았다.** 아래 표의 "증명"은 어디서 증명됐는지를 가리키고,
+미증명은 같은 무게로 적는다. **mock 통과를 live 통과로 적지 않는다.**
+
+| M8 완료 조건(§10 M8 절) | 증명 | 상태 |
+|---|---|---|
+| UX flow · 디자인 방향 · `DESIGN.md` · `tokens.json` · component inventory | acceptance **Test 20** ① — `src/core/designContract.ts`가 필수 9헤더 · 3계층 tokens 닫힌 형태 · inventory bullet 형식을 **fail-closed**로 검증(v1 `validate.ts`의 경고 수준을 올린 것). 계층 건너뛰기 · dangling 참조 · 빈 계층/group · 형식 위반 각각 거부. 규칙 제거 mutation → red | **증명(offline)** |
+| shadcn filtered read 재사용 | Test 20 ③ — registry profile `handoff-shadcn-readonly`의 읽기 5도구·금지 2도구가 **`shadcnReadPolicy.ts` 상수에서 파생**되고 launcher는 기존 `shadcn_read_proxy`다. **새 proxy·새 profile을 만들지 않았다**(profile 수 4 유지를 체크로 고정) | **증명(offline)** |
+| custom/private registry 차단 | Test 20 ④ — **세 층** fail-closed: 프로젝트(`checkComponentsJson` → `custom_registry_forbidden`) · 호출 인자(`validateToolArgs` → `@shadcn` 외 `bad_arg`, 금지 도구 `forbidden_tool`) · inventory 참조/출처(`registryInventory` → `registry_ref_forbidden`/`registry_source_forbidden`). 각 차단 제거 mutation → red | **증명(offline)** |
+| design review는 fresh Codex, 수정은 fresh design worker | Test 20 ⑦ — `designReviewRoundtrip.ts`가 저자·리뷰어·수정자의 **task/세션 신원 겹침**, 리뷰어 provider≠codex, sandbox≠read-only, design role의 자기 검토, 수정자 non-fresh를 각각 거부. kernel이 이미 하는 것(task fresh·리뷰 선행·대상 의존)은 **다시 구현하지 않았다** | **증명(계약 층) — 실제 Codex 프로세스 왕복은 미실행(T6)** |
+| **완료: 핵심 화면 설계→토큰 기반 구현 handoff의 계약·접근성·범위 검증** | Test 20 ②⑥ — `designHandoff.ts`가 닫힌 형태 계약(원문 없음·digest만)을 만들고 ⓐ 계약 위반 ⓑ **범위**(UX flow 미선언 화면·인벤토리 없는 컴포넌트·빈 화면·중복) ⓒ **사람 승인**(부재 / 승인 후 tokens digest 변경 = 재사용) 각각 거부. 접근성은 `a11y.contrastPairs` 선언에서 **WCAG 대비비를 실제 계산**하고 `min` 완화(1) 우회·`text-*` 선언 누락·대화형 컴포넌트 focus 토큰 부재를 거부 | **증명(tokens 층) — 아래 범위 한계 참조** |
+| **live 1회(실제 모델 산출 + registry 실조회)** | **미실행 — 사용자 승인 대기(T6)** | **미증명 — live 미실행** |
+
+**접근성 검증 범위(M8에서 정의 · 로드맵에 명시가 없어 이 세션이 확정)**:
+검증하는 것은 ⓐ 선언된 fg/bg 쌍의 WCAG 2.x 대비비(primitive hex까지 해석해 계산) ⓑ 모든
+`semantic.color.text-*`가 최소 한 쌍의 `fg`로 등장(선언 누락으로 검사를 비울 수 없다) ⓒ 대화형 컴포넌트
+10종의 focus 표시 토큰 존재. **검증하지 않는 것(통과로 주장하지 않는다)**: 실제 렌더링 결과 · 이미지/
+그라디언트 위 텍스트 · 폰트 크기별 large-text 예외 판정 · 스크린리더·키보드 실동작 · 시각 diff.
+**focus 토큰의 존재는 "초점이 실제로 보인다"의 증명이 아니다** — 토큰 계층의 필요조건일 뿐이다.
+
+**계약 변경 1건**: `tokens.json` 최상위 key가 3계층 → **`primitive`/`semantic`/`component`/`a11y` 넷**이 됐다.
+선언 없는 대비 검사는 공허해지므로(§7 위험 2 — M5에서 공허한 체크로 A급 3회) 검증 대상을 산출물이 직접
+선언하게 했다. 생산자 프롬프트 `agents/design_agent.md` §4도 같이 갱신했다(검증기와 계약 단일 출처).
+
+**실측**: `test:exec` **549/549** · `test:core` **442/442** · `scripts/acceptance.sh` **PASS=154 / FAIL=0**
+(M7의 140 + M8 14) · `npx tsc --noEmit` clean · **live LLM 0회 · shadcn registry 실조회 0회 · 과금 0원**.
+mutation red 확인 **9건**(계층 건너뛰기 · dangling 참조 · 대비 계산 · `text-*` 커버리지 · focus 토큰 ·
+registry 참조 · registry 출처 · handoff 범위 · 승인 stale).
+
+**M8 착수 시 판정한 미확인 4건**(상세는 `docs/handoff/M8_KICKOFF.md` §2):
+`handoff-shadcn-readonly`의 `approval_write`는 **유지**(유일 소비 경로 `handoff.ts`가 `--permission-mode default`를
+하드코딩하고 `compileToolProfile`을 쓰지 않으므로 이 값은 exact 계약 값이며, `read_only`로 바꾸면 계약이
+red가 되고 argv는 불변) · `ux_ui`·`design` role은 `planning-none`(산출물은 kernel artifact, 도구 불필요) ·
+fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.codex`로 **새 배선 불필요** ·
+문서 검증기 기존 패턴은 `src/core/validate.ts` + `agent_registry.json` `required_headers`.
+
+**M8이 하지 않은 것**(§6.5 경계 그대로): 화면 렌더링·시각 diff·스크린샷 검증 · Figma read(design_source
+프로젝트 없음) · 컴포넌트 코드 생성 · `design_write` · shadcn install · M9/M10 배치 항목.
+**§9.1 대장**: M8에서 닫은 항목 **없음**, 새로 등록한 항목 **1건**(`C-70` 아래).
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-70` | C (P3) | **design 산출물 계약이 v1 `runWorkflow` 경로에 배선되지 않았다.** `designContract.ts`의 fail-closed 검증은 M8 handoff 경로(`designHandoff.buildDesignHandoff`)에서만 호출되고, v1 문서 워크플로의 design 단계는 여전히 `validate.ts`의 **경고 수준** 헤더 검사만 지난다 → 계약 위반 산출물이 `docs/DESIGN.md`로 저장될 수 있다(단 handoff는 거부한다) | 중 — v1 경로로 design을 돌릴 때마다 | 저장된 문서 품질(handoff·구현으로는 새지 않는다) | 낮음(handoff가 fail-closed 이므로 하류 차단은 유지) | 소(runWorkflow design 분기에서 `validateDesignArtifacts` 호출 + 재생성 루프 연결) | **v1 design 산출물을 구현 파이프라인 입력으로 직접 쓰는 첫 마일스톤 전(M9 예상)** | M9 착수 세션 | `src/core/runWorkflow.ts` design 분기(경고만) vs `src/exec/designHandoff.ts`(fail-closed) · Test 20은 계약·handoff 층만 검사 | open |
+
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
 **offline 전부 + live 검색·benchmark 1회를 실행했다.** 아래 표의 "증명"은 어디서 증명됐는지를 가리키고,

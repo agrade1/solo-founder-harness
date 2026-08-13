@@ -1,6 +1,36 @@
 # WORKLOG.md
 
 
+## 2026-08-13 — V3 M8 T1~T5·T7 완료 (UX & Design Pipeline · offline) · T6(live) 미실행
+
+- **착수 판정 4건**(KICKOFF §2 미확인): `handoff-shadcn-readonly`의 `approval_write` **유지**(유일 소비
+  경로 `handoff.ts`가 `--permission-mode default`를 하드코딩하고 `compileToolProfile`을 쓰지 않으므로
+  이 값은 exact 계약 값이며, `read_only`로 바꾸면 계약만 red가 되고 argv는 불변) · `ux_ui`/`design`은
+  `planning-none` · fresh Codex 리뷰는 기존 `codexCliProvider` + manifest로 새 배선 불필요 ·
+  문서 검증기 기존 패턴은 `validate.ts` + `agent_registry.json` `required_headers`.
+- **T1** `src/core/designContract.ts` — DESIGN.md 9헤더 · tokens 3계층 닫힌 형태 · inventory 형식을
+  **fail-closed**로(v1은 경고 수준). 계층 건너뛰기·dangling 참조·빈 계층/group·형식 위반 각각 거부.
+- **T1 확장(접근성)** `tokens.json` 최상위에 **`a11y.contrastPairs` 추가 — 계약 변경 1건**. 선언 없는
+  대비 검사는 공허해지므로 검증 대상을 산출물이 직접 선언하게 했고, 하네스가 primitive hex까지 해석해
+  **WCAG 대비비를 실제 계산**한다. `min` 완화(1) 우회·`text-*` 선언 누락·대화형 컴포넌트 focus 토큰
+  부재를 거부. 생산자 프롬프트 `agents/design_agent.md` §4도 같이 갱신(계약 단일 출처).
+- **T2** `src/tools/registryInventory.ts` — `@shadcn/*` 참조 + `ui.shadcn.com` 출처 두 층 fail-closed,
+  원문은 `evidenceStore` 파일·중앙은 발췌만, `renderEvidenceDigest` 재사용. **새 proxy·새 profile 없음**
+  (M3c `shadcnReadPolicy`/`shadcnReadMcpProxy` 위에 섰다).
+- **T3/T5** `src/exec/designHandoff.ts` — 구현 세션 입력의 닫힌 형태(원문 없음·digest만). 계약 위반 ·
+  범위(UX flow 미선언 화면·인벤토리 없는 컴포넌트·빈 화면·중복) · 사람 승인(부재 / 승인 후 tokens
+  digest 변경 = 재사용) 각각 거부.
+- **T4** `src/exec/designReviewRoundtrip.ts` — 저자·리뷰어·수정자의 task/세션 신원 겹침, 리뷰어
+  provider≠codex, sandbox≠read-only, design role의 자기 검토, 수정자 non-fresh 거부. kernel이 이미
+  집행하는 것(task fresh·리뷰 선행·대상 의존)은 **다시 구현하지 않았다**.
+- **T7** acceptance **Test 20**(`scripts/m8-offline-acceptance.mjs` 46 내부 체크 / acceptance.sh 14 체크).
+- 실측: `test:exec` **549/549** · `test:core` **442/442** · acceptance **PASS=154 / FAIL=0** · tsc clean.
+  **live LLM 0회 · shadcn registry 실조회 0회 · 과금 0원.** mutation red 확인 **9건**.
+- 대장: 닫은 항목 없음, 신규 **`C-70`**(design 계약이 v1 `runWorkflow` 경로에 미배선 — handoff는
+  fail-closed이므로 하류는 막힌다. 기한: v1 design 산출물을 구현 입력으로 직접 쓰는 첫 마일스톤 전).
+- 판정 정본은 로드맵 **`M8 진행 판정`** 절. 접근성 검증 범위·범위 밖도 같은 절에 적혀 있다.
+
+
 ## 2026-08-12 — V3 M6 완료 (Hierarchical Orchestrator + Fresh Context Rotation)
 
 - **T1** `B-19`/`C-44`: `LIMITS.maxProcessesPerRun` 전용 상수 분리(프로세스 상한이 task 상한을 빌려 쓰고
