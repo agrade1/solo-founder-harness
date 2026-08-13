@@ -222,6 +222,21 @@ export function deriveExposedTools(bindings: Partial<Record<ToolCapability, Tool
   return { exposed: [...new Set(exposed)], builtin: [...new Set(builtin)] };
 }
 
+/**
+ * [V3 M7 T5] **도구 예산 상한.** tool/MCP는 등록만으로 컨텍스트를 상시 소모한다 — 관례가 아니라
+ * 코드 상수 + fail-closed로 막는다.
+ *
+ * 근거는 **우리 profile 실측**이다(외부 문서 수치를 그대로 쓰지 않는다). 2026-08-12 `registry/tool_profiles.json`
+ * 측정: `planning-none` 0서버/0도구 · `planning-local-readonly` 0서버/3도구 · `handoff-shadcn-readonly`
+ * **1서버/5도구**(선언 855 bytes). 즉 현재 최대는 1서버·5도구이고 상한은 그 위 여유분이다.
+ *
+ * **정직한 한계**: 도구 1개가 실제로 먹는 **토큰** 비용은 upstream 서버가 소유한 inputSchema에 달려 있어
+ * offline에서 측정하지 못했다(측정하려면 실제 MCP 서버 기동이 필요하다). 그래서 상한의 단위는
+ * "우리가 선언한 개수"이며, 토큰 단위 재측정은 live 실행이 있는 slice에서 한다.
+ */
+export const MAX_MCP_SERVERS_PER_PROFILE = 3;
+export const MAX_EXPOSED_TOOLS_PER_PROFILE = 16;
+
 // ── 시맨틱 validator ─────────────────────────────────────────────
 function validateSemantics(p: ToolProfile): void {
   // 1) capability 3계층: deny/reserved/unknown 거부
@@ -247,6 +262,17 @@ function validateSemantics(p: ToolProfile): void {
   }
   // 4) 집합 관계 (exposed는 binding에서 파생)
   const { exposed } = deriveExposedTools(p.bindings);
+  // 4-1) [M7 T5] 도구 예산 상한 — 초과 등록은 로드 자체가 실패한다(fail-closed).
+  if (p.servers.length > MAX_MCP_SERVERS_PER_PROFILE) {
+    throw new ToolProfileError(
+      `profile '${p.id}': MCP 서버 ${p.servers.length}개는 예산 상한 ${MAX_MCP_SERVERS_PER_PROFILE}개를 넘는다`,
+    );
+  }
+  if (exposed.length > MAX_EXPOSED_TOOLS_PER_PROFILE) {
+    throw new ToolProfileError(
+      `profile '${p.id}': 노출 도구 ${exposed.length}개는 예산 상한 ${MAX_EXPOSED_TOOLS_PER_PROFILE}개를 넘는다`,
+    );
+  }
   const exposedSet = new Set(exposed);
   for (const t of p.preapprovedTools) {
     if (!exposedSet.has(t)) throw new ToolProfileError(`profile '${p.id}': preapprovedTool '${t}'가 노출 도구(exposed)에 없음`);

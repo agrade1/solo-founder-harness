@@ -9,6 +9,9 @@ import {
   assertPolicyExecutable,
   hasMcpBinding,
   ToolProfileError,
+  deriveExposedTools,
+  MAX_EXPOSED_TOOLS_PER_PROFILE,
+  MAX_MCP_SERVERS_PER_PROFILE,
 } from "./profiles.js";
 import { getProviderCapabilities } from "../providers/capabilities.js";
 
@@ -193,4 +196,44 @@ test("[M3c-3b] validateServer: unknown key / bad transport / name 누락 → Too
   assert.throws(() => parseServers([{ name: "s", foo: 1 }]), ToolProfileError); // bare + unknown key
   assert.throws(() => parseServers([{ name: "s", transport: "sse" }]), ToolProfileError);
   assert.throws(() => parseServers([{ command: "node" }]), ToolProfileError); // name 누락
+});
+
+// ── [M7 T5] 도구 예산 상한 — 초과 등록 fail-closed ─────────────────────────────
+function parseBudget(servers: unknown[], toolCount: number): void {
+  parseToolProfiles({
+    profiles: [
+      {
+        id: "budget",
+        capabilities: ["repo_read"],
+        bindings: {
+          repo_read: { kind: "builtin", tools: Array.from({ length: toolCount }, (_, i) => `T${i}`) },
+        },
+        servers,
+        preapprovedTools: [],
+        deniedTools: [],
+        permissionMode: "read_only",
+        allowedDomains: [],
+        limits: { maxCallsPerStep: 0, maxResultChars: 0, maxElapsedMsPerCall: 0 },
+        secretRefs: [],
+      },
+    ],
+  });
+}
+
+test("[M7 T5] 노출 도구 수가 예산 상한을 넘으면 로드 거부, 상한 이내는 통과", () => {
+  assert.doesNotThrow(() => parseBudget([], MAX_EXPOSED_TOOLS_PER_PROFILE));
+  assert.throws(() => parseBudget([], MAX_EXPOSED_TOOLS_PER_PROFILE + 1), ToolProfileError);
+});
+
+test("[M7 T5] MCP 서버 수가 예산 상한을 넘으면 로드 거부, 상한 이내는 통과", () => {
+  const srv = (n: number) => Array.from({ length: n }, (_, i) => ({ name: `s${i}` }));
+  assert.doesNotThrow(() => parseBudget(srv(MAX_MCP_SERVERS_PER_PROFILE), 1));
+  assert.throws(() => parseBudget(srv(MAX_MCP_SERVERS_PER_PROFILE + 1), 1), ToolProfileError);
+});
+
+test("[M7 T5] 실사용 registry의 모든 profile이 예산 상한 안에 있다(실측 근거)", () => {
+  for (const [, p] of loadToolProfiles()) {
+    assert.ok(p.servers.length <= MAX_MCP_SERVERS_PER_PROFILE);
+    assert.ok(deriveExposedTools(p.bindings).exposed.length <= MAX_EXPOSED_TOOLS_PER_PROFILE);
+  }
 });
