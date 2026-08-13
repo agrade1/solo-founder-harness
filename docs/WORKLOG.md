@@ -28,6 +28,13 @@
   **live LLM 0회 · shadcn registry 실조회 0회 · 과금 0원.** mutation red 확인 **9건**.
 - 대장: 닫은 항목 없음, 신규 **`C-70`**(design 계약이 v1 `runWorkflow` 경로에 미배선 — handoff는
   fail-closed이므로 하류는 막힌다. 기한: v1 design 산출물을 구현 입력으로 직접 쓰는 첫 마일스톤 전).
+- **T6 live 1회**(사용자 승인 2026-08-13 · Codex 제외 결정): `scripts/m8-live-design.mjs`.
+  실제 모델이 계약대로 산출(재시도 1회 필요) · registry 20 item 실조회 · 원문 4,257→발췌 419 chars 절삭
+  실측 · handoff 생성. **live가 3건을 잡았다**: ⓐ 값 형식(숫자 font-weight/line-height) 위반 2실행 재현
+  → 프롬프트에 "값은 문자열" 명시 ⓑ registry 응답이 bare 이름이라 조회 0건 → 이름에서 참조 조립 후
+  `assertOfficialRef` 재검증 ⓒ 도구 끊은 세션이 **위조 인용을 담은 가짜 tool-use 텍스트**를 산출물 대신
+  냈고 계약이 `tokens_block_missing`으로 거부(검증기 없으면 저장될 수 있었다).
+  비용: `claude -p` 6왕복 = 구독 한도만, **실결제 $0**. registry 무료. Codex 0회.
 - 판정 정본은 로드맵 **`M8 진행 판정`** 절. 접근성 검증 범위·범위 밖도 같은 절에 적혀 있다.
 
 

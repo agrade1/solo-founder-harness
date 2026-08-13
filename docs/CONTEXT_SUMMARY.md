@@ -62,7 +62,11 @@
   **live LLM 0회 · registry 실조회 0회 · 과금 0원** · mutation red 9건.
 - 접근성은 **tokens 층만** 증명했다 — 렌더링·이미지 위 텍스트·large-text 예외·스크린리더·시각 diff는
   범위 밖이며 통과로 주장하지 않는다. 판정 정본은 로드맵 `M8 진행 판정` 절. 신규 대장 `C-70`.
-- **다음: T6 live 1회(사용자 승인 필요) 또는 M9**(§6.5 선결 4건부터).
+- **T6 live 완료**(2026-08-13 · `scripts/m8-live-design.mjs` · Codex live는 사용자 결정으로 제외):
+  실제 모델 산출물이 계약 통과(재시도 1회) · registry 20 item 실조회 · 원문/발췌 분리 실데이터 확인.
+  live가 3건을 잡았다(값 형식 위반 재현 · registry 응답 형식 가정 오류 · 가짜 tool-use 텍스트 거부).
+  구독 6왕복 = **실결제 $0**. **fresh Codex 리뷰 실제 왕복은 미증명.**
+- **다음: M9**(§6.5 선결 4건부터 — `run_process` enum · `B-16` · `B-17` · F2).
 
 ## (2026-08-12 — **V3 M7: T1~T8 완료 — offline 전부 + live benchmark 1회**)
 

@@ -59,6 +59,11 @@ MVP-lean 원칙(공용 운영 프롬프트)을 지킨다: 과설계 금지, 첫 
 규칙:
 
 - **최상위 key는 정확히 `primitive`/`semantic`/`component`/`a11y` 넷**이다. 더하거나 빼면 하네스가 거부한다.
+- **모든 토큰 값은 문자열**이다. CSS에서 unitless로 쓰는 값도 문자열로 적는다 —
+  `"weight-medium": "500"` · `"line-height-normal": "1.5"` (숫자 `500`·`1.5`는 거부된다).
+  (2026-08-13 live 실측: 이 규칙이 프롬프트에 없어 실제 모델이 `font-weight`/`line-height`를 숫자로 내
+  두 번 연속 계약 위반했다. 값 형식을 하나로 두는 이유는 참조 문법(`{...}`)과 같은 타입이어야
+  검증·직렬화가 단일 규칙으로 끝나기 때문이다.)
 - **계층 건너뛰기 금지**: primitive는 raw 값만, semantic은 primitive 참조만(`{primitive.*}`), component는 semantic 참조만(`{semantic.*}`).
 - **`a11y.contrastPairs`(필수)**: 검증받을 전경/배경 쌍을 **직접 선언**한다. `fg`/`bg`는 `semantic.*` 또는
   `component.*` 색 토큰 경로, `min`은 `4.5`(본문) 또는 `3`(큰 텍스트·비텍스트)만 허용한다. 하네스가 참조를

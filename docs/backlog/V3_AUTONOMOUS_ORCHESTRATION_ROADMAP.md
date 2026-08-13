@@ -1817,10 +1817,41 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M8 진행 판정 — T1~T5·T7 완료(offline) · T6(live) 미실행** (2026-08-13 · 이 절이 M8의 현행이며 아래 M7 절보다 최신이다)
+##### **M8 진행 판정 — T1~T7 완료(design worker live 포함 · Codex live 제외)** (2026-08-13 · 이 절이 M8의 현행이며 아래 M7 절보다 최신이다)
 
-**offline 전부를 세웠고 live는 돌리지 않았다.** 아래 표의 "증명"은 어디서 증명됐는지를 가리키고,
-미증명은 같은 무게로 적는다. **mock 통과를 live 통과로 적지 않는다.**
+**offline 전부 + design worker live 1회 + shadcn registry 실조회를 실행했다. Codex live는
+사용자 결정으로 제외했다**(Codex 인증 방식이 실결제일 수 있어 범위에서 뺐다) — 따라서 "design review는
+fresh Codex"의 **실제 프로세스 왕복은 여전히 미증명**이고 계약 층만 증명됐다. 아래 표의 "증명"은
+어디서 증명됐는지를 가리키고, 미증명은 같은 무게로 적는다. **mock 통과를 live 통과로 적지 않는다.**
+
+###### T6 live 결과 (2026-08-13 · `scripts/m8-live-design.mjs` · 수동 전용 · acceptance 미등록)
+
+| 확인 항목 | 결과 |
+|---|---|
+| 실제 모델(`claude -p`, 도구 0 · plan)이 계약대로 `DESIGN.md`+tokens를 산출하는가 | **산출됨(재시도 1회 필요)** — 3개 실행 모두 1차 시도가 거부되고 2차에서 PASS |
+| shadcn registry 실조회(filtered proxy 경유) | **20 item 실조회** · tool call 3건 · 거부 0 · 금지 시도 0 |
+| registry 원문/발췌 분리(실데이터) | 원문 **4,257 chars → 파일**(sha256) · 중앙 발췌 **419 chars**(절삭 실제 발생) · digest에 원문 전체 미포함 |
+| 실제 산출물 + 실제 registry로 handoff 계약 | **생성됨** · 범위 red-path(설계에 없는 화면) `scope_violation` 재확인 |
+| fresh Codex design review 실제 왕복 | **미실행(사용자 결정으로 제외) — 미증명** |
+
+**live가 실제로 잡은 것 3건**(mock만 돌렸으면 못 봤다):
+
+1. **계약이 실제 모델 산출물을 거부했다.** 2개 실행에서 **같은 위반이 재현** — `font-weight: 500` ·
+   `line-height: 1.5`를 **숫자로** 내 `tokens_value_type` 6건 + 그것을 참조한 semantic `tokens_ref_dangling`
+   3건. 모델 실수가 아니라 **생산자 프롬프트에 값 형식 규칙이 없던 것**이므로 `agents/design_agent.md` §4에
+   "모든 토큰 값은 문자열(unitless도 `"500"`)"을 명시했다. 재검증 1회에서 이 위반은 재현되지 않았다 —
+   **표본 1건이므로 "고쳐졌다"고 단정하지 않는다.**
+2. **registry 응답 형식 가정이 틀렸다.** live 배선이 `@shadcn/<name>` 문자열을 기대했으나 실제 응답은
+   **bare 이름**(`- accordion (registry:ui) [@shadcn]`)이라 조회 결과가 **0건**으로 나왔다. 이름만 뽑아
+   참조를 조립하고 `assertOfficialRef`로 다시 좁히도록 고쳤다(외부 문자열을 그대로 신뢰하지 않는다).
+3. **도구를 끊은 세션이 가짜 tool-use 텍스트를 낼 수 있다.** 재검증 실행의 1차 시도는 `<invoke name="Read">`
+   형태의 텍스트와 **실제 파일과 다른 위조된 인용**을 산출물 대신 냈다. 계약 검증이 `tokens_block_missing`으로
+   거부해 그 출력이 산출물로 승격되지 않았다 — 검증기가 없으면 이것이 `DESIGN.md`로 저장될 수 있었다.
+
+**비용**: `claude -p` 왕복 **6회**(전체 실행 3회 × 2시도 · 그중 2회는 `--registry-only` 플래그가 relaunch에서
+사라져 발생한 낭비 — 그 버그도 고쳤다) · **Claude Code 구독 한도만 소모, 실결제 $0** · shadcn registry는
+무료 공개 registry(네트워크만) · Codex 0회. CLI가 보고한 usage는 output 합계 약 **58k 토큰**,
+input은 0~2로 보고됐다(그대로 적는다 — 이 수치의 의미는 검증하지 않았다).
 
 | M8 완료 조건(§10 M8 절) | 증명 | 상태 |
 |---|---|---|
@@ -1829,7 +1860,8 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | custom/private registry 차단 | Test 20 ④ — **세 층** fail-closed: 프로젝트(`checkComponentsJson` → `custom_registry_forbidden`) · 호출 인자(`validateToolArgs` → `@shadcn` 외 `bad_arg`, 금지 도구 `forbidden_tool`) · inventory 참조/출처(`registryInventory` → `registry_ref_forbidden`/`registry_source_forbidden`). 각 차단 제거 mutation → red | **증명(offline)** |
 | design review는 fresh Codex, 수정은 fresh design worker | Test 20 ⑦ — `designReviewRoundtrip.ts`가 저자·리뷰어·수정자의 **task/세션 신원 겹침**, 리뷰어 provider≠codex, sandbox≠read-only, design role의 자기 검토, 수정자 non-fresh를 각각 거부. kernel이 이미 하는 것(task fresh·리뷰 선행·대상 의존)은 **다시 구현하지 않았다** | **증명(계약 층) — 실제 Codex 프로세스 왕복은 미실행(T6)** |
 | **완료: 핵심 화면 설계→토큰 기반 구현 handoff의 계약·접근성·범위 검증** | Test 20 ②⑥ — `designHandoff.ts`가 닫힌 형태 계약(원문 없음·digest만)을 만들고 ⓐ 계약 위반 ⓑ **범위**(UX flow 미선언 화면·인벤토리 없는 컴포넌트·빈 화면·중복) ⓒ **사람 승인**(부재 / 승인 후 tokens digest 변경 = 재사용) 각각 거부. 접근성은 `a11y.contrastPairs` 선언에서 **WCAG 대비비를 실제 계산**하고 `min` 완화(1) 우회·`text-*` 선언 누락·대화형 컴포넌트 focus 토큰 부재를 거부 | **증명(tokens 층) — 아래 범위 한계 참조** |
-| **live 1회(실제 모델 산출 + registry 실조회)** | **미실행 — 사용자 승인 대기(T6)** | **미증명 — live 미실행** |
+| **live 1회(실제 모델 산출 + registry 실조회)** | 위 T6 절 — 실제 모델 산출물이 계약을 지나고(재시도 1회) registry 20 item 실조회 · 실데이터로 원문/발췌 분리 확인 | **증명(live · 표본 1건)** |
+| **fresh Codex design review 실제 왕복** | 사용자 결정으로 범위 제외(실결제 위험) | **미증명 — 미실행** |
 
 **접근성 검증 범위(M8에서 정의 · 로드맵에 명시가 없어 이 세션이 확정)**:
 검증하는 것은 ⓐ 선언된 fg/bg 쌍의 WCAG 2.x 대비비(primitive hex까지 해석해 계산) ⓑ 모든
@@ -1843,7 +1875,8 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 선언하게 했다. 생산자 프롬프트 `agents/design_agent.md` §4도 같이 갱신했다(검증기와 계약 단일 출처).
 
 **실측**: `test:exec` **549/549** · `test:core` **442/442** · `scripts/acceptance.sh` **PASS=154 / FAIL=0**
-(M7의 140 + M8 14) · `npx tsc --noEmit` clean · **live LLM 0회 · shadcn registry 실조회 0회 · 과금 0원**.
+(M7의 140 + M8 14) · `npx tsc --noEmit` clean. **acceptance 자체는 live 0회**(Test 20은 전부 offline) —
+live는 `scripts/m8-live-design.mjs` 수동 실행 6왕복(구독 한도, 실결제 $0)이고 acceptance에 등록하지 않았다.
 mutation red 확인 **9건**(계층 건너뛰기 · dangling 참조 · 대비 계산 · `text-*` 커버리지 · focus 토큰 ·
 registry 참조 · registry 출처 · handoff 범위 · 승인 stale).
 
