@@ -1799,7 +1799,15 @@ function requireNoFollow(): void {
  * 코드는 프레임 문자열을 위조할 수 있다 — 그 정도 권한이면 모듈 자체를 갈아끼울 수 있으므로 새로운
  * 권한 상승은 아니다. ⓒ hook이 할 수 있는 일의 상한은 위 문단 그대로다(DoS + ambient 권한 canonical).
  */
-export type PublicationSeam = "parentWalk" | "targetOpen" | "publish" | "contentWrite" | "contentFsync" | "dirFsync";
+export type PublicationSeam =
+  | "parentWalk"
+  | "targetOpen"
+  | "publish"
+  /** V3 M9 선결 2 — 신규 발행에서 **빈 파일을 만든 직후**(승인 바이트는 아직 0). */
+  | "publishCreate"
+  | "contentWrite"
+  | "contentFsync"
+  | "dirFsync";
 
 let SEAMS: Partial<Record<PublicationSeam, () => void>> = {};
 
@@ -2081,13 +2089,58 @@ function judgeWriteTransaction(
     if (targetExists && targetFdRef !== null) {
       return applyToFixedTarget(targetFdRef, dirFd, bytes, intended, op.path);
     }
-    // **신규 발행도 여기서 끝난다**(3A 3차 리비전 A4): 최종 `link(2)`도 pathname이므로 부모 교체 경쟁을
-    // 예방할 수 없고, 사후 inode 검증은 그 창을 닫지 못한다(발행된 inode는 우리 것이 맞기 때문이다).
-    // temp를 만들기 **전에** 끝나므로 파일 시스템 부작용이 **0**이다 — 테스트가 그것을 단정한다.
-    throw new OrchestrationError(
-      "write_publish_unsupported",
-      "부재 대상 발행은 디스크립터 상대 no-replace primitive 없이 예방 안전하게 만들 수 없어 거부한다",
-    );
+    // ── **신규 발행**(V3 M9 선결 2 — 대장 `B-16` 완전 개방).
+    //
+    // 3A 3차 A4가 이 분기를 닫은 이유는 "temp → 최종 pathname 발행(`link(2)`/`rename(2)`)에서 부모
+    // 이름 교체 경쟁을 예방할 수 없다"였고, **그 판단은 temp 형태에 대해서는 지금도 옳다**. 여기서
+    // 여는 것은 temp가 아니라 **다른 형태**다:
+    //
+    //   ① `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW`로 **빈 파일**을 만든다. **이 시점까지 승인된 바이트는
+    //      단 하나도 커널에 들어가지 않았다.** symlink를 닫는 것은 실제로 `O_EXCL`이다 — POSIX에서
+    //      `O_CREAT|O_EXCL`은 대상 이름이 symlink면 매달린 것이든 아니든 `EEXIST`다(mutation으로
+    //      확인: `O_NOFOLLOW`만 제거해도 red가 나오지 않는다). `O_NOFOLLOW`는 의도를 남기는
+    //      중복 방어이고 **그것이 이 창을 닫는다고 주장하지 않는다**.
+    //   ② 그 다음 부모 신원을 **다시 확인한다** — 교체된 디렉터리였다면 여기서 잡힌다.
+    //   ③ 확인을 지난 뒤에야 `applyToFixedTarget`으로 **fd에만** 쓴다. 교체 경로와 **같은 함수**이므로
+    //      발행 syscall에 pathname이 하나도 없다는 성질이 그대로 유지된다.
+    //
+    // **그래서 남는 최악은 "빈 파일 하나"다.** 부모가 교체됐다면 공격자가 얻는 것은 0바이트 파일이고
+    // 승인된 내용은 새지 않는다 — A4가 막으려던 것이 정확히 그 유출이다.
+    //
+    // **정직하게 남는 것**: ⓐ 실패 시 그 빈 파일을 **지우지 않는다**. unlink는 pathname 연산이라
+    // 교체된 부모에서 남의 파일을 지울 수 있다 — 지우지 않는 쪽이 fail closed다. 그 결과 재시도는
+    // 대상이 빈 파일로 존재하므로 `write_conflict`가 되고(`expectedBeforeSha256: null`과 불일치)
+    // **사람이 본다**. ⓑ 같은 uid 경쟁자는 여전히 threat model 밖이다(`applyToFixedTarget` 주석 2).
+    // ⓒ 원자성은 교체 분기와 같은 수준이다(부분 write는 다음 시도에서 `write_conflict`로 fail closed).
+    let createdFd: number;
+    try {
+      createdFd = openSync(walk.target, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | O_NOFOLLOW, 0o644);
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // `EEXIST`는 판정 이후에 누군가 그 이름을 차지했다는 뜻이다 — 덮지 않는다.
+      if (code === "EEXIST") return writeOutcome("write_conflict", op.path, null);
+      if (code === "ELOOP") throw symlinkRefused("대상 이름이 symlink다(따라가지 않는다)");
+      throw writeFailed("대상을 새로 만들 수 없다");
+    }
+    fds.push(createdFd);
+    // 빈 파일이 만들어졌고 승인 바이트는 아직 0인 **정확히 그 지점**(테스트가 여기서 부모를 교체해
+    // "내용이 새지 않는다"를 실제로 확인한다).
+    seam("publishCreate");
+    // **바이트를 쓰기 전에** 부모가 그 사이에 교체되지 않았는지 본다. 여기서 거부되면 유출된 승인
+    // 내용은 0이다(빈 파일만 남는다).
+    const afterCreate = walkParents(auth.workspaceRoot, op.path);
+    if (afterCreate.parent !== walk.parent || !sameIdent(afterCreate.parentIdent, walk.parentIdent)) {
+      throw writeFailed("부모 디렉터리가 발행 중에 교체됐다(승인된 내용은 쓰지 않았다)");
+    }
+    // (`fstatSync(dirFd)`를 다시 보는 검사는 넣지 않았다 — fd가 inode를 고정하므로 그 비교는 항상
+    //  참이고 아무것도 잡지 못한다. 부모 교체를 실제로 잡는 것은 위의 경로 재해석이다.)
+    // 우리가 만든 그 inode가 이름으로도 여전히 도달 가능한지 — 아니면 **성공 영수증을 내지 않는다**
+    // (바이트는 우리 fd의 inode로만 가므로 유출은 없지만, 도달 불가한 발행을 성공이라 적으면 거짓이다).
+    const namedNow = lstatOrNull(walk.target);
+    if (namedNow === null || !sameIdent(identOf(namedNow), identOf(fstatSync(createdFd)))) {
+      throw writeFailed("만든 대상이 발행 중에 다른 파일로 바뀌었다(승인된 내용은 쓰지 않았다)");
+    }
+    return applyToFixedTarget(createdFd, dirFd, bytes, intended, op.path);
   } catch (e) {
     // OS·seam 오류는 **닫힌 안정 코드**로 접는다(경로·내용을 담지 않는다).
     throw e instanceof OrchestrationError ? e : writeFailed("집행 중 파일 시스템 오류가 났다");
