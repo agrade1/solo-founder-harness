@@ -2539,6 +2539,13 @@ test("[M5b] A2: provider start·send의 native 코드도 controller taxonomy로 
   assert.deepEqual([worker.status, worker.marker], ["failed", "provider_send_failed"]);
   assert.deepEqual(worker.acknowledged, [], "실패한 전달을 수령했다");
   assert.equal(g.kernel.getMessage("su-1")!.acknowledgedAt, null);
+  // **V3 M9 선결 3 — 대장 `B-17`**: 시작한 시도가 durable에 **열린 채 남지 않는다**. 이전 판은 send가
+  // 던지면 예외가 바깥 catch로 빠져 `activeAttemptId`가 남고 `nextAttemptAt`도 잡히지 않았다.
+  const d1 = g.kernel.getMessage("su-1")!.delivery;
+  assert.equal(d1.activeAttemptId, null, "실패한 전달 attempt가 durable에 열린 채 남았다");
+  assert.equal(d1.lastMarker, "send_failed", "실패 원인이 send 경계로 기록되지 않았다");
+  assert.equal(d1.attempts, 1);
+  assert.notEqual(d1.nextAttemptAt, null, "재시도 예약이 없다(회계가 멈췄다)");
 });
 
 test("[M5b] A5: 전달 turn이 실패로 끝나면 ack를 만들지 않는다", async () => {
@@ -2559,4 +2566,9 @@ test("[M5b] A5: 전달 turn이 실패로 끝나면 ack를 만들지 않는다", 
   assert.equal(worker.marker, "provider_result_error");
   assert.deepEqual(worker.acknowledged, []);
   assert.equal(g.kernel.getMessage("su-1")!.acknowledgedAt, null);
+  // `B-17`: turn 소비에서 죽은 경우도 같은 규칙이다 — 다만 marker는 send가 아니라 turn 쪽이다.
+  const d = g.kernel.getMessage("su-1")!.delivery;
+  assert.equal(d.activeAttemptId, null, "실패한 전달 attempt가 durable에 열린 채 남았다");
+  assert.equal(d.lastMarker, "turn_failed");
+  assert.notEqual(d.nextAttemptAt, null);
 });

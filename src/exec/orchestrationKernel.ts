@@ -1952,11 +1952,11 @@ function writeOutcome(marker: WriteEffectMarker, path: string | null, resultSha2
  *    것이었다. 그 이유는 지금 형태에 **성립하지 않는다**: rename하지 않고 4에서 신원까지 확정한 **바로
  *    그 fd**에 쓴다 → 발행 syscall(`write`/`ftruncate`/`fsync`)에 pathname이 **하나도 없다**.
  *    잃은 것은 **원자성**이다(`applyToFixedTarget` 주석에 무엇이 남는지 적어 두었다).
- * 8. **대상이 없으면 `write_publish_unsupported`**(3A 3차 A4 · 대장 `B-16` **잔여**) — 부재 대상에는
- *    고정할 fd가 없으므로 최종 `link(2)`가 pathname을 지나야 하고, 그 창은 여전히 예방할 수 없다.
- *    Node 18/macOS 내장에 디스크립터 상대 no-replace 발행(`linkat`)이 없다. `process.chdir(parent)` +
- *    basename `link`는 평가 후 기각했다(프로세스 전역 상태 · worker thread에서 throw · managed launcher가
- *    자식 cwd까지 오염). temp를 만들지 않으므로 이 거부의 파일 시스템 부작용은 **0**이다.
+ * 8. **대상이 없으면 신규 발행한다**(V3 M9 선결 2 — 대장 `B-16` **완전 개방**). M5c/M5d까지 이 자리는
+ *    `write_publish_unsupported`였고, 그 이유("최종 `link(2)`가 pathname을 지나므로 부모 교체 창을
+ *    예방할 수 없다")는 **temp+link/rename 형태에 대해서는 지금도 옳다**. M9는 그 형태를 되살리지 않고
+ *    `O_CREAT|O_EXCL` 빈 파일 → 부모 신원 재확인 → 고정한 fd에만 쓰기로 연다(아래 발행 블록 주석 참조).
+ *    `write_publish_unsupported`는 이제 **던지는 자리가 없는** 잔존 코드다.
  *
  * **관측 가능한 회귀 하나(정직)**: 4의 대상 open이 `O_RDWR`이므로 **쓰기 권한이 없는 대상**(예: 0444)은
  * 교체는 물론 `already_applied`·`write_conflict` 판정조차 `write_failed`가 된다. fail closed 방향이지만
@@ -2104,8 +2104,16 @@ function judgeWriteTransaction(
     //   ③ 확인을 지난 뒤에야 `applyToFixedTarget`으로 **fd에만** 쓴다. 교체 경로와 **같은 함수**이므로
     //      발행 syscall에 pathname이 하나도 없다는 성질이 그대로 유지된다.
     //
-    // **그래서 남는 최악은 "빈 파일 하나"다.** 부모가 교체됐다면 공격자가 얻는 것은 0바이트 파일이고
-    // 승인된 내용은 새지 않는다 — A4가 막으려던 것이 정확히 그 유출이다.
+    // **부모가 교체된 채로 남아 있으면 공격자가 얻는 것은 0바이트 파일이다** — A4가 막으려던 유출이
+    // 정확히 그것이고, 그 시퀀스는 위 ②③이 잡는다.
+    //
+    // **무조건 "0바이트"라고 주장하지는 않는다**(적대적 리뷰 B-2): 같은 uid 공격자가 ①창에서 부모를
+    // 교체해 빈 파일을 자기 디렉터리에 만들게 하고, ②③ 검증 **전에** 그 inode를 자기 경로로
+    // 하드링크한 뒤 원래 부모를 **복원**하면 ②③을 모두 지난다 → 승인된 내용이 그 inode로 가므로
+    // 공격자가 확보한 alias 이름으로도 도달한다. 실질 추가 권한은 "이미 그 workspace를 읽을 수 있는
+    // 자가 alias를 확보하는 것"이고(내용은 승인된 이름에도 정상 착지한다), **교체 분기도 기존 대상의
+    // 하드링크에 대해 같은 노출을 갖는다** — 즉 이것은 신규 발행이 새로 만든 구멍이 아니라 선언된
+    // threat model(같은 uid 경쟁자는 막지 않는다)의 결과다. 없앴다고 주장하지 않고 여기 적어 둔다.
     //
     // **정직하게 남는 것**: ⓐ 실패 시 그 빈 파일을 **지우지 않는다**. unlink는 pathname 연산이라
     // 교체된 부모에서 남의 파일을 지울 수 있다 — 지우지 않는 쪽이 fail closed다. 그 결과 재시도는
