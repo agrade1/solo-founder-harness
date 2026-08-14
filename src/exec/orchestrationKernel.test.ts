@@ -4323,7 +4323,7 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
   // **3A 3차 리비전 B2 — action별 입력 계약**: `data`는 임의 문자열 배열이 아니라 닫힌 key 집합 객체다.
   assert.deepEqual(
     rp.properties.data.oneOf.map((x: any) => x.$ref),
-    ["#/definitions/validatePlanData"],
+    ["#/definitions/validatePlanData", "#/definitions/runTestsData"],
     "action별 data 계약이 열렸다(임의 배열로 되돌아갔다)",
   );
   for (const action of CONTROLLER_ACTIONS) {

@@ -699,13 +699,33 @@ interface LaunchRecord {
   entrypoint: string;
   entrypointSha256: string;
   action: ControllerAction;
-  planPath: string;
   timeoutMs: number;
   /** **정확히 한 번**만 false → true가 된다. 되돌리는 통로가 없다(재생 불가). */
   spent: boolean;
 }
 
 const GENUINE_LAUNCH_CAPABILITIES = new WeakMap<object, LaunchRecord>();
+
+/**
+ * 승인된 `run_process` 레코드 → **controller entrypoint에 넘길 인자**(V3 M9 선결 1).
+ *
+ * 이 함수가 argv의 **유일한 조립 지점**이고 그 형태는 언제나 `[action, 승인된 경로 하나]`다.
+ * action마다 data key가 다르므로(`CONTROLLER_ACTION_DATA_KEYS`) 여기서 판별 union을 소진하며,
+ * 새 action이 추가되면 이 switch가 **컴파일 오류로** 그것을 요구한다(조용한 기본값이 없다).
+ * flag·shell·env·cwd·실행 파일은 어느 갈래에서도 만들어지지 않는다.
+ */
+function controllerActionArgs(approved: Extract<ApprovedOperation, { kind: "run_process" }>): readonly string[] {
+  switch (approved.action) {
+    case "validate-plan":
+      return Object.freeze([approved.action, approved.data.planPath]);
+    case "run-tests":
+      return Object.freeze([approved.action, approved.data.projectPath]);
+    default: {
+      const never: never = approved;
+      throw operationDenied(`승인 레코드의 action을 해석할 수 없다: ${JSON.stringify(never)}`);
+    }
+  }
+}
 
 /**
  * `run_process` 권위 해석. **spawn하지 않고 grant도 소비하지 않는다**(3A 3차 리비전 A2) — 순수 minting이며
@@ -733,7 +753,6 @@ export function resolveProcessLaunchCapability(op: TypedRunProcessOperation, han
     entrypoint: entry.path,
     entrypointSha256: entry.sha256,
     action: approved.action,
-    planPath: approved.data.planPath,
     timeoutMs: approved.timeoutMs,
     spent: false,
   });
@@ -909,11 +928,13 @@ export async function executeRunProcessOperation(
   if (approved.kind !== "run_process") throw operationDenied("승인 레코드의 kind와 다르다");
   // spawn **직전** digest 재검증.
   const target = verifyLaunchTargets(authority, launch);
+  // 인자는 표시 커밋 **이후에 다시 읽은** 승인 레코드에서만 파생한다(A4 — in-memory 스냅샷이 아니다).
+  const currentArgs = controllerActionArgs(approved);
   const policy = authority.manifest.autopilotPolicy;
 
   const supervised = await superviseProcess({
     executable: target.node,
-    args: [target.entrypoint, approved.action, approved.data.planPath],
+    args: [target.entrypoint, ...currentArgs],
     cwd: authority.workspaceRoot,
     timeoutMs: approved.timeoutMs,
     termGraceMs: policy.cleanupTermGraceMs,

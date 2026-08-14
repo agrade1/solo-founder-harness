@@ -41,6 +41,7 @@ import { fileURLToPath } from "node:url";
 import {
   ARTIFACT_ROLES,
   CONTROLLER_ACTIONS,
+  CONTROLLER_ACTION_DATA_KEYS,
   LIMITS,
   OrchestrationError,
   REQUIRED_BODY_HEADINGS,
@@ -3283,6 +3284,74 @@ test("[M5c] B2: 권능 발급은 효과가 아니다 — run_process pending은 
   assert.equal(codeOf(() => resolveProcessLaunchCapability(op2, grant2)), "dispatch_task_not_running");
 });
 
+test("[M9] 선결 1: run-tests action은 닫힌 채로 열렸다 — 명령·argv를 표현할 수 없고 경로 계약은 validate-plan과 같다", () => {
+  const rt = (over: Record<string, unknown>): string =>
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestObject({
+          operationAuthorityByTask: {
+            root: [{ authorityId: "p-t", kind: "run_process", action: "run-tests", data: { projectPath: "docs/proj" }, timeoutMs: 1000, ...over }],
+          },
+        }),
+      ),
+    );
+
+  // ⓐ **승인된 형태는 통과한다**(열지 않았다면 이 줄이 red다).
+  const ok = validateApprovalManifest(
+    manifestObject({
+      operationAuthorityByTask: {
+        root: [{ authorityId: "p-t", kind: "run_process", action: "run-tests", data: { projectPath: "docs/proj" }, timeoutMs: 1000 }],
+      },
+    }),
+  );
+  const approved = ok.operationAuthorityByTask.root[0];
+  assert.equal(approved.kind, "run_process");
+  assert.equal(approved.action, "run-tests");
+  assert.deepEqual(approved.data, { projectPath: "docs/proj" });
+
+  // ⓑ **action↔data 짝은 섞이지 않는다**: run-tests에 planPath를 담을 수 없고 그 반대도 안 된다.
+  assert.equal(rt({ data: { planPath: "docs/p.json" } }), "invalid_manifest", "run-tests가 planPath를 받았다");
+  assert.equal(
+    codeOf(() =>
+      validateApprovalManifest(
+        manifestObject({
+          operationAuthorityByTask: {
+            root: [{ authorityId: "p-x", kind: "run_process", action: "validate-plan", data: { projectPath: "docs/proj" }, timeoutMs: 1000 }],
+          },
+        }),
+      ),
+    ),
+    "invalid_manifest",
+    "validate-plan이 projectPath를 받았다",
+  );
+  assert.equal(rt({ data: { projectPath: "docs/proj", planPath: "docs/p.json" } }), "invalid_manifest");
+  assert.equal(rt({ data: {} }), "invalid_manifest");
+
+  // ⓒ **테스트 명령을 담을 통로가 없다.** 러너·스크립트·인자 key는 어느 것도 승인 문서에 들어가지 못한다.
+  for (const key of ["command", "script", "runner", "args", "argv", "npmScript", "testCommand", "shell", "env", "cwd"]) {
+    assert.equal(CONTROLLER_ACTION_DATA_KEYS["run-tests"].includes(key), false, key);
+    assert.equal(rt({ data: { projectPath: "docs/proj", [key]: "npm test" } }), "invalid_manifest", key);
+    assert.equal(rt({ [key]: "npm test" }), "invalid_manifest", key);
+  }
+  // 옵션 문자열을 경로 자리에 밀어 넣어도 승인 범위 밖이라 죽는다(validate-plan과 같은 자리).
+  for (const arg of ["--eval", "-e", "--require", "--test-reporter=spec"]) {
+    assert.equal(rt({ data: { projectPath: arg } }), "operation_outside_writable_root", arg);
+  }
+
+  // ⓓ 경로 계약은 `validate-plan`과 **같은 함수**를 지난다 — 같은 입력에 같은 코드가 나와야 한다.
+  for (const [bad, code] of [
+    ["a\0b", "operation_data_not_approved"],
+    ["docs/\ud800", "operation_data_not_approved"],
+    ["/etc", "operation_data_not_approved"],
+    ["../evil", "operation_data_not_approved"],
+    ["docs/./proj", "operation_data_not_approved"],
+    ["x".repeat(600), "operation_data_not_approved"],
+    ["outside/proj", "operation_outside_writable_root"],
+  ] as const) {
+    assert.equal(rt({ data: { projectPath: bad } }), code, bad.slice(0, 20));
+  }
+});
+
 test("[M5c] B-10: run_process는 --eval·--require·임의 script/module·action 주입을 표현할 수 없다", () => {
   const bad = (over: Record<string, unknown>): string =>
     codeOf(() =>
@@ -3313,7 +3382,9 @@ test("[M5c] B-10: run_process는 --eval·--require·임의 script/module·action
   for (const action of ["exec", "eval", "validate-plan; rm -rf /", "VALIDATE-PLAN", "", "../validate-plan", 1, null]) {
     assert.equal(bad({ action }), "operation_action_not_approved", String(action));
   }
-  assert.deepEqual([...CONTROLLER_ACTIONS], ["validate-plan"], "action 목록이 승인 없이 늘었다");
+  // V3 M9 선결 1에서 `run-tests`가 **사람 승인 아래** 더해졌다. 이 잠금은 그대로다 — 여기 없는 항목이
+  // 늘면 red다.
+  assert.deepEqual([...CONTROLLER_ACTIONS], ["validate-plan", "run-tests"], "action 목록이 승인 없이 늘었다");
   // ⓓ NUL·고립 surrogate·절대 경로·traversal·미정규화도 거부다(정확한 바이트 왕복 + 승인 범위).
   assert.equal(bad({ data: { planPath: "a\0b" } }), "operation_data_not_approved");
   assert.equal(bad({ data: { planPath: "docs/\ud800.json" } }), "operation_data_not_approved");
