@@ -48,7 +48,27 @@
 - **다음: M6**(Hierarchical Orchestrator + Fresh Context Rotation). 착수 문서는
   `docs/handoff/M6_KICKOFF.md`.
 
-## (2026-08-12 — **V3 M7: T1~T8 완료 — offline 전부 + live benchmark 1회** · 이 블록이 최신이다)
+## (2026-08-13 — **V3 M8: T1~T5·T7 완료(offline) · T6 live 미실행** · 이 블록이 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
+- 새로 선 것: `src/core/designContract.ts`(DESIGN.md·tokens·inventory fail-closed + **WCAG 대비 계산**) ·
+  `src/tools/registryInventory.ts`(공식 registry 참조/출처 2층 차단 + 원문=파일/중앙=발췌) ·
+  `src/exec/designHandoff.ts`(handoff 닫힌 계약 + 범위 + 승인 재사용 금지) ·
+  `src/exec/designReviewRoundtrip.ts`(fresh Codex 리뷰 / fresh design worker 왕복).
+- **계약 변경 1건**: `tokens.json` 최상위가 `primitive`/`semantic`/`component`/**`a11y`** 넷.
+  `agents/design_agent.md` §4도 같이 갱신했다(생산자↔검증기 단일 출처).
+- **새 proxy·새 tool profile을 만들지 않았다**(M3c shadcn read 계층 재사용 · profile 4개 유지).
+- 실측: `test:exec` 549 · `test:core` 442 · acceptance **PASS=154 / FAIL=0**(Test 20 신설) · tsc clean.
+  **live LLM 0회 · registry 실조회 0회 · 과금 0원** · mutation red 9건.
+- 접근성은 **tokens 층만** 증명했다 — 렌더링·이미지 위 텍스트·large-text 예외·스크린리더·시각 diff는
+  범위 밖이며 통과로 주장하지 않는다. 판정 정본은 로드맵 `M8 진행 판정` 절. 신규 대장 `C-70`.
+- **T6 live 완료**(2026-08-13 · `scripts/m8-live-design.mjs` · Codex live는 사용자 결정으로 제외):
+  실제 모델 산출물이 계약 통과(재시도 1회) · registry 20 item 실조회 · 원문/발췌 분리 실데이터 확인.
+  live가 3건을 잡았다(값 형식 위반 재현 · registry 응답 형식 가정 오류 · 가짜 tool-use 텍스트 거부).
+  구독 6왕복 = **실결제 $0**. **fresh Codex 리뷰 실제 왕복은 미증명.**
+- **다음: M9**(§6.5 선결 4건부터 — `run_process` enum · `B-16` · `B-17` · F2).
+
+## (2026-08-12 — **V3 M7: T1~T8 완료 — offline 전부 + live benchmark 1회**)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
   PR `pr/v3-m7-01-gateway`(T1~T5) · `pr/v3-m7-02-human-gate`(T6·T8).

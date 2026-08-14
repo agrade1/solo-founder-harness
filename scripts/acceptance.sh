@@ -325,6 +325,37 @@ check "M7 ⑦ 키 값을 사용자에게 요구하지 않음 확인 출력" $?
 echo "$M7_OUT" | grep -q "live 검색 API 실호출 0회"
 check "M7 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
 
+echo "== Test 20: M8 디자인 산출물 계약 · shadcn read 배선 · handoff 접근성/범위 (offline · 무과금) =="
+# 임시 디렉터리 전용 · shadcn registry 실조회 0회 · live LLM 0회. 상세 체크는 스크립트가 자체 출력한다.
+M8_OUT="$(node scripts/m8-offline-acceptance.mjs 2>&1)"
+M8_RC=$?
+[ "$M8_RC" -eq 0 ];                               check "M8 offline acceptance exit 0" $?
+echo "$M8_OUT" | grep -q "FAIL=0";                check "M8 내부 체크 전부 통과" $?
+echo "$M8_OUT" | grep -q "계층 건너뛰기(semantic raw 값)는 거부된다"
+check "M8 ① tokens 3계층 강제 확인 출력" $?
+echo "$M8_OUT" | grep -q "선언된 쌍의 대비 미달을 실제로 잡는다"
+check "M8 ② 접근성이 계산 기반(공허하지 않음) 확인 출력" $?
+echo "$M8_OUT" | grep -q "min을 임의 값(1)으로 낮춰 통과시키는 우회를 거부한다"
+check "M8 ② 대비 기준 완화 우회 차단 확인 출력" $?
+echo "$M8_OUT" | grep -q "text-\* 토큰을 선언에서 빼 검사를 비우는 것을 거부한다"
+check "M8 ② 선언 누락으로 검사를 비울 수 없음 확인 출력" $?
+echo "$M8_OUT" | grep -q "M8이 새 tool profile을 추가하지 않았다(4개 유지)"
+check "M8 ③ shadcn read 계층 재사용(새 proxy·profile 없음) 확인 출력" $?
+echo "$M8_OUT" | grep -q "프로젝트 층: components.json의 custom registry는 거부된다"
+check "M8 ④ custom/private registry 차단(프로젝트 층) 확인 출력" $?
+echo "$M8_OUT" | grep -q "inventory 층: 비공식 출처 호스트는 거부된다"
+check "M8 ④ custom/private registry 차단(inventory 층) 확인 출력" $?
+echo "$M8_OUT" | grep -q "발췌가 원문이 아니다(절삭이 실제로 일어난다)"
+check "M8 ⑤ registry 원문/발췌 분리 확인 출력" $?
+echo "$M8_OUT" | grep -q "범위: UX flow에 없는 화면은 거부된다"
+check "M8 ⑥ handoff 범위 검증 확인 출력" $?
+echo "$M8_OUT" | grep -q "승인 후 토큰이 바뀌면 그 승인을 재사용할 수 없다"
+check "M8 ⑥ 사람 승인 재사용 금지 확인 출력" $?
+echo "$M8_OUT" | grep -q "같은 세션 재사용은 거부된다"
+check "M8 ⑦ fresh 세션 강제(자기 승인 금지) 확인 출력" $?
+echo "$M8_OUT" | grep -q "shadcn registry 실조회 0회"
+check "M8 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
+
 echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
