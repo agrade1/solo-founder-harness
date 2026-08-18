@@ -15,6 +15,9 @@ export const TYPED_EXECUTION_CODES = [
      * 집행 단계의 닫힌 코드(정본은 `orchestrationKernel.ts`):
      * - `operation_denied` — 이 task의 이 authorityId가 승인되지 않았거나 kind가 승인 레코드와 다르다.
      * - `operation_not_owned` / `operation_outside_writable_root` — 승인은 있으나 durable 범위 밖이다.
+     * - `operation_ownership_contended` — **V3 M9 T3(대장 `B-29`)**: 승인·소유권 다 맞지만 **지금 자원을
+     *   점유 중인 다른 task가 그 경로를 소유한다**. 자기 ownership만 보던 이전 판은 같은 경로를 소유한
+     *   두 running task의 쓰기를 둘 다 통과시켜 조용한 덮어쓰기를 냈다(로드맵 M9 위험 1).
      * - `write_bytes_exceeded` — 본문이 `min(승인 maxBytes, LIMITS.maxWriteBytes)`를 넘는다.
      * - `write_path_symlink` / `write_target_not_regular` — symlink는 따라가지 않고 비일반 파일은 쓰지 않는다.
      * - `write_failed` — 그 밖의 집행 실패(부모 부재 · I/O · 신원 불일치). 내용은 담지 않는다.
