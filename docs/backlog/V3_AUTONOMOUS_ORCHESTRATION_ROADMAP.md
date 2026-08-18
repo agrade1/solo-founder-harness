@@ -1983,7 +1983,25 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 > 나온다는 사실로 동일하게 증명되고, fresh fixture 대조군이 발행 경로 자체의 생존을 덮는다).
 >
 > **`B-29`가 덮는 범위는 typed `write_file` 채널이다** — 이 경계를 정직하게 좁혀 적는다(`C-75`).
-| `B-30` | **B (P1)** | **DAG 문서의 `resourceClasses`·`dependsOn`이 kernel task로 1:1 보존된다는 보장이 없다.** `validateTaskDag`의 소유권 충돌 면제 근거 하나가 "배타 class를 공유하면 kernel scheduler가 동시 실행을 막는다"인데 이는 물질화가 문서의 두 필드를 **그대로** 옮길 때만 참이다. 물질화 코드는 아직 없다. 누락·축약하면 문서 검증을 통과한 `{a: src/x, db}`·`{b: src/x, db}`가 kernel에서 동시 스케줄돼 같은 경로를 쓴다 | 중 — 물질화 구현에 달렸다 | 소유권 충돌 면제가 근거를 잃는다(데이터 손실) | 낮음(물질화와 동시에 닫으면 된다) | 소(물질화 acceptance에 "문서 필드 1:1 보존" 검증 추가) | **DAG 물질화 구현과 같은 slice** | M9 T3 세션 | M9 T2 적대적 리뷰 B-2 · `taskDag.ts` ownership_conflict 면제 분기 | open |
+| `B-30` | **B (P1) — CLOSED(V3 M9 T3②)** | **DAG 문서의 `resourceClasses`·`dependsOn`이 kernel task로 1:1 보존된다는 보장이 없다.** `validateTaskDag`의 소유권 충돌 면제 근거 하나가 "배타 class를 공유하면 kernel scheduler가 동시 실행을 막는다"인데 이는 물질화가 문서의 두 필드를 **그대로** 옮길 때만 참이다. 물질화 코드는 아직 없다. 누락·축약하면 문서 검증을 통과한 `{a: src/x, db}`·`{b: src/x, db}`가 kernel에서 동시 스케줄돼 같은 경로를 쓴다 | 중 — 물질화 구현에 달렸다 | 소유권 충돌 면제가 근거를 잃는다(데이터 손실) | 낮음(물질화와 동시에 닫으면 된다) | 소(물질화 acceptance에 "문서 필드 1:1 보존" 검증 추가) | **DAG 물질화 구현과 같은 slice** | M9 T3 세션 | M9 T2 적대적 리뷰 B-2 · `taskDag.ts` ownership_conflict 면제 분기 | **closed — M9 T3②** |
+
+> **`B-30` 종결 방식(2026-08-18)**: `src/exec/taskDagMaterialize.ts` — **새 kernel API를 만들지 않았다.**
+> `createDependentTask`가 이미 depth-0 + `dependsOn` task를 만든다(`createRootTask`는 `dependsOn`을 강제로
+> 비워 DAG 간선을 표현할 수 없다). 물질화는 **의존 순서대로 기존 API를 부르는 것**이다.
+>
+> 1:1 보존의 **증거는 테스트**다: `resourceClasses` 미전달·`dependsOn` 미전달 mutation이 각각 red다.
+> 모듈에도 생성 후 대조(`dag_materialize_drift`)가 있지만 그것은 **도달 불가한 최후 방어선**이고
+> (매핑이 옳으면 drift가 없어 그 블록만 지워도 green이다 — mutation으로 실측), 주석에 그렇게 적었다.
+> **집행이 증거를 대신한다고 주장하지 않는다.**
+>
+> 함께 고정한 것: ⓐ 위상 정렬이 **taskId 사전순이 아니다**(사전순이 의존 순서를 거스르는 fixture로
+> 판별 — 첫 fixture는 사전순이 우연히 의존 순서와 같아 순서 로직 제거가 red가 되지 않았다) ⓑ 검증에
+> 걸리는 문서는 task를 **하나도** 만들지 않는다(부분 물질화 0) ⓒ 이미 task가 있는 run에는 물질화하지
+> 않는다(`dag_materialize_run_not_empty` — 문서는 자기 안에서만 겹침을 봤으므로 얹으면 판정 범위를
+> 벗어난다) ⓓ 호출자의 "이미 검증했다"를 신뢰하지 않고 다시 검증한다.
+>
+> `provides`/`consumes`는 kernel state 축이 없어 **`task_assignment` 본문의 `Inputs and Contracts` 절**에
+> 적는다(worker가 실제로 읽는 자리). 본문은 결정론적이다 — 시각·예산 실측값을 담지 않는다.
 | `C-73` | C (P3) | **디렉터리 단위 `provides`는 만들지 않을 파일까지 약속할 수 있다.** 의존이 `provides: ["src/m"]`(디렉터리)면 하류가 `src/m/never-written.ts`를 `consumes`해도 통과한다 → "영원히 오지 않을 입력이 계약에 남지 않는다"는 보장이 디렉터리 granularity에서는 **명목상**이다. 경로 계약의 본질적 한계이고, 파일 단위 선언을 강제하면 산출물 수가 `maxArtifactRefs`를 넘는 task를 표현할 수 없다 | 중 — 디렉터리 provides를 쓰는 만큼 | contract 검증의 정밀도(실행 안전성 무관 — 없는 입력은 실행 시점에 실패한다) | 낮음 | 중(산출물 실측과 대조하는 사후 검증, 또는 glob 계약) | 없음(bounded backlog) | 미정 | M9 T2 적대적 리뷰 C-3 · `taskDag.ts` consumes 검사의 `pathWithin(c, p)` | open |
 | `C-74` | C (P3) | **소유권 경합을 scheduler에서 직렬화하지 않는다(거부로만 닫혀 있다).** `B-29`는 동시 **쓰기**를 막지만 동시 **실행**은 허용한다 → 겹치는 소유권을 가진 두 task가 함께 running이 되어 한쪽이 `operation_ownership_contended`로 pause되고 그 attempt를 태운다(자원 낭비 + 사람이 볼 pause). 구조적 종결은 `selectSchedulable`에서 ownership을 암묵 배타 자원으로 취급하는 것인데, 그러려면 **기존 fixture 다수가 형제 task에 같은 경로를 편의상 선언하는 것을 전수 정정**해야 한다(실측: 그 판으로 `test:exec` 20건 이상 red) | 확실 — 겹치는 소유권 DAG를 실제로 돌릴 때마다 | 낭비된 attempt·pause 소음(**`write_file` 채널의** 데이터 무결성은 `B-29`가 지킨다 — `run_process` 부수 효과는 `C-75` 참조) | 낮음 — 거부가 이미 손실을 막고 있어 나중에 얹으면 된다 | 중(scheduler 5줄 + fixture 소유권 분리 sweep) | 없음(bounded) — 병렬 worker의 attempt 낭비가 실측으로 문제될 때(`C-10` starvation과 함께 본다) | 미정 | M9 T3 구현 시 실측(scheduler 판 시도 후 기각) · `selectSchedulable` · `heldResourceClasses` | open |
 | `C-75` | C (P3) | **`run_process`의 부수 효과 쓰기는 소유권 게이트 밖이다.** `B-29`가 덮는 것은 typed `write_file` 채널뿐이다. `run-tests` action은 승인된 `projectPath`에서 고정 controller entrypoint를 spawn하는데, **테스트 러너가 만드는 캐시·스냅샷·빌드 산출물 쓰기는 어떤 소유권 판정도 지나지 않는다**(`executeRunProcessOperation`에 `resolveWriteAuthority` 호출이 없다 — 설계상 그렇다). 시나리오: 겹치는 소유권 없이도 두 running task가 같은 `projectPath`로 `run-tests`를 동시에 승인받아 실행하면 러너가 같은 캐시/스냅샷을 동시에 갱신해 한쪽 산출이 조용히 덮인다 | 낮음~중 — 같은 `projectPath`를 두 task에 승인해야 하고, 그것은 사람의 승인 문서 판단이다 | 러너 캐시·스냅샷(하네스 산출물은 `write_file` 채널을 지나므로 무관) | 낮음 | 중(러너 산출 경로를 승인 축으로 올리거나, `projectPath`를 배타 자원으로 취급) | 없음(bounded backlog) — 같은 `projectPath`를 병렬로 승인하는 첫 DAG 전 | 미정 | M9 T3① 적대적 리뷰 C-1(read-only · `controllerActionArgs` · `superviseProcess` 호출부 · `executeRunProcessOperation`에 소유권 판정 부재 확인) | open |
