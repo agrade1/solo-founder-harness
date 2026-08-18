@@ -1738,6 +1738,13 @@ export function resolveApprovedOperation(
  * 만 점유한다 — `waiting_children`은 `requestSpawn`이 parent를 그 자리에서 내리므로 부모-자식이 같은
  * 경로를 소유해도 서로를 막지 않는다.
  */
+/*
+ * **이 게이트가 덮는 범위는 typed `write_file` 채널이다**(T3① 적대적 리뷰 C-1 — 정직하게 좁혀 적는다).
+ * `run_process`는 소유권 판정을 지나지 않는다: 고정 controller entrypoint가 승인된 `projectPath`에서
+ * 무엇을 쓰든(테스트 러너 캐시·스냅샷·빌드 산출물) 그것은 이 함수를 거치지 않는다. 같은 `projectPath`를
+ * 두 task에 승인하면 그 쓰기들은 서로를 덮을 수 있다 — 대장 `C-75`. 하네스 산출물은 `write_file`
+ * 채널을 지나므로 이 경계 밖이 아니다.
+ */
 function concurrentOwnershipOf(state: OrchestrationRunState, selfTaskId: string): string[] {
   const out: string[] = [];
   for (const t of state.tasks) {
