@@ -1,7 +1,12 @@
 # M9 KICKOFF — Development Pipeline
 
 > 새 세션이 **이 문서 하나로** 착수할 수 있게 쓴 문서다. 작성 2026-08-13(M8 완료 직후).
-> 브랜치 `work/m5c-autopilot`. 앞선 판정은 로드맵 `M8 진행 판정` 절이 정본이다.
+> 브랜치 `work/m5c-autopilot`.
+>
+> **⚠️ 2026-08-18 갱신**: T1(선결 4건)과 T2(DAG 계약)는 **완료됐다**. 현행 판정은 로드맵
+> **`M9 진행 판정 ①`** 절이 정본이고 이 문서보다 최신이다. 아래 §3 3번 칸의 `B-17` 기술은
+> **부정확했으며** 그 자리에 정정을 적어 두었다. §2 baseline 수치도 낡았다
+> (현행: `test:exec` 575 · `test:core` 442 · acceptance 154).
 
 ---
 
@@ -63,7 +68,7 @@ acceptance 마지막 번호는 **Test 20**(M8)다 — **M9는 Test 21**을 쓴�
 |---|---|---|---|
 | 1 | **`run_process` action enum 확장 (하드 게이트)** | `orchestrationTypes.ts:802` `CONTROLLER_ACTIONS = ["validate-plan"]` **하나이고 읽기 전용** | 테스트 실행을 표현하는 action 추가. **닫힌 enum 유지** · action마다 정확한 key 집합 · argv/shell 문자열을 모델이 고르는 통로를 만들지 않는다(승인 레코드가 실행 파일·argv·timeout을 정한다 — `validate-plan`의 action 전용 입력 패턴이 본보기) |
 | 2 | **`B-16` 신규 파일 발행** | `orchestrationKernel.ts` `write_publish_unsupported` — 부재 대상 발행이 fail-closed. 승인된 **기존 파일 교체만** 가능 | worker가 새 파일을 만드는 경로. 승인 manifest의 ownership·writableRoots 집행을 유지한 채 신규 경로 발행을 연다 |
-| 3 | **`B-17` inbox 전달 소비(ack)** | kernel API `acknowledgeDelivery`는 **있다**(`orchestrationKernel.ts:2848`, durable event `delivery_acknowledged`) · `stableController.ts:923`이 호출한다. **autopilot 경로의 소비는 확인되지 않았다**(M6 판정: "autopilot은 여전히 전달을 ack하지 않는다") — **착수 시 실측으로 판정하라** | "fresh Codex 검토 → fresh Claude 수정"의 자동 전달이 성립하려면 수신 task가 inbox를 실제로 읽고 행동을 바꿔야 한다 |
+| 3 | ~~**`B-17` inbox 전달 소비(ack)**~~ **→ 이 칸의 기술은 부정확했다(2026-08-18 실측으로 정정)** | **정정**: 대장 원문의 `B-17` 잔여는 ack가 아니라 **"전달 실패 시 `failDeliveryAttempt` 미호출"**이었다 — 그 API는 kernel에 있었으나 **프로덕션 호출부가 0건**이라 `stableController` 전달 루프가 실패하면 `activeAttemptId`가 durable에 열린 채 남았다. **이건 M9 T1에서 닫았다.** autopilot 쪽 잔여도 "ack를 안 한다"가 아니라 **전달 루프 자체가 없다**는 것이다(`autopilot.ts:24`) | **회계면은 닫혔다.** 남은 것은 "수신 task가 inbox를 읽어 **행동을 바꾼다**"이고, autopilot worker가 정적 offline plan 백엔드라 **offline에서는 증명 불가**다 → Claude worker live 단계로 유예(로드맵 "M9 진행 판정 ①" 절이 정본) |
 | 4 | **F2 실행 가시성(진행률·스피너·ETA · 신규 의존성 0)** | v1 계층은 **이미 있다** — `src/core/progress.ts`(`RunEvent`·`ProgressReporter`·TTY/비-TTY 렌더러) + `progress.test.ts`. **exec/autopilot 계층의 가시성은 없다**(`autopilotTypes.ts`의 `progress` 이벤트는 durable 회계용이고 사람용 표시가 아니다) | **v1 `progress.ts`를 재사용**해 exec/autopilot 진행을 사람에게 보이게 한다. 새 렌더러·새 의존성을 만들지 않는다. F1의 데이터 기반(step 타임스탬프)도 여기서 생긴다 |
 
 **§9.1 대장에서 M9 기한·트리거를 가진 열린 항목**(grep 실측):

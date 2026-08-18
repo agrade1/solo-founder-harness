@@ -1817,6 +1817,60 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **M9 진행 판정 ① — T1 선결 4건 완료 · T2 DAG 계약 완료** (2026-08-18 · 이 절이 M9의 현행이며 아래 M8 절보다 최신이다)
+
+> 범위: PR #29(T1 선결 4건) · #30(dist) · `pr/v3-m9-03-dag`(T2). 전부 **offline·무과금**이다.
+> **live는 아직 하나도 돌리지 않았다** — Claude worker live도, Codex live도 미실행이다.
+
+**실측 baseline**: `test:exec` **575/575** · `test:core` **442/442** ·
+`scripts/acceptance.sh` **PASS=154 / FAIL=0** · `npx tsc --noEmit` clean.
+mutation **23종 red 확인**(T1 17 + T2 6).
+
+| 선결/과업 | 무엇을 했는가 | 증명 상태 |
+|---|---|---|
+| **선결 1** `run_process` action enum | `CONTROLLER_ACTIONS = ["validate-plan", "run-tests"]`. data key는 action마다 닫힌 채이고 `run-tests`는 `{projectPath}` 하나뿐 — 명령·러너·argv·shell·env·cwd를 담을 key가 없다. argv 조립은 `controllerActionArgs()` 한 곳, 형태는 항상 `[action, 승인된 경로]`이며 새 action은 exhaustive switch가 컴파일 오류로 요구한다 | **증명** — mutation 6종 red · 실제 spawn 왕복 2건(`managedProcess.test.ts`) |
+| **선결 2** `B-16` 신규 파일 발행 | **완전 개방**. temp+link/rename을 되살리지 않고 `O_CREAT\|O_EXCL` 빈 파일 → 부모 경로 재해석 검증 → inode 도달성 검증 → 그 다음에야 기존 `applyToFixedTarget`(fd 전용)으로 쓴다. 부모가 교체된 채면 공격자가 얻는 것은 0바이트다 | **증명** — mutation 4종 red · 판별 테스트 5건 |
+| **선결 3** `B-17` | **회계면만 닫았다.** `failDeliveryAttempt`는 kernel에 있었으나 **프로덕션 호출부가 0건**이어서 `stableController` 전달 루프가 실패하면 `activeAttemptId`가 durable에 열린 채 남았다. 이제 실패 marker로 닫는다(`send_failed` vs `turn_failed`) | **부분** — 아래 미증명 표 참조 |
+| **선결 4** F2 실행 가시성 | v1 `core/progress.ts`를 **재사용**한다(새 렌더러 0 · 신규 의존성 0). `AutopilotEvent → RunEvent` 변환기 하나뿐이다. batch 수 → `step_start.total`, task 경과 → `step_end.elapsedMs`(**F1의 데이터 기반이 여기서 생겼다**), 멈춘 marker는 warn note로 남고 pause는 `ok:false`·run은 `failed`다 | **증명** — mutation 5종 red |
+| **T2** Tech Lead DAG·ownership·API contract | `src/exec/taskDag.ts` — 닫힌 key 집합 문서 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 · `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재). 소유권 충돌은 **순서가 강제되지 않는** 두 task만 거부한다(의존 사슬로 묶인 구현→수정의 같은 파일 소유는 정상이다) | **증명** — mutation 6종 red |
+
+**`B-17` 실측 정정(중요 — `docs/handoff/M9_KICKOFF.md` §3의 기술이 부정확했다)**:
+KICKOFF는 `B-17`을 "inbox 전달 소비(ack)"로 적었으나, §9.1 대장 원문의 잔여는
+**"전달 실패 시 `failDeliveryAttempt` 미호출"**이고 `acknowledgeDelivery`·`stableController` 호출은
+이미 있었다. 그리고 autopilot 쪽 잔여는 "ack를 안 한다"가 아니라 **전달 루프 자체가 없다**는 것이다
+(`autopilot.ts:24` 주석 — `beginDeliveryAttempt`를 부르지 않는다).
+
+| 항목 | 상태 |
+|---|---|
+| 전달 실패 시 attempt 정산(`failDeliveryAttempt`) | **닫힘** — `B-17` 원문 해소 |
+| autopilot 경로의 전달 루프 · "수신 task가 inbox를 읽어 **행동을 바꾼다**" | **미증명 — 의도적 유예.** autopilot worker는 정적 offline plan 백엔드(`startOfflinePlanTurn`)라 **offline에서는 증명할 수 없다**. 사용자 판단으로 회계면만 닫고 행동 변경은 Claude worker live 단계로 미뤘다 |
+| Codex live(code/security/test review·verify) | **미증명 — 미실행.** 과금 게이트(사용자 승인 필요) |
+| Claude worker live | **미증명 — 미실행** |
+| DAG 문서 → 실제 kernel task 물질화 | **미구현** — T2는 문서 계약과 검증까지다 |
+| 병렬 worktree 2 worker 동시 진행 · 리뷰 3종 왕복 · 직렬 병합 · end-to-end 1회 | **미구현 — T3 이후** |
+
+**§9.1 대장**: M9에서 닫은 항목 **2건**(`B-16` 완전 개방 · `B-17` 원문). 새로 등록한 항목 **5건** —
+`C-71`(빈 파일 잔재) · `C-72`(하드링크+부모복원 시퀀스 미커버)는 선결 2 리뷰 산물이고,
+`B-29`(kernel에 소유권 겹침 검사 없음 — spawn 경로 우회) · `B-30`(DAG 문서 필드의 kernel 1:1 보존
+미보장) · `C-73`(디렉터리 단위 `provides`의 명목성)는 T2 리뷰 산물이다.
+**`B-29`·`B-30`은 M9 완료 선언 전 필수다** — 완료 조건이 "kernel이 소유권 충돌을 fail-closed
+검증"이라고 적고 있는데 지금 그 검증은 **문서 단계에만** 있다.
+`C-70`(design 계약이 v1 `runWorkflow`에 미배선)은 **아직 열려 있다**(담당 "M9 착수 세션" — T3 이후로
+미룬다). `C-10`(starvation)은 병렬 worker를 실제로 돌리는 T3에서 실측 대상이 된다.
+
+**적대적 read-only 리뷰 ②(T2)**: **APPROVE — A=0, B=2, C=3**. 리뷰어가 독립 검증한 것:
+의존 간선의 비동시성 보장은 **건전하다**(`recompute`는 `dependsOn`이 전부 `completed`일 때만
+`ready`로 올리고, `completed`는 되돌리지 않으며, typed operation은 `running` task만 집행 가능하다
+→ `waiting_children`/`cleaning`/`retry_wait` 의존이 효과를 내는 중에 하류가 시작하는 시나리오는
+kernel 매개 쓰기로는 구성 불가). 순환 알고리즘도 완전하고 store load 경로가 별도로 cycle을 본다.
+B 2건은 이 커밋의 결함이 아니라 **후속 필수 조건**이라 대장(`B-29`·`B-30`)에 올렸고, C 3건 중
+2건(`resourceClasses` 중복이 fail-late · 죽은 등호 조건)은 **이 슬라이스에서 고쳤다**.
+
+**적대적 read-only 리뷰 ①(선결 1·2)**: **REVISE — A=0, B=2, C=2**.
+B 2건은 **둘 다 과대주장**이었다 — ⓐ 계약 주석이 같은 커밋이 연 신규 발행을 여전히 "fail closed"라고
+기술 ⓑ "부모 교체 시 0바이트"라는 무조건 주장에 하드링크+부모복원 반례. 둘 다 수정했고 C 2건은
+대장에 등록했다. 리뷰어가 테스트 이관 9개 사이트를 개별 대조해 **약화 0건**으로 판정했다.
+
 ##### **M8 진행 판정 — T1~T7 완료(design worker live 포함 · Codex live 제외)** (2026-08-13 · 이 절이 M8의 현행이며 아래 M7 절보다 최신이다)
 
 **offline 전부 + design worker live 1회 + shadcn registry 실조회를 실행했다. Codex live는
@@ -1896,6 +1950,9 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-70` | C (P3) | **design 산출물 계약이 v1 `runWorkflow` 경로에 배선되지 않았다.** `designContract.ts`의 fail-closed 검증은 M8 handoff 경로(`designHandoff.buildDesignHandoff`)에서만 호출되고, v1 문서 워크플로의 design 단계는 여전히 `validate.ts`의 **경고 수준** 헤더 검사만 지난다 → 계약 위반 산출물이 `docs/DESIGN.md`로 저장될 수 있다(단 handoff는 거부한다) | 중 — v1 경로로 design을 돌릴 때마다 | 저장된 문서 품질(handoff·구현으로는 새지 않는다) | 낮음(handoff가 fail-closed 이므로 하류 차단은 유지) | 소(runWorkflow design 분기에서 `validateDesignArtifacts` 호출 + 재생성 루프 연결) | **v1 design 산출물을 구현 파이프라인 입력으로 직접 쓰는 첫 마일스톤 전(M9 예상)** | M9 착수 세션 | `src/core/runWorkflow.ts` design 분기(경고만) vs `src/exec/designHandoff.ts`(fail-closed) · Test 20은 계약·handoff 층만 검사 | open |
 | `C-71` | C (P3) | **`B-16` 완전 개방의 대가 — 실패한 신규 발행이 빈 파일 잔재를 남긴다.** 신규 발행은 `O_CREAT|O_EXCL`로 빈 파일을 먼저 만들므로, 그 뒤 검증·write·fsync 어디서 실패하든 그 이름이 0바이트(또는 torn) 파일로 남는다. unlink는 **의도적으로 하지 않는다**(pathname 연산이라 교체된 부모에서 남의 파일을 지운다 — 하지 않는 쪽이 fail closed다). 그래서 M5c/M5d가 갖고 있던 "만료·크래시가 파일 시스템 잔재를 0으로 남긴다"는 운영 성질이 사라졌다. 재시도는 preimage 불일치(`write_conflict`)로 막히므로 **조용한 손상은 없고 사람이 본다** | 확실 — 신규 발행이 실패하는 모든 경우 | workspace 위생(잔재 파일). 승인·내용·영수증 무결성에는 영향 없음 | 낮음 — fail closed 방향이고 재시도가 덮지 않는다 | 중(디스크립터 상대 unlink(`unlinkat`)가 있으면 안전하게 지울 수 있다 — Node 내장에 없다. 또는 잔재를 durable에 기록해 사람에게 보고) | 없음(bounded backlog) — 잔재가 실제로 운영을 방해할 때 | 미정 | M9 선결 2 적대적 리뷰 C-1 · `judgeWriteTransaction` 신규 발행 블록 · `typedExecution.test.ts` "만료·deadline을 넘긴 running pending" 단정 변경 | open |
 | `C-72` | C (P3) | **신규 발행의 하드링크+부모복원 노출이 테스트로 덮이지 않는다.** 같은 uid 공격자가 ① 빈 파일 생성 창에서 부모를 교체하고 ② 검증 **전에** 그 inode를 자기 경로로 하드링크한 뒤 ③ 원래 부모를 **복원**하면 부모 신원 재확인과 inode 도달성 검사를 **모두 지난다** → 승인된 내용이 공격자가 확보한 alias 이름으로도 도달한다. 실질 추가 권한은 "이미 그 workspace를 읽을 수 있는 자의 alias 확보"이고 **교체 분기도 기존 대상 하드링크에 같은 노출**을 가지므로 신규 발행이 만든 구멍이 아니라 선언된 threat model(같은 uid 경쟁자는 막지 않는다)의 결과다. 코드는 고치지 않고 **주석에 명시**했다(과대주장 제거). 잔여는 **이 시퀀스를 집행하는 테스트가 없다는 것** | 낮음 — 같은 uid 공격자를 요구하고 threat model 밖이다 | 감사·회귀 검출(내용 무결성 아님) | 중 — 나중에 threat model이 좁아지면 조용히 깨질 수 있다 | 중(3단 rename+link 시퀀스를 seam으로 조립하는 테스트, 또는 `openat`/`linkat` 계열이 생기면 구조적 종결) | 같은 uid 경쟁자를 threat model 안으로 들이는 마일스톤 전 | 미정 | M9 선결 2 적대적 리뷰 B-2(read-only · 시퀀스는 코드 추론이며 미실행) · `orchestrationKernel.ts` 신규 발행 블록 주석 | open |
+| `B-29` | **B (P1)** | **kernel 자체에는 소유권 겹침 검사가 없다 — 문서 검증(`validateTaskDag`)을 spawn 경로로 우회할 수 있다.** `addTask`는 ownership **형식**만 보고 기존 task와의 겹침을 보지 않으며 `write_file` 권위는 자기 ownership만 본다(`orchestrationKernel.ts:1733`). 시나리오: 문서 검증을 통과해 물질화된 r1(ownership `src/x`)이 running인 동안 무관한 r2의 worker가 `spawn_request`로 child c(ownership `src/x` · dependsOn 없음 · resource class 없음)를 만들면 c는 즉시 `ready` → 동시 스케줄 → 둘 다 자기 ownership 안이라 통과 → **조용한 덮어쓰기**(로드맵 M9 위험 1) | 중 — 병렬 worker와 spawn을 함께 쓰는 순간 | 같은 경로를 쓰는 두 task의 산출물(데이터 손실) | 중 — 나중에 닫으면 이미 나온 산출물의 신뢰도를 소급 판정해야 한다 | 중(`addTask`/`requestSpawn`에 겹침 게이트, 또는 scheduler에서 ownership을 암묵 배타 자원으로 취급) | **M9 완료 선언 전 필수** — 완료 조건이 "kernel이 소유권 충돌을 fail-closed 검증"이라고 적고 있다 | M9 T3 이후 세션 | M9 T2 적대적 리뷰 B-1(read-only · `addTask`~4917 · `requestSpawn`~2627 · dispatch 게이트 1733 확인) · `validateTaskDag` 호출자 0건(grep 실측) | open |
+| `B-30` | **B (P1)** | **DAG 문서의 `resourceClasses`·`dependsOn`이 kernel task로 1:1 보존된다는 보장이 없다.** `validateTaskDag`의 소유권 충돌 면제 근거 하나가 "배타 class를 공유하면 kernel scheduler가 동시 실행을 막는다"인데 이는 물질화가 문서의 두 필드를 **그대로** 옮길 때만 참이다. 물질화 코드는 아직 없다. 누락·축약하면 문서 검증을 통과한 `{a: src/x, db}`·`{b: src/x, db}`가 kernel에서 동시 스케줄돼 같은 경로를 쓴다 | 중 — 물질화 구현에 달렸다 | 소유권 충돌 면제가 근거를 잃는다(데이터 손실) | 낮음(물질화와 동시에 닫으면 된다) | 소(물질화 acceptance에 "문서 필드 1:1 보존" 검증 추가) | **DAG 물질화 구현과 같은 slice** | M9 T3 세션 | M9 T2 적대적 리뷰 B-2 · `taskDag.ts` ownership_conflict 면제 분기 | open |
+| `C-73` | C (P3) | **디렉터리 단위 `provides`는 만들지 않을 파일까지 약속할 수 있다.** 의존이 `provides: ["src/m"]`(디렉터리)면 하류가 `src/m/never-written.ts`를 `consumes`해도 통과한다 → "영원히 오지 않을 입력이 계약에 남지 않는다"는 보장이 디렉터리 granularity에서는 **명목상**이다. 경로 계약의 본질적 한계이고, 파일 단위 선언을 강제하면 산출물 수가 `maxArtifactRefs`를 넘는 task를 표현할 수 없다 | 중 — 디렉터리 provides를 쓰는 만큼 | contract 검증의 정밀도(실행 안전성 무관 — 없는 입력은 실행 시점에 실패한다) | 낮음 | 중(산출물 실측과 대조하는 사후 검증, 또는 glob 계약) | 없음(bounded backlog) | 미정 | M9 T2 적대적 리뷰 C-3 · `taskDag.ts` consumes 검사의 `pathWithin(c, p)` | open |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
