@@ -28,7 +28,7 @@
  * kernel을 부르지 않고 파일을 읽지 않으며 상태를 만들지 않는다. **순수 검증**이다. 문서를 실제
  * task로 물질화하는 것은 별도 단계이고 거기서도 권위는 kernel이다.
  */
-import { LIMITS, OrchestrationError, assertSlug, assertText, normalizeOwnership, normalizeWorkspacePath } from "./orchestrationTypes.js";
+import { LIMITS, OrchestrationError, assertSlug, assertText, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath } from "./orchestrationTypes.js";
 import { assertRegistryRoleId, pathWithin } from "./approvalManifest.js";
 
 /** DAG 문서 1건이 담을 수 있는 최대 task 수 — kernel의 run당 task 상한과 같은 값을 쓴다. */
@@ -155,9 +155,9 @@ function stringList(raw: unknown, what: string, max: number): string[] {
   return raw.map((v) => assertSlug(v, `${what} 항목`));
 }
 
-/** 두 경로가 겹치는가 — 같거나 한쪽이 다른 쪽의 하위 경로면 겹친다. */
+/** 두 경로가 겹치는가 — 한쪽이 다른 쪽의 하위 경로면 겹친다(`pathWithin`이 동일 경로를 포함한다). */
 function overlaps(a: string, b: string): boolean {
-  return a === b || pathWithin(a, b) || pathWithin(b, a);
+  return pathWithin(a, b) || pathWithin(b, a);
 }
 
 /**
@@ -208,7 +208,8 @@ export function validateTaskDag(raw: unknown): TaskDagDocument {
     for (const p of provides) {
       // **만들 수 없는 것을 만들겠다고 선언할 수 없다.** 이 검사가 없으면 contract가 실행 권한과
       // 어긋난 채 통과하고, 하류 task는 영원히 오지 않을 입력을 기다린다.
-      if (!ownership.some((own) => pathWithin(p, own) || p === own)) {
+      // `pathWithin`이 `child === root`를 이미 포함한다(approvalManifest.ts) — 등호 절을 따로 두지 않는다.
+      if (!ownership.some((own) => pathWithin(p, own))) {
         throw fail("provides_not_owned", `${taskId}의 provides가 자기 ownership 밖이다: ${p}`);
       }
     }
@@ -221,7 +222,9 @@ export function validateTaskDag(raw: unknown): TaskDagDocument {
       dependsOn,
       provides,
       consumes: pathList(o.consumes, `DAG node(${taskId}).consumes`, MAX_DAG_CONTRACT_PATHS),
-      resourceClasses: stringList(o.resourceClasses, `DAG node(${taskId}).resourceClasses`, LIMITS.maxResourceClasses),
+      // kernel과 **같은 함수**를 쓴다(중복 거부·사전순 고정). 이전 판은 자체 목록 검증이라 중복이
+      // 문서 검증을 통과하고 물질화에서 늦게 터졌다(T2 적대적 리뷰 C-1 — fail-late).
+      resourceClasses: normalizeResourceClasses(o.resourceClasses ?? [], `DAG node(${taskId}).resourceClasses`),
     };
     byId.set(taskId, node);
     nodes.push(node);
@@ -269,7 +272,7 @@ export function validateTaskDag(raw: unknown): TaskDagDocument {
   for (const n of nodes) {
     const upstream = ancestors.get(n.taskId)!;
     for (const c of n.consumes) {
-      const provided = [...upstream].some((up) => byId.get(up)!.provides.some((p) => p === c || pathWithin(c, p)));
+      const provided = [...upstream].some((up) => byId.get(up)!.provides.some((p) => pathWithin(c, p)));
       if (!provided) {
         throw fail("consumes_unprovided", `${n.taskId}의 consumes를 만들어 주는 이행적 의존이 없다: ${c}`);
       }

@@ -240,6 +240,17 @@ test("[M9] T2: 경로는 정확한 바이트여야 한다(미정규화·traversa
   assert.equal(codeOf(() => validateTaskDag(doc([node({ provides: ["src/a/x", "src/a/x"] })]))), "invalid_dag_document");
 });
 
+test("[M9] T2: resourceClasses는 kernel과 같은 계약이다(중복은 문서 단계에서 죽고 정렬돼 돌아온다)", () => {
+  // T2 적대적 리뷰 C-1(fail-late): 이전 판은 자체 목록 검증이라 중복이 문서를 통과하고 물질화에서
+  // 늦게 터졌다. "통과하면 정규화된 문서"라는 주장과 어긋난다.
+  assert.equal(
+    codeOf(() => validateTaskDag(doc([node({ resourceClasses: ["db", "db"] })]))),
+    "resource_class_duplicate",
+  );
+  const out = validateTaskDag(doc([node({ resourceClasses: ["zeta", "alpha"] })]));
+  assert.deepEqual(out.tasks[0].resourceClasses, ["alpha", "zeta"], "사전순으로 굳지 않았다");
+});
+
 test("[M9] T2: 오류 코드는 닫힌 목록이다", () => {
   const seen = new Set<string>();
   const cases: Record<string, unknown>[][] = [
