@@ -173,6 +173,8 @@ const OPERATION_AUTHORITY = {
     { authorityId: "w-small", kind: "write_file", path: "docs/small.md", maxBytes: 8 },
     { authorityId: "w-nested", kind: "write_file", path: "docs/nested/a.md", maxBytes: 1024 },
     { authorityId: "w-linked", kind: "write_file", path: "src/linked/a.md", maxBytes: 1024 },
+    // V3 M9 T3(`B-29`) — sibling이 소유하지 **않는** 경로. 겹치지 않는 병렬이 열려 있음을 보이는 대조군.
+    { authorityId: "w-src", kind: "write_file", path: "src/only.md", maxBytes: 1024 },
     { authorityId: "p-node", kind: "run_process", action: "validate-plan", data: { planPath: "docs/plan.json" }, timeoutMs: 5_000 },
   ],
   sibling: [{ authorityId: "w-sib", kind: "write_file", path: "docs/sib.md", maxBytes: 1024 }],
@@ -911,9 +913,17 @@ test("[M5c] permit·grant에 묶이지 않은 operation은 집행되지 않는�
   // 계획에 없는 operationId로는 grant 자체가 나오지 않는다.
   assert.equal(codeOf(() => f.kernel.beginOperation({ permit: permitA, operationId: "op-ghost", actionId: nextId("act") })), "dispatch_operation_unbound");
   assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
-  // 위 거부는 grant를 소진하지 않는다 — 진짜 짝은 그대로 집행 게이트를 지나 **발행까지 간다**
-  // (M9 선결 2에서 `B-16`이 열렸다 — 이 대조군이 공허하지 않다는 증거가 더 강해졌다).
-  assert.equal(applyWriteFile(opA, grantA).marker, "applied");
+  // 위 거부는 grant를 소진하지 않는다 — 진짜 짝은 **binding 게이트를 전부 지난다**. 이 fixture는
+  // root(`docs`,`src`)와 sibling(`docs`)이 **동시에 running이고 소유권이 겹치므로**, 지나간 자리는
+  // binding 다음의 `B-29` 게이트다(V3 M9 T3). 즉 위 `dispatch_operation_unbound`들이 진짜 짝을
+  // 가리고 있던 것이 아니라는 증거는 그대로다 — 코드가 **다른** 게이트의 것이라는 사실이 그것이다.
+  assert.equal(codeOf(() => applyWriteFile(opA, grantA)), "operation_ownership_contended");
+  // 그리고 경합이 없으면 같은 짝이 **발행까지 간다**(위 게이트가 binding 실패를 숨긴 것이 아니다).
+  {
+    const g = fixture();
+    const [op, grant] = writePermit(g);
+    assert.equal(applyWriteFile(op, grant).marker, "applied");
+  }
 });
 
 test("[M5c] permit 발급은 durable 신원·lifecycle을 요구한다(계획이 자칭하는 신원은 무의미하다)", () => {
@@ -1743,6 +1753,54 @@ test("[M5c] 소유와 writableRoots는 dispatch 시점 durable 상태로 본다"
 });
 
 // ── 6. write_file 집행 ──────────────────────────────────────────────────────
+
+test("[M9] T3(B-29): 동시에 running인 두 task는 같은 경로에 쓸 수 없다(조용한 덮어쓰기 예방)", () => {
+  // **이전 판의 결함**: `resolveWriteAuthority`는 **자기 ownership만** 봤다. fixture의 root는
+  // `["docs","src"]`, sibling은 `["docs"]`를 소유하므로 둘 다 running이면 **양쪽 쓰기가 다 통과**했고
+  // 나중 쓴 쪽이 앞선 산출물을 조용히 덮었다(로드맵 M9 위험 1). `taskDag.ts`의 `ownership_conflict`는
+  // Tech Lead 문서를 막지만 `requestSpawn`으로 만든 child는 그 문서를 지나지 않는다.
+  const f = fixture();
+  startNow(f.kernel, "sibling");
+  const target = join(f.ws, "docs/out.md");
+
+  // ⓐ **양쪽 다 막힌다** — 먼저 쓴 쪽이 이기는 것이 아니라 경합 자체가 fail-closed다.
+  const [opRoot, grantRoot] = writePermit(f, { content: "root 내용" });
+  assert.equal(codeOf(() => applyWriteFile(opRoot, grantRoot)), "operation_ownership_contended");
+  const permitSib = permitFor(f.kernel, "sibling", [writeOp({ operationId: "op-s", authorityId: "w-sib", path: "docs/sib.md", content: "sib 내용" })], "turn-s");
+  const opSib = permitSib.plan.operations[0] as TypedWriteFileOperation;
+  const grantSib = grantFor(f.kernel, permitSib, opSib.operationId);
+  assert.equal(
+    codeOf(() => applyWriteFile(opSib, grantSib)),
+    "operation_ownership_contended",
+    "겹치는 소유권 아래에서 sibling 쓰기가 통과했다",
+  );
+  // **바이트 0**: 거부는 사후 탐지가 아니라 예방이다.
+  assert.deepEqual(readdirSync(join(f.ws, "docs")), []);
+  assert.equal(lstatSync(target, { throwIfNoEntry: false }), undefined);
+
+  // ⓑ **경합이 사라지면 열린다**(게이트가 공허하지 않다는 대조군). sibling을 정리해 자원을 놓게 한다.
+  // 두 거부는 **집행 경계에 들어간 뒤** 났다 — 기존 `operation_not_owned`와 **같은 자리**의 게이트라
+  // 같은 성질을 갖는다(바이트는 0이지만 pending은 보수적으로 attempted로 남아 정합화로만 닫힌다).
+  // 그 계약을 여기서 다시 검증하지 않는다(전용 테스트가 이미 있다).
+
+  // ⓑ **경합이 없으면 같은 쓰기가 열린다**(게이트가 공허하지 않다는 대조군 — sibling을 시작하지 않는다).
+  {
+    const g = fixture();
+    const [op, grant] = writePermit(g, { content: "root 내용" });
+    assert.equal(applyWriteFile(op, grant).marker, "applied");
+    assert.equal(readFileSync(join(g.ws, "docs/out.md"), "utf8"), "root 내용");
+  }
+});
+
+test("[M9] T3(B-29): 소유권이 겹치지 않으면 두 task가 동시에 쓴다(병렬을 막지 않는다)", () => {
+  // 게이트가 병렬 자체를 막으면 M9의 "격리 worktree 병렬 worker"가 성립하지 않는다. root는 `src`도
+  // 소유하고 sibling은 소유하지 않으므로, 그 경로는 sibling이 running이어도 열려 있어야 한다.
+  const f = fixture();
+  startNow(f.kernel, "sibling");
+  const [op, grant] = writePermit(f, { authorityId: "w-src", path: "src/only.md", content: "겹치지 않는다" });
+  assert.equal(applyWriteFile(op, grant).marker, "applied");
+  assert.equal(readFileSync(join(f.ws, "src/only.md"), "utf8"), "겹치지 않는다");
+});
 
 test("[M9] 선결 2: 신규 발행은 열렸지만 A4가 막던 유출은 그대로 막힌다", () => {
   // **A4가 이 분기를 닫은 이유**(3A 3차): `link(2)`/`rename(2)` 발행은 최종 부모 확인과 syscall 사이에

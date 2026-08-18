@@ -1950,9 +1950,43 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-70` | C (P3) | **design 산출물 계약이 v1 `runWorkflow` 경로에 배선되지 않았다.** `designContract.ts`의 fail-closed 검증은 M8 handoff 경로(`designHandoff.buildDesignHandoff`)에서만 호출되고, v1 문서 워크플로의 design 단계는 여전히 `validate.ts`의 **경고 수준** 헤더 검사만 지난다 → 계약 위반 산출물이 `docs/DESIGN.md`로 저장될 수 있다(단 handoff는 거부한다) | 중 — v1 경로로 design을 돌릴 때마다 | 저장된 문서 품질(handoff·구현으로는 새지 않는다) | 낮음(handoff가 fail-closed 이므로 하류 차단은 유지) | 소(runWorkflow design 분기에서 `validateDesignArtifacts` 호출 + 재생성 루프 연결) | **v1 design 산출물을 구현 파이프라인 입력으로 직접 쓰는 첫 마일스톤 전(M9 예상)** | M9 착수 세션 | `src/core/runWorkflow.ts` design 분기(경고만) vs `src/exec/designHandoff.ts`(fail-closed) · Test 20은 계약·handoff 층만 검사 | open |
 | `C-71` | C (P3) | **`B-16` 완전 개방의 대가 — 실패한 신규 발행이 빈 파일 잔재를 남긴다.** 신규 발행은 `O_CREAT|O_EXCL`로 빈 파일을 먼저 만들므로, 그 뒤 검증·write·fsync 어디서 실패하든 그 이름이 0바이트(또는 torn) 파일로 남는다. unlink는 **의도적으로 하지 않는다**(pathname 연산이라 교체된 부모에서 남의 파일을 지운다 — 하지 않는 쪽이 fail closed다). 그래서 M5c/M5d가 갖고 있던 "만료·크래시가 파일 시스템 잔재를 0으로 남긴다"는 운영 성질이 사라졌다. 재시도는 preimage 불일치(`write_conflict`)로 막히므로 **조용한 손상은 없고 사람이 본다** | 확실 — 신규 발행이 실패하는 모든 경우 | workspace 위생(잔재 파일). 승인·내용·영수증 무결성에는 영향 없음 | 낮음 — fail closed 방향이고 재시도가 덮지 않는다 | 중(디스크립터 상대 unlink(`unlinkat`)가 있으면 안전하게 지울 수 있다 — Node 내장에 없다. 또는 잔재를 durable에 기록해 사람에게 보고) | 없음(bounded backlog) — 잔재가 실제로 운영을 방해할 때 | 미정 | M9 선결 2 적대적 리뷰 C-1 · `judgeWriteTransaction` 신규 발행 블록 · `typedExecution.test.ts` "만료·deadline을 넘긴 running pending" 단정 변경 | open |
 | `C-72` | C (P3) | **신규 발행의 하드링크+부모복원 노출이 테스트로 덮이지 않는다.** 같은 uid 공격자가 ① 빈 파일 생성 창에서 부모를 교체하고 ② 검증 **전에** 그 inode를 자기 경로로 하드링크한 뒤 ③ 원래 부모를 **복원**하면 부모 신원 재확인과 inode 도달성 검사를 **모두 지난다** → 승인된 내용이 공격자가 확보한 alias 이름으로도 도달한다. 실질 추가 권한은 "이미 그 workspace를 읽을 수 있는 자의 alias 확보"이고 **교체 분기도 기존 대상 하드링크에 같은 노출**을 가지므로 신규 발행이 만든 구멍이 아니라 선언된 threat model(같은 uid 경쟁자는 막지 않는다)의 결과다. 코드는 고치지 않고 **주석에 명시**했다(과대주장 제거). 잔여는 **이 시퀀스를 집행하는 테스트가 없다는 것** | 낮음 — 같은 uid 공격자를 요구하고 threat model 밖이다 | 감사·회귀 검출(내용 무결성 아님) | 중 — 나중에 threat model이 좁아지면 조용히 깨질 수 있다 | 중(3단 rename+link 시퀀스를 seam으로 조립하는 테스트, 또는 `openat`/`linkat` 계열이 생기면 구조적 종결) | 같은 uid 경쟁자를 threat model 안으로 들이는 마일스톤 전 | 미정 | M9 선결 2 적대적 리뷰 B-2(read-only · 시퀀스는 코드 추론이며 미실행) · `orchestrationKernel.ts` 신규 발행 블록 주석 | open |
-| `B-29` | **B (P1)** | **kernel 자체에는 소유권 겹침 검사가 없다 — 문서 검증(`validateTaskDag`)을 spawn 경로로 우회할 수 있다.** `addTask`는 ownership **형식**만 보고 기존 task와의 겹침을 보지 않으며 `write_file` 권위는 자기 ownership만 본다(`orchestrationKernel.ts:1733`). 시나리오: 문서 검증을 통과해 물질화된 r1(ownership `src/x`)이 running인 동안 무관한 r2의 worker가 `spawn_request`로 child c(ownership `src/x` · dependsOn 없음 · resource class 없음)를 만들면 c는 즉시 `ready` → 동시 스케줄 → 둘 다 자기 ownership 안이라 통과 → **조용한 덮어쓰기**(로드맵 M9 위험 1) | 중 — 병렬 worker와 spawn을 함께 쓰는 순간 | 같은 경로를 쓰는 두 task의 산출물(데이터 손실) | 중 — 나중에 닫으면 이미 나온 산출물의 신뢰도를 소급 판정해야 한다 | 중(`addTask`/`requestSpawn`에 겹침 게이트, 또는 scheduler에서 ownership을 암묵 배타 자원으로 취급) | **M9 완료 선언 전 필수** — 완료 조건이 "kernel이 소유권 충돌을 fail-closed 검증"이라고 적고 있다 | M9 T3 이후 세션 | M9 T2 적대적 리뷰 B-1(read-only · `addTask`~4917 · `requestSpawn`~2627 · dispatch 게이트 1733 확인) · `validateTaskDag` 호출자 0건(grep 실측) | open |
+| `B-29` | **B (P1) — CLOSED(V3 M9 T3)** | **kernel 자체에는 소유권 겹침 검사가 없다 — 문서 검증(`validateTaskDag`)을 spawn 경로로 우회할 수 있다.** `addTask`는 ownership **형식**만 보고 기존 task와의 겹침을 보지 않으며 `write_file` 권위는 자기 ownership만 본다(`orchestrationKernel.ts:1733`). 시나리오: 문서 검증을 통과해 물질화된 r1(ownership `src/x`)이 running인 동안 무관한 r2의 worker가 `spawn_request`로 child c(ownership `src/x` · dependsOn 없음 · resource class 없음)를 만들면 c는 즉시 `ready` → 동시 스케줄 → 둘 다 자기 ownership 안이라 통과 → **조용한 덮어쓰기**(로드맵 M9 위험 1) | 중 — 병렬 worker와 spawn을 함께 쓰는 순간 | 같은 경로를 쓰는 두 task의 산출물(데이터 손실) | 중 — 나중에 닫으면 이미 나온 산출물의 신뢰도를 소급 판정해야 한다 | 중(`addTask`/`requestSpawn`에 겹침 게이트, 또는 scheduler에서 ownership을 암묵 배타 자원으로 취급) | **M9 완료 선언 전 필수** — 완료 조건이 "kernel이 소유권 충돌을 fail-closed 검증"이라고 적고 있다 | M9 T3 이후 세션 | M9 T2 적대적 리뷰 B-1(read-only · `addTask`~4917 · `requestSpawn`~2627 · dispatch 게이트 1733 확인) · `validateTaskDag` 호출자 0건(grep 실측) | **closed — M9 T3** |
+
+> **`B-29` 종결 방식(2026-08-18)**: **거부(fail-closed)로 닫았다 — 직렬화가 아니다.** `DispatchAuthority`에
+> `concurrentOwnership`(지금 자원을 점유 중인 **다른** task들의 ownership 합집합, dispatch 시점 durable
+> state에서 새로 읽는다)을 실었고, `resolveWriteAuthority`가 `operation_not_owned` **바로 다음 자리**에서
+> `operation_ownership_contended`로 거부한다. 그래서 taxonomy·위치·정합화 성질이 기존 소유권 거부와 같다
+> (경계 표시 이후이므로 바이트는 0이지만 pending은 보수적으로 attempted로 남아 정합화로만 닫힌다).
+>
+> **scheduler 직렬화를 먼저 시도했고 기각했다**: `selectSchedulable`에서 ownership을 암묵 배타 자원으로
+> 취급하는 판을 만들어 돌려 보니 `test:exec`에서 **20건 이상**이 깨졌다 — 기존 fixture 다수가 형제 task에
+> 같은 경로(`docs`)를 편의상 선언하고 있어서, 그 판은 정상 병렬까지 막았다. 두 접근의 차이를 정직하게
+> 적는다: 거부는 **동시 쓰기 순간**을 막고, 직렬화는 **동시 실행 자체**를 막는다. 후자가 구조적으로 더
+> 강하지만 fixture 전수 정정(= 형제 task 소유권을 실제로 분리)이 선행돼야 하며 그 sweep은 하지 않았다 →
+> 아래 `C-74`로 등록.
+>
+> **`waiting_children`은 점유하지 않는다**: `requestSpawn`이 parent를 그 자리에서 `waiting_children`으로
+> 내리므로(`orchestrationKernel.ts:2671`) parent와 child가 동시에 점유하는 일이 없고, 그래서 부모-자식이
+> 같은 경로를 소유해도 서로를 막지 않는다.
+>
+> 증거: mutation 3종 red(게이트 제거 / 자기 자신 미제외 / `holdsResources` 무시) · 전용 테스트 2건
+> (경합 거부 + 바이트 0 · 겹치지 않는 병렬은 열려 있다).
+>
+> **적대적 read-only 리뷰(T3① · fresh 세션): APPROVE — A=0, B=0, C=1.** 리뷰어가 독립 검증한 것:
+> ⓐ **TOCTOU 없음** — `executeWriteFileOperation`은 `markAttempted` 커밋 **이후** `authorityFromPermit`
+> 로 durable state를 다시 읽고 거기서 `concurrentOwnershipOf`가 **재계산**된다(run_process의 A4 재독과
+> 같은 패턴). 판정과 fd 쓰기 사이는 동기 JS라 다른 task의 전이가 끼어들 수 없다. ⓑ **`waiting_children`
+> 우회 없음** — 그 상태의 parent가 grant를 쥐고 있어도 `requireDispatchableTask`가 `running`이 아니면
+> 거부하며 이 검사도 A4 재독에서 다시 돈다. ⓒ **거짓 영수증 없음** — contended는 표시 커밋 이후 throw라
+> `failOperation`의 `assertNotAttempted`가 평범한 실패 종결을 막고 `outcome_unknown`으로만 닫힌다.
+> ⓓ 테스트 이관은 **완화가 아니다**(구 단정의 "grant 미소진 + binding 통과"는 다음 게이트의 코드가
+> 나온다는 사실로 동일하게 증명되고, fresh fixture 대조군이 발행 경로 자체의 생존을 덮는다).
+>
+> **`B-29`가 덮는 범위는 typed `write_file` 채널이다** — 이 경계를 정직하게 좁혀 적는다(`C-75`).
 | `B-30` | **B (P1)** | **DAG 문서의 `resourceClasses`·`dependsOn`이 kernel task로 1:1 보존된다는 보장이 없다.** `validateTaskDag`의 소유권 충돌 면제 근거 하나가 "배타 class를 공유하면 kernel scheduler가 동시 실행을 막는다"인데 이는 물질화가 문서의 두 필드를 **그대로** 옮길 때만 참이다. 물질화 코드는 아직 없다. 누락·축약하면 문서 검증을 통과한 `{a: src/x, db}`·`{b: src/x, db}`가 kernel에서 동시 스케줄돼 같은 경로를 쓴다 | 중 — 물질화 구현에 달렸다 | 소유권 충돌 면제가 근거를 잃는다(데이터 손실) | 낮음(물질화와 동시에 닫으면 된다) | 소(물질화 acceptance에 "문서 필드 1:1 보존" 검증 추가) | **DAG 물질화 구현과 같은 slice** | M9 T3 세션 | M9 T2 적대적 리뷰 B-2 · `taskDag.ts` ownership_conflict 면제 분기 | open |
 | `C-73` | C (P3) | **디렉터리 단위 `provides`는 만들지 않을 파일까지 약속할 수 있다.** 의존이 `provides: ["src/m"]`(디렉터리)면 하류가 `src/m/never-written.ts`를 `consumes`해도 통과한다 → "영원히 오지 않을 입력이 계약에 남지 않는다"는 보장이 디렉터리 granularity에서는 **명목상**이다. 경로 계약의 본질적 한계이고, 파일 단위 선언을 강제하면 산출물 수가 `maxArtifactRefs`를 넘는 task를 표현할 수 없다 | 중 — 디렉터리 provides를 쓰는 만큼 | contract 검증의 정밀도(실행 안전성 무관 — 없는 입력은 실행 시점에 실패한다) | 낮음 | 중(산출물 실측과 대조하는 사후 검증, 또는 glob 계약) | 없음(bounded backlog) | 미정 | M9 T2 적대적 리뷰 C-3 · `taskDag.ts` consumes 검사의 `pathWithin(c, p)` | open |
+| `C-74` | C (P3) | **소유권 경합을 scheduler에서 직렬화하지 않는다(거부로만 닫혀 있다).** `B-29`는 동시 **쓰기**를 막지만 동시 **실행**은 허용한다 → 겹치는 소유권을 가진 두 task가 함께 running이 되어 한쪽이 `operation_ownership_contended`로 pause되고 그 attempt를 태운다(자원 낭비 + 사람이 볼 pause). 구조적 종결은 `selectSchedulable`에서 ownership을 암묵 배타 자원으로 취급하는 것인데, 그러려면 **기존 fixture 다수가 형제 task에 같은 경로를 편의상 선언하는 것을 전수 정정**해야 한다(실측: 그 판으로 `test:exec` 20건 이상 red) | 확실 — 겹치는 소유권 DAG를 실제로 돌릴 때마다 | 낭비된 attempt·pause 소음(**`write_file` 채널의** 데이터 무결성은 `B-29`가 지킨다 — `run_process` 부수 효과는 `C-75` 참조) | 낮음 — 거부가 이미 손실을 막고 있어 나중에 얹으면 된다 | 중(scheduler 5줄 + fixture 소유권 분리 sweep) | 없음(bounded) — 병렬 worker의 attempt 낭비가 실측으로 문제될 때(`C-10` starvation과 함께 본다) | 미정 | M9 T3 구현 시 실측(scheduler 판 시도 후 기각) · `selectSchedulable` · `heldResourceClasses` | open |
+| `C-75` | C (P3) | **`run_process`의 부수 효과 쓰기는 소유권 게이트 밖이다.** `B-29`가 덮는 것은 typed `write_file` 채널뿐이다. `run-tests` action은 승인된 `projectPath`에서 고정 controller entrypoint를 spawn하는데, **테스트 러너가 만드는 캐시·스냅샷·빌드 산출물 쓰기는 어떤 소유권 판정도 지나지 않는다**(`executeRunProcessOperation`에 `resolveWriteAuthority` 호출이 없다 — 설계상 그렇다). 시나리오: 겹치는 소유권 없이도 두 running task가 같은 `projectPath`로 `run-tests`를 동시에 승인받아 실행하면 러너가 같은 캐시/스냅샷을 동시에 갱신해 한쪽 산출이 조용히 덮인다 | 낮음~중 — 같은 `projectPath`를 두 task에 승인해야 하고, 그것은 사람의 승인 문서 판단이다 | 러너 캐시·스냅샷(하네스 산출물은 `write_file` 채널을 지나므로 무관) | 낮음 | 중(러너 산출 경로를 승인 축으로 올리거나, `projectPath`를 배타 자원으로 취급) | 없음(bounded backlog) — 같은 `projectPath`를 병렬로 승인하는 첫 DAG 전 | 미정 | M9 T3① 적대적 리뷰 C-1(read-only · `controllerActionArgs` · `superviseProcess` 호출부 · `executeRunProcessOperation`에 소유권 판정 부재 확인) | open |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
