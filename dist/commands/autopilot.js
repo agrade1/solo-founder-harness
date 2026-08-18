@@ -47,6 +47,8 @@ import { isAbsolute, join, resolve } from "node:path";
 import { LIMITS, ORCHESTRATOR_ID, OrchestrationError, REQUIRED_BODY_HEADINGS, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, assertSlug, formatTimestamp, } from "../exec/orchestrationTypes.js";
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
+import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
+import { createProgressReporter } from "./progress.js";
 import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
 import { applyAgentRequests, requestsOfKind } from "../exec/spawnRouting.js";
 import { openOrchestrationRun } from "../exec/orchestrationKernel.js";
@@ -731,11 +733,13 @@ export async function runAutopilotCommand(opts) {
             planDir,
             maxIterations: opts.maxIterations === undefined ? undefined : Number(opts.maxIterations),
             signal: ac.signal,
-            onEvent: (e) => {
-                process.stdout.write(opts.json
-                    ? `${JSON.stringify(e)}\n`
-                    : `[autopilot] ${e.kind}${e.taskId ? ` ${e.taskId}` : ""}${e.marker ? ` ${e.marker}` : ""}${e.detail ? ` (${e.detail})` : ""}\n`);
-            },
+            // **V3 M9 선결 4(F2)**: 사람이 보는 경로는 v1 F2 렌더러를 재사용한다(스피너·경과시간·비-TTY
+            // 자동 강등 — 새 렌더러·새 의존성 0). `--json`은 **기계 계약**이므로 원본 event를 그대로 흘린다.
+            onEvent: opts.json
+                ? (e) => {
+                    process.stdout.write(`${JSON.stringify(e)}\n`);
+                }
+                : autopilotProgressBridge(createProgressReporter()),
         });
         process.stdout.write(opts.json
             ? `${JSON.stringify(report)}\n`

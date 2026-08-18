@@ -312,6 +312,26 @@ export function executeWriteFileOperation(grant, op) {
 }
 const GENUINE_LAUNCH_CAPABILITIES = new WeakMap();
 /**
+ * 승인된 `run_process` 레코드 → **controller entrypoint에 넘길 인자**(V3 M9 선결 1).
+ *
+ * 이 함수가 argv의 **유일한 조립 지점**이고 그 형태는 언제나 `[action, 승인된 경로 하나]`다.
+ * action마다 data key가 다르므로(`CONTROLLER_ACTION_DATA_KEYS`) 여기서 판별 union을 소진하며,
+ * 새 action이 추가되면 이 switch가 **컴파일 오류로** 그것을 요구한다(조용한 기본값이 없다).
+ * flag·shell·env·cwd·실행 파일은 어느 갈래에서도 만들어지지 않는다.
+ */
+function controllerActionArgs(approved) {
+    switch (approved.action) {
+        case "validate-plan":
+            return Object.freeze([approved.action, approved.data.planPath]);
+        case "run-tests":
+            return Object.freeze([approved.action, approved.data.projectPath]);
+        default: {
+            const never = approved;
+            throw operationDenied(`승인 레코드의 action을 해석할 수 없다: ${JSON.stringify(never)}`);
+        }
+    }
+}
+/**
  * `run_process` 권위 해석. **spawn하지 않고 grant도 소비하지 않는다**(3A 3차 리비전 A2) — 순수 minting이며
  * 몇 번을 불러도 상태를 만들지 않는다. 실제 실행은 `executeRunProcessOperation()` 하나뿐이고, 그것이
  * 여기서 발급한 권능을 **정확히 한 번** 소비한다(`B-F1` ①).
@@ -338,7 +358,6 @@ export function resolveProcessLaunchCapability(op, handle) {
         entrypoint: entry.path,
         entrypointSha256: entry.sha256,
         action: approved.action,
-        planPath: approved.data.planPath,
         timeoutMs: approved.timeoutMs,
         spent: false,
     });
@@ -494,10 +513,12 @@ export async function executeRunProcessOperation(grant, op, capability, options 
         throw operationDenied("승인 레코드의 kind와 다르다");
     // spawn **직전** digest 재검증.
     const target = verifyLaunchTargets(authority, launch);
+    // 인자는 표시 커밋 **이후에 다시 읽은** 승인 레코드에서만 파생한다(A4 — in-memory 스냅샷이 아니다).
+    const currentArgs = controllerActionArgs(approved);
     const policy = authority.manifest.autopilotPolicy;
     const supervised = await superviseProcess({
         executable: target.node,
-        args: [target.entrypoint, approved.action, approved.data.planPath],
+        args: [target.entrypoint, ...currentArgs],
         cwd: authority.workspaceRoot,
         timeoutMs: approved.timeoutMs,
         termGraceMs: policy.cleanupTermGraceMs,
@@ -1324,11 +1345,11 @@ function writeOutcome(marker, path, resultSha256) {
  *    것이었다. 그 이유는 지금 형태에 **성립하지 않는다**: rename하지 않고 4에서 신원까지 확정한 **바로
  *    그 fd**에 쓴다 → 발행 syscall(`write`/`ftruncate`/`fsync`)에 pathname이 **하나도 없다**.
  *    잃은 것은 **원자성**이다(`applyToFixedTarget` 주석에 무엇이 남는지 적어 두었다).
- * 8. **대상이 없으면 `write_publish_unsupported`**(3A 3차 A4 · 대장 `B-16` **잔여**) — 부재 대상에는
- *    고정할 fd가 없으므로 최종 `link(2)`가 pathname을 지나야 하고, 그 창은 여전히 예방할 수 없다.
- *    Node 18/macOS 내장에 디스크립터 상대 no-replace 발행(`linkat`)이 없다. `process.chdir(parent)` +
- *    basename `link`는 평가 후 기각했다(프로세스 전역 상태 · worker thread에서 throw · managed launcher가
- *    자식 cwd까지 오염). temp를 만들지 않으므로 이 거부의 파일 시스템 부작용은 **0**이다.
+ * 8. **대상이 없으면 신규 발행한다**(V3 M9 선결 2 — 대장 `B-16` **완전 개방**). M5c/M5d까지 이 자리는
+ *    `write_publish_unsupported`였고, 그 이유("최종 `link(2)`가 pathname을 지나므로 부모 교체 창을
+ *    예방할 수 없다")는 **temp+link/rename 형태에 대해서는 지금도 옳다**. M9는 그 형태를 되살리지 않고
+ *    `O_CREAT|O_EXCL` 빈 파일 → 부모 신원 재확인 → 고정한 fd에만 쓰기로 연다(아래 발행 블록 주석 참조).
+ *    `write_publish_unsupported`는 이제 **던지는 자리가 없는** 잔존 코드다.
  *
  * **관측 가능한 회귀 하나(정직)**: 4의 대상 open이 `O_RDWR`이므로 **쓰기 권한이 없는 대상**(예: 0444)은
  * 교체는 물론 `already_applied`·`write_conflict` 판정조차 `write_failed`가 된다. fail closed 방향이지만
@@ -1459,10 +1480,69 @@ function judgeWriteTransaction(auth, op, bytes, intended, status) {
         if (targetExists && targetFdRef !== null) {
             return applyToFixedTarget(targetFdRef, dirFd, bytes, intended, op.path);
         }
-        // **신규 발행도 여기서 끝난다**(3A 3차 리비전 A4): 최종 `link(2)`도 pathname이므로 부모 교체 경쟁을
-        // 예방할 수 없고, 사후 inode 검증은 그 창을 닫지 못한다(발행된 inode는 우리 것이 맞기 때문이다).
-        // temp를 만들기 **전에** 끝나므로 파일 시스템 부작용이 **0**이다 — 테스트가 그것을 단정한다.
-        throw new OrchestrationError("write_publish_unsupported", "부재 대상 발행은 디스크립터 상대 no-replace primitive 없이 예방 안전하게 만들 수 없어 거부한다");
+        // ── **신규 발행**(V3 M9 선결 2 — 대장 `B-16` 완전 개방).
+        //
+        // 3A 3차 A4가 이 분기를 닫은 이유는 "temp → 최종 pathname 발행(`link(2)`/`rename(2)`)에서 부모
+        // 이름 교체 경쟁을 예방할 수 없다"였고, **그 판단은 temp 형태에 대해서는 지금도 옳다**. 여기서
+        // 여는 것은 temp가 아니라 **다른 형태**다:
+        //
+        //   ① `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW`로 **빈 파일**을 만든다. **이 시점까지 승인된 바이트는
+        //      단 하나도 커널에 들어가지 않았다.** symlink를 닫는 것은 실제로 `O_EXCL`이다 — POSIX에서
+        //      `O_CREAT|O_EXCL`은 대상 이름이 symlink면 매달린 것이든 아니든 `EEXIST`다(mutation으로
+        //      확인: `O_NOFOLLOW`만 제거해도 red가 나오지 않는다). `O_NOFOLLOW`는 의도를 남기는
+        //      중복 방어이고 **그것이 이 창을 닫는다고 주장하지 않는다**.
+        //   ② 그 다음 부모 신원을 **다시 확인한다** — 교체된 디렉터리였다면 여기서 잡힌다.
+        //   ③ 확인을 지난 뒤에야 `applyToFixedTarget`으로 **fd에만** 쓴다. 교체 경로와 **같은 함수**이므로
+        //      발행 syscall에 pathname이 하나도 없다는 성질이 그대로 유지된다.
+        //
+        // **부모가 교체된 채로 남아 있으면 공격자가 얻는 것은 0바이트 파일이다** — A4가 막으려던 유출이
+        // 정확히 그것이고, 그 시퀀스는 위 ②③이 잡는다.
+        //
+        // **무조건 "0바이트"라고 주장하지는 않는다**(적대적 리뷰 B-2): 같은 uid 공격자가 ①창에서 부모를
+        // 교체해 빈 파일을 자기 디렉터리에 만들게 하고, ②③ 검증 **전에** 그 inode를 자기 경로로
+        // 하드링크한 뒤 원래 부모를 **복원**하면 ②③을 모두 지난다 → 승인된 내용이 그 inode로 가므로
+        // 공격자가 확보한 alias 이름으로도 도달한다. 실질 추가 권한은 "이미 그 workspace를 읽을 수 있는
+        // 자가 alias를 확보하는 것"이고(내용은 승인된 이름에도 정상 착지한다), **교체 분기도 기존 대상의
+        // 하드링크에 대해 같은 노출을 갖는다** — 즉 이것은 신규 발행이 새로 만든 구멍이 아니라 선언된
+        // threat model(같은 uid 경쟁자는 막지 않는다)의 결과다. 없앴다고 주장하지 않고 여기 적어 둔다.
+        //
+        // **정직하게 남는 것**: ⓐ 실패 시 그 빈 파일을 **지우지 않는다**. unlink는 pathname 연산이라
+        // 교체된 부모에서 남의 파일을 지울 수 있다 — 지우지 않는 쪽이 fail closed다. 그 결과 재시도는
+        // 대상이 빈 파일로 존재하므로 `write_conflict`가 되고(`expectedBeforeSha256: null`과 불일치)
+        // **사람이 본다**. ⓑ 같은 uid 경쟁자는 여전히 threat model 밖이다(`applyToFixedTarget` 주석 2).
+        // ⓒ 원자성은 교체 분기와 같은 수준이다(부분 write는 다음 시도에서 `write_conflict`로 fail closed).
+        let createdFd;
+        try {
+            createdFd = openSync(walk.target, fsConstants.O_CREAT | fsConstants.O_EXCL | fsConstants.O_WRONLY | O_NOFOLLOW, 0o644);
+        }
+        catch (e) {
+            const code = e.code;
+            // `EEXIST`는 판정 이후에 누군가 그 이름을 차지했다는 뜻이다 — 덮지 않는다.
+            if (code === "EEXIST")
+                return writeOutcome("write_conflict", op.path, null);
+            if (code === "ELOOP")
+                throw symlinkRefused("대상 이름이 symlink다(따라가지 않는다)");
+            throw writeFailed("대상을 새로 만들 수 없다");
+        }
+        fds.push(createdFd);
+        // 빈 파일이 만들어졌고 승인 바이트는 아직 0인 **정확히 그 지점**(테스트가 여기서 부모를 교체해
+        // "내용이 새지 않는다"를 실제로 확인한다).
+        seam("publishCreate");
+        // **바이트를 쓰기 전에** 부모가 그 사이에 교체되지 않았는지 본다. 여기서 거부되면 유출된 승인
+        // 내용은 0이다(빈 파일만 남는다).
+        const afterCreate = walkParents(auth.workspaceRoot, op.path);
+        if (afterCreate.parent !== walk.parent || !sameIdent(afterCreate.parentIdent, walk.parentIdent)) {
+            throw writeFailed("부모 디렉터리가 발행 중에 교체됐다(승인된 내용은 쓰지 않았다)");
+        }
+        // (`fstatSync(dirFd)`를 다시 보는 검사는 넣지 않았다 — fd가 inode를 고정하므로 그 비교는 항상
+        //  참이고 아무것도 잡지 못한다. 부모 교체를 실제로 잡는 것은 위의 경로 재해석이다.)
+        // 우리가 만든 그 inode가 이름으로도 여전히 도달 가능한지 — 아니면 **성공 영수증을 내지 않는다**
+        // (바이트는 우리 fd의 inode로만 가므로 유출은 없지만, 도달 불가한 발행을 성공이라 적으면 거짓이다).
+        const namedNow = lstatOrNull(walk.target);
+        if (namedNow === null || !sameIdent(identOf(namedNow), identOf(fstatSync(createdFd)))) {
+            throw writeFailed("만든 대상이 발행 중에 다른 파일로 바뀌었다(승인된 내용은 쓰지 않았다)");
+        }
+        return applyToFixedTarget(createdFd, dirFd, bytes, intended, op.path);
     }
     catch (e) {
         // OS·seam 오류는 **닫힌 안정 코드**로 접는다(경로·내용을 담지 않는다).

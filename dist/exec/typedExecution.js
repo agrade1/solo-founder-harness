@@ -18,8 +18,9 @@ export const TYPED_EXECUTION_CODES = [
      * - `write_bytes_exceeded` — 본문이 `min(승인 maxBytes, LIMITS.maxWriteBytes)`를 넘는다.
      * - `write_path_symlink` / `write_target_not_regular` — symlink는 따라가지 않고 비일반 파일은 쓰지 않는다.
      * - `write_failed` — 그 밖의 집행 실패(부모 부재 · I/O · 신원 불일치). 내용은 담지 않는다.
-     * - `write_publish_unsupported` — **부재 대상 발행**은 여전히 fail closed다(3A 3차 A4 · 대장 `B-16`
-     *   잔여): 고정할 fd가 없어 최종 `link(2)`가 pathname을 지나야 하고 그 창을 예방할 수 없다.
+     * - `write_publish_unsupported` — **더 이상 발생하지 않는다**(V3 M9 선결 2에서 `B-16`이 완전 개방됐다).
+     *   신규 발행은 `O_CREAT|O_EXCL`로 빈 파일을 만들고 부모 신원을 재확인한 뒤 **고정한 fd에만** 쓴다.
+     *   코드는 닫힌 목록에 남지만 던지는 자리는 없다(M5c/M5d 계약의 잔존 코드).
      * - `write_apply_incomplete` — **M5d `B-16` 부분 개방**: 고정한 대상 fd에 쓰는 도중 실패했다.
      *   내용이 torn일 수 있고 재시도는 preimage 불일치로 막힌다(사람이 개입할 때까지 fail closed).
      * - `write_replace_unsupported` — **더 이상 발생하지 않는다**(M5d 이전 계약의 잔존 코드).
