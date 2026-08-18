@@ -523,6 +523,17 @@ export interface DispatchAuthority {
   readonly turnId: string;
   /** **현재** durable task ownership(manifest에 없는 child 위임도 여기서 나온다). */
   readonly ownership: readonly string[];
+  /**
+   * **지금 자원을 점유 중인 다른 task들의 ownership 합집합**(V3 M9 T3 — 대장 `B-29`).
+   *
+   * `ownership`만 보면 같은 경로를 소유한 두 task가 동시에 running일 때 **둘 다 통과해 조용히
+   * 덮어쓴다**(로드맵 M9 위험 1). `taskDag.ts`의 `ownership_conflict`는 Tech Lead 문서를 막지만
+   * `requestSpawn`으로 만든 child는 그 문서를 지나지 않으므로 런타임 게이트가 함께 있어야 한다.
+   *
+   * 자기 자신은 빠져 있고, `waiting_children`·terminal task도 빠져 있다(점유하지 않으므로 동시
+   * 쓰기가 성립하지 않는다). **dispatch 시점의 durable state에서 새로 읽는다** — 스냅샷이 아니다.
+   */
+  readonly concurrentOwnership: readonly string[];
   /** kernel clock이 정한 집행 시각. */
   readonly nowIso: string;
 }
@@ -1548,6 +1559,7 @@ function authorityFromPermit(
       attemptId: bound.attemptId,
       turnId: bound.turnId,
       ownership: Object.freeze([...task.ownership]),
+      concurrentOwnership: Object.freeze(concurrentOwnershipOf(state, task.taskId)),
       nowIso: now,
     }),
     task,
@@ -1667,6 +1679,8 @@ function requireDispatchableTask(
 export const WRITE_EFFECT_CODES = [
   "operation_denied",
   "operation_not_owned",
+  /** V3 M9 T3(`B-29`) — 동시 점유 중인 다른 task가 그 경로를 소유한다(동시 쓰기 거부). */
+  "operation_ownership_contended",
   "operation_outside_writable_root",
   "write_bytes_exceeded",
   "write_path_symlink",
@@ -1720,6 +1734,21 @@ export function resolveApprovedOperation(
 }
 
 /**
+ * 지금 자원을 점유 중인 **다른** task들이 소유한 경로 전부(대장 `B-29`). `prepared`/`running`/`cleaning`
+ * 만 점유한다 — `waiting_children`은 `requestSpawn`이 parent를 그 자리에서 내리므로 부모-자식이 같은
+ * 경로를 소유해도 서로를 막지 않는다.
+ */
+function concurrentOwnershipOf(state: OrchestrationRunState, selfTaskId: string): string[] {
+  const out: string[] = [];
+  for (const t of state.tasks) {
+    if (t.taskId === selfTaskId) continue;
+    if (!holdsResources(t.state)) continue;
+    out.push(...t.ownership);
+  }
+  return [...new Set(out)].sort();
+}
+
+/**
  * `write_file` 권위 해석. 정확히 같은 정규화 경로 · **dispatch 시점** ownership · `writableRoots`를
  * 전부 다시 본다. 파일 시스템은 만지지 않는다(위 함수와 같은 이유로 순수하다).
  */
@@ -1732,6 +1761,15 @@ export function resolveWriteAuthority(
   if (op.path !== approved.path) throw operationDenied("승인된 경로와 정확히 같지 않다");
   if (!auth.ownership.some((own) => pathWithin(op.path, own))) {
     throw new OrchestrationError("operation_not_owned", "경로가 이 task의 durable ownership 밖이다");
+  }
+  // **동시 점유 중인 다른 task가 그 경로를 소유하면 쓰지 않는다**(대장 `B-29`). 자기 ownership만 보던
+  // 이전 판은 같은 경로를 소유한 두 running task의 쓰기를 **둘 다 통과시켰다**. 직렬화가 아니라
+  // fail-closed다: 지금 쓰면 남의 산출물을 조용히 덮으므로 이 turn은 성공하지 않는다.
+  if (auth.concurrentOwnership.some((own) => pathWithin(op.path, own))) {
+    throw new OrchestrationError(
+      "operation_ownership_contended",
+      "지금 자원을 점유 중인 다른 task가 이 경로를 소유한다(동시 쓰기를 허용하지 않는다)",
+    );
   }
   if (!auth.manifest.writableRoots.some((root) => pathWithin(op.path, root))) {
     throw new OrchestrationError("operation_outside_writable_root", "경로가 승인된 writableRoots 밖이다");
