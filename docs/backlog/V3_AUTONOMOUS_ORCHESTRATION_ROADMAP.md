@@ -1817,6 +1817,48 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
+##### **M9 진행 판정 ① — T1 선결 4건 완료 · T2 DAG 계약 완료** (2026-08-18 · 이 절이 M9의 현행이며 아래 M8 절보다 최신이다)
+
+> 범위: PR #29(T1 선결 4건) · #30(dist) · `pr/v3-m9-03-dag`(T2). 전부 **offline·무과금**이다.
+> **live는 아직 하나도 돌리지 않았다** — Claude worker live도, Codex live도 미실행이다.
+
+**실측 baseline**: `test:exec` **575/575** · `test:core` **442/442** ·
+`scripts/acceptance.sh` **PASS=154 / FAIL=0** · `npx tsc --noEmit` clean.
+mutation **23종 red 확인**(T1 17 + T2 6).
+
+| 선결/과업 | 무엇을 했는가 | 증명 상태 |
+|---|---|---|
+| **선결 1** `run_process` action enum | `CONTROLLER_ACTIONS = ["validate-plan", "run-tests"]`. data key는 action마다 닫힌 채이고 `run-tests`는 `{projectPath}` 하나뿐 — 명령·러너·argv·shell·env·cwd를 담을 key가 없다. argv 조립은 `controllerActionArgs()` 한 곳, 형태는 항상 `[action, 승인된 경로]`이며 새 action은 exhaustive switch가 컴파일 오류로 요구한다 | **증명** — mutation 6종 red · 실제 spawn 왕복 2건(`managedProcess.test.ts`) |
+| **선결 2** `B-16` 신규 파일 발행 | **완전 개방**. temp+link/rename을 되살리지 않고 `O_CREAT\|O_EXCL` 빈 파일 → 부모 경로 재해석 검증 → inode 도달성 검증 → 그 다음에야 기존 `applyToFixedTarget`(fd 전용)으로 쓴다. 부모가 교체된 채면 공격자가 얻는 것은 0바이트다 | **증명** — mutation 4종 red · 판별 테스트 5건 |
+| **선결 3** `B-17` | **회계면만 닫았다.** `failDeliveryAttempt`는 kernel에 있었으나 **프로덕션 호출부가 0건**이어서 `stableController` 전달 루프가 실패하면 `activeAttemptId`가 durable에 열린 채 남았다. 이제 실패 marker로 닫는다(`send_failed` vs `turn_failed`) | **부분** — 아래 미증명 표 참조 |
+| **선결 4** F2 실행 가시성 | v1 `core/progress.ts`를 **재사용**한다(새 렌더러 0 · 신규 의존성 0). `AutopilotEvent → RunEvent` 변환기 하나뿐이다. batch 수 → `step_start.total`, task 경과 → `step_end.elapsedMs`(**F1의 데이터 기반이 여기서 생겼다**), 멈춘 marker는 warn note로 남고 pause는 `ok:false`·run은 `failed`다 | **증명** — mutation 5종 red |
+| **T2** Tech Lead DAG·ownership·API contract | `src/exec/taskDag.ts` — 닫힌 key 집합 문서 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 · `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재). 소유권 충돌은 **순서가 강제되지 않는** 두 task만 거부한다(의존 사슬로 묶인 구현→수정의 같은 파일 소유는 정상이다) | **증명** — mutation 6종 red |
+
+**`B-17` 실측 정정(중요 — `docs/handoff/M9_KICKOFF.md` §3의 기술이 부정확했다)**:
+KICKOFF는 `B-17`을 "inbox 전달 소비(ack)"로 적었으나, §9.1 대장 원문의 잔여는
+**"전달 실패 시 `failDeliveryAttempt` 미호출"**이고 `acknowledgeDelivery`·`stableController` 호출은
+이미 있었다. 그리고 autopilot 쪽 잔여는 "ack를 안 한다"가 아니라 **전달 루프 자체가 없다**는 것이다
+(`autopilot.ts:24` 주석 — `beginDeliveryAttempt`를 부르지 않는다).
+
+| 항목 | 상태 |
+|---|---|
+| 전달 실패 시 attempt 정산(`failDeliveryAttempt`) | **닫힘** — `B-17` 원문 해소 |
+| autopilot 경로의 전달 루프 · "수신 task가 inbox를 읽어 **행동을 바꾼다**" | **미증명 — 의도적 유예.** autopilot worker는 정적 offline plan 백엔드(`startOfflinePlanTurn`)라 **offline에서는 증명할 수 없다**. 사용자 판단으로 회계면만 닫고 행동 변경은 Claude worker live 단계로 미뤘다 |
+| Codex live(code/security/test review·verify) | **미증명 — 미실행.** 과금 게이트(사용자 승인 필요) |
+| Claude worker live | **미증명 — 미실행** |
+| DAG 문서 → 실제 kernel task 물질화 | **미구현** — T2는 문서 계약과 검증까지다 |
+| 병렬 worktree 2 worker 동시 진행 · 리뷰 3종 왕복 · 직렬 병합 · end-to-end 1회 | **미구현 — T3 이후** |
+
+**§9.1 대장**: M9에서 닫은 항목 **2건**(`B-16` 완전 개방 · `B-17` 원문). 새로 등록한 항목 **2건**
+(`C-71` 빈 파일 잔재 · `C-72` 하드링크+부모복원 시퀀스 미커버) — 둘 다 선결 2 적대적 리뷰 산물이다.
+`C-70`(design 계약이 v1 `runWorkflow`에 미배선)은 **아직 열려 있다**(담당 "M9 착수 세션" — T3 이후로
+미룬다). `C-10`(starvation)은 병렬 worker를 실제로 돌리는 T3에서 실측 대상이 된다.
+
+**적대적 read-only 리뷰**(fresh · 구현자와 다른 세션): 선결 1·2에 대해 **REVISE — A=0, B=2, C=2**.
+B 2건은 **둘 다 과대주장**이었다 — ⓐ 계약 주석이 같은 커밋이 연 신규 발행을 여전히 "fail closed"라고
+기술 ⓑ "부모 교체 시 0바이트"라는 무조건 주장에 하드링크+부모복원 반례. 둘 다 수정했고 C 2건은
+대장에 등록했다. 리뷰어가 테스트 이관 9개 사이트를 개별 대조해 **약화 0건**으로 판정했다.
+
 ##### **M8 진행 판정 — T1~T7 완료(design worker live 포함 · Codex live 제외)** (2026-08-13 · 이 절이 M8의 현행이며 아래 M7 절보다 최신이다)
 
 **offline 전부 + design worker live 1회 + shadcn registry 실조회를 실행했다. Codex live는
