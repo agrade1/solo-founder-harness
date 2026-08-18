@@ -515,12 +515,19 @@ export function emptyTaskExecution() {
 /**
  * **고정 controller entrypoint가 받아들이는 닫힌 action 집합**(3A 2차 리비전 B2 · 대장 `B-10`).
  * 여기 없는 문자열은 승인 문서에 담길 수 없고, 이 목록에 항목을 더하는 것 자체가 사람의 승인 대상이다.
- * M5c에서 실제로 필요한 것은 offline 계획 검증 하나뿐이라 그 하나만 있다(없는 action을 미리 열지 않는다).
+ * M5c에서 실제로 필요한 것은 offline 계획 검증 하나뿐이라 그 하나만 있었다(없는 action을 미리 열지 않는다).
+ *
+ * **V3 M9 선결 1 — `run-tests` 추가**(로드맵 M9 절 "하드 게이트"). "fresh Codex test review"가 성립하려면
+ * **테스트를 실행할 타입**이 있어야 하는데 `validate-plan` 하나로는 그것을 표현할 수 없었다. 확장하면서도
+ * 열지 **않은** 것이 이 항목의 핵심이다: argv·shell 문자열·실행 파일·env·cwd는 여전히 **표현할 필드가 없고**,
+ * 실행 대상은 manifest의 `executionAuthority.node` + `controllerEntrypoint` 하나로 고정된 채다. worker가
+ * 고를 수 있는 것은 `authorityId`뿐이고 action·data·timeout은 **사람이 승인한 레코드**에서 나온다.
  */
-export const CONTROLLER_ACTIONS = ["validate-plan"];
+export const CONTROLLER_ACTIONS = ["validate-plan", "run-tests"];
 /** action별 `data` key 집합(닫혀 있다 — 여기 없는 key는 승인 문서에 담길 수 없다). */
 export const CONTROLLER_ACTION_DATA_KEYS = {
     "validate-plan": ["planPath"],
+    "run-tests": ["projectPath"],
 };
 export function emptyMessageDelivery() {
     return {

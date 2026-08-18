@@ -344,7 +344,13 @@ function validateApprovedOperation(raw, what, ctx) {
     if (timeoutMs > ctx.maxAttemptElapsedMs) {
         throw new OrchestrationError("invalid_manifest", `${what}.timeoutMs는 autopilotPolicy.maxAttemptElapsedMs 이하여야 한다`);
     }
-    return { authorityId, kind, action, data: validateActionData(o.data, action, `${what}.data`, ctx), timeoutMs };
+    // action마다 `data` 타입이 다른 **판별 union**이라 여기서 갈라 만든다(공통 객체 하나를 만들어
+    // 캐스팅하면 action↔data 짝이 타입에서 풀린다).
+    const data = validateActionData(o.data, action, `${what}.data`, ctx);
+    if (action === "run-tests") {
+        return { authorityId, kind, action, data: data, timeoutMs };
+    }
+    return { authorityId, kind, action, data: data, timeoutMs };
 }
 /**
  * **action별 입력 계약**(3A 3차 리비전 B2 · 대장 `B-10`).
@@ -356,30 +362,43 @@ function validateApprovedOperation(raw, what, ctx) {
  *
  * 별도의 `readableRoots`를 새로 만들지 않았다: 읽기 범위를 **이미 승인된 쓰기 범위 안쪽으로** 좁히는 것이
  * 더 적은 권한이고(fail closed) 승인 문서에 새 축을 열지 않는다.
+ *
+ * **V3 M9 선결 1**: `run-tests`가 더해졌고 그 입력은 정확히 `{ projectPath }` 하나다. 두 action의 경로
+ * 검증은 **같은 계약**이라 `approvedActionPath()` 하나를 공유한다 — action이 늘어도 경로 규칙이 갈라지지
+ * 않게 하는 것이 목적이다. 명령·인자·러너를 담는 key는 어느 action에도 없다.
  */
 function validateActionData(raw, action, what, ctx) {
     const o = asObject(raw, what);
     closedKeys(o, CONTROLLER_ACTION_DATA_KEYS[action], what);
+    if (action === "run-tests") {
+        return { projectPath: approvedActionPath(o.projectPath, `${what}.projectPath`, ctx) };
+    }
+    return { planPath: approvedActionPath(o.planPath, `${what}.planPath`, ctx) };
+}
+/**
+ * action data가 담는 **승인된 workspace-relative 경로 1건**. `validate-plan`·`run-tests`가 공유한다.
+ */
+function approvedActionPath(raw, what, ctx) {
     // 경로는 **정확한 바이트**여야 한다: 고립 surrogate는 파일 시스템·spawn 경계에서 U+FFFD로 바뀌어
     // "승인된 인자와 정확히 같은가"가 흉내가 된다. `normalizeWorkspacePath`가 그것까지 함께 거부한다.
-    let planPath;
+    let normalized;
     try {
-        planPath = normalizeWorkspacePath(o.planPath, `${what}.planPath`);
+        normalized = normalizeWorkspacePath(raw, what);
     }
     catch {
-        throw new OrchestrationError("operation_data_not_approved", `${what}.planPath는 정규화 가능한 workspace-relative 경로여야 한다`);
+        throw new OrchestrationError("operation_data_not_approved", `${what}는 정규화 가능한 workspace-relative 경로여야 한다`);
     }
     // 승인 문서에는 **이미 정규화된 형태**만 담긴다(같은 파일을 가리키는 두 표기가 승인에 남지 않는다).
-    if (o.planPath !== planPath || codePointLength(planPath) > LIMITS.maxPathLength) {
-        throw new OrchestrationError("operation_data_not_approved", `${what}.planPath는 이미 정규화된 bounded 경로여야 한다`);
+    if (raw !== normalized || codePointLength(normalized) > LIMITS.maxPathLength) {
+        throw new OrchestrationError("operation_data_not_approved", `${what}는 이미 정규화된 bounded 경로여야 한다`);
     }
-    if (!ctx.writableRoots.some((root) => pathWithin(planPath, root))) {
-        throw new OrchestrationError("operation_outside_writable_root", `${what}.planPath가 승인된 writableRoots 밖이다`);
+    if (!ctx.writableRoots.some((root) => pathWithin(normalized, root))) {
+        throw new OrchestrationError("operation_outside_writable_root", `${what}가 승인된 writableRoots 밖이다`);
     }
-    if (ctx.approvedOwnership !== undefined && !ctx.approvedOwnership.some((own) => pathWithin(planPath, own))) {
-        throw new OrchestrationError("operation_not_owned", `${what}.planPath가 그 task의 승인된 ownership 밖이다`);
+    if (ctx.approvedOwnership !== undefined && !ctx.approvedOwnership.some((own) => pathWithin(normalized, own))) {
+        throw new OrchestrationError("operation_not_owned", `${what}가 그 task의 승인된 ownership 밖이다`);
     }
-    return { planPath };
+    return normalized;
 }
 function validateDependency(raw) {
     const o = asObject(raw, "allowedDependencies 항목");
