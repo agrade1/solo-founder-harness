@@ -137,7 +137,14 @@ interface Fixture {
  * `entrypointBody`가 이 run의 모든 `run_process`가 실제로 실행하는 프로그램이다.
  */
 function fixture(
-  opts: { entrypointBody: string; timeoutMs?: number; taskIds?: string[]; maxSessions?: number } = {
+  opts: {
+    entrypointBody: string;
+    timeoutMs?: number;
+    taskIds?: string[];
+    maxSessions?: number;
+    /** V3 M9 선결 1 — 기본 `validate-plan` 대신 다른 승인 action을 쓰는 fixture(같은 authorityId). */
+    action?: { action: string; data: Record<string, string> };
+  } = {
     entrypointBody: "#!/bin/sh\nexit 0\n",
   },
 ): Fixture {
@@ -180,8 +187,7 @@ function fixture(
           {
             authorityId: "p-node",
             kind: "run_process",
-            action: "validate-plan",
-            data: { planPath: "docs/plan.json" },
+            ...(opts.action ?? { action: "validate-plan", data: { planPath: "docs/plan.json" } }),
             timeoutMs: opts.timeoutMs ?? 30_000,
           },
         ],
@@ -384,6 +390,42 @@ test("[M5c/3C] B-F1 개봉: 승인된 run_process가 실제로 실행되고 exit
   assert.equal(receipt.kind, "run_process");
   assert.equal(receipt.exitCode, 7);
   assert.equal(f.kernel.getTask("root")!.execution.pendingOperations.length, 0);
+});
+
+test("[M9] 선결 1: 승인된 run-tests가 실제로 실행되고 인자는 [action, 승인된 경로] 뿐이다", async () => {
+  // entrypoint가 **받은 인자 전부**를 그대로 적는다 — 승인 문서 밖의 flag·argv가 새면 여기서 보인다.
+  const f = fixture({
+    entrypointBody: '#!/bin/sh\nprintf "%s\\n" "$#" "$@" > docs/argv.txt\nexit 3\n',
+    action: { action: "run-tests", data: { projectPath: "docs/proj" } },
+  });
+  const { op, grant, cap } = oneShot(f, "turn-1");
+
+  const outcome = await executeRunProcessOperation(grant, op, cap);
+
+  assert.equal(outcome.marker, "applied");
+  assert.equal(outcome.exitCode, 3);
+  // 인자는 **정확히 둘**이다: 닫힌 action enum + 승인 레코드의 경로. 테스트 명령·러너·flag는 없다.
+  assert.deepEqual(readFileSync(join(f.ws, "docs/argv.txt"), "utf8").trim().split("\n"), ["2", "run-tests", "docs/proj"]);
+
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+  const receipt = receiptOf(f, op.operationId);
+  assert.equal(receipt.kind, "run_process");
+  assert.equal(receipt.exitCode, 3);
+});
+
+test("[M9] 선결 1: run-tests도 실패 exit code를 성공으로 덮지 않는다(거짓 성공 영수증 0)", async () => {
+  // 로드맵 M9 위험 3 — "테스트를 실행했다"는 기록과 실제 종료코드가 어긋나면 그것이 곧 A급이다.
+  const f = fixture({
+    entrypointBody: "#!/bin/sh\nexit 1\n",
+    action: { action: "run-tests", data: { projectPath: "docs/proj" } },
+  });
+  const { op, grant, cap } = oneShot(f, "turn-1");
+  const outcome = await executeRunProcessOperation(grant, op, cap);
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+
+  // `marker: applied`는 "프로세스가 끝까지 돌았다"는 뜻이고 **테스트가 통과했다는 뜻이 아니다**.
+  // 실패 종료코드는 영수증에 그대로 남아야 한다 — 이 값이 durable에서 사라지면 거짓 영수증이다.
+  assert.equal(receiptOf(f, op.operationId).exitCode, 1);
 });
 
 // ── B-F1 ① 단일 소비 ────────────────────────────────────────────────────────

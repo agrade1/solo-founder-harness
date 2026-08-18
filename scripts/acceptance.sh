@@ -225,8 +225,8 @@ echo "$M5D_OUT" | grep -q "버그 파일이 실제로 고쳐졌다"
 check "M5d implement 단계가 실제 바이트를 냈다" $?
 echo "$M5D_OUT" | grep -q "의존 task도 같은 실행에서 완주했다"
 check "M5d DAG 전진(수동 개입 0) 확인 출력" $?
-echo "$M5D_OUT" | grep -q "신규 파일 발행은 fail closed"
-check "M5d B-16 잔여(신규 발행 차단) 확인 출력" $?
+echo "$M5D_OUT" | grep -q "신규 파일도 발행된다(B-16 개방"
+check "M5d B-16 완전 개방(신규 발행) 확인 출력 — V3 M9 선결 2" $?
 echo "$M5D_OUT" | grep -q "paused로 착지한다(hang 없음)"
 check "M5d hang 대신 pause 확인 출력" $?
 echo "$M5D_OUT" | grep -q "spawn 0회 — deadline/cancellation 자손 정리 증명 아님"

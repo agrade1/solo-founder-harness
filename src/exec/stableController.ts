@@ -138,6 +138,7 @@ import type {
   ArtifactPointer,
   ArtifactRole,
   MessageIndexEntry,
+  DeliveryMarker,
   MilestoneApprovalManifest,
   OrchestrationRunState,
   OrchestrationTask,
@@ -566,6 +567,8 @@ interface CapturedKernel {
   /** **원자적 완료**: 산출물 전체 등록 + result 수락 + completed 전이가 한 커밋이다(3차 리뷰 A3). */
   completeTaskWithArtifacts: (input: CompleteTaskInput) => CompletedTask;
   acknowledgeDelivery: (input: { taskId: string; messageId: string }) => MessageIndexEntry;
+  /** V3 M9 선결 3(대장 `B-17`) — 시작한 전달 시도를 실패 marker로 닫는다(열린 attempt 잔재 0). */
+  failDeliveryAttempt: (input: { taskId: string; messageId: string; actionId: string; marker: DeliveryMarker }) => MessageIndexEntry;
 }
 
 /** provider에 대고 부를 **생성 시점 포착 메서드**. monkey-patch는 실행 대상이 되지 않는다. */
@@ -589,6 +592,7 @@ const KERNEL_METHODS = [
   "confirmCleanup",
   "completeTaskWithArtifacts",
   "acknowledgeDelivery",
+  "failDeliveryAttempt",
 ] as const;
 const PROVIDER_METHODS = ["start", "send", "events", "stop"] as const;
 
@@ -918,8 +922,31 @@ export class StableController {
             attemptId: this.#actionId("attempt"),
           }),
         );
-        await atBoundaryAsync("provider_send_failed", () => provider.send(handle!, message));
-        await this.#consumeTurn(handle, outcome);
+        // **시작한 시도는 반드시 닫는다**(V3 M9 선결 3 — 대장 `B-17`). 이전 판은 `send`/turn 소비가
+        // 던지면 예외가 바깥 catch로 빠져 `activeAttemptId`가 durable에 **열린 채** 남고
+        // `nextAttemptAt`도 잡히지 않았다 → 미정산 attempt 잔재. 여기서 실패 marker로 닫으면 backoff·
+        // 시도 상한 회계가 그 자리에서 정확해진다. `failDeliveryAttempt`는 이 실패의 원인을 덮지
+        // 않는다 — **원래 예외를 다시 던진다**(그것이 pause 이유를 정하는 값이다).
+        try {
+          await atBoundaryAsync("provider_send_failed", () => provider.send(handle!, message));
+          await this.#consumeTurn(handle, outcome);
+        } catch (e) {
+          // 실패 기록 자체가 또 실패하면 **원래 예외가 이긴다**(기록 실패로 원인을 바꿔치지 않는다).
+          try {
+            atKernel(() =>
+              kernel.failDeliveryAttempt({
+                taskId,
+                messageId: entry.messageId,
+                actionId: this.#actionId("deliver-fail"),
+                // send 경계에서 죽었는지 turn 소비에서 죽었는지 구분한다(둘 다 닫힌 marker다).
+                marker: codeOf(e) === "provider_send_failed" ? "send_failed" : "turn_failed",
+              }),
+            );
+          } catch {
+            /* 원래 예외를 삼키지 않는다 */
+          }
+          throw e;
+        }
         atKernel(() => kernel.acknowledgeDelivery({ taskId, messageId: entry.messageId }));
         outcome.acknowledged.push(entry.messageId);
       }

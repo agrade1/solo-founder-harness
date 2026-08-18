@@ -240,11 +240,11 @@
         "kind": { "const": "run_process" },
         "action": {
           "description": "고정 controller entrypoint가 받아들이는 **닫힌 action 집합**. 여기 없는 문자열은 승인될 수 없고, 목록에 항목을 더하는 것 자체가 사람의 승인 대상이다. 정본은 src/exec/orchestrationTypes.ts의 CONTROLLER_ACTIONS다.",
-          "enum": ["validate-plan"]
+          "enum": ["validate-plan", "run-tests"]
         },
         "data": {
-          "description": "M5c 3A 3차 리비전(B2) — **action별 입력 계약**. 이전 판은 0..16개의 임의 문자열 배열이라 arity·경로 의미·소유권·읽기 범위를 미래 launcher가 지어내야 했다(과승인이거나 폐기 대상). 지금 action마다 key 집합이 닫혀 있다: validate-plan은 {planPath} 하나뿐이다. 런타임(src/exec/approvalManifest.ts)은 여기에 더해 planPath가 **이미 정규화된** 형태이고(normalizeWorkspacePath 항등) 고립 UTF-16 surrogate가 없으며 승인된 writableRoots 안이고 그 task의 승인 ownership 안임을 함께 본다(operation_data_not_approved / operation_outside_writable_root / operation_not_owned). **읽기 전용 action이지만 별도의 readableRoots를 새로 만들지 않고 이미 승인된 쓰기 범위 안쪽으로 좁힌다**(더 좁은 쪽이 fail closed다). 정규화 항등·surrogate 판정은 draft-07 pattern으로 표현하지 않으며 **런타임 전용 불변식**이다.",
-          "oneOf": [{ "$ref": "#/definitions/validatePlanData" }]
+          "description": "M5c 3A 3차 리비전(B2) — **action별 입력 계약**. 이전 판은 0..16개의 임의 문자열 배열이라 arity·경로 의미·소유권·읽기 범위를 미래 launcher가 지어내야 했다(과승인이거나 폐기 대상). 지금 action마다 key 집합이 닫혀 있다: validate-plan은 {planPath} 하나뿐이다. 런타임(src/exec/approvalManifest.ts)은 여기에 더해 planPath가 **이미 정규화된** 형태이고(normalizeWorkspacePath 항등) 고립 UTF-16 surrogate가 없으며 승인된 writableRoots 안이고 그 task의 승인 ownership 안임을 함께 본다(operation_data_not_approved / operation_outside_writable_root / operation_not_owned). **읽기 전용 action이지만 별도의 readableRoots를 새로 만들지 않고 이미 승인된 쓰기 범위 안쪽으로 좁힌다**(더 좁은 쪽이 fail closed다). 정규화 항등·surrogate 판정은 draft-07 pattern으로 표현하지 않으며 **런타임 전용 불변식**이다. **V3 M9 선결 1 — run-tests 추가**: 입력은 정확히 {projectPath} 하나이고 planPath와 **같은 경로 계약**을 지난다(같은 검증 함수를 공유한다). 테스트 명령·인자·러너를 담는 key는 어느 action에도 없다 — 무엇을 어떻게 실행할지는 고정된 controller entrypoint가 정한다.",
+          "oneOf": [{ "$ref": "#/definitions/validatePlanData" }, { "$ref": "#/definitions/runTestsData" }]
         },
         "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 3600000 }
       }
@@ -255,6 +255,13 @@
       "additionalProperties": false,
       "required": ["planPath"],
       "properties": { "planPath": { "$ref": "#/definitions/workspacePath" } }
+    },
+    "runTestsData": {
+      "description": "`run-tests` action의 입력(V3 M9 선결 1). 정확히 projectPath 하나이며 테스트를 돌릴 프로젝트의 정규화된 workspace-relative 디렉터리다. 명령·인자·러너는 표현할 필드가 없다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectPath"],
+      "properties": { "projectPath": { "$ref": "#/definitions/workspacePath" } }
     },
     "slug": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
     "timestamp": {

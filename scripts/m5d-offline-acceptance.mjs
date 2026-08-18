@@ -18,7 +18,8 @@
  *   authoring한 offline 문서이고 worker는 in-memory 데이터 어댑터다.
  * - **테스트 실행 없음** — typed `run_process`의 action enum은 `validate-plan` 하나이고 **읽기 전용**이다.
  *   "test → fresh review → verify"의 *실행* 부분은 이 acceptance의 범위 밖이다.
- * - **신규 파일 발행 없음** — `B-16`은 **부분 개방**이다(승인된 기존 파일 교체만). 신규 생성은 여전히
+ * - **신규 파일 발행**: M5d 시점에는 없었다. **V3 M9 선결 2에서 `B-16`이 완전 개방**됐으므로 ⑥의
+ *   그 자리는 이제 발행 성공을 확인한다. (아래 원문은 M5d 당시 기록이다) `B-16`은 **부분 개방**이었고(승인된 기존 파일 교체만) 신규 생성은 여전히
  *   fail closed이며 시나리오 ⑥이 그것을 단정한다.
  * - reviewer 왕복은 이 스크립트가 **전혀 다루지 않는다** — autopilot loop는 inbox 전달을 하지 않는다
  *   (`B-17` 미소비). 라우팅 계약 자체는 M4c acceptance가 덮는다.
@@ -279,11 +280,13 @@ try {
       result: { summary: "신규 발행 시도", outputs: [] },
     });
     await runAutopilot({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, planDir, clock });
-    // **승인은 하나도 빠지지 않았다** — authority·경로·소유권·바이트 상한 전부 통과한다. 그럼에도
-    // 부재 대상 발행은 막힌다. 이것이 `B-16`이 "부분" 개방인 이유다.
-    check("승인이 다 있어도 신규 파일 발행은 fail closed다(B-16 잔여)", existsSync(join(ws, "src/new.js")) === false);
+    // **V3 M9 선결 2에서 `B-16`이 완전 개방됐다**: 승인이 하나도 빠지지 않았으면(authority·경로·
+    // 소유권·바이트 상한) 신규 파일도 발행된다. M5d 시점에는 이 자리가 fail-closed였고, 그 판정을
+    // 바꾼 것은 M9의 명시적 slice다(발행 형태는 여전히 fd 전용 — temp/rename을 되살리지 않았다).
+    check("승인이 다 있으면 신규 파일도 발행된다(B-16 개방 — M9 선결 2)", existsSync(join(ws, "src/new.js")));
+    check("발행된 신규 파일 내용이 승인된 바이트다", readFileSync(join(ws, "src/new.js"), "utf8") === "x\n");
     const t = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock }).getTask("closed");
-    check("닫힌 게이트도 hang 없이 paused다", t.state === "paused", t.state);
+    check("발행이 성공한 turn은 hang 없이 전진한다", t.state === "completed", t.state);
   }
 
   console.log("\n⑦ 재시작 — durable 재수화");
