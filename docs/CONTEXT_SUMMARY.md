@@ -1,8 +1,43 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-19 (M9 — T1~T5 완료 · live 실측 완료)
+최종 갱신: 2026-08-19 (M10 T1 — resume/crash recovery 완료)
 
-## 최신 (2026-08-19 — **V3 M9 T1~T5 완료 · live 17/17** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-19 — **V3 M10 T1 완료. 다음은 T2** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
+- 실측 `test:exec` **605/605** · `test:core` **446/446** · acceptance **PASS=181 / FAIL=0**
+  (M10은 **Test 22**) · `tsc --noEmit` clean. **live LLM 0회**(T1은 offline이지만 실제 프로세스와
+  실제 SIGKILL을 쓴다). 판정 정본은 로드맵 **`M10 진행 판정 ①`** 절이다.
+
+**T1에서 선 것**
+- **A급 1건 수정 — 거짓 성공 영수증.** autopilot이 `superviseProcess`의 정리 미확인
+  (`process_cleanup_unconfirmed`) turn에도 `confirmCleanup`(= survivors 0)을 durable에 적고 있었다.
+  판정을 `cleanupUnobservableReason()` **하나**로 모아 turn 착지와 크래시 복구가 같은 durable 증거를
+  본다. 근거였던 헤더 주석("이 loop는 프로세스를 하나도 띄우지 않는다")도 거짓이어서 함께 정정했다.
+- **크래시 잔재 정착 pass**(`recoverCrashedAttempts`, `C-55` 잔여): `running`/`cleaning`+lease 잔재를
+  `controller_lost`(신규 marker)로 적고 → 미확정 operation을 durable 신원만으로 정합화 → 관측 가능하면
+  `confirmCleanup`+`settleCleanedAttempt`(새 attempt로 재개), 아니면 **격리**(자원 유지 · loop 정지).
+- **stale lock 회수**(`C-8`·`C-4` 보강): lock 파일이 `{nonce,pid}`가 되고 `kill(pid,0)`의 **ESRCH만**
+  회수 근거다. 회수는 `<lock>.reclaim`(`O_EXCL`)로 직렬화하고, 발행은 temp+`link`라 빈 lock 창이 0이다.
+- **C-76 부분 물질화 이어받기**: 같은 문서면 멱등하게 이어 만들고, 다른 문서·시작된 run은 그대로 거부.
+- **C-59**: 잔여 `prepared` pause 거부가 CLI를 죽이지 않는다(`safePause`).
+- acceptance **Test 22**(`scripts/m10-offline-acceptance.mjs` · 내부 22건) · **mutation red 14종**.
+
+**대장**: 닫은 항목 6건(`C-4` 부분·`C-4` 보강·`C-8`·`C-55`·`C-59`·`C-76`) · **stale 표기 정정 3건**
+(`B-12`·`B-21`·`B-22`는 코드가 이미 닫혀 있었고 행만 `open`이었다) · **신규 5건**(`B-32`·`C-81`~`C-84`).
+
+**T2 착수 전에 알아야 할 것**
+- **`B-32`는 T3의 하드 게이트다**: 복구 pass는 "잔재가 보이면 이전 프로세스가 죽었다"를 전제하므로
+  **동시 controller 2대**에서는 살아 있는 attempt를 크래시로 오판한다. live worker 배선 전에 결정해야 한다.
+- 미증명 3건을 같은 무게로 적었다: 좌초 프로세스 **탐색 자체는 표현 불가**(관측자가 없다) ·
+  `process_cleanup_unconfirmed` 실제 재현(`C-81`) · 동시 controller(`B-32`).
+- `C-80`("직렬 로컬 병합")은 여전히 닫지 않는다 — worker 산출 경로를 바꾸는 결정이 선행한다.
+
+---
+
+## 이전 (2026-08-19 · M9 완료 시점)
+
+## 최신 (2026-08-19 — **V3 M9 T1~T5 완료 · live 17/17**)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
 - 실측 `test:exec` **589/589** · `test:core` **442/442** · acceptance **PASS=168 / FAIL=0**

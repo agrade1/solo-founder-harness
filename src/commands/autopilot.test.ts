@@ -25,6 +25,7 @@ import { join } from "node:path";
 import { LIMITS } from "../exec/orchestrationTypes.js";
 import type { OrchestrationTask } from "../exec/orchestrationTypes.js";
 import { __setPublicationSeamsForTest, createOrchestrationRun, openOrchestrationRun } from "../exec/orchestrationKernel.js";
+import { runPaths } from "../exec/orchestrationStore.js";
 import type { OrchestrationKernel, TaskSeed } from "../exec/orchestrationKernel.js";
 import { REQUIRED_BODY_HEADINGS } from "../exec/orchestrationTypes.js";
 import { AutopilotEvent, runAutopilot } from "./autopilot.js";
@@ -1104,4 +1105,243 @@ test("[M6-T2] ②: spawn turn이 산출물을 주장하면 조용히 유실되�
   const k = reopen(f.ws);
   assert.equal(k.getTask("child1"), null, "거부된 계획이 child를 만들었다");
   assert.equal(k.getState().artifacts.length, 0, "거부된 계획이 artifact를 등록했다");
+});
+
+// ── ⑨ V3 M10 T1 — 크래시 잔재 정착 (완료 조건 "중단 후 재개") ────────────────
+//
+// 이 절이 고정하는 것은 **거짓 성공 영수증이 없는 복구**다. M10의 완료 조건은 "중단 후 재개 시 중복
+// agent/중복 merge/결정 유실 없음"이므로, 복구가 **되는 경우**와 **되지 않는 경우**를 둘 다 고정한다 —
+// 되지 않는 경우를 조용히 통과시키면 그 자체가 과대주장이다.
+
+/** durable 감사 로그 원문(state 요약이 아니다 — 지워진 per-attempt 배열도 여기에는 남는다). */
+function eventLog(ws: string): Array<{ type: string; marker: string | null; taskId: string | null }> {
+  const file = runPaths(ws, RUN_ID).eventsFile;
+  return readFileSync(file, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as { type: string; marker: string | null; taskId: string | null });
+}
+
+function eventTypes(ws: string): string[] {
+  return eventLog(ws).map((e) => e.type);
+}
+
+/**
+ * **turn 도중 프로세스가 죽은 것과 durable하게 등가인 잔재**를 만든다. C-55 테스트와 같은 수단
+ * (시작 뒤 시계 역행 → 다음 kernel 호출이 throw)이며, 결과는 `running`/`cleaning` + lease를 쥔 task다.
+ * 실제 SIGKILL 재현은 store 층 테스트(`orchestrationKernel.test.ts`의 M10 절)가 real child로 한다.
+ */
+async function crashDuringTurn(f: Fixture, taskId: string): Promise<void> {
+  let started = false;
+  let ticks = 0;
+  const clock = (): Date => {
+    ticks += 1;
+    return started ? new Date(T0 - 3_600_000) : new Date(T0 + 60_000 + ticks * 1000);
+  };
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock,
+    onEvent: (e) => {
+      if (e.kind === "task_started" && e.taskId === taskId) started = true;
+    },
+  });
+  assert.equal(report.stoppedBecause, "turn_aborted", "이 테스트의 전제(크래시 등가 잔재)가 성립하지 않았다");
+}
+
+test("[M10-T1] 크래시 등가 잔재를 다음 실행이 정착시키고 새 attempt로 재개한다 (C-55 잔여)", async () => {
+  const f = boot();
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  writePlan(f.planDir, "root", { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } });
+
+  await crashDuringTurn(f, "root");
+  const stranded = taskOf(f.ws, "root");
+  assert.ok(stranded.state === "running" || stranded.state === "cleaning", `잔재 상태: ${stranded.state}`);
+  assert.ok(stranded.execution.processLeaseMarker !== null, "잔재가 lease를 쥐고 있지 않다");
+  const deadAttempt = stranded.execution.attemptId;
+
+  // 두 번째 실행: 잔재를 정착시키고(controller_lost → 정리 확인 → settle) 같은 실행 안에서 재개한다.
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+    onEvent: (e) => events.push(e),
+  });
+
+  // ⓐ 관측한 사실이 그대로 durable에 남는다 — controller가 사라졌다(worker 실패가 아니다).
+  assert.ok(
+    events.some((e) => e.kind === "task_aborted" && e.marker === "controller_lost" && e.detail === "crash_settled:retry_wait"),
+    `정착 이벤트가 없다: ${JSON.stringify(events)}`,
+  );
+  // ⓑ **재개됐다**: 같은 task가 새 attempt로 완주한다.
+  const done = taskOf(f.ws, "root");
+  assert.equal(done.state, "completed", `재개되지 않았다: ${done.state}`);
+  assert.equal(done.execution.processLeaseMarker, null, "완주한 task가 lease를 쥐고 있다");
+  assert.equal(report.stoppedBecause, "no_runnable_tasks");
+  // ⓒ **중복이 없다**: 죽은 attempt는 부활하지 않고(새 attemptId) 결과 메시지는 정확히 1건이다.
+  assert.notEqual(done.execution.attemptId, deadAttempt, "죽은 attempt가 그대로 부활했다");
+  const k = reopen(f.ws);
+  assert.equal(k.getState().messages.filter((m) => m.taskId === "root" && m.type === "result").length, 1, "결과가 중복 발행됐다");
+  assert.equal(k.getState().artifacts.length, 1, "artifact가 중복 등록됐다");
+  // ⓓ **결정 유실이 없다**: 죽은 attempt의 정리 확인과 새 attempt의 완료가 둘 다 감사 로그에 있다.
+  const types = eventTypes(f.ws);
+  assert.ok(types.includes("cleanup_confirmed"), "정리 확인이 감사 로그에 없다");
+  assert.ok(types.includes("retry_scheduled"), "재시도 예약이 감사 로그에 없다");
+});
+
+test("[M10-T1] 정리를 관측하지 못한 attempt는 confirmCleanup을 적지 않고 자원을 쥔 채 격리된다", async () => {
+  const f = boot({}, ["root", "sibling"]);
+  writePlan(f.planDir, "root", { result: { summary: "완료", outputs: [] } });
+  writePlan(f.planDir, "sibling", { result: { summary: "완료", outputs: [] } });
+
+  // **durable 증거를 직접 만든다**: supervisor가 "프로세스 그룹이 빈 것을 관측하지 못했다"고 보고한
+  // attempt가 남긴 상태 그대로다(`cleanup_unconfirmed` marker + lease + cleaning).
+  // 이 테스트가 증명하는 것은 **그 증거를 보고 하는 판정**이며, OS 수준 좌초 프로세스 탐지가 아니다
+  // (그런 관측자는 이 아키텍처에 없다 — `recoverCrashedAttempts` 주석 참조).
+  const k0 = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 60_000, 1000) });
+  const batch = k0.planRunnableBatch();
+  k0.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: "act.pf1",
+    decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: `att.${t.taskId}` })),
+  });
+  k0.startPreparedTask({ taskId: "root", actionId: "act.start1", leaseMarker: `lease.${"a".repeat(32)}` });
+  k0.recordTerminal({ taskId: "root", actionId: "act.term1", marker: "cleanup_unconfirmed" });
+  const beforeEvents = eventTypes(f.ws).length;
+
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+    onEvent: (e) => events.push(e),
+  });
+
+  // ⓐ **거짓 성공 영수증이 없다**: 이 실행이 남긴 event에 정리 확인이 하나도 없다.
+  const added = eventTypes(f.ws).slice(beforeEvents);
+  assert.ok(!added.includes("cleanup_confirmed"), `관측하지 못한 정리를 확인으로 적었다: ${added.join(",")}`);
+  assert.ok(added.includes("cleanup_failed"), `관측 실패를 durable에 적지 않았다: ${added.join(",")}`);
+  // ⓑ 자원을 놓지 않는다 — 살아 있을 수 있는 자손이 다음 batch의 배타 자원 판정을 거짓으로 만들지 않게.
+  const isolated = taskOf(f.ws, "root");
+  assert.equal(isolated.state, "cleaning", "관측하지 못한 정리인데 자원을 놓았다");
+  assert.notEqual(isolated.execution.cleanupStatus, "confirmed");
+  assert.equal(isolated.execution.cleanupAttempts, 1);
+  assert.ok(isolated.execution.processLeaseMarker !== null, "격리했는데 lease를 놓았다");
+  // ⓒ loop는 조용히 나머지를 밀지 않는다.
+  assert.equal(report.stoppedBecause, "cleanup_unobservable");
+  assert.ok(events.some((e) => e.kind === "task_aborted" && e.detail === "crash_isolated"));
+  assert.equal(taskOf(f.ws, "sibling").state, "prepared", "격리 뒤에도 다음 task를 밀었다");
+});
+
+test("[M10-T1] 효과 뒤 크래시가 남긴 미확정 operation은 durable 신원만으로 정합화된 뒤 정착한다", async () => {
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "before\n");
+  const before = createHash("sha256").update("before\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "after\n", expectedBeforeSha256: before },
+    ],
+    result: { summary: "영수증 전에 죽는다", outputs: [] },
+  });
+
+  // **효과는 끝났고 영수증은 못 적은 창**: 마지막 seam(`dirFsync`) 뒤에 시계를 되돌리면 영수증 커밋과
+  // 그 뒤의 모든 kernel 호출이 거부된다 → pending이 attemptedAt과 함께 durable에 남는다(= 크래시 등가).
+  let crashed = false;
+  let ticks = 0;
+  const clock = (): Date => {
+    ticks += 1;
+    return crashed ? new Date(T0 - 3_600_000) : new Date(T0 + 60_000 + ticks * 1000);
+  };
+  const restore = __setPublicationSeamsForTest({
+    dirFsync: () => {
+      crashed = true;
+    },
+  });
+  try {
+    const first = await runAutopilot({ workspaceRoot: f.ws, runId: RUN_ID, milestoneId: MILESTONE, planDir: f.planDir, clock });
+    assert.equal(first.stoppedBecause, "turn_aborted", "이 테스트의 전제(영수증 전 크래시)가 성립하지 않았다");
+  } finally {
+    restore();
+  }
+  const stranded = taskOf(f.ws, "root");
+  assert.equal(stranded.execution.pendingOperations.length, 1, "미확정 operation 잔재가 없다");
+  assert.ok(stranded.execution.pendingOperations[0]!.attemptedAt !== null, "집행 경계에 들어간 흔적이 없다");
+
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+    maxIterations: 1,
+  });
+
+  const settled = taskOf(f.ws, "root");
+  // ⓐ pending은 **durable 신원만으로** 닫혔다(살아 있는 grant는 크래시와 함께 사라졌다).
+  assert.deepEqual(settled.execution.pendingOperations, [], "미확정 operation이 남아 정착이 막혔다");
+  // 정합화는 **감사 로그**에 남는다 — 새 attempt가 시작되면 per-attempt 영수증 배열은 리셋되므로
+  // state 요약만 보면 "정합화했다"를 증명할 수 없다(그 차이가 곧 공허한 단정과 실측의 차이다).
+  assert.ok(
+    eventLog(f.ws).some((e) => e.type === "operation_receipt" && e.marker === "outcome_unknown"),
+    "효과가 일어났을 수 있는 operation을 성공·실패로 단정했다(또는 정합화하지 않았다)",
+  );
+  // ⓑ `write_file`은 자손을 남기지 않으므로 정리 판정과 무관하다 → 정착하고 재개 대상이 된다.
+  //    (여기서 격리하면 파일 쓰기 하나의 미확정이 run 전체를 영구 격리시킨다.)
+  //    같은 실행 안에서 새 attempt가 **멱등 재집행**(`already_applied`)으로 완주한다 = 재개의 실체다.
+  assert.equal(settled.state, "completed", `정착·재개하지 않았다: ${settled.state}`);
+  assert.equal(settled.execution.attemptNo, 2, "새 attempt로 재개하지 않았다");
+  assert.deepEqual(settled.execution.operationReceipts.map((r) => r.marker), ["already_applied"]);
+  assert.notEqual(report.stoppedBecause, "cleanup_unobservable");
+  assert.ok(eventTypes(f.ws).includes("cleanup_confirmed"), "구조적으로 survivors 0인데 정리를 확인하지 않았다");
+});
+
+test("[M10-T1] prepared 잔여 pause가 kernel에 거부돼도 CLI가 죽지 않고 loop가 멈춘다 (C-59)", async () => {
+  const f = boot({}, ["root", "t2", "t3"]);
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const plan = { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } };
+  for (const id of ["root", "t2", "t3"]) writePlan(f.planDir, id, plan);
+
+  // 첫 실행을 첫 진행에서 취소한다 → t2·t3가 `prepared` 잔여로 남는다.
+  const ac = new AbortController();
+  await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    signal: ac.signal,
+    onEvent: (e) => {
+      if (e.kind === "task_progress") ac.abort();
+    },
+  });
+  assert.equal(taskOf(f.ws, "t2").state, "prepared", "이 테스트의 전제(prepared 잔여)가 성립하지 않았다");
+  assert.equal(taskOf(f.ws, "t3").state, "prepared");
+  rmSync(join(f.planDir, "t2.json"));
+
+  // 계획 없는 잔여(t2)를 pause하려는 순간 **다른 writer가 먼저 커밋한 상태**를 만든다 → autopilot의
+  // 다음 커밋은 `stale_writer`다. 이전 판은 이 pause가 `C-55` 보호 **밖**이라 예외가 CLI 밖으로 나갔다
+  // (대장 `C-59`).
+  const other = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 200_000, 1000) });
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+    onEvent: (e) => {
+      if (e.kind === "run_started") other.pauseTask({ taskId: "t3", actionId: "act.other", pauseReason: "operator_requested" });
+    },
+  });
+
+  // ⓐ 예외가 CLI 밖으로 전파되지 않았다(이 await 자체가 증거다) ⓑ 조용히 진행하지도 않았다.
+  assert.equal(report.blocked, null);
+  assert.equal(report.stoppedBecause, "stale_writer");
+  assert.equal(taskOf(f.ws, "t2").state, "prepared", "거부된 pause가 상태를 바꿨다");
 });
