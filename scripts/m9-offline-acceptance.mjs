@@ -50,6 +50,7 @@ const { applyWriteFile, resolveWorktreeCapability, executeWorktreeOperation } = 
   join(REPO_ROOT, "src/exec/typedExecution.ts")
 );
 const { autopilotProgressBridge } = await import(join(REPO_ROOT, "src/exec/autopilotProgress.ts"));
+const { assertCodeReviewRoundtrip } = await import(join(REPO_ROOT, "src/exec/designReviewRoundtrip.ts"));
 
 let pass = 0;
 let fail = 0;
@@ -507,10 +508,39 @@ console.log("\n⑦ 선결 4 — F2: autopilot 진행이 v1 RunEvent로 보이고
   check("표시 실패가 실행 실패가 되지 않는다", threw === false);
 }
 
+console.log("\n⑧ T4 — code/security/test 리뷰 왕복 계약(자기 승인 금지)");
+{
+  const OK9 = {
+    author: { taskId: "impl-a", roleId: "dev-lead", provider: "claude", sessionId: "s-author", fresh: false },
+    reviews: {
+      code: { taskId: "rev-code", roleId: "tech-lead", provider: "codex", sessionId: "s-code", sandbox: "read-only", fresh: true },
+      security: { taskId: "rev-sec", roleId: "qa-security", provider: "codex", sessionId: "s-sec", sandbox: "read-only", fresh: true },
+      test: { taskId: "rev-test", roleId: "qa-security.test", provider: "codex", sessionId: "s-test", sandbox: "read-only", fresh: true },
+    },
+    revision: { taskId: "impl-a-fix", roleId: "dev-lead.revise", provider: "claude", sessionId: "s-revise", fresh: true },
+    verify: { taskId: "verify-1", roleId: "tech-lead.verify", provider: "codex", sessionId: "s-verify", sandbox: "read-only", fresh: true },
+    testLens: "test",
+  };
+  const rt9 = (f) => {
+    const r = JSON.parse(JSON.stringify(OK9));
+    f(r);
+    return r;
+  };
+  const c9 = (r) => codeOf(() => assertCodeReviewRoundtrip(r));
+  check("정상 왕복(저자 → 리뷰 3종 → 수정 → verify)은 통과한다", c9(OK9) === "no-error", c9(OK9));
+  check("리뷰 렌즈는 정확히 code·security·test 셋이다", c9(rt9((r) => delete r.reviews.security)) === "review_lens_set");
+  check("세 리뷰어가 한 세션을 겸할 수 없다", c9(rt9((r) => (r.reviews.security.sessionId = "s-code"))) === "participant_session_reused");
+  check("저자가 자기 코드를 리뷰할 수 없다", c9(rt9((r) => (r.reviews.code.taskId = "impl-a"))) === "participant_task_reused");
+  check("verify가 앞선 리뷰어와 같을 수 없다", c9(rt9((r) => (r.verify.taskId = "rev-code"))) === "participant_task_reused");
+  check("리뷰어·verify는 fresh Codex read-only여야 한다", c9(rt9((r) => (r.verify.sandbox = "workspace-write"))) === "reviewer_sandbox");
+  check("구현 역할이 자기 산출물을 검토할 수 없다", c9(rt9((r) => (r.reviews.code.roleId = "dev-lead"))) === "reviewer_role");
+  check("테스트 실행 책임은 test 렌즈에 못 박힌다", c9(rt9((r) => (r.testLens = "code"))) === "test_lens_invalid");
+}
+
 console.log("");
 console.log(`PASS=${pass} FAIL=${fail}`);
 console.log(
-  "미증명(정직하게): live LLM 0회(Claude worker·Codex 둘 다) · fresh Codex 리뷰 3종 왕복 미실행 · " +
+  "미증명(정직하게): live LLM 0회(Claude worker·Codex 둘 다) · ⑧은 **계약 층**만 본다(fresh Codex 3종의 실제 프로세스 왕복은 미실행) · " +
     "병렬 2 worker 실제 동시 진행 미실행 · revise/verify·직렬 병합·end-to-end 1회 범위 밖(M9 T4 이후) · " +
     "⑥은 worktree가 로컬에서 동작함만 보이고 worker가 그 안에서 코드를 고쳐 병합되는 것은 보이지 않는다.",
 );
