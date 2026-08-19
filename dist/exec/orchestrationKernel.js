@@ -45,7 +45,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, constants as fsConstants, fstatSync, fsyncSync, ftruncateSync, lstatSync, openSync, readSync, realpathSync, writeSync, } from "node:fs";
 import { isAbsolute, join as joinPath } from "node:path";
-import { AGENT_MESSAGE_SCHEMA_VERSION, APPROVED_OPERATION_KINDS, ARTIFACT_ROLES, AUTOPILOT_MARKERS, CENTRAL_MESSAGE_TYPES, DELIVERY_MARKERS, EMPTY_EVENT_AUDIT, LIMITS, ORCHESTRATOR_ID, OrchestrationError, PAUSE_REASONS, RUN_STATE_SCHEMA_VERSION, SAFETY_ONLY_EVENT_TYPES, SAFETY_ONLY_REASONS, SUMMARY_REQUIRED, assertSlug, assertText, assertTimestamp, codePointLength, emptyMessageDelivery, emptyTaskExecution, formatTimestamp, holdsResources, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
+import { AGENT_MESSAGE_SCHEMA_VERSION, APPROVED_OPERATION_KINDS, ARTIFACT_ROLES, AUTOPILOT_MARKERS, opensProcess, CENTRAL_MESSAGE_TYPES, DELIVERY_MARKERS, EMPTY_EVENT_AUDIT, LIMITS, ORCHESTRATOR_ID, OrchestrationError, PAUSE_REASONS, RUN_STATE_SCHEMA_VERSION, SAFETY_ONLY_EVENT_TYPES, SAFETY_ONLY_REASONS, SUMMARY_REQUIRED, assertSlug, assertText, assertTimestamp, codePointLength, emptyMessageDelivery, emptyTaskExecution, formatTimestamp, holdsResources, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath, } from "./orchestrationTypes.js";
 import { validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import { approvedOperationFor, assertRegistryRoleId, pathWithin, validateApprovalManifest } from "./approvalManifest.js";
 import { MAX_PROGRESS_STEP_CHARS, MAX_WORKER_EVENTS } from "./autopilotTypes.js";
@@ -595,7 +595,8 @@ function processDenied(code, what) {
 function launchedProcesses(task) {
     // **프로세스를 여는 kind 전부를 센다**(T3③ 리뷰 C-1). `git_worktree`도 `superviseProcess`로 자식을
     // 띄우므로 여기 빠져 있으면 `maxProcessesPerRun`이 실제 프로세스 수와 어긋난다(이전 판이 그랬다).
-    const opens = (kind) => kind === "run_process" || kind === "git_worktree";
+    // V3 M10 T1: 목록을 수기로 다시 적지 않는다 — `opensProcess` 하나가 정본이다(autopilot 정리 판정과 공유).
+    const opens = opensProcess;
     return (task.execution.operationReceipts.filter((r) => opens(r.kind)).length +
         task.execution.pendingOperations.filter((p) => opens(p.kind)).length);
 }
