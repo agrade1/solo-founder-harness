@@ -71,6 +71,7 @@ import {
   ARTIFACT_ROLES,
   type AutopilotMarker,
   AUTOPILOT_MARKERS,
+  opensProcess,
   CENTRAL_MESSAGE_TYPES,
   type Clock,
   type ControllerAction,
@@ -1056,7 +1057,8 @@ function processDenied(code: ProcessEffectCode, what: string): OrchestrationErro
 function launchedProcesses(task: OrchestrationTask): number {
   // **프로세스를 여는 kind 전부를 센다**(T3③ 리뷰 C-1). `git_worktree`도 `superviseProcess`로 자식을
   // 띄우므로 여기 빠져 있으면 `maxProcessesPerRun`이 실제 프로세스 수와 어긋난다(이전 판이 그랬다).
-  const opens = (kind: string): boolean => kind === "run_process" || kind === "git_worktree";
+  // V3 M10 T1: 목록을 수기로 다시 적지 않는다 — `opensProcess` 하나가 정본이다(autopilot 정리 판정과 공유).
+  const opens = opensProcess;
   return (
     task.execution.operationReceipts.filter((r) => opens(r.kind)).length +
     task.execution.pendingOperations.filter((p) => opens(p.kind)).length

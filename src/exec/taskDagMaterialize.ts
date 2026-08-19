@@ -25,6 +25,7 @@
  * 따라 **task_assignment 본문의 `Inputs and Contracts` 절**에 적는다 — worker가 실제로 읽는 자리다.
  * 본문은 결정론적이다: 같은 문서면 같은 바이트가 나온다(`REQUIRED_BODY_HEADINGS` 순서 고정).
  */
+import { createHash } from "node:crypto";
 import type { OrchestrationKernel } from "./orchestrationKernel.js";
 import { LIMITS, OrchestrationError, REQUIRED_BODY_HEADINGS, assertSlug, type OrchestrationTask } from "./orchestrationTypes.js";
 import { validateMessageBody } from "./agentMessage.js";
@@ -48,7 +49,11 @@ export type TaskDagMaterializeCode = (typeof TASK_DAG_MATERIALIZE_CODES)[number]
 /** kernel이 정본이므로 이 모듈은 결과를 **읽어서** 돌려준다(자기 선언이 아니다). */
 export interface MaterializedTaskDag {
   document: TaskDagDocument;
-  /** 만든 순서(의존 먼저). kernel state의 정렬과는 무관하다. */
+  /**
+   * **이 호출이 실제로 만든** task의 순서(의존 먼저). kernel state의 정렬과는 무관하다.
+   * 이어받기(아래 `materializeTaskDag` 참조)에서는 앞선 호출이 이미 만든 task가 **들어 있지 않다** —
+   * "만들었다"가 아닌 것을 만들었다고 적지 않는다.
+   */
   createdOrder: string[];
   tasks: OrchestrationTask[];
 }
@@ -112,20 +117,30 @@ function dependencyOrder(nodes: readonly TaskDagNode[]): TaskDagNode[] {
  * **검증 → 순서 → 생성 → 대조.** 문서를 다시 검증하는 것은 중복이 아니다: "이미 검증했다"는 호출자의
  * 주장이며 이 모듈은 그것을 신뢰하지 않는다(deny-by-default).
  *
- * **빈 run에만 물질화한다**: 이미 task가 있는 run에 얹으면 taskId 충돌·소유권 겹침 판정이 문서 범위를
- * 벗어난다(문서는 자기 안에서만 겹침을 봤다).
+ * **빈 run이거나, 같은 문서로 물질화하다 만 run에만 물질화한다**: 그 밖의 run에 얹으면 taskId 충돌·
+ * 소유권 겹침 판정이 문서 범위를 벗어난다(문서는 자기 안에서만 겹침을 봤다).
  *
- * **부분 물질화에 대해 무엇을 보장하는가(정직하게)**: 문서 검증과 **seed 사전 검증**에서 거부되면
- * durable에는 아무것도 남지 않는다. 그러나 생성 루프 도중 kernel이 거부하면 앞선 task는 **남는다**
- * (task 생성이 task마다 별도 커밋이기 때문이다). 그 상태에서 재시도는 `dag_materialize_run_not_empty`로
- * 막히므로 **run은 사람이 손대야 한다**. 사전 검증이 알려진 원인 4종을 걷어냈을 뿐이고
- * "mid-loop 실패 불가"를 주장하지 않는다 — 대장 `C-76`.
+ * **부분 물질화(V3 M10 T1 — 대장 `C-76`)**: 문서 검증과 **seed 사전 검증**에서 거부되면 durable에는
+ * 아무것도 남지 않는다. 그러나 생성 루프 도중 kernel이 거부하면 앞선 task는 **남는다**(task 생성이
+ * task마다 별도 커밋이기 때문이다 — 사전 검증은 kernel 거부 사유를 전부 열거한 것이 아니고 시계·동시
+ * writer·IO는 열거로 닫히지 않는다). 이전 판은 그 상태에서 재시도를 `dag_materialize_run_not_empty`로
+ * 막아 **run을 벽돌로 만들었다**. 지금은 **같은 문서로 이어받는다**:
+ *
+ * - 기존 task 전부가 문서 node와 **정확히 일치**하고(아래 `nodeMatchesTask` — `B-30` 대조와 같은 등호 +
+ *   state 축 밖 필드까지 보는 assignment 본문 digest 대조), 문서 밖 task가 없고, **아무 task도 시작되지
+ *   않았을 때**(`attemptNo === 0`)만 이어받는다.
+ * - 그 밖에는 그대로 `dag_materialize_run_not_empty`다. 특히 **한 번 진행된 run에 문서를 다시 얹어
+ *   DAG를 키우는 경로는 열지 않았다** — 그것은 복구가 아니라 새 능력이고, 진행 중 소유권 경합 판정의
+ *   전제를 바꾼다.
+ * - 이어받기는 **멱등**이다: 이미 있는 task는 다시 만들지 않고 `createdOrder`에도 넣지 않는다.
+ *
+ * 원자적 대안(전 task를 한 커밋으로 만드는 kernel API)을 고르지 않은 이유: `commitRun`의 journal 상한
+ * (`MAX_JOURNAL_BODIES`=8 · `MAX_JOURNAL_EVENTS`=64)이 task 8건을 넘는 DAG를 한 커밋으로 표현하지
+ * 못한다 → 크래시 복구 journal 계약을 넓히는 별도 slice가 선행해야 한다.
  */
 export function materializeTaskDag(kernel: OrchestrationKernel, rawDocument: unknown): MaterializedTaskDag {
   const document = validateTaskDag(rawDocument);
-  if (kernel.getState().tasks.length > 0) {
-    throw new OrchestrationError("dag_materialize_run_not_empty", "이미 task가 있는 run에는 DAG를 물질화하지 않는다");
-  }
+  assertResumableRun(kernel, document);
 
   const ordered = dependencyOrder(document.tasks);
 
@@ -196,6 +211,9 @@ export function materializeTaskDag(kernel: OrchestrationKernel, rawDocument: unk
 
   const createdOrder: string[] = [];
   for (const { node, seed } of seeds) {
+    // 이어받기: 앞선 호출이 이미 만든 task는 **다시 만들지 않는다**(`assertResumableRun`이 그것이
+    // 문서와 같음을 이미 확인했다). 다시 부르면 kernel이 `task_exists`로 거부할 뿐이다.
+    if (kernel.getTask(node.taskId) !== null) continue;
     // 의존이 없으면 root, 있으면 dependent — 둘 다 depth 0이고 **중앙이** 만든다.
     if (node.dependsOn.length === 0) kernel.createRootTask(seed);
     else kernel.createDependentTask({ ...seed, dependsOn: [...node.dependsOn] });
@@ -211,22 +229,7 @@ export function materializeTaskDag(kernel: OrchestrationKernel, rawDocument: unk
     if (task === null || task === undefined) {
       throw new OrchestrationError("dag_materialize_drift", `물질화한 task를 kernel에서 찾을 수 없다: ${node.taskId}`);
     }
-    const same = (a: readonly string[], b: readonly string[]): boolean => {
-      if (a.length !== b.length) return false;
-      const x = [...a].sort();
-      const y = [...b].sort();
-      return x.every((v, i) => v === y[i]);
-    };
-    if (
-      task.roleId !== node.roleId ||
-      task.title !== node.title ||
-      task.scope !== node.scope ||
-      task.depth !== 0 ||
-      task.parentTaskId !== null ||
-      !same(task.ownership, node.ownership) ||
-      !same(task.dependsOn, node.dependsOn) ||
-      !same(task.resourceClasses, node.resourceClasses)
-    ) {
+    if (!nodeMatchesTask(node, task)) {
       throw new OrchestrationError(
         "dag_materialize_drift",
         `물질화한 task가 문서와 다르다: ${node.taskId}(ownership·dependsOn·resourceClasses·role·제목·scope 중 하나)`,
@@ -235,4 +238,77 @@ export function materializeTaskDag(kernel: OrchestrationKernel, rawDocument: unk
     tasks.push(task);
   }
   return { document, createdOrder, tasks };
+}
+
+/** 순서를 무시한 집합 등호(문서와 kernel의 정렬 규칙이 다를 수 있다). */
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const x = [...a].sort();
+  const y = [...b].sort();
+  return x.every((v, i) => v === y[i]);
+}
+
+/**
+ * **문서 node와 durable task가 같은 것인가.** `B-30` 최후 방어선과 이어받기 판정이 **같은 등호 하나**를
+ * 쓴다 — 두 곳이 갈라지면 "이어받아도 안전하다"의 근거와 "1:1 보존"의 근거가 서로 달라진다.
+ * 상태·attempt는 보지 않는다(그것은 `assertResumableRun`이 따로 본다).
+ */
+function nodeMatchesTask(node: TaskDagNode, task: OrchestrationTask): boolean {
+  return (
+    task.roleId === node.roleId &&
+    task.title === node.title &&
+    task.scope === node.scope &&
+    task.depth === 0 &&
+    task.parentTaskId === null &&
+    sameSet(task.ownership, node.ownership) &&
+    sameSet(task.dependsOn, node.dependsOn) &&
+    sameSet(task.resourceClasses, node.resourceClasses)
+  );
+}
+
+/**
+ * **빈 run이거나 같은 문서로 물질화하다 만 run인가**(대장 `C-76`). 아니면 `dag_materialize_run_not_empty`다.
+ *
+ * 이어받기 조건 셋 전부를 요구한다: ⓐ 기존 task가 전부 문서 안에 있고 ⓑ 각각 문서 node와 정확히 같고
+ * ⓒ **아무 task도 시작된 적이 없다**(`attemptNo === 0`). ⓒ가 없으면 진행 중인 run에 문서를 다시 얹어
+ * DAG를 키울 수 있고, 그것은 부분 물질화 복구가 아니라 새 능력이다.
+ */
+function assertResumableRun(kernel: OrchestrationKernel, document: TaskDagDocument): void {
+  const state = kernel.getState();
+  const existing = state.tasks;
+  if (existing.length === 0) return;
+  const byId = new Map(document.tasks.map((n) => [n.taskId, n]));
+  for (const task of existing) {
+    const node = byId.get(task.taskId);
+    if (node === undefined) {
+      throw new OrchestrationError(
+        "dag_materialize_run_not_empty",
+        `이 run에는 문서 밖 task가 있다 — 물질화 이어받기 대상이 아니다: ${task.taskId}`,
+      );
+    }
+    if (!nodeMatchesTask(node, task)) {
+      throw new OrchestrationError(
+        "dag_materialize_run_not_empty",
+        `기존 task가 문서 node와 다르다 — 이어받으면 문서와 durable이 갈린다: ${task.taskId}`,
+      );
+    }
+    // **state 축이 아닌 필드까지 본다**(T1 적대적 리뷰 B1). `provides`/`consumes`(= API contract)는
+    // kernel state에 없고 **assignment 본문**에만 산다 → 위 등호만으로는 "문서를 고쳐 들고 와서
+    // 앞선 task는 구계약, 새 task는 신계약"이 통과한다. 본문은 같은 문서면 같은 바이트이므로
+    // (`assignmentBodyFor` 결정론) durable digest와 재계산 digest를 그대로 대조한다.
+    const assignment = state.messages.find((m) => m.messageId === `asg-${task.taskId}`);
+    const expected = createHash("sha256").update(assignmentBodyFor(node), "utf8").digest("hex");
+    if (assignment === undefined || assignment.bodySha256 !== expected) {
+      throw new OrchestrationError(
+        "dag_materialize_run_not_empty",
+        `기존 task의 assignment 본문이 문서와 다르다(provides·consumes 등 state 축 밖 필드): ${task.taskId}`,
+      );
+    }
+    if (task.execution.attemptNo !== 0) {
+      throw new OrchestrationError(
+        "dag_materialize_run_not_empty",
+        `이미 시작된 task가 있는 run에는 이어받지 않는다: ${task.taskId}`,
+      );
+    }
+  }
 }

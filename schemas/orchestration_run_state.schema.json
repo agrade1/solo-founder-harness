@@ -150,7 +150,8 @@
         "cleanup_unconfirmed",
         "stream_invalid",
         "delivery_failed",
-        "review_invalid"
+        "review_invalid",
+        "controller_lost"
       ]
     },
     "pauseReason": {
@@ -200,6 +201,7 @@
         "stream_invalid",
         "delivery_failed",
         "review_invalid",
+        "controller_lost",
         "approval_required",
         "attempts_exhausted",
         "delivery_deadline_exceeded",

@@ -4,6 +4,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   appendFileSync,
@@ -18,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   AGENT_MESSAGE_TYPES,
@@ -4439,4 +4440,134 @@ test("[M7 T6] blocker는 막지 않는다 — 차단은 진행이 아니라 사�
     summary: "결정 대기 중 차단",
   });
   assert.equal(blocked.state, "blocked");
+});
+
+// ── V3 M10 T1: 실제 프로세스 kill로 본 크래시 복구 (C-4 · C-8 · C-4 보강) ────
+//
+// **왜 in-process fault만으로 부족한가**: `setCommitFaultHook`이 던지면 `commitRun`의 `finally`가 lock을
+// **해제한다** → 그 경로는 "journal 잔존"은 재현하지만 **"stale lock 잔존"은 재현하지 못한다**. 그리고
+// stale lock이 바로 복구를 막던 것이다(`loadRun`은 복구 **전에** lock을 잡는다). 그래서 이 절은 진짜
+// 자식 프로세스를 SIGKILL한다 — M9에서 "offline만으로는 보이지 않는 결함"을 실측으로 잡았던 것과 같은 이유다.
+
+const CRASH_CHILD = `
+import { pathToFileURL } from "node:url";
+import { join } from "node:path";
+const [root, ws, runId, stage] = process.argv.slice(2);
+const url = (rel) => pathToFileURL(join(root, rel)).href;
+const store = await import(url("src/exec/orchestrationStore.ts"));
+const kernel = await import(url("src/exec/orchestrationKernel.ts"));
+const types = await import(url("src/exec/orchestrationTypes.ts"));
+const k = kernel.openOrchestrationRun({ workspaceRoot: ws, runId, clock: () => new Date(Date.UTC(2026, 6, 27, 0, 30, 0)) });
+store.setCommitFaultHook((s) => {
+  // **관측 지점에서 즉시 죽는다** — SIGKILL이므로 finally도 atexit도 돌지 않는다(진짜 크래시와 같다).
+  if (s === stage) process.kill(process.pid, "SIGKILL");
+});
+const heading = types.REQUIRED_BODY_HEADINGS.task_assignment.map((h) => "## " + h + "\\n\\n본문 한 줄.\\n").join("\\n");
+k.createRootTask({
+  taskId: "crashed",
+  roleId: "pm",
+  title: "crashed 제목",
+  scope: "crashed bounded scope",
+  ownership: ["src/crashed"],
+  assignmentMessageId: "asg-crashed",
+  assignmentBody: heading,
+});
+process.exit(0);
+`;
+
+test("[M10-T1] 커밋 발행 경계 11곳에서 프로세스를 SIGKILL해도 재시작이 열리고 중복·유실이 없다", () => {
+  const repoRoot = resolve(fileURLToPath(new URL(".", import.meta.url)), "../..");
+  const tsx = join(repoRoot, "node_modules/.bin/tsx");
+  assert.ok(existsSync(tsx), "tsx가 없다 — 이 테스트는 실제 자식 프로세스를 띄운다");
+  const childFile = join(mkdtempSync(join(tmpdir(), "m10-crash-child-")), "crash.mjs");
+  writeFileSync(childFile, CRASH_CHILD);
+
+  for (const stage of COMMIT_STAGES) {
+    const { ws, k } = bootRoot(["crashed"]);
+    const paths = runPaths(ws, RUN_ID);
+    const baseRevision = k.getState().revision;
+    const baseEvents = readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0).length;
+
+    const child = spawnSync(tsx, [childFile, repoRoot, ws, RUN_ID, stage], { encoding: "utf8", timeout: 60_000 });
+    // `tsx`는 래퍼 프로세스라 안쪽 node가 SIGKILL로 죽으면 래퍼가 `137`(=128+9)로 끝난다 — 둘 다 같은
+    // 사실(신호로 죽었고 정리 코드가 돌지 않았다)이므로 둘 다 받는다. 정상 종료(0)만 전제 위반이다.
+    assert.ok(
+      child.signal === "SIGKILL" || child.status === 137,
+      `${stage}: 자식이 SIGKILL로 죽지 않았다 (status=${child.status} signal=${child.signal}) ${child.stderr}`,
+    );
+
+    // ⓐ **진짜 크래시의 잔재**: 커밋 중이었으므로 writer lock이 남는다(finally가 돌지 않았다).
+    assert.ok(existsSync(paths.lockFile), `${stage}: lock이 남지 않았다 — 이 테스트의 전제가 성립하지 않았다`);
+
+    // ⓑ **재시작이 열린다**: 죽은 소유자의 lock을 회수하고 journal 규칙대로 정리한 뒤 적재한다.
+    //    (회수가 없으면 `run_lock_held`로 영구히 열리지 않는다 = 이전 판의 실제 동작이다.)
+    // 자식이 커밋을 착지시킨 단계에서는 durable `updatedAt`이 자식의 시각(00:30)이다 → 부모는 그보다
+    // **뒤**의 시계로 열어야 한다(시계 역행은 kernel이 `clock_invalid`로 거부한다).
+    let laterTick = 0;
+    const laterClock = (): Date => new Date(Date.UTC(2026, 6, 27, 0, 45, laterTick++));
+    const reopened = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: laterClock });
+    const state = reopened.getState();
+    // ⓒ **가시적 상태는 전 또는 후 하나다**(중간이 없다). 결정은 유실되지 않고, 부분 커밋도 없다.
+    const landed = state.tasks.some((t) => t.taskId === "crashed");
+    assert.equal(state.revision, landed ? baseRevision + 1 : baseRevision, `${stage}: revision이 전도 후도 아니다`);
+    const events = readFileSync(paths.eventsFile, "utf8").split("\n").filter((l) => l.length > 0);
+    assert.equal(events.length, state.lastEventId, `${stage}: event 수와 lastEventId가 다르다`);
+    assert.ok(events.length >= baseEvents, `${stage}: 기준 event가 잘려나갔다(결정 유실)`);
+    assert.ok(!existsSync(paths.journalFile), `${stage}: 복구 뒤에도 미완 커밋 journal이 남았다`);
+
+    // ⓓ **중복이 없다**: 같은 커밋을 다시 시도하면 착지했으면 `task_exists`, 아니면 성공 — 어느 쪽이든
+    //    같은 taskId가 둘이 되는 경우는 없다.
+    let retry = "ok";
+    try {
+      reopened.createRootTask(seed("crashed", "pm", { ownership: ["src/crashed"] }));
+    } catch (e) {
+      retry = e instanceof OrchestrationError ? e.code : "unknown";
+    }
+    // 착지했으면 중복 생성으로 거부되고, 착지하지 않았으면 같은 커밋이 그대로 성공한다 — 어느 쪽이든
+    // 같은 taskId가 둘이 되는 경우는 없다(아래 단정).
+    assert.equal(retry, landed ? "duplicate_task_id" : "ok", `${stage}: 재시도 결과가 착지 여부와 어긋난다(${retry})`);
+    // ⓔ 죽은 writer의 lock이 **아무것도 막지 않는다**. journal이 발행되기 전에 죽은 단계에서는 `loadRun`이
+    //    복구할 것이 없어 lock을 건드리지 않으므로(그래서 열기는 성공한다), 회수는 다음 커밋 경로에서
+    //    일어난다 — 어느 경로든 끝나고 나면 남지 않는다.
+    assert.ok(!existsSync(paths.lockFile), `${stage}: 죽은 writer의 lock이 회수되지 않고 남았다`);
+    assert.equal(
+      openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: laterClock }).getState().tasks.filter((t) => t.taskId === "crashed").length,
+      1,
+      `${stage}: 같은 task가 중복 생성됐다`,
+    );
+  }
+});
+
+test("[M10-T1] 살아 있는 writer의 lock은 훔치지 않는다 — 회수는 사망 관측에만 열린다", () => {
+  const { ws, k } = bootRoot(["blocked"]);
+  const paths = runPaths(ws, RUN_ID);
+
+  // ⓐ 살아 있는 이 프로세스가 쥔 lock: 회수 대상이 아니다(이전과 같은 fail closed).
+  const mine = acquireRunWriterLock(paths);
+  assert.equal(codeOf(() => acquireRunWriterLock(paths)), "run_lock_held");
+  assert.equal(codeOf(() => k.createRootTask(seed("blocked", "pm"))), "run_lock_held");
+  releaseRunWriterLock(paths, mine);
+
+  // ⓑ **소유자 미상**(형태가 아닌 lock 파일)도 회수하지 않는다 — 미상을 회수 근거로 삼지 않는다.
+  writeFileSync(paths.lockFile, "다른 도구가 만든 lock\n");
+  assert.equal(codeOf(() => acquireRunWriterLock(paths)), "run_lock_held");
+  rmSync(paths.lockFile);
+
+  // ⓒ **죽은 소유자**의 lock만 회수한다. pid 1은 존재하므로(init) `<= 1`은 형태에서 이미 거부된다 →
+  //    존재하지 않는 pid를 골라 쓴다. `kill(pid, 0)`가 ESRCH일 때만 회수가 열린다.
+  let dead = 4_000_000;
+  for (;;) {
+    try {
+      process.kill(dead, 0);
+      dead -= 1;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ESRCH") break;
+      dead -= 1;
+    }
+  }
+  writeFileSync(paths.lockFile, `${JSON.stringify({ nonce: "b".repeat(32), pid: dead })}\n`);
+  const reclaimed = acquireRunWriterLock(paths);
+  assert.notEqual(reclaimed.nonce, "b".repeat(32), "회수가 남의 nonce를 그대로 물려받았다");
+  releaseRunWriterLock(paths, reclaimed);
+  assert.ok(!existsSync(paths.lockFile));
 });
