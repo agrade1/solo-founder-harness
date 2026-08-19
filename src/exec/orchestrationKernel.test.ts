@@ -3018,7 +3018,10 @@ test("[M4a] orchestration_run_state.schema.json의 key·enum·상한이 runtime 
   assert.deepEqual(Object.keys(d.operationReceipt.properties).sort(), [...OPERATION_RECEIPT_KEYS].sort());
   assert.equal(d.operationReceipt.additionalProperties, false);
   assert.deepEqual(d.operationReceiptMarker.enum, [...OPERATION_RECEIPT_MARKERS]);
-  assert.deepEqual(d.operationKind.enum, [...APPROVED_OPERATION_KINDS]);
+  // **리터럴 목록으로 잠근다**(T3③ 리뷰 C-3): 상수 자기참조(`[...APPROVED_OPERATION_KINDS]`)는 kind를
+  // 더해도 테스트 수정 없이 통과한다 — mutating kind가 생긴 지금은 그 잠금이 공허하다.
+  assert.deepEqual(d.operationKind.enum, ["write_file", "run_process", "git_worktree"]);
+  assert.deepEqual([...APPROVED_OPERATION_KINDS], d.operationKind.enum, "스키마와 런타임 상수가 갈라졌다");
   assert.equal(d.operationReceipt.properties.exitCode.oneOf[0].minimum, -255);
   assert.equal(d.operationReceipt.properties.exitCode.oneOf[0].maximum, 255);
   // M5c 3A 4차 리비전 — 미확정 operation 레코드(`attemptedAt` 포함)도 schema와 정확히 같아야 한다.

@@ -19,6 +19,8 @@
  */
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
+import { MANAGED_PROCESS_ENV } from "./managedProcess.js";
+import { renameSync } from "node:fs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -529,7 +531,7 @@ function worktreeShot(f: Fixture, authorityId: string, turnId: string): { op: Ty
       taskId: "root",
       attemptId: task.execution.attemptId,
       turnId,
-      operations: [{ operationId: `op-${authorityId}`, kind: "git_worktree", authorityId }],
+      operations: [{ operationId: nextId("op"), kind: "git_worktree", authorityId }],
       result: { summary: "worktree turn", outputs: [] },
     },
   });
@@ -584,6 +586,85 @@ test("[M9] T3③: git 인자에 브랜치·remote·refspec이 없고 경로·커
   }
   // hook·fsmonitor·pager를 끄는 고정 전치 인자가 그대로 붙는다.
   assert.ok(argv.includes("core.hooksPath=/dev/null"), "hook 차단 전치 인자가 사라졌다");
+});
+
+test("[M9] T3③ 리뷰 A: 실패한 worktree 명령은 성공 영수증이 되지 않는다(거짓 성공 0)", async () => {
+  // **이전 판의 A급 결함**: `terminatedBy === "exit"`만 보고 `marker: "applied"`를 만들었다 →
+  // `git worktree add`가 exit 128로 실패해도(경로 점유·커밋 부재·잔재) "만들었다"는 durable 영수증이
+  // 남고, 같은 operationId는 `operation_already_recorded`로 **영구 봉인**됐다(로드맵 M9 위험 3).
+  const f = worktreeFixture();
+  const expected = join(f.ws, ".harness", "worktrees", RUN_ID, "root");
+
+  // ⓐ 같은 경로를 미리 점유해 `worktree add`를 실제로 실패시킨다(exit 128).
+  mkdirSync(expected, { recursive: true });
+  writeFileSync(join(expected, "squatter.txt"), "이미 있다\n");
+  const add = worktreeShot(f, "wt-add", "turn-1");
+  assert.equal(
+    await codeOfAsync(() => executeWorktreeOperation(add.grant, add.op, add.cap)),
+    "process_result_unknown",
+    "실패한 worktree add가 성공으로 접혔다",
+  );
+  // **성공 영수증이 없다** — pending은 attempted로 남아 정합화로만 닫힌다(부분 상태가 있을 수 있다).
+  const pend = f.kernel.getTask("root").execution.pendingOperations;
+  assert.equal(f.kernel.getTask("root").execution.operationReceipts.length, 0, "실패가 영수증으로 남았다");
+  assert.equal(pend.length, 1);
+  assert.notEqual(pend[0].attemptedAt, null, "집행 경계 진입이 durable하지 않다");
+  // 경쟁자 파일은 그대로다(우리가 지우지 않았다).
+  assert.equal(readFileSync(join(expected, "squatter.txt"), "utf8"), "이미 있다\n");
+
+  // ⓑ **존재하지 않는 worktree remove도 성공이 아니다**("정리했다"는 거짓 기록 0).
+  const g = worktreeFixture();
+  const rm = worktreeShot(g, "wt-remove", "turn-1");
+  assert.equal(
+    await codeOfAsync(() => executeWorktreeOperation(rm.grant, rm.op, rm.cap)),
+    "process_result_unknown",
+  );
+  assert.equal(g.kernel.getTask("root").execution.operationReceipts.length, 0);
+});
+
+test("[M9] T3③ 리뷰 B-2: linked worktree 루트에서는 worktree를 만들지 않는다(변경이 승인 루트 밖에 남는다)", async () => {
+  // `verifyApprovedRepoRoot`는 읽기 질의 시절 규칙이라 `.git`이 **일반 파일**인 루트(그 자체가 linked
+  // worktree)도 통과시킨다. 거기서 add하면 등록·metadata가 **main clone의 `.git/worktrees/`**, 즉
+  // manifest가 이름한 적 없는 디렉터리에 남는다.
+  const f = worktreeFixture();
+  // workspaceRoot의 `.git`을 디렉터리에서 파일로 바꿔 linked worktree 모양을 만든다.
+  const dotGit = join(f.ws, ".git");
+  renameSync(dotGit, join(f.ws, ".git-real"));
+  writeFileSync(dotGit, `gitdir: ${join(f.ws, ".git-real")}\n`);
+  const add = worktreeShot(f, "wt-add", "turn-1");
+  assert.equal(
+    await codeOfAsync(() => executeWorktreeOperation(add.grant, add.op, add.cap)),
+    "process_executable_untrusted",
+    "linked worktree 루트에서 변경이 통과했다",
+  );
+  assert.equal(lstatSync(join(f.ws, ".harness"), { throwIfNoEntry: false }), undefined, "거부인데 worktree가 생겼다");
+});
+
+test("[M9] T3③ 리뷰 B-1: 고정 env가 partial clone lazy fetch를 끈다", () => {
+  // argv에 `fetch`가 없어도 checkout은 object를 물리적으로 요구하므로 partial clone에서는 git이
+  // **내부에서** 원격에 닿는다. argv 계약만으로 "네트워크 0"이 성립하지 않는다는 뜻이라 env로 끈다.
+  assert.equal(MANAGED_PROCESS_ENV.GIT_NO_LAZY_FETCH, "1", "lazy fetch 차단이 고정 env에서 사라졌다");
+  // **호출자별 env 오버라이드 표면을 열지 않았다**: `SupervisedLaunch`에 `env` key가 없다
+  // (있으면 임의 env 주입 통로가 되고, 이 상수가 닫혀 있다는 성질이 무너진다).
+  assert.equal(Object.keys(MANAGED_PROCESS_ENV).includes("env"), false);
+});
+
+test("[M9] T3③ 리뷰 C-1: worktree도 프로세스 상한에 포함된다(회계가 실제 프로세스 수와 맞는다)", async () => {
+  // `git_worktree`도 `superviseProcess`로 자식을 띄운다 — `launchedProcesses`에서 빠져 있으면 상한이
+  // 실제 프로세스 수보다 느슨해진다. **상한 자체로 판별한다**(테스트가 직접 세면 공허하다).
+  const f = worktreeFixture();
+  // task당 child 상한은 4다 → add/remove를 번갈아 4번 성공시키고 5번째가 spawn 전에 닫히는지 본다.
+  for (let i = 0; i < 4; i++) {
+    const shot = worktreeShot(f, i % 2 === 0 ? "wt-add" : "wt-remove", `turn-${i}`);
+    const outcome = await executeWorktreeOperation(shot.grant, shot.op, shot.cap);
+    f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+  }
+  const fifth = worktreeShot(f, "wt-add", "turn-4");
+  assert.equal(
+    await codeOfAsync(() => executeWorktreeOperation(fifth.grant, fifth.op, fifth.cap)),
+    "process_spawn_limit_exceeded",
+    "worktree가 프로세스 상한에 잡히지 않는다",
+  );
 });
 
 test("[M9] T3③: 승인되지 않은 worktree 권능·재생·위조는 저장소를 건드리지 못한다", async () => {

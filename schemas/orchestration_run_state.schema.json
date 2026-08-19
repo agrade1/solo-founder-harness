@@ -271,11 +271,11 @@
         "turnId": { "$ref": "#/definitions/slug" },
         "planDigest": { "$ref": "#/definitions/sha256" },
         "path": {
-          "description": "write_file이면 정규화된 workspace-relative 경로, run_process면 null.",
+          "description": "write_file이면 정규화된 workspace-relative 경로, run_process·git_worktree면 null.",
           "oneOf": [{ "$ref": "#/definitions/workspacePath" }, { "type": "null" }]
         },
         "resultSha256": {
-          "description": "write_file이면 결과 내용 sha256, run_process면 null.",
+          "description": "write_file이면 결과 내용 sha256, run_process·git_worktree면 null.",
           "oneOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }]
         },
         "exitCode": {
