@@ -357,6 +357,38 @@ echo "$M8_OUT" | grep -q "shadcn registry 실조회 0회"
 check "M8 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
 
 echo ""
+echo "== Test 21: M9 개발 파이프라인 — 선결 4건 · DAG 계약/물질화 · 소유권 경합 · 격리 worktree (offline · 무과금) =="
+# 임시 디렉터리 전용 · live LLM 0회. ⑥만 **실제 git**을 로컬에서 부른다(네트워크 0 · 원격 0).
+M9_OUT="$(node scripts/m9-offline-acceptance.mjs 2>&1)"
+M9_RC=$?
+[ "$M9_RC" -eq 0 ];                               check "M9 offline acceptance exit 0" $?
+echo "$M9_OUT" | grep -q "FAIL=0";                check "M9 내부 체크 전부 통과" $?
+echo "$M9_OUT" | grep -q "테스트 명령·러너·argv를 담을 통로가 없다"
+check "M9 ① run-tests가 닫힌 채로 열렸다 확인 출력" $?
+echo "$M9_OUT" | grep -q "승인된 신규 파일이 실제로 발행된다(B-16 개방)"
+check "M9 ② B-16 신규 발행이 실제 바이트를 냈다 확인 출력" $?
+echo "$M9_OUT" | grep -q "겹치는 소유권 아래 쓰기는 거부된다"
+check "M9 ③ B-29 동시 쓰기 거부 확인 출력" $?
+echo "$M9_OUT" | grep -q "겹치지 않는 경로는 열려 있다(병렬을 막지 않는다)"
+check "M9 ③ 게이트가 병렬을 막지 않음(공허하지 않음) 확인 출력" $?
+echo "$M9_OUT" | grep -q "순서가 강제되지 않는 두 task의 소유권 겹침은 거부된다"
+check "M9 ④ DAG 소유권 충돌 fail-closed 확인 출력" $?
+echo "$M9_OUT" | grep -q "문서가 실행 권한을 만들 통로가 없다"
+check "M9 ④ DAG 문서가 승인 manifest를 우회하지 못함 확인 출력" $?
+echo "$M9_OUT" | grep -q "resourceClasses가 kernel로 1:1 보존된다(B-30)"
+check "M9 ⑤ B-30 문서→kernel 1:1 보존 확인 출력" $?
+echo "$M9_OUT" | grep -q "거부된 물질화가 durable 잔류를 남기지 않는다(run 벽돌화 0)"
+check "M9 ⑤ 부분 물질화 방지(리뷰 A급 수정) 확인 출력" $?
+echo "$M9_OUT" | grep -q "격리 worktree 디렉터리가 실제로 생겼다"
+check "M9 ⑥ 실제 git worktree 생성 확인 출력" $?
+echo "$M9_OUT" | grep -q "브랜치를 만들지 않았다(--detach)"
+check "M9 ⑥ 브랜치 미생성(원격 쓰기 표현 불가 유지) 확인 출력" $?
+echo "$M9_OUT" | grep -q "멈춘 marker가 표시에서 사라지지 않는다"
+check "M9 ⑦ F2 진행 표시가 실패를 숨기지 않음 확인 출력" $?
+echo "$M9_OUT" | grep -q "live LLM 0회"
+check "M9 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

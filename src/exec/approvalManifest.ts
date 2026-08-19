@@ -154,7 +154,10 @@ export const RUN_PROCESS_AUTHORITY_KEYS = ["authorityId", "kind", "action", "dat
 /**
  * **격리 worktree 조작 승인 1건의 닫힌 key 집합**(V3 M9 T3③). 경로·브랜치·커밋·remote·refspec을 담을
  * 필드가 **하나도 없다** — 전부 kernel이 durable(runId·taskId·`approvedCommit`)에서 파생한다.
- * `timeoutMs`도 없다: 작업량이 상수라 승인 문서가 고를 값이 아니다(trusted git 질의와 같은 판단).
+ * `timeoutMs`도 없다 — 집행기가 trusted git 질의의 30초 상수를 쓴다. **다만 "작업량이 상수"는
+ * 질의에만 참이다**: `worktree add`는 tree 전체 checkout이라 repo 크기에 비례한다(T3③ 적대적 리뷰
+ * B-3). 큰 repo에서 deadline kill이 나면 승인 루트 밖에 잔재가 남고 `prune`은 닫힌 집합에 없다 →
+ * 대장 `B-31`. 없앴다고 주장하지 않는다.
  */
 export const GIT_WORKTREE_AUTHORITY_KEYS = ["authorityId", "kind", "action"] as const;
 

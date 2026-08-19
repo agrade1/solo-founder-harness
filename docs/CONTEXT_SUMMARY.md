@@ -1,6 +1,37 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-12 (M6 완료)
+최종 갱신: 2026-08-19 (M9 진행 중 — T1·T2·T3 완료)
+
+## 최신 (2026-08-19 — **V3 M9 진행 중. T4 남음** · 이 블록이 가장 최신이다)
+
+- worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
+- 실측 `test:exec` **589/589** · `test:core` **442/442** · acceptance **PASS=168 / FAIL=0**
+  (M9는 **Test 21**) · `tsc --noEmit` clean.
+- 판정 정본은 로드맵 **`M9 진행 판정 ①`** 절이다(증명/미증명을 같은 무게로 적었다).
+
+**M9에서 선 것**
+- **선결 4건 전부**: `run_process`에 `run-tests` action(닫힌 채 · 명령/argv 통로 0) ·
+  `B-16` 신규 파일 발행 완전 개방(`O_CREAT|O_EXCL` 빈 파일 → 부모 재검증 → fd 전용 쓰기) ·
+  `B-17` 회계면(`failDeliveryAttempt` 배선) · F2 실행 가시성(v1 `progress.ts` 재사용 · 신규 의존성 0).
+- **T2** `src/exec/taskDag.ts` — Tech Lead DAG 문서 계약 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 ·
+  `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재).
+- **T3①** `B-29` — 동시 점유 task의 같은 경로 쓰기 거부(`operation_ownership_contended`).
+- **T3②** `src/exec/taskDagMaterialize.ts` — 문서 → kernel task(새 kernel API 0개). `B-30` 닫음.
+- **T3③** `git_worktree`를 **세 번째 typed operation kind**로 — kernel이 저장소를 바꾸는 첫 면이며
+  경로·커밋을 durable에서 파생하고 브랜치를 만들지 않는다(`--detach`). **실제 git 왕복 실측**.
+
+**M9에 남은 것(전부 미증명)**
+- 병렬 2 worker의 **실제 동시 진행** · fresh Codex 리뷰 3종(test review가 실제 테스트 실행) ·
+  revise/verify 왕복 · 직렬 병합 · end-to-end 1회.
+- **live는 0회다** — Claude worker live(구독)도, Codex live(과금 게이트 · 사용자 승인 필요)도 미실행.
+
+**작업 방식(그대로 유지)**: 슬라이스마다 focused + mutation red 확인 → fresh 적대적 read-only 리뷰
+(구현자와 다른 세션) → 지적 반영 → PR 분할(소스/dist). M9에서 리뷰가 **A급 1건**(부분 물질화와 그
+과대주장)을 잡았고 즉시 수정했다.
+
+---
+
+## 이전 (2026-08-12 · M6 완료 시점)
 
 ## 최신 (2026-08-12 — **V3 M6 완료. 다음은 M7** · 이 블록이 가장 최신이다)
 

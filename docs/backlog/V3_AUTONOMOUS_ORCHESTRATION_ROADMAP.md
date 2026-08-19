@@ -1822,9 +1822,15 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 > 범위: PR #29(T1 선결 4건) · #30(dist) · `pr/v3-m9-03-dag`(T2). 전부 **offline·무과금**이다.
 > **live는 아직 하나도 돌리지 않았다** — Claude worker live도, Codex live도 미실행이다.
 
-**실측 baseline**: `test:exec` **575/575** · `test:core` **442/442** ·
-`scripts/acceptance.sh` **PASS=154 / FAIL=0** · `npx tsc --noEmit` clean.
-mutation **23종 red 확인**(T1 17 + T2 6).
+**실측 baseline**(2026-08-19 갱신): `test:exec` **589/589** · `test:core` **442/442** ·
+`scripts/acceptance.sh` **PASS=168 / FAIL=0**(M9는 **Test 21**) · `npx tsc --noEmit` clean.
+mutation **34종 red 확인**(T1 17 + T2 7 + T3① 3 + T3② 3(리뷰 A급 수정 포함) + T3③ 5 + Test 21 3).
+
+**acceptance Test 21이 생겼다**(`scripts/m9-offline-acceptance.mjs` · 내부 체크 47건). KICKOFF §10
+완료 판정 기준 2번이 요구한 것인데 T3까지 빠져 있었다 — 슬라이스마다 focused+mutation은 돌았지만
+acceptance 진입점이 0건이었다. ⑥만 **실제 git**을 로컬에서 부르고(네트워크 0 · 원격 0) 나머지는
+전부 offline이다. 체크가 공허하지 않음을 mutation 3종(B-29 게이트 제거 / DAG 소유권 충돌 제거 /
+`--detach` 제거)으로 확인했다.
 
 | 선결/과업 | 무엇을 했는가 | 증명 상태 |
 |---|---|---|
@@ -1832,6 +1838,9 @@ mutation **23종 red 확인**(T1 17 + T2 6).
 | **선결 2** `B-16` 신규 파일 발행 | **완전 개방**. temp+link/rename을 되살리지 않고 `O_CREAT\|O_EXCL` 빈 파일 → 부모 경로 재해석 검증 → inode 도달성 검증 → 그 다음에야 기존 `applyToFixedTarget`(fd 전용)으로 쓴다. 부모가 교체된 채면 공격자가 얻는 것은 0바이트다 | **증명** — mutation 4종 red · 판별 테스트 5건 |
 | **선결 3** `B-17` | **회계면만 닫았다.** `failDeliveryAttempt`는 kernel에 있었으나 **프로덕션 호출부가 0건**이어서 `stableController` 전달 루프가 실패하면 `activeAttemptId`가 durable에 열린 채 남았다. 이제 실패 marker로 닫는다(`send_failed` vs `turn_failed`) | **부분** — 아래 미증명 표 참조 |
 | **선결 4** F2 실행 가시성 | v1 `core/progress.ts`를 **재사용**한다(새 렌더러 0 · 신규 의존성 0). `AutopilotEvent → RunEvent` 변환기 하나뿐이다. batch 수 → `step_start.total`, task 경과 → `step_end.elapsedMs`(**F1의 데이터 기반이 여기서 생겼다**), 멈춘 marker는 warn note로 남고 pause는 `ok:false`·run은 `failed`다 | **증명** — mutation 5종 red |
+| **T3①** `B-29` kernel 소유권 경합 | 동시 자원 점유 task의 같은 경로 쓰기를 `operation_ownership_contended`로 거부. scheduler 직렬화는 시도 후 기각(fixture 20건+ red) → `C-74` | **증명** — mutation 3종 red · 적대적 리뷰 APPROVE(TOCTOU·`waiting_children` 우회·거짓 영수증 3종 독립 확인) |
+| **T3②** DAG → kernel task 물질화 | `createDependentTask` 재사용(새 kernel API 0). 생성 **전에** 전 seed 검증 → 부분 물질화·run 벽돌화 차단 | **증명** — mutation 5종 red · 적대적 리뷰가 **A급 1건**(부분 물질화와 그 과대주장)을 잡아 수정 |
+| **T3③** 격리 worktree | `git_worktree`를 세 번째 typed operation kind로. kernel이 저장소를 바꾸는 첫 면이며 경로·커밋은 durable 파생, `--detach`, remote 표현 불가 | **증명(로컬 git 왕복)** — 실제 worktree 생성/검증/삭제 실측 · mutation 5종 red |
 | **T2** Tech Lead DAG·ownership·API contract | `src/exec/taskDag.ts` — 닫힌 key 집합 문서 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 · `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재). 소유권 충돌은 **순서가 강제되지 않는** 두 task만 거부한다(의존 사슬로 묶인 구현→수정의 같은 파일 소유는 정상이다) | **증명** — mutation 6종 red |
 
 **`B-17` 실측 정정(중요 — `docs/handoff/M9_KICKOFF.md` §3의 기술이 부정확했다)**:
@@ -2020,6 +2029,8 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-74` | C (P3) | **소유권 경합을 scheduler에서 직렬화하지 않는다(거부로만 닫혀 있다).** `B-29`는 동시 **쓰기**를 막지만 동시 **실행**은 허용한다 → 겹치는 소유권을 가진 두 task가 함께 running이 되어 한쪽이 `operation_ownership_contended`로 pause되고 그 attempt를 태운다(자원 낭비 + 사람이 볼 pause). 구조적 종결은 `selectSchedulable`에서 ownership을 암묵 배타 자원으로 취급하는 것인데, 그러려면 **기존 fixture 다수가 형제 task에 같은 경로를 편의상 선언하는 것을 전수 정정**해야 한다(실측: 그 판으로 `test:exec` 20건 이상 red) | 확실 — 겹치는 소유권 DAG를 실제로 돌릴 때마다 | 낭비된 attempt·pause 소음(**`write_file` 채널의** 데이터 무결성은 `B-29`가 지킨다 — `run_process` 부수 효과는 `C-75` 참조) | 낮음 — 거부가 이미 손실을 막고 있어 나중에 얹으면 된다 | 중(scheduler 5줄 + fixture 소유권 분리 sweep) | 없음(bounded) — 병렬 worker의 attempt 낭비가 실측으로 문제될 때(`C-10` starvation과 함께 본다) | 미정 | M9 T3 구현 시 실측(scheduler 판 시도 후 기각) · `selectSchedulable` · `heldResourceClasses` | open |
 | `C-75` | C (P3) | **`run_process`의 부수 효과 쓰기는 소유권 게이트 밖이다.** `B-29`가 덮는 것은 typed `write_file` 채널뿐이다. `run-tests` action은 승인된 `projectPath`에서 고정 controller entrypoint를 spawn하는데, **테스트 러너가 만드는 캐시·스냅샷·빌드 산출물 쓰기는 어떤 소유권 판정도 지나지 않는다**(`executeRunProcessOperation`에 `resolveWriteAuthority` 호출이 없다 — 설계상 그렇다). 시나리오: 겹치는 소유권 없이도 두 running task가 같은 `projectPath`로 `run-tests`를 동시에 승인받아 실행하면 러너가 같은 캐시/스냅샷을 동시에 갱신해 한쪽 산출이 조용히 덮인다 | 낮음~중 — 같은 `projectPath`를 두 task에 승인해야 하고, 그것은 사람의 승인 문서 판단이다 | 러너 캐시·스냅샷(하네스 산출물은 `write_file` 채널을 지나므로 무관) | 낮음 | 중(러너 산출 경로를 승인 축으로 올리거나, `projectPath`를 배타 자원으로 취급) | 없음(bounded backlog) — 같은 `projectPath`를 병렬로 승인하는 첫 DAG 전 | 미정 | M9 T3① 적대적 리뷰 C-1(read-only · `controllerActionArgs` · `superviseProcess` 호출부 · `executeRunProcessOperation`에 소유권 판정 부재 확인) | open |
 | `C-76` | C (P2) | **DAG 물질화의 mid-loop kernel 거부는 여전히 부분 물질화를 남기고 run을 벽돌로 만든다.** T3② 리뷰 A 수정으로 알려진 원인 4종은 생성 **전에** 걸러지지만, 사전 검증이 kernel 거부 사유를 **전부 열거한 것은 아니다**. 남은 사유로 루프 도중 거부되면 앞선 task가 durable에 남고(task 생성이 task마다 별도 커밋) 재시도는 `dag_materialize_run_not_empty`로 막혀 **사람이 손대야 한다** | 낮음 — 알려진 4종이 닫혔고 나머지는 문서 검증이 이미 걸러낸다 | 그 run 하나(데이터 손실 아님 — 만들어진 task는 유효하다) | 낮~중 — 나중에 닫으려면 물질화를 한 커밋으로 만드는 kernel API가 필요하다 | 중(전 task를 **한 `#mutate`**로 만드는 `createTaskGraph` 계열 API, 또는 실패 시 정리 경로) | 없음(bounded) — 물질화가 사람 개입 없이 반복되는 마일스톤 전(M10 resume/crash recovery와 함께 본다) | 미정 | M9 T3② 적대적 리뷰 A(read-only · probe 4종 실측) · `taskDagMaterialize.ts` 생성 루프 · `dag_materialize_run_not_empty` | open |
+| `B-31` | **B (P1)** | **격리 worktree의 deadline kill이 승인 루트 밖에 잔재를 남기고 정리할 수단이 없다.** `git_worktree`는 trusted git 질의의 30초 상수(`TRUSTED_GIT_TIMEOUT_MS`)를 재사용하는데 **`worktree add`는 tree 전체 checkout이라 작업량이 repo 크기에 비례한다**(승인 문서 주석의 "작업량이 상수"는 질의에만 참이다). 대형 repo에서 deadline kill이 나면 ⓐ 부분 worktree 디렉터리와 ⓑ **main clone의 `.git/worktrees/<name>` metadata**가 남고, 그 뒤 재시도한 `add`는 `exit 128`이 된다. `git worktree prune`은 닫힌 action 집합에 **없다** → 사람이 손으로 정리해야 한다. 실패가 성공으로 덮이는 것은 T3③ 리뷰 A급 수정(`process_result_unknown`)이 닫았지만, **잔재 자체는 남는다** | 중 — 큰 repo이거나 디스크가 느릴 때 | worktree 1건의 재시도 가능성(승인 루트 밖 metadata 잔류). 데이터 무결성은 아니다 | 중 — 나중에 닫으려면 `prune` action을 여는 별도 승인이 필요하다 | 중(`worktree prune`을 닫힌 action에 추가 + timeout을 승인 축으로 올리거나 크기 비례 상한) | **병렬 worker를 큰 repo에서 실제로 돌리는 첫 마일스톤 전** | 미정 | M9 T3③ 적대적 리뷰 B-3(read-only · probe로 exit 128 재현) · `orchestrationKernel.ts` `TRUSTED_GIT_TIMEOUT_MS` 재사용 · `approvalManifest.ts` "작업량이 상수" 주석 | open |
+| `C-77` | C (P3) | **repo-local smudge filter는 `TRUSTED_GIT_PREFIX`가 끄지 않는다.** `worktree add`의 checkout 중 `.git/config`의 `filter.*.smudge`가 임의 명령을 실행할 수 있다(리뷰어 실측). prefix는 hook·fsmonitor·pager만 끈다. **모델 통로는 아니다** — `.git/config` 지배가 전제이고 그것을 쥔 쪽은 이미 그 저장소를 지배한다. 그래서 새 권한 상승이 아니라 **주장 범위의 문제**이고, 주석에서 "전부 끈다"를 걷어냈다 | 낮음 — 저장소 config를 이미 지배해야 한다 | checkout 중 실행되는 명령(하네스 권위 밖) | 낮음 | 소~중(`-c filter.<n>.smudge=` 무력화는 필터 이름을 알아야 해 일반해가 아니다. `GIT_CONFIG_COUNT` 계열로 덮거나 `core.filterProcess` 차단 검토) | 없음(bounded backlog) | 미정 | M9 T3③ 적대적 리뷰 C-2 부수 확인(read-only · /tmp probe) | open |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
