@@ -1843,6 +1843,40 @@ acceptance 진입점이 0건이었다. ⑥만 **실제 git**을 로컬에서 부
 | **T3③** 격리 worktree | `git_worktree`를 세 번째 typed operation kind로. kernel이 저장소를 바꾸는 첫 면이며 경로·커밋은 durable 파생, `--detach`, remote 표현 불가 | **증명(로컬 git 왕복)** — 실제 worktree 생성/검증/삭제 실측 · mutation 5종 red |
 | **T2** Tech Lead DAG·ownership·API contract | `src/exec/taskDag.ts` — 닫힌 key 집합 문서 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 · `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재). 소유권 충돌은 **순서가 강제되지 않는** 두 task만 거부한다(의존 사슬로 묶인 구현→수정의 같은 파일 소유는 정상이다) | **증명** — mutation 6종 red |
 
+##### live 1회 실측 (2026-08-19 · `scripts/m9-live-pipeline.mjs` · **PASS=12 / FAIL=0**)
+
+> **과금 실측**: Claude Code CLI는 구독(M8 실측 실결제 $0). **Codex는 `~/.codex/auth.json`의
+> `auth_mode: chatgpt`이고 `OPENAI_API_KEY`가 null이다 → ChatGPT 구독 경로이며 per-token API 과금이
+> 아니다**(값은 읽지 않고 key 이름·mode만 확인했다). KICKOFF §6이 걱정한 "실결제 가능" 시나리오는
+> 이 환경에서는 성립하지 않았다. 사용자가 Claude·Codex live 둘 다 명시 승인했다.
+
+| 무엇 | 결과 |
+|---|---|
+| 수정 **전** fixture 테스트 | `run-tests` action이 실제로 돌아 **exit=1**(게이트가 공허하지 않다) |
+| Claude worker 구현 → 발행 | 실제 모델 산출이 **kernel typed-write 채널**로 발행되고 바이트가 디스크에 있다 |
+| 수정 **후** fixture 테스트 | **exit=0** — 두 실행의 종료 코드가 durable 영수증에 서로 다르게 남았다 |
+| fresh Codex 리뷰 3종 | code·security·test가 **각각 다른 프로세스·세션**으로 실산출(read-only sandbox) |
+| fresh Claude 수정 → fresh Codex verify | 둘 다 실제 프로세스로 응답 |
+| 왕복 계약 | **실제 6개 세션 신원**이 `assertCodeReviewRoundtrip`을 통과(자기 승인 0) |
+
+**live가 잡은 결함 3건**(mock/offline만 돌렸으면 못 봤다 — M8과 같은 교훈):
+1. **worker가 파일 내용 대신 도구 호출 형태의 텍스트를 냈고 하네스가 그대로 발행했다.** typed-write는
+   **권한**(경로·ownership·바이트·preimage)만 집행하고 목적 산출물인지는 보지 않는다(대장 `C-63`의
+   영역이며 의도된 경계다). **그 실패를 잡은 것은 뒤이은 `run-tests`였다 — 거짓 성공은 없었다.**
+   → live 스크립트에 **발행 전 sanity 게이트 + 재시도 1회**를 넣었다(M8 design live 선례와 같은 규율).
+2. **`MANAGED_PROCESS_ENV`의 PATH가 `/usr/bin:/bin`뿐이라 nvm의 `node`가 PATH로 잡히지 않는다.**
+   controller entrypoint가 자식 node를 **절대 경로**로 불러야 한다.
+3. **실행 계약은 `node <controllerEntrypoint>`이므로 entrypoint는 JS 파일이어야 한다.** shell script로
+   썼더니 진짜 node가 그것을 JS로 파싱해 exit 1이 됐고, 그것이 "수정 후에도 테스트 실패"의 진짜
+   원인이었다(**worker의 수정은 옳았다**). 세 결함 모두 하네스 코드가 아니라 **live 배선**의 문제였다.
+
+**관측 그대로 적는 것 하나**: `test` 렌즈 Codex 리뷰가 `VERDICT: FAIL`을 냈다. 같은 시점 하네스의
+`run-tests`는 exit=0이었다. 리뷰어가 테스트 **커버리지·품질**을 지적한 것으로 읽히지만 이 스크립트는
+**리뷰 산출물의 품질을 판정하지 않는다** — 두 값이 갈렸다는 사실만 남긴다.
+
+**이 live가 증명하지 않는 것**: 병렬 2 worker의 **동시** 진행(여기서 돈 worker는 1명) · 리뷰 산출물의
+품질 · 로컬 병합(`mergeCoordinator`는 M9에서 미배선).
+
 **`B-17` 실측 정정(중요 — `docs/handoff/M9_KICKOFF.md` §3의 기술이 부정확했다)**:
 KICKOFF는 `B-17`을 "inbox 전달 소비(ack)"로 적었으나, §9.1 대장 원문의 잔여는
 **"전달 실패 시 `failDeliveryAttempt` 미호출"**이고 `acknowledgeDelivery`·`stableController` 호출은
@@ -2031,6 +2065,8 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-76` | C (P2) | **DAG 물질화의 mid-loop kernel 거부는 여전히 부분 물질화를 남기고 run을 벽돌로 만든다.** T3② 리뷰 A 수정으로 알려진 원인 4종은 생성 **전에** 걸러지지만, 사전 검증이 kernel 거부 사유를 **전부 열거한 것은 아니다**. 남은 사유로 루프 도중 거부되면 앞선 task가 durable에 남고(task 생성이 task마다 별도 커밋) 재시도는 `dag_materialize_run_not_empty`로 막혀 **사람이 손대야 한다** | 낮음 — 알려진 4종이 닫혔고 나머지는 문서 검증이 이미 걸러낸다 | 그 run 하나(데이터 손실 아님 — 만들어진 task는 유효하다) | 낮~중 — 나중에 닫으려면 물질화를 한 커밋으로 만드는 kernel API가 필요하다 | 중(전 task를 **한 `#mutate`**로 만드는 `createTaskGraph` 계열 API, 또는 실패 시 정리 경로) | 없음(bounded) — 물질화가 사람 개입 없이 반복되는 마일스톤 전(M10 resume/crash recovery와 함께 본다) | 미정 | M9 T3② 적대적 리뷰 A(read-only · probe 4종 실측) · `taskDagMaterialize.ts` 생성 루프 · `dag_materialize_run_not_empty` | open |
 | `B-31` | **B (P1)** | **격리 worktree의 deadline kill이 승인 루트 밖에 잔재를 남기고 정리할 수단이 없다.** `git_worktree`는 trusted git 질의의 30초 상수(`TRUSTED_GIT_TIMEOUT_MS`)를 재사용하는데 **`worktree add`는 tree 전체 checkout이라 작업량이 repo 크기에 비례한다**(승인 문서 주석의 "작업량이 상수"는 질의에만 참이다). 대형 repo에서 deadline kill이 나면 ⓐ 부분 worktree 디렉터리와 ⓑ **main clone의 `.git/worktrees/<name>` metadata**가 남고, 그 뒤 재시도한 `add`는 `exit 128`이 된다. `git worktree prune`은 닫힌 action 집합에 **없다** → 사람이 손으로 정리해야 한다. 실패가 성공으로 덮이는 것은 T3③ 리뷰 A급 수정(`process_result_unknown`)이 닫았지만, **잔재 자체는 남는다** | 중 — 큰 repo이거나 디스크가 느릴 때 | worktree 1건의 재시도 가능성(승인 루트 밖 metadata 잔류). 데이터 무결성은 아니다 | 중 — 나중에 닫으려면 `prune` action을 여는 별도 승인이 필요하다 | 중(`worktree prune`을 닫힌 action에 추가 + timeout을 승인 축으로 올리거나 크기 비례 상한) | **병렬 worker를 큰 repo에서 실제로 돌리는 첫 마일스톤 전** | 미정 | M9 T3③ 적대적 리뷰 B-3(read-only · probe로 exit 128 재현) · `orchestrationKernel.ts` `TRUSTED_GIT_TIMEOUT_MS` 재사용 · `approvalManifest.ts` "작업량이 상수" 주석 | open |
 | `C-77` | C (P3) | **repo-local smudge filter는 `TRUSTED_GIT_PREFIX`가 끄지 않는다.** `worktree add`의 checkout 중 `.git/config`의 `filter.*.smudge`가 임의 명령을 실행할 수 있다(리뷰어 실측). prefix는 hook·fsmonitor·pager만 끈다. **모델 통로는 아니다** — `.git/config` 지배가 전제이고 그것을 쥔 쪽은 이미 그 저장소를 지배한다. 그래서 새 권한 상승이 아니라 **주장 범위의 문제**이고, 주석에서 "전부 끈다"를 걷어냈다 | 낮음 — 저장소 config를 이미 지배해야 한다 | checkout 중 실행되는 명령(하네스 권위 밖) | 낮음 | 소~중(`-c filter.<n>.smudge=` 무력화는 필터 이름을 알아야 해 일반해가 아니다. `GIT_CONFIG_COUNT` 계열로 덮거나 `core.filterProcess` 차단 검토) | 없음(bounded backlog) | 미정 | M9 T3③ 적대적 리뷰 C-2 부수 확인(read-only · /tmp probe) | open |
+| `C-78` | C (P3) | **리뷰 왕복 계약이 렌즈↔역할·실행 책임을 참가자에 바인딩하지 않는다.** `assertCodeReviewRoundtrip`은 신원 분리(task·세션·provider·sandbox·role 계열)만 본다 → ⓐ `security` 렌즈에 `tech-lead` role을 붙여도 통과하고 ⓑ `reviews.test` 참가자가 실제로 `run-tests` operation을 들고 있는지 보지 않으며 ⓒ 같은 물리 프로세스에 다른 `sessionId` 문자열 6개를 주면 통과한다(리뷰어 probe 실측). **의도된 경계이고 acceptance 출력이 "⑧은 계약 층만 본다"로 공개한다** — 잔여는 배선하는 쪽이 그 바인딩을 잊어도 계약이 잡아주지 않는다는 것이다 | 중 — live 배선을 사람이 아니라 코드가 만들 때 | 리뷰 3종의 의미(신원 분리는 유지된다) | 낮~중 | 중(렌즈별 요구 role 계열 표 + `test` 렌즈 참가자의 `run-tests` authority 대조. 세션↔프로세스 동일성은 provider 층 신원이 필요해 더 크다) | 없음(bounded) — 왕복 레코드를 코드가 구성하는 첫 마일스톤 전 | 미정 | M9 T4 적대적 리뷰 finding 2·probe 실측 · `designReviewRoundtrip.ts` | open |
+| `C-79` | C (P3) | **다중 위반 입력의 오류 코드 순서가 M8 대비 1건 바뀌었다.** 일반화로 리뷰어 loop가 provider·sandbox를 함께 보게 되어, "리뷰어 sandbox 위반 + 저자 provider=codex" 입력의 코드가 `worker_provider` → `reviewer_sandbox`로 바뀌었다. 리뷰어가 26 케이스 배터리로 대조해 **이 하나만** 다르고 나머지 전부 동일 코드임을 확인했다. M8 테스트·acceptance는 전부 단일 위반 입력이라 의존하지 않는다(실질 무손상) | 낮음 — 다중 위반 입력에서만 | 진단 코드 1건 | 낮음 | 소(순서를 옛 순서로 되돌리거나 코드 순서를 계약으로 고정) | 없음 — 향후 golden test가 옛 순서를 가정하지 않도록 기록만 | 미정 | M9 T4 적대적 리뷰 finding 3 · 26케이스 old/new diff 매트릭스 | open |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
