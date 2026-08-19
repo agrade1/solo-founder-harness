@@ -524,7 +524,9 @@ export function emptyTaskExecution() {
  * - **브랜치를 만들지 않는다**(`--detach`). 브랜치명을 담을 필드가 없어야 하고, M9에서 worker의 산출물은
  *   worktree가 아니라 **kernel typed-write 채널**로 발행되므로 브랜치가 필요하지 않다.
  * - `fetch`/`pull`/`push`/`remote`/`clone`/`merge`/`rebase`/`commit`/`tag`는 **표현할 타입이 없다**
- *   (원격 쓰기 hard deny — §8).
+ *   (원격 **쓰기** hard deny — §8). **"네트워크에 닿지 않는다"와 같은 말이 아니다**: partial clone
+ *   (`--filter=blob:none`)에서 checkout은 argv에 `fetch`가 없어도 lazy fetch를 일으킬 수 있어
+ *   집행기가 `GIT_NO_LAZY_FETCH=1`로 따로 끈다(T3③ 적대적 리뷰 B-1 실측).
  * - 승인은 task별이다(`operationAuthorityByTask`) → 아무 task나 worktree를 만들 수 없다.
  */
 export const GIT_WORKTREE_ACTIONS = ["add", "remove"];
