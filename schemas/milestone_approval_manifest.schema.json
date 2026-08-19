@@ -213,7 +213,7 @@
     },
     "approvedOperation": {
       "description": "M5c — **승인된 typed operation 1건**(대장 B-10). kind별로 key 집합이 닫혀 있다: write_file은 {authorityId, kind, path, maxBytes}, run_process는 {authorityId, kind, action, data, timeoutMs}뿐이다. **3A 2차 리비전에서 run_process의 executable/args를 삭제했다** — 1차 판은 승인된 Node 경로 + bounded 문자열 argv라 --eval·--require·임의 script 경로가 그대로 통과했고, 그것은 승인된 Node 하나가 곧 임의 로컬 코드 권위라는 뜻이었다. 지금 실행 대상은 executionAuthority.node + controllerEntrypoint로 고정이고 승인 문서가 고르는 것은 닫힌 action enum과 데이터 전용 인자뿐이다. shell 문자열 · 인자 wildcard · 런타임 실행 파일/script 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없다**. 런타임은 여기에 더해 write_file.path가 writableRoots 안이고(operation_outside_writable_root) 그 task의 승인 ownership 안이며(operation_not_owned), action이 승인 목록 안이고(operation_action_not_approved) data 항목이 NUL·고립 surrogate 없고 '-'로 시작하지 않으며(operation_data_not_approved) timeoutMs가 autopilotPolicy.maxAttemptElapsedMs 이하임을 함께 본다.",
-      "oneOf": [{ "$ref": "#/definitions/writeFileAuthority" }, { "$ref": "#/definitions/runProcessAuthority" }]
+      "oneOf": [{ "$ref": "#/definitions/writeFileAuthority" }, { "$ref": "#/definitions/runProcessAuthority" }, { "$ref": "#/definitions/gitWorktreeAuthority" }]
     },
     "writeFileAuthority": {
       "type": "object",
@@ -255,6 +255,20 @@
       "additionalProperties": false,
       "required": ["planPath"],
       "properties": { "planPath": { "$ref": "#/definitions/workspacePath" } }
+    },
+    "gitWorktreeAuthority": {
+      "description": "V3 M9 T3③ — 격리 worktree 조작 승인 1건. 경로·브랜치·커밋·remote·refspec·timeout을 담을 필드가 하나도 없다: worktree 경로는 <workspaceRoot>/.harness/worktrees/<runId>/<taskId>로, 체크아웃 커밋은 approvedCommit으로 kernel이 파생한다. add는 --detach라 브랜치를 만들지 않는다. 이것이 kernel이 저장소를 바꾸는 유일한 면이며, 집행은 typed operation 경로(durable pending·A4 표시·영수증·outcome_unknown 정합화)를 그대로 지난다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "action"],
+      "properties": {
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "git_worktree" },
+        "action": {
+          "description": "정본은 src/exec/orchestrationTypes.ts의 GIT_WORKTREE_ACTIONS다.",
+          "enum": ["add", "remove"]
+        }
+      }
     },
     "runTestsData": {
       "description": "`run-tests` action의 입력(V3 M9 선결 1). 정확히 projectPath 하나이며 테스트를 돌릴 프로젝트의 정규화된 workspace-relative 디렉터리다. 명령·인자·러너는 표현할 필드가 없다.",

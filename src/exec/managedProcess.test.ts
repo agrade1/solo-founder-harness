@@ -18,9 +18,10 @@
  * - 정리 미확인이 1차 오류를 이긴다(B1).
  */
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, existsSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -35,6 +36,9 @@ import type { AgentMessageType } from "./orchestrationTypes.js";
 import {
   OrchestrationKernel,
   executeRunProcessOperation,
+  executeWorktreeOperation,
+  resolveWorktreeCapability,
+  type WorktreeCapability,
   isGenuineLaunchCapability,
   resolveProcessLaunchCapability,
   type OperationDispatchPermit,
@@ -426,6 +430,184 @@ test("[M9] 선결 1: run-tests도 실패 exit code를 성공으로 덮지 않는
   // `marker: applied`는 "프로세스가 끝까지 돌았다"는 뜻이고 **테스트가 통과했다는 뜻이 아니다**.
   // 실패 종료코드는 영수증에 그대로 남아야 한다 — 이 값이 durable에서 사라지면 거짓 영수증이다.
   assert.equal(receiptOf(f, op.operationId).exitCode, 1);
+});
+
+// ── V3 M9 T3③ 격리 worktree ─────────────────────────────────────────────────
+
+/**
+ * worktree fixture: **진짜 git 저장소** 하나 + 승인 manifest가 그 HEAD를 `approvedCommit`으로 가리킨다.
+ * `gitBody`를 주면 그 shell 스크립트가 git 자리에 들어간다(인자 기록용).
+ */
+function worktreeFixture(opts: { gitBody?: string } = {}): Fixture & { gitPath: string; commit: string } {
+  const ws = makeDir("m9-wt-ws-");
+  mkdirSync(join(ws, "docs"));
+  const bin = makeDir("m9-wt-bin-");
+  const nodePath = writeExecutable(bin, "node", FAKE_NODE);
+  const entrypoint = writeExecutable(bin, "controller.sh", "#!/bin/sh\nexit 0\n");
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  const run = (args: string[]): void => {
+    const r = spawnSync("/usr/bin/git", args, { cwd: ws, env, stdio: "ignore" });
+    assert.equal(r.status, 0, `git ${args.join(" ")} 실패`);
+  };
+  run(["init", "-q", "-b", "main"]);
+  run(["-c", "user.email=t@e", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "base"]);
+  const head = spawnSync("/usr/bin/git", ["rev-parse", "HEAD"], { cwd: ws, env, encoding: "utf8" });
+  assert.equal(head.status, 0);
+  const commit = head.stdout.trim();
+
+  const gitPath = opts.gitBody === undefined ? "/usr/bin/git" : writeExecutable(bin, "git", opts.gitBody);
+  const manifest = {
+    milestoneId: MILESTONE,
+    approvedCommit: commit,
+    writableRoots: ["docs"],
+    ownershipByTask: { root: ["docs"] },
+    allowedCommands: [],
+    allowedDependencies: [],
+    allowedNetworkDomains: [],
+    executionAuthority: {
+      codex: null,
+      controllerEntrypoint: { path: entrypoint, sha256: sha256File(entrypoint) },
+      git: { path: gitPath, sha256: sha256File(gitPath) },
+      node: { path: nodePath, sha256: sha256File(nodePath) },
+      processObserver: { path: "/opt/harness/ps", sha256: "f".repeat(64) },
+    },
+    autopilotPolicy: {
+      maxTaskAttempts: 2,
+      maxDeliveryAttempts: 2,
+      retryBackoffMs: 0,
+      deliveryDeadlineMs: 600_000,
+      maxNoProgressMs: 600_000,
+      maxAttemptElapsedMs: 3_000_000,
+      cleanupTermGraceMs: 2_000,
+      cleanupKillGraceMs: 2_000,
+    },
+    operationAuthorityByTask: {
+      root: [
+        { authorityId: "wt-add", kind: "git_worktree", action: "add" },
+        { authorityId: "wt-remove", kind: "git_worktree", action: "remove" },
+      ],
+    },
+    maxSessions: 4,
+    maxTokens: 100_000,
+    maxElapsedMs: 3_600_000,
+    localMergeAllowed: false,
+    expiresAt: EXPIRES,
+  };
+  let n = 0;
+  const kernel = OrchestrationKernel.create({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest,
+    clock: () => new Date(T0 + n++),
+  });
+  kernel.createRootTask(seed("root"));
+  const batch = kernel.planRunnableBatch();
+  kernel.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: nextId("act"),
+    decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: nextId("att") })),
+  });
+  kernel.startPreparedTask({
+    taskId: "root",
+    actionId: nextId("act"),
+    leaseMarker: `lease.${(++counter).toString(16).padStart(32, "0")}`,
+  });
+  return { ws, bin, nodePath, entrypoint, kernel, gitPath, commit };
+}
+
+/** worktree operation 하나짜리 turn. */
+function worktreeShot(f: Fixture, authorityId: string, turnId: string): { op: TypedGitWorktreeOperation; grant: OperationExecutionGrant; cap: WorktreeCapability } {
+  const task = f.kernel.getTask("root")!;
+  const permit = f.kernel.issueOperationDispatchPermit({
+    taskId: "root",
+    turnId,
+    actionId: nextId("act"),
+    plan: {
+      schemaVersion: "1",
+      runId: RUN_ID,
+      taskId: "root",
+      attemptId: task.execution.attemptId,
+      turnId,
+      operations: [{ operationId: `op-${authorityId}`, kind: "git_worktree", authorityId }],
+      result: { summary: "worktree turn", outputs: [] },
+    },
+  });
+  f.kernel.chargeDispatchTurnUsage({ permit, actionId: nextId("act"), inputTokens: 1, outputTokens: 1, elapsedMs: 1 });
+  const op = permit.plan.operations[0] as TypedGitWorktreeOperation;
+  const grant = f.kernel.beginOperation({ permit, operationId: op.operationId, actionId: nextId("act") });
+  return { op, grant, cap: resolveWorktreeCapability(op, grant) };
+}
+
+test("[M9] T3③: 승인된 worktree add가 실제로 격리 checkout을 만들고 remove가 지운다", async () => {
+  const f = worktreeFixture();
+  // 경로 규칙은 **여기서 독립적으로 다시 적는다**(kernel 상수를 공유하면 규칙이 바뀌어도 따라 바뀐다).
+  const expected = join(f.ws, ".harness", "worktrees", RUN_ID, "root");
+
+  const add = worktreeShot(f, "wt-add", "turn-1");
+  const outcome = await executeWorktreeOperation(add.grant, add.op, add.cap);
+  assert.equal(outcome.marker, "applied");
+  assert.equal(outcome.exitCode, 0);
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+
+  // **진짜 linked worktree다**: `.git`이 디렉터리가 아니라 gitdir 포인터 파일이다.
+  assert.ok(lstatSync(expected).isDirectory(), "worktree 디렉터리가 없다");
+  assert.ok(lstatSync(join(expected, ".git")).isFile(), "linked worktree가 아니다");
+  // **승인된 커밋에 detach돼 있다** — 브랜치를 만들지 않았다.
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" };
+  const head = spawnSync("/usr/bin/git", ["rev-parse", "HEAD"], { cwd: expected, env, encoding: "utf8" });
+  assert.equal(head.stdout.trim(), f.commit, "승인된 커밋이 아닌 곳에 checkout됐다");
+  const branch = spawnSync("/usr/bin/git", ["symbolic-ref", "-q", "HEAD"], { cwd: expected, env, encoding: "utf8" });
+  assert.notEqual(branch.status, 0, "브랜치를 만들었다(--detach가 아니다)");
+
+  const rm = worktreeShot(f, "wt-remove", "turn-2");
+  const removed = await executeWorktreeOperation(rm.grant, rm.op, rm.cap);
+  assert.equal(removed.marker, "applied");
+  f.kernel.recordOperationReceipt({ outcome: removed, actionId: nextId("act") });
+  assert.equal(lstatSync(expected, { throwIfNoEntry: false }), undefined, "worktree가 지워지지 않았다");
+});
+
+test("[M9] T3③: git 인자에 브랜치·remote·refspec이 없고 경로·커밋은 durable에서 파생된다", async () => {
+  // 인자를 그대로 적는 fake git. 승인 문서가 담을 수 없는 것이 실제로 argv에도 없는지 본다.
+  const f = worktreeFixture({ gitBody: '#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv.txt"\nexit 0\n' });
+  const add = worktreeShot(f, "wt-add", "turn-1");
+  await executeWorktreeOperation(add.grant, add.op, add.cap);
+
+  const argv = readFileSync(join(f.ws, "argv.txt"), "utf8").trim().split("\n");
+  assert.ok(argv.includes("worktree") && argv.includes("add"), "worktree add가 아니다");
+  assert.ok(argv.includes("--detach"), "브랜치를 만들지 않는다는 보장이 argv에 없다");
+  assert.ok(argv.includes(join(f.ws, ".harness", "worktrees", RUN_ID, "root")), "경로가 durable 파생값이 아니다");
+  assert.ok(argv.includes(f.commit), "체크아웃 커밋이 approvedCommit이 아니다");
+  // **원격·브랜치 계열은 어디에도 없다.**
+  for (const forbidden of ["-b", "-B", "--track", "origin", "--branch", "fetch", "push", "remote", "clone", "merge", "commit", "--reference"]) {
+    assert.equal(argv.includes(forbidden), false, `argv에 ${forbidden}이 있다`);
+  }
+  // hook·fsmonitor·pager를 끄는 고정 전치 인자가 그대로 붙는다.
+  assert.ok(argv.includes("core.hooksPath=/dev/null"), "hook 차단 전치 인자가 사라졌다");
+});
+
+test("[M9] T3③: 승인되지 않은 worktree 권능·재생·위조는 저장소를 건드리지 못한다", async () => {
+  const f = worktreeFixture();
+  const expected = join(f.ws, ".harness", "worktrees", RUN_ID, "root");
+  const add = worktreeShot(f, "wt-add", "turn-1");
+
+  // ⓐ 위조·전개 사본 권능은 조회에서 죽는다(파일 시스템 효과 0).
+  for (const forged of [{ ...add.cap }, {}, null, () => add.cap]) {
+    assert.equal(
+      await codeOfAsync(() => executeWorktreeOperation(add.grant, add.op, forged)),
+      "process_capability_invalid",
+    );
+  }
+  assert.equal(lstatSync(join(f.ws, ".harness"), { throwIfNoEntry: false }), undefined, "거부인데 worktree가 생겼다");
+
+  // ⓑ 진짜 짝은 통과한다(대조군).
+  const outcome = await executeWorktreeOperation(add.grant, add.op, add.cap);
+  assert.equal(outcome.marker, "applied");
+  f.kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+  assert.ok(lstatSync(expected).isDirectory());
+
+  // ⓒ 같은 권능 재생은 거부다.
+  assert.equal(await codeOfAsync(() => executeWorktreeOperation(add.grant, add.op, add.cap)), "process_capability_spent");
 });
 
 // ── B-F1 ① 단일 소비 ────────────────────────────────────────────────────────

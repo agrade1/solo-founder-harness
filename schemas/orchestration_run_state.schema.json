@@ -177,8 +177,8 @@
       "enum": ["none", "required", "confirmed", "failed"]
     },
     "operationKind": {
-      "description": "M5c — typed operation 종류. 닫힌 union이며 shell 문자열·wildcard·런타임 실행 파일 선택은 표현할 수 없다(대장 B-10).",
-      "enum": ["write_file", "run_process"]
+      "description": "M5c — typed operation 종류. 닫힌 union이며 shell 문자열·wildcard·런타임 실행 파일 선택은 표현할 수 없다(대장 B-10). V3 M9 T3③에서 git_worktree가 사람 승인 아래 더해졌다: 경로·커밋은 kernel이 durable에서 파생하고 승인 레코드가 고르는 것은 add/remove뿐이며 branch·remote·refspec은 표현할 필드가 없다.",
+      "enum": ["write_file", "run_process", "git_worktree"]
     },
     "operationReceiptMarker": {
       "description": "M5c — 집행한 typed operation 1건의 닫힌 결과 marker. outcome_unknown은 M5c 3A 4차 리비전(A3)이 더한 fail-safe 종결이다: 일회용 집행 경계에 들어간 뒤(pendingOperation.attemptedAt != null) 결과를 잃어버린 operation은 성공도 실패도 단정할 수 없으므로 이 marker로만 정직하게 닫힌다.",

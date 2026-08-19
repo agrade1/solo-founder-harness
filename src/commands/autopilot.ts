@@ -72,7 +72,9 @@ import type {
 import {
   applyWriteFile,
   executeRunProcessOperation,
+  executeWorktreeOperation,
   resolveProcessLaunchCapability,
+  resolveWorktreeCapability,
   resolveWriteFileAuthority,
 } from "../exec/typedExecution.js";
 
@@ -597,7 +599,9 @@ async function dispatchOperations(ctx: {
     // 승인 밖 요청과 "정말 결과를 모르는" 요청이 같은 marker를 받아서는 안 된다.
     try {
       if (op.kind === "write_file") resolveWriteFileAuthority(op, permit);
-      else resolveProcessLaunchCapability(op, permit);
+      else if (op.kind === "run_process") resolveProcessLaunchCapability(op, permit);
+      // V3 M9 T3③ — 격리 worktree. 사전 판정도 다른 kind와 **같은 자리**를 지난다(순수 판정 · 효과 0).
+      else resolveWorktreeCapability(op, permit);
     } catch (err) {
       return { marker: operationMarker(err), charged: true, chargeFailed: null };
     }
@@ -612,7 +616,9 @@ async function dispatchOperations(ctx: {
       const outcome =
         op.kind === "write_file"
           ? applyWriteFile(op, grant)
-          : await executeRunProcessOperation(grant, op, resolveProcessLaunchCapability(op, grant), { signal });
+          : op.kind === "run_process"
+            ? await executeRunProcessOperation(grant, op, resolveProcessLaunchCapability(op, grant), { signal })
+            : await executeWorktreeOperation(grant, op, resolveWorktreeCapability(op, grant), { signal });
       kernel.recordOperationReceipt({ outcome, actionId: id("rcpt") });
     } catch (err) {
       closePendingOperation(kernel, grant, taskId, op.operationId, err);

@@ -89,6 +89,7 @@ import {
   resolveWriteFileAuthority,
   validateTypedExecutionPlan,
   type PublicationSeam,
+  type TypedGitWorktreeOperation,
   type TypedRunProcessOperation,
   type TypedWriteFileOperation,
 } from "./typedExecution.js";
@@ -176,6 +177,8 @@ const OPERATION_AUTHORITY = {
     // V3 M9 T3(`B-29`) — sibling이 소유하지 **않는** 경로. 겹치지 않는 병렬이 열려 있음을 보이는 대조군.
     { authorityId: "w-src", kind: "write_file", path: "src/only.md", maxBytes: 1024 },
     { authorityId: "p-node", kind: "run_process", action: "validate-plan", data: { planPath: "docs/plan.json" }, timeoutMs: 5_000 },
+    // V3 M9 T3③ — 격리 worktree. 경로·커밋을 담을 필드가 없다(kernel이 durable에서 파생한다).
+    { authorityId: "wt-add", kind: "git_worktree", action: "add" },
   ],
   sibling: [{ authorityId: "w-sib", kind: "write_file", path: "docs/sib.md", maxBytes: 1024 }],
   // manifest.ownershipByTask에 **없는** child — 소유 판정은 dispatch 시점 durable ownership이 한다.
@@ -365,6 +368,13 @@ function writePermit(
 ): [TypedWriteFileOperation, OperationExecutionGrant] {
   const permit = permitFor(f.kernel, taskId, [writeOp(over)]);
   const op = permit.plan.operations[0] as TypedWriteFileOperation;
+  return [op, grantFor(f.kernel, permit, op.operationId)];
+}
+
+/** V3 M9 T3③ — `git_worktree` operation 하나짜리 turn. */
+function worktreePermit(f: Fixture, over: Record<string, unknown> = {}): [TypedGitWorktreeOperation, OperationExecutionGrant] {
+  const permit = permitFor(f.kernel, "root", [{ operationId: "op-1", kind: "git_worktree", authorityId: "wt-add", ...over }]);
+  const op = permit.plan.operations[0] as TypedGitWorktreeOperation;
   return [op, grantFor(f.kernel, permit, op.operationId)];
 }
 
@@ -2806,7 +2816,10 @@ test("[M5c] A2: 임의 콜백으로 성공을 만드는 공개 표면이 존재�
       // **M5c task 3C(대장 `B-F1` 개봉)**: `executeRunProcessOperation(grant, op, capability, options?)`만
       // 인자가 2개를 넘는다. 그 3번째는 **콜백이 아니라 kernel 발급 권능**이며, 아래에서 "함수를 넣으면
       // 거부된다"를 **실제로 실행해** 단정한다(arity 규칙보다 강한 확인이다). 그 밖의 export는 그대로다.
-      if (name === "executeRunProcessOperation") continue;
+      // **V3 M9 T3③**: `executeWorktreeOperation(grant, op, capability, options?)`도 같은 형태다 —
+      // 3번째는 콜백이 아니라 kernel 발급 권능이고, 아래에서 "함수를 넣으면 거부된다"를 실제로 실행해
+      // 단정한다. 이 예외 목록에 이름을 더하는 것 자체가 사람의 승인 대상이다.
+      if (name === "executeRunProcessOperation" || name === "executeWorktreeOperation") continue;
       assert.ok(value.length <= 2, `${name}은 인자 ${value.length}개를 받는다 — 콜백 표면이 아닌지 확인해야 한다`);
     }
   }
@@ -2827,6 +2840,20 @@ test("[M5c] A2: 임의 콜백으로 성공을 만드는 공개 표면이 존재�
   }
   assert.equal(f.kernel.getTask("root")!.execution.operationReceipts.length, 0);
   assert.equal(f.kernel.getTask("root")!.execution.pendingOperations[0].attemptedAt, null);
+
+  // **worktree 집행기도 같다**(V3 M9 T3③): 권능 자리에 임의 함수를 넣으면 spawn도 영수증도 없이 거부다.
+  assert.equal(typeof kernelModule.executeWorktreeOperation, "function");
+  assert.equal(typeof typedModule.executeWorktreeOperation, "function");
+  const g = fixture();
+  const [wop, wgrant] = worktreePermit(g);
+  for (const callback of [() => ({ marker: "applied", path: null, resultSha256: null, exitCode: 0 }), () => undefined]) {
+    await assert.rejects(
+      (kernelModule.executeWorktreeOperation as (...a: unknown[]) => Promise<unknown>)(wgrant, wop, callback),
+      (e: unknown) => (e as OrchestrationError).code === "process_capability_invalid",
+    );
+  }
+  assert.equal(g.kernel.getTask("root")!.execution.operationReceipts.length, 0);
+  assert.equal(g.kernel.getTask("root")!.execution.pendingOperations[0].attemptedAt, null);
 });
 
 // ── 7d. 직접 import 우회 · 발급 인스턴스 격리 (3A 5차 리비전 A3/A2) ────────────
@@ -3676,7 +3703,8 @@ test("[M5c] typed_execution_plan.schema.json의 key·enum·상한이 런타임 �
   assert.equal(s.properties.operations.maxItems, LIMITS.maxOperationsPerTurn);
   assert.deepEqual(
     s.properties.operations.items.oneOf.map((x: any) => x.$ref),
-    ["#/definitions/writeFileOperation", "#/definitions/runProcessOperation"],
+    // V3 M9 T3③에서 `gitWorktreeOperation`이 **사람 승인 아래** 더해졌다. 잠금은 그대로다.
+    ["#/definitions/writeFileOperation", "#/definitions/runProcessOperation", "#/definitions/gitWorktreeOperation"],
   );
   const w = s.definitions.writeFileOperation;
   const r = s.definitions.runProcessOperation;

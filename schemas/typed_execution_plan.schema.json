@@ -20,7 +20,11 @@
       "type": "array",
       "maxItems": 64,
       "items": {
-        "oneOf": [{ "$ref": "#/definitions/writeFileOperation" }, { "$ref": "#/definitions/runProcessOperation" }]
+        "oneOf": [
+          { "$ref": "#/definitions/writeFileOperation" },
+          { "$ref": "#/definitions/runProcessOperation" },
+          { "$ref": "#/definitions/gitWorktreeOperation" }
+        ]
       }
     },
     "requests": {
@@ -134,6 +138,17 @@
       "properties": {
         "operationId": { "$ref": "#/definitions/slug" },
         "kind": { "const": "run_process" },
+        "authorityId": { "$ref": "#/definitions/slug" }
+      }
+    },
+    "gitWorktreeOperation": {
+      "description": "V3 M9 T3③ — 격리 worktree 조작 1건. run_process와 같은 이유로 필드가 셋뿐이다: worker가 주는 것은 authorityId 하나이고, 무엇을 할지(add/remove)는 승인 레코드가, worktree 경로(<workspaceRoot>/.harness/worktrees/<runId>/<taskId>)와 체크아웃 커밋(manifest.approvedCommit)은 kernel이 durable에서 파생한다. branch·remote·refspec·message를 담을 필드가 없으므로 push·fetch·merge·clone은 표현할 수 없다(원격 쓰기 hard deny).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["operationId", "kind", "authorityId"],
+      "properties": {
+        "operationId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "git_worktree" },
         "authorityId": { "$ref": "#/definitions/slug" }
       }
     }

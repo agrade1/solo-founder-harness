@@ -31,6 +31,9 @@ import {
   SLUG_PATTERN,
   type ValidatePlanData,
   type RunTestsData,
+  APPROVED_OPERATION_KINDS,
+  GIT_WORKTREE_ACTIONS,
+  type GitWorktreeAction,
   assertSlug,
   assertTimestamp,
   codePointLength,
@@ -147,6 +150,13 @@ export const WRITE_FILE_AUTHORITY_KEYS = ["authorityId", "kind", "path", "maxByt
  * 것은 닫힌 `action`과 **데이터 전용** `data`뿐이다.
  */
 export const RUN_PROCESS_AUTHORITY_KEYS = ["authorityId", "kind", "action", "data", "timeoutMs"] as const;
+
+/**
+ * **격리 worktree 조작 승인 1건의 닫힌 key 집합**(V3 M9 T3③). 경로·브랜치·커밋·remote·refspec을 담을
+ * 필드가 **하나도 없다** — 전부 kernel이 durable(runId·taskId·`approvedCommit`)에서 파생한다.
+ * `timeoutMs`도 없다: 작업량이 상수라 승인 문서가 고를 값이 아니다(trusted git 질의와 같은 판단).
+ */
+export const GIT_WORKTREE_AUTHORITY_KEYS = ["authorityId", "kind", "action"] as const;
 
 /** 구체적인 approved commit — 40자 소문자 hex만. 짧은 해시·브랜치·tag는 거부한다. */
 export const COMMIT_PATTERN = "^[0-9a-f]{40}$";
@@ -393,10 +403,20 @@ function validateApprovedOperation(
 ): ApprovedOperation {
   const o = asObject(raw, what);
   const kind = o.kind;
-  if (kind !== "write_file" && kind !== "run_process") {
-    throw new OrchestrationError("invalid_manifest", `${what}.kind는 write_file|run_process여야 한다`);
+  if (kind !== "write_file" && kind !== "run_process" && kind !== "git_worktree") {
+    throw new OrchestrationError("invalid_manifest", `${what}.kind는 ${APPROVED_OPERATION_KINDS.join("|")} 중 하나여야 한다`);
   }
   const authorityId = assertSlug(o.authorityId, `${what}.authorityId`);
+  if (kind === "git_worktree") {
+    closedKeys(o, GIT_WORKTREE_AUTHORITY_KEYS, what);
+    if (typeof o.action !== "string" || !(GIT_WORKTREE_ACTIONS as readonly string[]).includes(o.action)) {
+      throw new OrchestrationError(
+        "operation_action_not_approved",
+        `${what}.action은 ${GIT_WORKTREE_ACTIONS.join("|")} 중 하나여야 한다(경로·브랜치·커밋·remote는 표현할 필드가 없다)`,
+      );
+    }
+    return { authorityId, kind, action: o.action as GitWorktreeAction };
+  }
   if (kind === "write_file") {
     closedKeys(o, WRITE_FILE_AUTHORITY_KEYS, what);
     const path = normalizeWorkspacePath(o.path, `${what}.path`);
