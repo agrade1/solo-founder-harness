@@ -1822,9 +1822,15 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 > 범위: PR #29(T1 선결 4건) · #30(dist) · `pr/v3-m9-03-dag`(T2). 전부 **offline·무과금**이다.
 > **live는 아직 하나도 돌리지 않았다** — Claude worker live도, Codex live도 미실행이다.
 
-**실측 baseline**: `test:exec` **575/575** · `test:core` **442/442** ·
-`scripts/acceptance.sh` **PASS=154 / FAIL=0** · `npx tsc --noEmit` clean.
-mutation **23종 red 확인**(T1 17 + T2 6).
+**실측 baseline**(2026-08-19 갱신): `test:exec` **589/589** · `test:core` **442/442** ·
+`scripts/acceptance.sh` **PASS=168 / FAIL=0**(M9는 **Test 21**) · `npx tsc --noEmit` clean.
+mutation **34종 red 확인**(T1 17 + T2 7 + T3① 3 + T3② 3(리뷰 A급 수정 포함) + T3③ 5 + Test 21 3).
+
+**acceptance Test 21이 생겼다**(`scripts/m9-offline-acceptance.mjs` · 내부 체크 47건). KICKOFF §10
+완료 판정 기준 2번이 요구한 것인데 T3까지 빠져 있었다 — 슬라이스마다 focused+mutation은 돌았지만
+acceptance 진입점이 0건이었다. ⑥만 **실제 git**을 로컬에서 부르고(네트워크 0 · 원격 0) 나머지는
+전부 offline이다. 체크가 공허하지 않음을 mutation 3종(B-29 게이트 제거 / DAG 소유권 충돌 제거 /
+`--detach` 제거)으로 확인했다.
 
 | 선결/과업 | 무엇을 했는가 | 증명 상태 |
 |---|---|---|
@@ -1832,6 +1838,9 @@ mutation **23종 red 확인**(T1 17 + T2 6).
 | **선결 2** `B-16` 신규 파일 발행 | **완전 개방**. temp+link/rename을 되살리지 않고 `O_CREAT\|O_EXCL` 빈 파일 → 부모 경로 재해석 검증 → inode 도달성 검증 → 그 다음에야 기존 `applyToFixedTarget`(fd 전용)으로 쓴다. 부모가 교체된 채면 공격자가 얻는 것은 0바이트다 | **증명** — mutation 4종 red · 판별 테스트 5건 |
 | **선결 3** `B-17` | **회계면만 닫았다.** `failDeliveryAttempt`는 kernel에 있었으나 **프로덕션 호출부가 0건**이어서 `stableController` 전달 루프가 실패하면 `activeAttemptId`가 durable에 열린 채 남았다. 이제 실패 marker로 닫는다(`send_failed` vs `turn_failed`) | **부분** — 아래 미증명 표 참조 |
 | **선결 4** F2 실행 가시성 | v1 `core/progress.ts`를 **재사용**한다(새 렌더러 0 · 신규 의존성 0). `AutopilotEvent → RunEvent` 변환기 하나뿐이다. batch 수 → `step_start.total`, task 경과 → `step_end.elapsedMs`(**F1의 데이터 기반이 여기서 생겼다**), 멈춘 marker는 warn note로 남고 pause는 `ok:false`·run은 `failed`다 | **증명** — mutation 5종 red |
+| **T3①** `B-29` kernel 소유권 경합 | 동시 자원 점유 task의 같은 경로 쓰기를 `operation_ownership_contended`로 거부. scheduler 직렬화는 시도 후 기각(fixture 20건+ red) → `C-74` | **증명** — mutation 3종 red · 적대적 리뷰 APPROVE(TOCTOU·`waiting_children` 우회·거짓 영수증 3종 독립 확인) |
+| **T3②** DAG → kernel task 물질화 | `createDependentTask` 재사용(새 kernel API 0). 생성 **전에** 전 seed 검증 → 부분 물질화·run 벽돌화 차단 | **증명** — mutation 5종 red · 적대적 리뷰가 **A급 1건**(부분 물질화와 그 과대주장)을 잡아 수정 |
+| **T3③** 격리 worktree | `git_worktree`를 세 번째 typed operation kind로. kernel이 저장소를 바꾸는 첫 면이며 경로·커밋은 durable 파생, `--detach`, remote 표현 불가 | **증명(로컬 git 왕복)** — 실제 worktree 생성/검증/삭제 실측 · mutation 5종 red |
 | **T2** Tech Lead DAG·ownership·API contract | `src/exec/taskDag.ts` — 닫힌 key 집합 문서 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 · `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재). 소유권 충돌은 **순서가 강제되지 않는** 두 task만 거부한다(의존 사슬로 묶인 구현→수정의 같은 파일 소유는 정상이다) | **증명** — mutation 6종 red |
 
 **`B-17` 실측 정정(중요 — `docs/handoff/M9_KICKOFF.md` §3의 기술이 부정확했다)**:
