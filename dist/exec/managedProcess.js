@@ -32,6 +32,18 @@ export const MANAGED_PROCESS_ENV = Object.freeze({
     LANG: "C",
     LC_ALL: "C",
     TZ: "UTC",
+    /**
+     * **partial clone의 lazy fetch를 끈다**(V3 M9 T3③ 적대적 리뷰 B-1 실측).
+     *
+     * `git worktree add`는 읽기 질의와 달리 object를 물리적으로 요구하므로, `--filter=blob:none` clone
+     * 에서는 argv에 `fetch`가 없어도 git이 **내부에서 원격에 닿는다**. argv 계약만으로는 "네트워크 0"이
+     * 성립하지 않는다는 뜻이라, 그 축을 여기서 끈다.
+     *
+     * **호출자별 env 오버라이드 표면을 열지 않았다**: 그것은 임의 env 주입 통로가 되고, 이 상수가 닫혀
+     * 있다는 성질 자체가 secret·`NODE_OPTIONS`·proxy 유입을 막는 근거다. git 아닌 프로세스에는 무해한
+     * 미상 변수 하나일 뿐이다.
+     */
+    GIT_NO_LAZY_FETCH: "1",
 });
 /** 그룹 상태를 관측하는 주기. 짧은 fixture에서도 결정적이고, 유예 안에서만 돈다. */
 const POLL_MS = 5;

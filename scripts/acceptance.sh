@@ -385,6 +385,12 @@ echo "$M9_OUT" | grep -q "브랜치를 만들지 않았다(--detach)"
 check "M9 ⑥ 브랜치 미생성(원격 쓰기 표현 불가 유지) 확인 출력" $?
 echo "$M9_OUT" | grep -q "멈춘 marker가 표시에서 사라지지 않는다"
 check "M9 ⑦ F2 진행 표시가 실패를 숨기지 않음 확인 출력" $?
+echo "$M9_OUT" | grep -q "세 리뷰어가 한 세션을 겸할 수 없다"
+check "M9 ⑧ 리뷰 3종이 각각 다른 fresh 세션 확인 출력" $?
+echo "$M9_OUT" | grep -q "저자가 자기 코드를 리뷰할 수 없다"
+check "M9 ⑧ 자기 승인 금지 확인 출력" $?
+echo "$M9_OUT" | grep -q "테스트 실행 책임은 test 렌즈에 못 박힌다"
+check "M9 ⑧ test 렌즈 책임 고정 확인 출력" $?
 echo "$M9_OUT" | grep -q "live LLM 0회"
 check "M9 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
 

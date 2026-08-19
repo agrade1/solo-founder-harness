@@ -365,7 +365,10 @@ export function resolveProcessLaunchCapability(op, handle) {
 }
 // ── 격리 worktree (V3 M9 T3③ · 로드맵 §7 병렬 계약 2) ──────────────────────
 /**
- * **worktree 경로는 durable에서 파생한다**(호출자·모델 문자열이 들어오는 통로가 없다).
+ * **worktree 경로는 durable에서 파생한다.** 정확히 말하면 경로 segment인 `taskId`는 spawn된 child의
+ * 경우 worker가 고른 slug일 수 있다 — 다만 `SLUG_PATTERN`을 지나 durable state에 굳은 값이고 절대
+ * 경로의 마지막 segment이므로 인자 주입·경로 탈출은 표현되지 않는다("모델 문자열 통로가 아예 없다"는
+ * 부정확한 서술이라 고쳤다 — T3③ 리뷰 C-2).
  * v2 `worktree.ts`와 **같은 레이아웃**을 쓴다: `<workspaceRoot>/.harness/worktrees/<runId>/<taskId>`.
  * 두 번째 규칙을 만들지 않는다 — 사람이 손으로 정리할 때 한 곳만 보면 되기 때문이다.
  *
@@ -382,7 +385,9 @@ function taskWorktreePath(workspaceRoot, runId, taskId) {
  *
  * - `add`는 `--detach`다 → **브랜치를 만들지 않는다**(브랜치명을 담을 필드가 없어야 한다).
  * - `remove`는 `--force`다 → 열린 worktree도 정리한다. **경로 하나만** 지운다.
- * - `TRUSTED_GIT_PREFIX`를 그대로 쓴다(hook·fsmonitor·external diff·pager 전부 끈다).
+ * - `TRUSTED_GIT_PREFIX`를 그대로 쓴다 — **hook·fsmonitor·pager를 끈다**(external diff/textconv를
+ *   끄는 `--no-ext-diff`·`--no-textconv`는 그 prefix가 아니라 **질의 spec**에 있다. 여기서 끈다고
+ *   주장하지 않는다 — T3③ 리뷰 C-2).
  * - remote·refspec·branch·message를 담을 자리가 어느 갈래에도 없다(원격 쓰기 hard deny — §8).
  */
 function gitWorktreeArgs(action, path, approvedCommit) {
@@ -495,12 +500,21 @@ export async function executeWorktreeOperation(grant, op, capability, options = 
     });
     // **저장소를 바꾸는 유일한 면**이므로 대상이 승인된 저장소 루트 그 자체임을 다시 본다.
     verifyApprovedRepoRoot(authority.workspaceRoot);
+    // **그 위에 mutating 전용 게이트를 하나 더 얹는다**(T3③ 리뷰 B-2). `verifyApprovedRepoRoot`는 읽기
+    // 질의 시절 규칙이라 `.git`이 **일반 파일**인 루트(= 그 자체가 linked worktree)도 통과시킨다. 거기서
+    // `worktree add`를 하면 등록·metadata가 **main clone의 `.git/worktrees/`**, 즉 manifest가 이름한 적
+    // 없는 디렉터리에 남는다. 읽기라면 무해하지만 변경에는 아니다 → 여기서 거부한다.
+    if (!lstatOrNull(joinPath(authority.workspaceRoot, ".git"))?.isDirectory()) {
+        throw processDenied("process_executable_untrusted", "승인된 저장소 루트가 주 checkout이 아니다(linked worktree에서는 worktree를 만들지 않는다 — 변경이 승인 루트 밖에 남는다)");
+    }
     const policy = authority.manifest.autopilotPolicy;
     const args = gitWorktreeArgs(approved.action, taskWorktreePath(authority.workspaceRoot, authority.runId, authority.taskId), authority.manifest.approvedCommit);
     const supervised = await superviseProcess({
         executable: git.path,
         args,
         cwd: authority.workspaceRoot,
+        // lazy fetch 차단은 `MANAGED_PROCESS_ENV`(고정 env)에 있다 — 호출자별 env 오버라이드 표면을
+        // 열지 않기 위해서다(T3③ 리뷰 B-1).
         timeoutMs: TRUSTED_GIT_TIMEOUT_MS,
         termGraceMs: policy.cleanupTermGraceMs,
         killGraceMs: policy.cleanupKillGraceMs,
@@ -513,11 +527,26 @@ export async function executeWorktreeOperation(grant, op, capability, options = 
     if (supervised.terminatedBy !== "exit") {
         throw processDenied("process_deadline_exceeded", `git 프로세스를 ${supervised.terminatedBy}로 종료했다`);
     }
+    // **닫힌 판정표: 0만 성공이다**(T3③ 적대적 리뷰 A급 — 거짓 성공 영수증).
+    //
+    // 이전 판은 `terminatedBy === "exit"`만 보고 `marker: "applied"`를 만들었다. `run_process`에서는
+    // 그것이 옳다 — 거기서 exitCode는 **산출물**이고(테스트 실패가 그대로 영수증에 남아야 한다) 호출자가
+    // 읽는 값이다. **`git_worktree`는 다르다**: mutation 자체가 목적이고 이 kind의 exitCode를 읽는 코드는
+    // 0줄이다. 그래서 `git worktree add`가 exit 128로 실패해도(경로 점유·커밋 부재·이전 잔재)
+    // "worktree를 만들었다"는 durable 영수증이 남았고, 같은 operationId는 `operation_already_recorded`로
+    // **영구 봉인**됐다. 로드맵 M9 위험 3이 정확히 이것이다.
+    //
+    // 지금은 trusted git 질의와 **같은 규율**이다("결과를 지어내지 않는다"): 0이 아니면 성공을 만들지
+    // 않고 던진다. pending은 이미 attempted로 표시돼 있으므로 `outcome_unknown` 정합화로만 닫힌다 —
+    // 실패한 `worktree add`가 부분 상태를 남겼을 수 있다는 것이 **정직한 서술**이기 때문이다.
+    if (supervised.exitCode !== 0) {
+        throw processDenied("process_result_unknown", `git worktree가 0이 아닌 종료 코드를 냈다(성공으로 접지 않는다): ${supervised.exitCode ?? "null"}`);
+    }
     rec.outcome = Object.freeze({
         marker: "applied",
         path: null,
         resultSha256: null,
-        exitCode: supervised.exitCode === null ? null : boundedExit(supervised.exitCode),
+        exitCode: 0,
     });
     rec.state = "attempted";
     const handle = Object.freeze({
@@ -551,14 +580,24 @@ export const PROCESS_EFFECT_CODES = [
     "process_deadline_exceeded",
     /** **자손이 사라진 것을 확인하지 못했다.** 1차 오류에 가려지지 않는다(B1 계약). */
     "process_cleanup_unconfirmed",
+    /**
+     * **닫힌 판정표에 없는 종료 코드다**(V3 M9 T3③ 리뷰 A급). `git_worktree`처럼 **mutation 자체가
+     * 산출물**인 kind는 0만 성공이다 — 0이 아니면 성공을 만들지 않고, 부분 상태가 남았을 수 있으므로
+     * `outcome_unknown` 정합화로만 닫힌다. `run_process`는 exitCode가 **산출물**이라 이 판정을 지나지
+     * 않는다(테스트 실패가 영수증에 그대로 남아야 한다).
+     */
+    "process_result_unknown",
 ];
 function processDenied(code, what) {
     return new OrchestrationError(code, what);
 }
 /** 이 task가 지금까지 **연 `run_process` 수**(영수증 + 미확정 pending — durable에서만 센다). */
 function launchedProcesses(task) {
-    return (task.execution.operationReceipts.filter((r) => r.kind === "run_process").length +
-        task.execution.pendingOperations.filter((p) => p.kind === "run_process").length);
+    // **프로세스를 여는 kind 전부를 센다**(T3③ 리뷰 C-1). `git_worktree`도 `superviseProcess`로 자식을
+    // 띄우므로 여기 빠져 있으면 `maxProcessesPerRun`이 실제 프로세스 수와 어긋난다(이전 판이 그랬다).
+    const opens = (kind) => kind === "run_process" || kind === "git_worktree";
+    return (task.execution.operationReceipts.filter((r) => opens(r.kind)).length +
+        task.execution.pendingOperations.filter((p) => opens(p.kind)).length);
 }
 /**
  * **spawn 상한을 spawn 전에 닫는다**(로드맵 §5: task당 child 4 · child depth 최대 3(root=0) ·
