@@ -18,7 +18,8 @@
  *   D. **fresh Claude 수정 → fresh Codex verify**가 서로 다른 세션으로 이어진다.
  *
  * ## 증명하지 않는다 (정직하게)
- *   - **병렬 2 worker의 동시 진행은 이 스크립트가 하지 않는다** — 여기서 도는 것은 worker 1명이다.
+ *   E. **병렬 2 worker가 소유권 분리 아래 동시 진행한다** — 두 LLM 왕복이 같은 wall-clock 구간에서
+ *      겹치고, 각자 자기 소유 경로에만 발행하며, 소유권 밖 쓰기는 거부된다.
  *   - 리뷰 산출물의 **품질**을 판정하지 않는다. 판정하는 것은 "실제 프로세스가 돌고 계약을 지켰는가"다.
  *   - 직접 병합(merge)은 하지 않는다 — 로컬 병합은 `mergeCoordinator`(v2)의 몫이고 M9 범위에서
  *     **미배선**이다.
@@ -82,6 +83,23 @@ const WS = realpathSync(mkdtempSync(join(tmpdir(), "m9-live-")));
 mkdirSync(join(WS, "src"));
 const BUGGY = "export function add(a, b) {\n  return a - b;\n}\n";
 writeFileSync(join(WS, "src/calc.js"), BUGGY);
+// **두 번째 worker의 소유 영역**(disjoint): 병렬 조건은 "파일 소유권 분리"이므로 디렉터리를 나눈다.
+mkdirSync(join(WS, "lib"));
+const BUGGY2 = "export function mul(a, b) {\n  return a + b;\n}\n";
+writeFileSync(join(WS, "lib/mul.js"), BUGGY2);
+writeFileSync(
+  join(WS, "lib/mul.test.js"),
+  [
+    'import { test } from "node:test";',
+    'import assert from "node:assert/strict";',
+    'import { mul } from "./mul.js";',
+    "",
+    'test("mul", () => {',
+    "  assert.equal(mul(3, 4), 12);",
+    "});",
+    "",
+  ].join("\n"),
+);
 writeFileSync(
   join(WS, "src/calc.test.js"),
   [
@@ -140,8 +158,9 @@ const MILESTONE = "ms-m9-live";
 const manifest = {
   milestoneId: MILESTONE,
   approvedCommit: "a".repeat(40),
-  writableRoots: ["src"],
-  ownershipByTask: { "impl-calc": ["src"] },
+  writableRoots: ["src", "lib"],
+  // **소유권 분리**: 두 worker의 경로가 겹치지 않는다(로드맵 §7 병렬 계약 3).
+  ownershipByTask: { "impl-calc": ["src"], "impl-mul": ["lib"] },
   allowedCommands: [],
   allowedDependencies: [],
   allowedNetworkDomains: [],
@@ -166,6 +185,10 @@ const manifest = {
     "impl-calc": [
       { authorityId: "w-calc", kind: "write_file", path: "src/calc.js", maxBytes: 4096 },
       { authorityId: "p-test", kind: "run_process", action: "run-tests", data: { projectPath: "src" }, timeoutMs: 120_000 },
+    ],
+    "impl-mul": [
+      { authorityId: "w-mul", kind: "write_file", path: "lib/mul.js", maxBytes: 4096 },
+      { authorityId: "p-test-lib", kind: "run_process", action: "run-tests", data: { projectPath: "lib" }, timeoutMs: 120_000 },
     ],
   },
   maxSessions: 4,
@@ -195,37 +218,45 @@ const ASSIGNMENT_BODY = [
 ]
   .map((h) => `## ${h}\n\n본문 한 줄.\n`)
   .join("\n");
-kernel.createRootTask({
-  taskId: "impl-calc",
-  roleId: "dev-lead",
-  title: "calc.add 버그 수정",
-  scope: "src/calc.js만 고친다",
-  ownership: ["src"],
-  assignmentMessageId: "asg-impl-calc",
-  assignmentBody: ASSIGNMENT_BODY,
-});
+for (const [taskId, own, title] of [
+  ["impl-calc", ["src"], "calc.add 버그 수정"],
+  ["impl-mul", ["lib"], "mul 버그 수정"],
+]) {
+  kernel.createRootTask({
+    taskId,
+    roleId: "dev-lead",
+    title,
+    scope: `${own[0]} 안에서만 고친다`,
+    ownership: own,
+    assignmentMessageId: `asg-${taskId}`,
+    assignmentBody: ASSIGNMENT_BODY,
+  });
+}
 {
+  // **한 batch에서 둘을 함께 올린다** — scheduler가 소유권 분리 아래 둘을 동시에 고른다는 뜻이다.
   const batch = kernel.planRunnableBatch();
   kernel.commitPreflightBatch({
     baseRevision: batch.revision,
     actionId: nextId("act"),
     decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared", attemptId: nextId("att") })),
   });
-  kernel.startPreparedTask({ taskId: "impl-calc", actionId: nextId("act"), leaseMarker: nextLease() });
+  for (const taskId of ["impl-calc", "impl-mul"]) {
+    kernel.startPreparedTask({ taskId, actionId: nextId("act"), leaseMarker: nextLease() });
+  }
 }
 
 /** 한 turn = 한 계획. operation 하나를 열고 grant까지 만든다. */
-function openOperation(op) {
-  const task = kernel.getTask("impl-calc");
+function openOperation(op, taskId = "impl-calc") {
+  const task = kernel.getTask(taskId);
   const turnId = nextId("turn");
   const permit = kernel.issueOperationDispatchPermit({
-    taskId: "impl-calc",
+    taskId,
     turnId,
     actionId: nextId("act"),
     plan: {
       schemaVersion: "1",
       runId: RUN_ID,
-      taskId: "impl-calc",
+      taskId,
       attemptId: task.execution.attemptId,
       turnId,
       operations: [op],
@@ -238,11 +269,11 @@ function openOperation(op) {
 }
 
 /** 미확정 pending을 계약대로 닫는다(집행 경계 진입 뒤 실패는 정합화로만 닫힌다). */
-function reconcileOpen() {
-  for (const p of [...kernel.getTask("impl-calc").execution.pendingOperations]) {
+function reconcileOpen(taskId = "impl-calc") {
+  for (const p of [...kernel.getTask(taskId).execution.pendingOperations]) {
     kernel.reconcileUncertainOperation({
       runId: RUN_ID,
-      taskId: "impl-calc",
+      taskId,
       attemptId: p.attemptId,
       turnId: p.turnId,
       planDigest: p.planDigest,
@@ -254,8 +285,8 @@ function reconcileOpen() {
   }
 }
 
-async function runTests(label) {
-  const { op, grant } = openOperation({ operationId: nextId("op"), kind: "run_process", authorityId: "p-test" });
+async function runTests(label, taskId = "impl-calc", authorityId = "p-test") {
+  const { op, grant } = openOperation({ operationId: nextId("op"), kind: "run_process", authorityId }, taskId);
   let outcome = null;
   let err = null;
   try {
@@ -263,7 +294,7 @@ async function runTests(label) {
     kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
   } catch (e) {
     err = e;
-    reconcileOpen();
+    reconcileOpen(taskId);
   }
   console.log(`  · ${label}: exit=${outcome?.exitCode ?? `throw(${err?.code ?? "?"})`}`);
   return outcome;
@@ -353,14 +384,31 @@ check("수정 전 테스트가 실제로 실패한다(게이트가 공허하지 
  * 검사해야 한다.** 1차 live에서 worker가 파일 내용 대신 **도구 호출 형태의 텍스트**를 냈고, 하네스는
  * 권한이 맞으니 그대로 발행했다. 그 실패를 잡은 것은 뒤이은 `run-tests`였다(거짓 성공은 없었다).
  */
-function looksLikeModule(text) {
+/**
+ * 모델 응답에서 **소스 텍스트만** 뽑는다.
+ *
+ * 1차 live: 응답 전체가 도구 호출 XML이었다. 2차 live: **올바른 코드 뒤에 산문이 붙었고**
+ * (` ``` ` 다음에 "Wait — plan mode is…") 앞뒤 펜스만 벗기는 이전 판이 그것을 통과시켰다.
+ * 그래서 펜스가 있으면 **첫 펜스 블록의 내용만** 취한다.
+ */
+function extractSource(text) {
+  const fenced = /```[a-z]*\n([\s\S]*?)```/i.exec(text);
+  if (fenced !== null) return fenced[1].trim();
+  return text.replace(/^```[a-z]*\n?/i, "").replace(/\n?```[\s\S]*$/i, "").trim();
+}
+
+/**
+ * 발행 전 게이트. **정규식만으로는 부족하다**(2차 live 실측: `export function add`를 포함하면서
+ * 뒤에 산문이 붙은 텍스트가 통과했다) → `node --check`로 **실제 문법 검사**를 지난다.
+ */
+function looksLikeModule(text, fnName) {
   const t = text.trim();
   if (t.length === 0 || t.length > 4096) return false;
   if (t.startsWith("<")) return false; // 도구 호출·XML 형태
-  return /export\s+function\s+add\s*\(/.test(t);
-}
-function stripFence(text) {
-  return text.replace(/^```[a-z]*\n?/i, "").replace(/\n?```\s*$/i, "").trim();
+  if (!new RegExp(`export\\s+function\\s+${fnName}\\s*\\(`).test(t)) return false;
+  const probe = join(BIN, `probe-${fnName}.mjs`);
+  writeFileSync(probe, `${t}\n`);
+  return spawnSync(NODE_BIN, ["--check", probe], { stdio: "ignore" }).status === 0;
 }
 
 let published = false;
@@ -377,12 +425,12 @@ if (!DRY) {
     "",
     "이 테스트가 통과해야 한다: assert.equal(add(2, 3), 5)",
   ].join("\n");
-  let raw = stripFence(await askClaude(prompt, "claude-impl"));
+  let raw = extractSource(await askClaude(prompt, "claude-impl"));
   let attempts = 1;
-  if (!looksLikeModule(raw)) {
+  if (!looksLikeModule(raw, "add")) {
     // **재시도 1회**(M8 live 선례: "실패하면 실패로 적는다 — 재시도 1회까지").
     console.log("  · 1차 산출이 모듈 형태가 아니다 → 교정 프롬프트로 1회 재시도");
-    raw = stripFence(
+    raw = extractSource(
       await askClaude(
         [
           "직전 응답이 파일 내용이 아니었다. 도구를 쓰지 말고 파일을 찾지도 마라.",
@@ -395,8 +443,8 @@ if (!DRY) {
     );
     attempts = 2;
   }
-  check("worker 산출물이 모듈 형태다(발행 전 sanity 게이트)", looksLikeModule(raw), `${attempts}회 시도 · ${raw.slice(0, 24)}`);
-  if (!looksLikeModule(raw)) {
+  check("worker 산출물이 모듈 형태다(발행 전 sanity 게이트 · node --check)", looksLikeModule(raw, "add"), `${attempts}회 시도 · ${raw.slice(0, 24)}`);
+  if (!looksLikeModule(raw, "add")) {
     // **발행하지 않는다.** 권한이 맞아도 목적 산출물이 아니면 발행은 손해다(C-63).
     notes.push("A: worker 산출물이 2회 모두 모듈 형태가 아니어서 **발행하지 않았다**");
     console.log("");
@@ -428,6 +476,84 @@ if (published) {
   check("수정 후 테스트가 실제로 통과한다(exit 0)", after !== null && after.exitCode === 0, String(after?.exitCode));
   const receipts = kernel.getTask("impl-calc").execution.operationReceipts.filter((r) => r.kind === "run_process");
   check("두 번의 테스트 실행이 서로 다른 종료 코드로 durable에 남았다", receipts.length >= 1, `receipts=${receipts.length}`);
+}
+
+// ── E: 병렬 2 worker 동시 진행(소유권 분리) ─────────────────────────────────
+if (!DRY) {
+  console.log("\nE — 병렬 2 worker 동시 진행(소유권 분리 · src ↔ lib)");
+  // **두 task가 정말 동시에 자원을 점유하는가**를 먼저 durable 상태로 확인한다.
+  const holding = ["impl-calc", "impl-mul"].filter((id) => ["prepared", "running", "cleaning"].includes(kernel.getTask(id).state));
+  check("두 worker task가 동시에 running이다(scheduler가 둘을 함께 골랐다)", holding.length === 2, holding.join(","));
+
+  const askFix = (label, buggy, fnName) =>
+    askClaude(
+      [
+        "아래 JavaScript 모듈에 버그가 있다. 고친 소스 텍스트를 출력해라.",
+        "**도구를 쓰지 마라. 파일을 찾지 마라.** 필요한 내용은 아래에 전부 있다.",
+        "설명·코드펜스·주석 없이 **소스 텍스트 그 자체만** 출력한다. 첫 글자는 `e`(export)다.",
+        "",
+        buggy,
+        "",
+        `함수 이름은 ${fnName} 그대로 두고 연산만 고쳐라.`,
+      ].join("\n"),
+      label,
+    );
+
+  // **동시 호출**: 두 worker의 LLM 왕복이 같은 wall-clock 구간에서 겹친다.
+  const startedAt = Date.now();
+  const [rawA, rawB] = await Promise.all([
+    askFix("claude-parallel-calc", BUGGY, "add").then(extractSource),
+    askFix("claude-parallel-mul", BUGGY2, "mul").then(extractSource),
+  ]);
+  const elapsed = Date.now() - startedAt;
+  console.log(`  · 두 worker 왕복이 겹친 구간: ${elapsed}ms`);
+  check("두 worker 산출물이 모두 모듈 형태다(node --check)", looksLikeModule(rawA, "add") && looksLikeModule(rawB, "mul"));
+
+  // 각자 **자기 소유 경로에만** 발행한다.
+  if (looksLikeModule(rawB, "mul")) {
+    const { op, grant } = openOperation(
+      {
+        operationId: nextId("op"),
+        kind: "write_file",
+        authorityId: "w-mul",
+        path: "lib/mul.js",
+        content: `${rawB}\n`,
+        expectedBeforeSha256: createHash("sha256").update(BUGGY2).digest("hex"),
+      },
+      "impl-mul",
+    );
+    const outcome = applyWriteFile(op, grant);
+    kernel.recordOperationReceipt({ outcome, actionId: nextId("act") });
+    check("두 번째 worker가 자기 소유 경로에 발행했다", outcome.marker === "applied", outcome.marker);
+  }
+
+  // **소유권 밖 쓰기는 거부된다** — 두 번째 worker가 첫 worker의 경로를 노린다.
+  {
+    const { op, grant } = openOperation(
+      {
+        operationId: nextId("op"),
+        kind: "write_file",
+        authorityId: "w-calc",
+        path: "src/calc.js",
+        content: "export function add() { return 0; }\n",
+        expectedBeforeSha256: null,
+      },
+      "impl-mul",
+    );
+    let code = "no-error";
+    try {
+      applyWriteFile(op, grant);
+    } catch (e) {
+      code = e?.code ?? String(e);
+    }
+    check("소유권 밖 쓰기는 거부된다(operation_denied — 승인 자체가 없다)", code !== "no-error", code);
+    reconcileOpen("impl-mul");
+  }
+
+  const libAfter = await runTests("두 번째 worker 테스트", "impl-mul", "p-test-lib");
+  check("두 번째 worker의 테스트도 실제로 통과한다(exit 0)", libAfter !== null && libAfter.exitCode === 0, String(libAfter?.exitCode));
+} else {
+  notes.push("E: --dry — 병렬 2 worker 미실행");
 }
 
 // ── C/D: fresh Codex 리뷰 3종 · 수정 · verify ───────────────────────────────
@@ -496,8 +622,8 @@ console.log("");
 console.log(`PASS=${pass} FAIL=${fail}`);
 for (const n of notes) console.log(`미실행: ${n}`);
 console.log(
-  "미증명(정직하게): 병렬 2 worker 동시 진행 미실행(여기서 도는 worker는 1명) · 리뷰 산출물의 **품질**은 판정하지 않는다 · " +
-    "로컬 병합(mergeCoordinator)은 M9에서 미배선이다.",
+  "미증명(정직하게): 리뷰 산출물의 **품질**은 판정하지 않는다 · 로컬 병합은 이 아키텍처에 매핑되지 않는다 " +
+    "(worker 산출물이 브랜치가 아니라 kernel typed-write로 run workspace에 발행되고 worktree는 --detach라 브랜치가 없다).",
 );
 console.log(`workspace 보존: ${WS}`);
 process.exit(fail === 0 ? 0 : 1);

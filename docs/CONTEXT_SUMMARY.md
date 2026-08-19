@@ -1,8 +1,8 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-19 (M9 진행 중 — T1·T2·T3 완료)
+최종 갱신: 2026-08-19 (M9 — T1~T5 완료 · live 실측 완료)
 
-## 최신 (2026-08-19 — **V3 M9 진행 중. T4 남음** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-19 — **V3 M9 T1~T5 완료 · live 17/17** · 이 블록이 가장 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
 - 실측 `test:exec` **589/589** · `test:core` **442/442** · acceptance **PASS=168 / FAIL=0**
@@ -20,10 +20,21 @@
 - **T3③** `git_worktree`를 **세 번째 typed operation kind**로 — kernel이 저장소를 바꾸는 첫 면이며
   경로·커밋을 durable에서 파생하고 브랜치를 만들지 않는다(`--detach`). **실제 git 왕복 실측**.
 
-**M9에 남은 것(전부 미증명)**
-- 병렬 2 worker의 **실제 동시 진행** · fresh Codex 리뷰 3종(test review가 실제 테스트 실행) ·
-  revise/verify 왕복 · 직렬 병합 · end-to-end 1회.
-- **live는 0회다** — Claude worker live(구독)도, Codex live(과금 게이트 · 사용자 승인 필요)도 미실행.
+**live 실측 완료** (`scripts/m9-live-pipeline.mjs` · **PASS=17 / FAIL=0** · 수동 실행 전용):
+Claude worker 구현 → kernel typed-write 발행 → `run-tests`로 실제 테스트(전 exit=1 → 후 exit=0) →
+**병렬 2 worker 동시 진행**(소유권 분리 · 왕복 9.4초 겹침 · 소유권 밖 쓰기 거부) → fresh Codex 리뷰
+3종(각각 다른 프로세스·세션) → fresh Claude 수정 → fresh Codex verify → 실제 6개 세션 신원이 왕복
+계약 통과. **과금**: Claude 구독 · Codex도 `auth_mode: chatgpt`(API 키 없음)라 **구독 경로**다.
+
+**live가 잡은 결함 4건** — 전부 하네스 코드가 아니라 **live 배선** 문제였고, 매번 실패를 잡은 것은
+`run-tests`였다(거짓 성공 0). 자세한 것은 로드맵 `live 실측` 절.
+
+**M9에 남은 것**
+- **"직렬 로컬 병합"은 이 아키텍처에 매핑되지 않는다** — worker 산출물이 브랜치가 아니라 kernel
+  typed-write로 발행되고 worktree는 `--detach`라 브랜치가 없다. 증명했다고 적지 않고 이유를 적었다
+  (대장 `C-80`).
+- end-to-end가 `runAutopilot` **무인 loop**가 아니라 스크립트가 단계를 부르는 형태다(부분).
+- 리뷰 산출물의 **품질**은 판정하지 않는다.
 
 **작업 방식(그대로 유지)**: 슬라이스마다 focused + mutation red 확인 → fresh 적대적 read-only 리뷰
 (구현자와 다른 세션) → 지적 반영 → PR 분할(소스/dist). M9에서 리뷰가 **A급 1건**(부분 물질화와 그

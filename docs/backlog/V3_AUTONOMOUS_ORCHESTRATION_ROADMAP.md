@@ -1843,7 +1843,7 @@ acceptance 진입점이 0건이었다. ⑥만 **실제 git**을 로컬에서 부
 | **T3③** 격리 worktree | `git_worktree`를 세 번째 typed operation kind로. kernel이 저장소를 바꾸는 첫 면이며 경로·커밋은 durable 파생, `--detach`, remote 표현 불가 | **증명(로컬 git 왕복)** — 실제 worktree 생성/검증/삭제 실측 · mutation 5종 red |
 | **T2** Tech Lead DAG·ownership·API contract | `src/exec/taskDag.ts` — 닫힌 key 집합 문서 + 검증 6종(순환 · 미상 의존 · 소유권 충돌 · `provides` 소유 · `consumes` 이행적 제공 · 실행 권한 필드 부재). 소유권 충돌은 **순서가 강제되지 않는** 두 task만 거부한다(의존 사슬로 묶인 구현→수정의 같은 파일 소유는 정상이다) | **증명** — mutation 6종 red |
 
-##### live 1회 실측 (2026-08-19 · `scripts/m9-live-pipeline.mjs` · **PASS=12 / FAIL=0**)
+##### live 실측 (2026-08-19 · `scripts/m9-live-pipeline.mjs` · **PASS=17 / FAIL=0**)
 
 > **과금 실측**: Claude Code CLI는 구독(M8 실측 실결제 $0). **Codex는 `~/.codex/auth.json`의
 > `auth_mode: chatgpt`이고 `OPENAI_API_KEY`가 null이다 → ChatGPT 구독 경로이며 per-token API 과금이
@@ -1858,8 +1858,9 @@ acceptance 진입점이 0건이었다. ⑥만 **실제 git**을 로컬에서 부
 | fresh Codex 리뷰 3종 | code·security·test가 **각각 다른 프로세스·세션**으로 실산출(read-only sandbox) |
 | fresh Claude 수정 → fresh Codex verify | 둘 다 실제 프로세스로 응답 |
 | 왕복 계약 | **실제 6개 세션 신원**이 `assertCodeReviewRoundtrip`을 통과(자기 승인 0) |
+| **병렬 2 worker 동시 진행** | scheduler가 소유권 분리(`src` ↔ `lib`) 아래 **둘을 같은 batch에서 골라 둘 다 running**으로 올리고, 두 LLM 왕복이 **같은 wall-clock 구간에서 겹쳤다**(실측 9.4초). 각자 자기 소유 경로에만 발행하고, **소유권 밖 쓰기는 거부됐다**(`operation_denied` — 승인 자체가 없다). 두 worker의 테스트가 각각 exit=0 |
 
-**live가 잡은 결함 3건**(mock/offline만 돌렸으면 못 봤다 — M8과 같은 교훈):
+**live가 잡은 결함 4건**(mock/offline만 돌렸으면 못 봤다 — M8과 같은 교훈):
 1. **worker가 파일 내용 대신 도구 호출 형태의 텍스트를 냈고 하네스가 그대로 발행했다.** typed-write는
    **권한**(경로·ownership·바이트·preimage)만 집행하고 목적 산출물인지는 보지 않는다(대장 `C-63`의
    영역이며 의도된 경계다). **그 실패를 잡은 것은 뒤이은 `run-tests`였다 — 거짓 성공은 없었다.**
@@ -1870,12 +1871,41 @@ acceptance 진입점이 0건이었다. ⑥만 **실제 git**을 로컬에서 부
    썼더니 진짜 node가 그것을 JS로 파싱해 exit 1이 됐고, 그것이 "수정 후에도 테스트 실패"의 진짜
    원인이었다(**worker의 수정은 옳았다**). 세 결함 모두 하네스 코드가 아니라 **live 배선**의 문제였다.
 
+4. **발행 전 sanity 게이트가 정규식만으로는 부족했다.** 2차 live에서 worker가 **올바른 코드 뒤에
+   산문을 붙였고**(` ``` ` 다음에 "Wait — plan mode is…"), `export function add`를 포함한다는 정규식
+   검사가 그것을 통과시켜 문법 오류 파일이 발행됐다. → 첫 펜스 블록만 취하고 **`node --check`로 실제
+   문법 검사**를 지나게 고쳤다. **이번에도 그 실패를 잡은 것은 `run-tests`였다.**
+
 **관측 그대로 적는 것 하나**: `test` 렌즈 Codex 리뷰가 `VERDICT: FAIL`을 냈다. 같은 시점 하네스의
 `run-tests`는 exit=0이었다. 리뷰어가 테스트 **커버리지·품질**을 지적한 것으로 읽히지만 이 스크립트는
 **리뷰 산출물의 품질을 판정하지 않는다** — 두 값이 갈렸다는 사실만 남긴다.
 
-**이 live가 증명하지 않는 것**: 병렬 2 worker의 **동시** 진행(여기서 돈 worker는 1명) · 리뷰 산출물의
-품질 · 로컬 병합(`mergeCoordinator`는 M9에서 미배선).
+**이 live가 증명하지 않는 것**: 리뷰 산출물의 **품질**(판정하지 않는다) · 아래 "로컬 병합" 판정.
+
+##### 완료 조건 판정 — "직렬 로컬 병합"은 **이 아키텍처에 매핑되지 않는다**(2026-08-19)
+
+로드맵 M9 완료 조건에 "직렬 로컬 병합"이 있으나 **M9가 실제로 만든 구조에는 병합할 브랜치가 없다**:
+
+- worker 산출물은 worktree가 아니라 **kernel typed-write 채널로 run workspace에 직접 발행**된다.
+- 격리 worktree는 `--detach`로 만들어 **브랜치를 아예 만들지 않는다**(T3③에서 의도적으로 그렇게
+  설계하고 문서화했다 — 브랜치명을 담을 필드가 없어야 원격 쓰기가 표현 불가로 남는다).
+- 따라서 직렬 통합 지점은 "브랜치 병합"이 아니라 **단일 run workspace + `B-29` 직렬화**이고,
+  그것은 위 live의 병렬 2 worker 항목이 실측했다(소유권 분리 · 소유권 밖 쓰기 거부).
+
+v2 `mergeCoordinator`는 세션 브랜치를 base에 병합하는 전제인데 **그 전제가 성립하지 않는다.**
+여기서 "직렬 병합 증명"이라고 적으면 그것이 과대주장이다. 그래서 **증명했다고 적지 않고 조건이
+매핑되지 않는 이유를 적는다.** 브랜치 기반 병합이 실제로 필요해지는 시점(worker가 worktree 안에서
+커밋을 남기는 형태로 바꾸는 마일스톤)에 다시 판단한다 → 대장 `C-80`.
+
+##### M9 판정 요약 (2026-08-19)
+
+| 완료 조건(로드맵 원문) | 판정 |
+|---|---|
+| Tech Lead가 task DAG/ownership/API contract 생성 | **증명** — T2 문서 계약 + T3② 물질화(mutation 13종 red) |
+| Claude Code Opus worker 병렬 worktree 구현 | **증명** — live 병렬 2 worker 동시 진행 + 소유권 밖 쓰기 거부 + `B-16` 신규 발행 |
+| fresh Codex code/security/test review | **증명** — 3종이 각각 다른 프로세스·세션으로 실산출, `run-tests`가 실제 테스트를 돌려 exit 0/1을 durable 영수증에 남김 |
+| fresh Claude revise · fresh Codex verify · 직렬 로컬 병합 | **부분** — revise·verify는 실제 프로세스로 증명. **"직렬 로컬 병합"은 위 판정대로 이 아키텍처에 매핑되지 않는다** |
+| 아이디어 → 로컬 동작 MVP → 전체 테스트 → 최종 report 단일 실행 | **부분** — fixture repo에서 구현→테스트→리뷰→수정→verify가 **한 스크립트 실행**으로 이어졌다(PASS=17). 다만 그 실행은 `runAutopilot` 무인 loop가 아니라 **스크립트가 단계를 부르는 형태**이고, 최종 report 산출도 stdout 요약이다 |
 
 **`B-17` 실측 정정(중요 — `docs/handoff/M9_KICKOFF.md` §3의 기술이 부정확했다)**:
 KICKOFF는 `B-17`을 "inbox 전달 소비(ack)"로 적었으나, §9.1 대장 원문의 잔여는
@@ -2067,6 +2097,7 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-77` | C (P3) | **repo-local smudge filter는 `TRUSTED_GIT_PREFIX`가 끄지 않는다.** `worktree add`의 checkout 중 `.git/config`의 `filter.*.smudge`가 임의 명령을 실행할 수 있다(리뷰어 실측). prefix는 hook·fsmonitor·pager만 끈다. **모델 통로는 아니다** — `.git/config` 지배가 전제이고 그것을 쥔 쪽은 이미 그 저장소를 지배한다. 그래서 새 권한 상승이 아니라 **주장 범위의 문제**이고, 주석에서 "전부 끈다"를 걷어냈다 | 낮음 — 저장소 config를 이미 지배해야 한다 | checkout 중 실행되는 명령(하네스 권위 밖) | 낮음 | 소~중(`-c filter.<n>.smudge=` 무력화는 필터 이름을 알아야 해 일반해가 아니다. `GIT_CONFIG_COUNT` 계열로 덮거나 `core.filterProcess` 차단 검토) | 없음(bounded backlog) | 미정 | M9 T3③ 적대적 리뷰 C-2 부수 확인(read-only · /tmp probe) | open |
 | `C-78` | C (P3) | **리뷰 왕복 계약이 렌즈↔역할·실행 책임을 참가자에 바인딩하지 않는다.** `assertCodeReviewRoundtrip`은 신원 분리(task·세션·provider·sandbox·role 계열)만 본다 → ⓐ `security` 렌즈에 `tech-lead` role을 붙여도 통과하고 ⓑ `reviews.test` 참가자가 실제로 `run-tests` operation을 들고 있는지 보지 않으며 ⓒ 같은 물리 프로세스에 다른 `sessionId` 문자열 6개를 주면 통과한다(리뷰어 probe 실측). **의도된 경계이고 acceptance 출력이 "⑧은 계약 층만 본다"로 공개한다** — 잔여는 배선하는 쪽이 그 바인딩을 잊어도 계약이 잡아주지 않는다는 것이다 | 중 — live 배선을 사람이 아니라 코드가 만들 때 | 리뷰 3종의 의미(신원 분리는 유지된다) | 낮~중 | 중(렌즈별 요구 role 계열 표 + `test` 렌즈 참가자의 `run-tests` authority 대조. 세션↔프로세스 동일성은 provider 층 신원이 필요해 더 크다) | 없음(bounded) — 왕복 레코드를 코드가 구성하는 첫 마일스톤 전 | 미정 | M9 T4 적대적 리뷰 finding 2·probe 실측 · `designReviewRoundtrip.ts` | open |
 | `C-79` | C (P3) | **다중 위반 입력의 오류 코드 순서가 M8 대비 1건 바뀌었다.** 일반화로 리뷰어 loop가 provider·sandbox를 함께 보게 되어, "리뷰어 sandbox 위반 + 저자 provider=codex" 입력의 코드가 `worker_provider` → `reviewer_sandbox`로 바뀌었다. 리뷰어가 26 케이스 배터리로 대조해 **이 하나만** 다르고 나머지 전부 동일 코드임을 확인했다. M8 테스트·acceptance는 전부 단일 위반 입력이라 의존하지 않는다(실질 무손상) | 낮음 — 다중 위반 입력에서만 | 진단 코드 1건 | 낮음 | 소(순서를 옛 순서로 되돌리거나 코드 순서를 계약으로 고정) | 없음 — 향후 golden test가 옛 순서를 가정하지 않도록 기록만 | 미정 | M9 T4 적대적 리뷰 finding 3 · 26케이스 old/new diff 매트릭스 | open |
+| `C-80` | C (P3) | **"직렬 로컬 병합"이 M9 아키텍처에 매핑되지 않는다.** 완료 조건은 세션 브랜치를 base에 직렬 병합하는 형태(v2 `mergeCoordinator`)를 전제하지만, M9는 worker 산출물을 **kernel typed-write로 run workspace에 직접 발행**하고 격리 worktree를 `--detach`로 만들어 **브랜치를 아예 만들지 않는다**(브랜치명을 담을 필드가 없어야 원격 쓰기가 표현 불가로 남기 때문이다). 직렬 통합 지점은 단일 run workspace + `B-29` 직렬화이고 그것은 live로 실측됐다. **증명했다고 적지 않고 매핑되지 않는다고 적었다** | 해당 없음(현 구조에서는 발생하지 않는다) | 없음 — 지금은 병합 단계가 존재하지 않는다 | 중 — worker가 worktree 안에서 커밋을 남기는 형태로 바꾸면 그때 병합 계약이 필요해진다 | 중(`mergeCoordinator` 배선 + 게이트 재실행 + 충돌 처리. 다만 그 전에 worker 산출 경로 자체를 바꾸는 결정이 선행한다) | **worker가 worktree 안에서 커밋을 남기는 형태로 전환하는 마일스톤** | 미정 | M9 T5 live 판정(2026-08-19) · `gitWorktreeArgs`의 `--detach` · `taskDagMaterialize`/typed-write 발행 경로 | open |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
