@@ -162,3 +162,23 @@ test("[M9] T4: M8 design 왕복 계약은 그대로다(같은 구현을 공유�
   // 반대로 M9에서는 dev-lead 리뷰어가 거부다 — 계열이 진입점마다 다르다는 것이 지켜진다.
   assert.equal(code9(rt9((r) => (r.reviews.code.roleId = "dev-lead"))), "reviewer_role");
 });
+
+test("[M9] T4 리뷰 B: 참가자 값이 null이면 typed code로 거부한다(raw TypeError 누출 0)", () => {
+  // 렌즈 **키는 있는데 값이 null**인 입력은 렌즈 집합 게이트를 지나 참가자 접근에서 터졌다.
+  // `DesignRoundtripError`만 catch하는 호출자(run state JSON에서 레코드를 구성하는 배선)에게는
+  // untyped crash다.
+  for (const mutate of [
+    (r: CodeReviewRoundtrip) => ((r.reviews as Record<string, unknown>).code = null),
+    (r: CodeReviewRoundtrip) => ((r as unknown as Record<string, unknown>).verify = null),
+    (r: CodeReviewRoundtrip) => ((r as unknown as Record<string, unknown>).revision = null),
+    (r: CodeReviewRoundtrip) => ((r as unknown as Record<string, unknown>).author = "not-an-object"),
+    (r: CodeReviewRoundtrip) => ((r.reviews as Record<string, unknown>).security = []),
+  ]) {
+    assert.equal(code9(rt9(mutate)), "participant_invalid");
+  }
+  // M8 진입점도 같은 구현을 지나므로 함께 닫힌다.
+  assert.throws(
+    () => assertDesignReviewRoundtrip({ ...OK, reviewer: null as unknown as typeof OK.reviewer }),
+    (e: unknown) => e instanceof DesignRoundtripError && e.code === "participant_invalid",
+  );
+});

@@ -49,9 +49,13 @@ export type CodeReviewLens = (typeof CODE_REVIEW_LENSES)[number];
 /**
  * **M9 개발 파이프라인의 리뷰 왕복**: 저자 → 리뷰 3종 → 수정 → verify.
  *
- * `test` 렌즈만 `runsTests`가 참이어야 한다. **이 모듈이 증명하는 것은 "누가 테스트 실행 책임을
- * 지는가"가 계약에 못 박혔다는 것뿐**이다 — 테스트가 실제로 돌았다는 것은 kernel의 `run_process`
- * (`run-tests` action) 영수증이 증명한다. 둘을 섞지 않는다.
+ **이 모듈이 검사하는 것은 `testLens === "test"` 하나뿐이다** — 즉 "테스트 실행 책임이 `test` 렌즈에
+ * 있다"는 **선언**이 계약에 박혀 다른 렌즈로 옮겨갈 수 없다는 것까지다(T4 적대적 리뷰 A급: 이전 판
+ * 주석은 존재하지도 않는 `runsTests` 필드 검사를 주장했다 — 그 문장을 지웠다).
+ *
+ * **이 모듈은 실행 책임을 참가자에 바인딩하지 않는다.** `reviews.test` 참가자가 실제로 `run-tests`
+ * operation을 들고 있는지는 보지 않으며, 테스트가 돌았다는 것은 kernel의 `run_process`(`run-tests`)
+ * 영수증이 증명한다. 배선하는 쪽이 그 바인딩을 **직접** 해야 한다.
  */
 export interface CodeReviewRoundtrip {
   /** 구현한 worker(claude). */
@@ -75,7 +79,10 @@ export class DesignRoundtripError extends Error {
   }
 }
 
-/** role 계열 판정 — 상위 role 그 자체이거나 하위 한 겹(`design.*`). */
+/**
+ * role 계열 판정 — 상위 role 그 자체이거나 그 아래 **임의 깊이**(`design.*`, `design.a.b`도 포함).
+ * (M8 주석은 "하위 한 겹"이라고 적었으나 `startsWith`는 깊이를 제한하지 않는다 — T4 리뷰 C에서 정정.)
+ */
 function inRoleFamily(roleId: string, family: string): boolean {
   return roleId === family || roleId.startsWith(`${family}.`);
 }
@@ -90,6 +97,13 @@ function fail(code: string, msg: string): never {
  * @param authorRoleFamily 저자·수정자가 속해야 하는 role 계열. 리뷰어·verify는 **이 계열 밖**이어야
  *   한다(같은 역할이 자기 산출물을 검토하면 왕복이 아니다).
  */
+/** 참가자 1명이 최소한 객체 모양인가 — 아니면 typed code로 거부한다(raw TypeError 누출 금지). */
+function assertParticipantShape(p: unknown, what: string): asserts p is RoundtripParticipant {
+  if (p === null || typeof p !== "object" || Array.isArray(p)) {
+    fail("participant_invalid", `${what} 참가자가 객체가 아니다`);
+  }
+}
+
 function assertRoundtrip(spec: {
   author: RoundtripParticipant;
   /** 1명 이상. 전부 fresh Codex read-only여야 한다(verify도 여기 포함해서 넘긴다). */
@@ -99,6 +113,12 @@ function assertRoundtrip(spec: {
 }): void {
   const { author, reviewers, revision, authorRoleFamily } = spec;
   const all = [author, ...reviewers, revision];
+  // **shape를 먼저 본다**(T4 적대적 리뷰 B): `reviews: { code: null, … }`처럼 **키는 있는데 값이 null**인
+  // 입력은 렌즈 집합 게이트를 지나 여기서 raw `TypeError`로 터졌다. `DesignRoundtripError`만 catch하는
+  // 호출자에게는 untyped crash다 — run state JSON에서 왕복 레코드를 구성하는 배선이 곧 그 호출자다.
+  assertParticipantShape(author, "author");
+  assertParticipantShape(revision, "revision");
+  for (const r of reviewers) assertParticipantShape(r, "reviewer");
 
   // 1) 참가자의 task·세션 신원이 **전부** 달라야 한다(같으면 자기 승인이다).
   const taskIds = all.map((p) => p.taskId);
