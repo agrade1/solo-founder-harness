@@ -279,7 +279,7 @@ export const DELIVERY_MARKERS = ["delivered", "send_failed", "turn_failed", "dea
 /** cleanup 진행 상태. `confirmed`만 다음 상태로 나갈 자격이 된다. */
 export const CLEANUP_STATUSES = ["none", "required", "confirmed", "failed"];
 /** typed operation 종류 — 닫힌 union(shell 문자열·wildcard·런타임 실행 파일 선택은 없다). */
-export const APPROVED_OPERATION_KINDS = ["write_file", "run_process"];
+export const APPROVED_OPERATION_KINDS = ["write_file", "run_process", "git_worktree"];
 /**
  * bounded 상한. spawn 상한 3종은 M4a 필수 요건이고 나머지는 state·메시지가 무제한으로
  * 커지지 않게 하는 방어선이다. schema(JSON)와 runtime validator가 같은 값을 쓴다.
@@ -512,6 +512,22 @@ export function emptyTaskExecution() {
         operationReceipts: [],
     };
 }
+/**
+ * **격리 worktree 조작 1건의 닫힌 action 집합**(V3 M9 T3③ — 로드맵 §7 병렬 계약 2 "worker마다 격리된
+ * git worktree 1개").
+ *
+ * 이것이 **kernel이 저장소를 바꾸는 유일한 면**이다. 그래서 열린 만큼 정확히 닫아 두었다:
+ *
+ * - **호출자·모델이 담을 수 있는 필드가 하나도 없다.** worktree 경로는 `runId`+`taskId`에서, 체크아웃할
+ *   커밋은 승인 manifest의 `approvedCommit`에서 **kernel이 파생한다**(`gitWorktreeArgs`). 승인 레코드가
+ *   고르는 것은 `add`/`remove` 둘 중 하나뿐이다.
+ * - **브랜치를 만들지 않는다**(`--detach`). 브랜치명을 담을 필드가 없어야 하고, M9에서 worker의 산출물은
+ *   worktree가 아니라 **kernel typed-write 채널**로 발행되므로 브랜치가 필요하지 않다.
+ * - `fetch`/`pull`/`push`/`remote`/`clone`/`merge`/`rebase`/`commit`/`tag`는 **표현할 타입이 없다**
+ *   (원격 쓰기 hard deny — §8).
+ * - 승인은 task별이다(`operationAuthorityByTask`) → 아무 task나 worktree를 만들 수 없다.
+ */
+export const GIT_WORKTREE_ACTIONS = ["add", "remove"];
 /**
  * **고정 controller entrypoint가 받아들이는 닫힌 action 집합**(3A 2차 리비전 B2 · 대장 `B-10`).
  * 여기 없는 문자열은 승인 문서에 담길 수 없고, 이 목록에 항목을 더하는 것 자체가 사람의 승인 대상이다.
