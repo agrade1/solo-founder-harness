@@ -63,6 +63,16 @@ export function resolveWriteFileAuthority(op, permit) {
  */
 export { executeRunProcessOperation, isGenuineLaunchCapability, resolveProcessLaunchCapability, } from "./orchestrationKernel.js";
 /**
+ * **격리 worktree**(V3 M9 T3③) — 등록부·집행기가 kernel 안에 있는 이유는 위 둘과 **정확히 같다**.
+ * 여기서는 이름만 재수출한다. 승인 레코드가 고르는 것은 `add`/`remove` 하나뿐이고 경로·커밋은
+ * kernel이 durable에서 파생하므로, 브랜치·remote·refspec을 담을 필드가 어디에도 없다.
+ *
+ * 경로 파생 헬퍼(`taskWorktreePath`)는 **facade로 내보내지 않는다** — 집행에 필요한 표면이 아니고,
+ * 내보내면 "인자 2개 초과 export 금지" 잠금(콜백 표면 재도입 차단)의 예외를 하나 늘려야 한다.
+ * 필요한 쪽은 kernel 모듈에서 직접 읽는다.
+ */
+export { executeWorktreeOperation, isGenuineWorktreeCapability, resolveWorktreeCapability, } from "./orchestrationKernel.js";
+/**
  * **trusted Git**(task 3D · 대장 `C-26`) — 등록부·집행기는 launch 권능과 **같은 이유로** kernel 안에 있고
  * 여기서는 이름만 재수출한다. 호출자가 고를 수 있는 것은 닫힌 enum 하나뿐이며 argv는 동결된 상수다:
  * remote · refspec · branch · 경로 · 커밋 메시지를 담을 필드가 존재하지 않으므로 push·PR/merge·네트워크

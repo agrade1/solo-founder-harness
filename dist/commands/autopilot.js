@@ -53,7 +53,7 @@ import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
 import { applyAgentRequests, requestsOfKind } from "../exec/spawnRouting.js";
 import { openOrchestrationRun } from "../exec/orchestrationKernel.js";
 // **집행 진입점은 facade 하나만 쓴다** — kernel 사설 집행기에 직접 닿는 통로를 만들지 않는다.
-import { applyWriteFile, executeRunProcessOperation, resolveProcessLaunchCapability, resolveWriteFileAuthority, } from "../exec/typedExecution.js";
+import { applyWriteFile, executeRunProcessOperation, executeWorktreeOperation, resolveProcessLaunchCapability, resolveWorktreeCapability, resolveWriteFileAuthority, } from "../exec/typedExecution.js";
 /** 한 번의 `autopilot` 실행이 도는 iteration 상한(무인 loop는 언제나 bounded다). */
 export const DEFAULT_MAX_ITERATIONS = 16;
 /** 이 모듈이 낼 수 있는 run 수준 거부 코드(닫힌 집합). */
@@ -482,8 +482,11 @@ async function dispatchOperations(ctx) {
         try {
             if (op.kind === "write_file")
                 resolveWriteFileAuthority(op, permit);
-            else
+            else if (op.kind === "run_process")
                 resolveProcessLaunchCapability(op, permit);
+            // V3 M9 T3③ — 격리 worktree. 사전 판정도 다른 kind와 **같은 자리**를 지난다(순수 판정 · 효과 0).
+            else
+                resolveWorktreeCapability(op, permit);
         }
         catch (err) {
             return { marker: operationMarker(err), charged: true, chargeFailed: null };
@@ -499,7 +502,9 @@ async function dispatchOperations(ctx) {
         try {
             const outcome = op.kind === "write_file"
                 ? applyWriteFile(op, grant)
-                : await executeRunProcessOperation(grant, op, resolveProcessLaunchCapability(op, grant), { signal });
+                : op.kind === "run_process"
+                    ? await executeRunProcessOperation(grant, op, resolveProcessLaunchCapability(op, grant), { signal })
+                    : await executeWorktreeOperation(grant, op, resolveWorktreeCapability(op, grant), { signal });
             kernel.recordOperationReceipt({ outcome, actionId: id("rcpt") });
         }
         catch (err) {

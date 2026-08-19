@@ -363,6 +363,172 @@ export function resolveProcessLaunchCapability(op, handle) {
     });
     return capability;
 }
+// ── 격리 worktree (V3 M9 T3③ · 로드맵 §7 병렬 계약 2) ──────────────────────
+/**
+ * **worktree 경로는 durable에서 파생한다**(호출자·모델 문자열이 들어오는 통로가 없다).
+ * v2 `worktree.ts`와 **같은 레이아웃**을 쓴다: `<workspaceRoot>/.harness/worktrees/<runId>/<taskId>`.
+ * 두 번째 규칙을 만들지 않는다 — 사람이 손으로 정리할 때 한 곳만 보면 되기 때문이다.
+ *
+ * **export하지 않는다**: 집행에 필요한 표면이 아니고, 내보내면 "인자 2개 초과 export 금지" 잠금
+ * (콜백 표면 재도입 차단)의 예외를 하나 늘려야 한다. 테스트는 이 규칙을 **독립적으로 다시 적어**
+ * 확인한다(같은 상수를 공유하면 규칙이 바뀌어도 테스트가 따라 바뀌어 검증이 공허해진다).
+ */
+function taskWorktreePath(workspaceRoot, runId, taskId) {
+    return joinPath(joinPath(joinPath(joinPath(workspaceRoot, ".harness"), "worktrees"), runId), taskId);
+}
+/**
+ * 승인된 worktree 조작 → **git argv**. 이 함수가 argv의 유일한 조립 지점이고, 들어가는 값은 전부
+ * durable이다: 경로는 `taskWorktreePath`, 커밋은 `manifest.approvedCommit`.
+ *
+ * - `add`는 `--detach`다 → **브랜치를 만들지 않는다**(브랜치명을 담을 필드가 없어야 한다).
+ * - `remove`는 `--force`다 → 열린 worktree도 정리한다. **경로 하나만** 지운다.
+ * - `TRUSTED_GIT_PREFIX`를 그대로 쓴다(hook·fsmonitor·external diff·pager 전부 끈다).
+ * - remote·refspec·branch·message를 담을 자리가 어느 갈래에도 없다(원격 쓰기 hard deny — §8).
+ */
+function gitWorktreeArgs(action, path, approvedCommit) {
+    switch (action) {
+        case "add":
+            return Object.freeze([...TRUSTED_GIT_PREFIX, "worktree", "add", "--detach", path, approvedCommit]);
+        case "remove":
+            return Object.freeze([...TRUSTED_GIT_PREFIX, "worktree", "remove", "--force", path]);
+        default: {
+            const never = action;
+            throw operationDenied(`승인 레코드의 worktree action을 해석할 수 없다: ${JSON.stringify(never)}`);
+        }
+    }
+}
+const GENUINE_WORKTREE_CAPABILITIES = new WeakMap();
+/**
+ * `git_worktree` 권위 해석. **spawn하지 않고 grant도 소비하지 않는다** — 순수 minting이며
+ * `resolveProcessLaunchCapability`와 정확히 같은 계약이다(두 번째 패턴을 만들지 않는다).
+ */
+export function resolveWorktreeCapability(op, handle) {
+    const { authority: auth, permitRecord } = dispatchFrom(handle, op);
+    const approved = resolveApprovedOperation(op, auth);
+    if (approved.kind !== "git_worktree")
+        throw operationDenied("승인 레코드의 kind와 다르다");
+    const git = auth.manifest.executionAuthority.git;
+    const capability = Object.freeze({
+        operationId: op.operationId,
+        authorityId: op.authorityId,
+        runId: auth.runId,
+        taskId: auth.taskId,
+        attemptId: auth.attemptId,
+        turnId: auth.turnId,
+    });
+    GENUINE_WORKTREE_CAPABILITIES.set(capability, {
+        issuer: permitRecord.issuer,
+        executable: git.path,
+        sha256: git.sha256,
+        action: approved.action,
+        repoRoot: auth.workspaceRoot,
+        spent: false,
+    });
+    return capability;
+}
+/** 테스트·감사용 판정 — 실행 명세는 돌려주지 않는다. */
+export function isGenuineWorktreeCapability(v) {
+    return typeof v === "object" && v !== null && GENUINE_WORKTREE_CAPABILITIES.has(v);
+}
+/**
+ * **격리 worktree 조작 1건의 고정 집행 진입점**(V3 M9 T3③).
+ *
+ * `executeRunProcessOperation`과 **같은 순서**다 — 그것이 이 계층의 durable pending(A4) 계약이고,
+ * trusted git 주석이 "변경 계열을 열려면 durable pending 계약이 먼저 필요하다"고 요구한 그 계약이다.
+ * 여기서는 typed operation 경로를 그대로 타므로 `attemptedAt` 표시·영수증·`outcome_unknown` 정합화가
+ * **이미 있는 것**을 쓴다(별도 git 권능 경로를 또 만들지 않았다).
+ *
+ * 저장소를 바꾸는 유일한 kernel 면이므로 게이트를 하나 더 얹는다: `verifyApprovedRepoRoot`로 대상이
+ * **승인된 저장소 루트 그 자체**임을 spawn 직전에 확인한다(상위 repo의 하위 디렉터리·symlink 탈출 거부).
+ */
+export async function executeWorktreeOperation(grant, op, capability, options = {}) {
+    // ① 권능 게이트가 가장 먼저다(재생 시도가 grant 상태에 가려지지 않는다).
+    const rec0 = typeof capability === "object" && capability !== null ? GENUINE_WORKTREE_CAPABILITIES.get(capability) : undefined;
+    if (rec0 === undefined)
+        throw processDenied("process_capability_invalid", "worktree 권능이 kernel 발급 값이 아니다");
+    if (rec0.spent)
+        throw processDenied("process_capability_spent", "이미 소비된 worktree 권능이다(재생 금지)");
+    // ② grant — write/run_process 경로와 같은 계약.
+    const rec = genuineGrant(grant);
+    if (rec.state !== "issued") {
+        throw dispatchDenied("dispatch_grant_spent", "이미 소진된 execution grant다(중복 집행·재사용 금지)");
+    }
+    if (rec.op !== op) {
+        throw dispatchDenied("dispatch_operation_unbound", "execution grant가 이 operation에 묶여 있지 않다");
+    }
+    if (rec.op.kind !== "git_worktree") {
+        throw dispatchDenied("dispatch_operation_unbound", "이 진입점은 git_worktree operation 전용이다");
+    }
+    const cap = capability;
+    if (rec0.issuer !== rec.issuer ||
+        cap.operationId !== op.operationId ||
+        cap.authorityId !== op.authorityId ||
+        cap.runId !== rec.permit.runId ||
+        cap.taskId !== rec.permit.taskId ||
+        cap.attemptId !== rec.permit.attemptId ||
+        cap.turnId !== rec.permit.turnId) {
+        throw processDenied("process_capability_invalid", "worktree 권능이 이 grant의 신원에 묶여 있지 않다");
+    }
+    // ③ 진입 자격 + durable state 재독(여기서 거부되면 durable 표시조차 남지 않는다).
+    {
+        const entry = authorityFromPermit(rec.permit, rec.op);
+        assertSpawnLimits(entry.permitRecord.readState(), entry.task);
+    }
+    // ④ **효과보다 먼저** 권능을 태우고 durable에 적는다. 순서가 계약이다.
+    rec0.spent = true;
+    rec.markAttempted();
+    rec.state = "errored";
+    // ⑤ 표시 커밋 **이후의** 권위로만 집행한다(A4).
+    const { authority } = authorityFromPermit(rec.permit, rec.op);
+    const approved = resolveApprovedOperation(op, authority);
+    if (approved.kind !== "git_worktree")
+        throw operationDenied("승인 레코드의 kind와 다르다");
+    const git = authority.manifest.executionAuthority.git;
+    if (git.path !== rec0.executable || git.sha256 !== rec0.sha256) {
+        throw processDenied("process_digest_mismatch", "승인된 git이 권능 발급 이후에 바뀌었다");
+    }
+    verifyApprovedExecutable(git, "executionAuthority.git", {
+        path: "process_executable_untrusted",
+        invalid: "process_executable_untrusted",
+        identity: "process_executable_untrusted",
+        digest: "process_digest_mismatch",
+    });
+    // **저장소를 바꾸는 유일한 면**이므로 대상이 승인된 저장소 루트 그 자체임을 다시 본다.
+    verifyApprovedRepoRoot(authority.workspaceRoot);
+    const policy = authority.manifest.autopilotPolicy;
+    const args = gitWorktreeArgs(approved.action, taskWorktreePath(authority.workspaceRoot, authority.runId, authority.taskId), authority.manifest.approvedCommit);
+    const supervised = await superviseProcess({
+        executable: git.path,
+        args,
+        cwd: authority.workspaceRoot,
+        timeoutMs: TRUSTED_GIT_TIMEOUT_MS,
+        termGraceMs: policy.cleanupTermGraceMs,
+        killGraceMs: policy.cleanupKillGraceMs,
+        signal: options.signal,
+    });
+    // ⑥ 정리 미확인이 1차 오류를 이긴다(B1).
+    if (!supervised.cleanupConfirmed) {
+        throw processDenied("process_cleanup_unconfirmed", "git 프로세스의 자손이 사라진 것을 확인하지 못했다");
+    }
+    if (supervised.terminatedBy !== "exit") {
+        throw processDenied("process_deadline_exceeded", `git 프로세스를 ${supervised.terminatedBy}로 종료했다`);
+    }
+    rec.outcome = Object.freeze({
+        marker: "applied",
+        path: null,
+        resultSha256: null,
+        exitCode: supervised.exitCode === null ? null : boundedExit(supervised.exitCode),
+    });
+    rec.state = "attempted";
+    const handle = Object.freeze({
+        operationId: rec.op.operationId,
+        kind: rec.op.kind,
+        authorityId: rec.op.authorityId,
+        ...rec.outcome,
+    });
+    GENUINE_OUTCOMES.set(handle, rec);
+    return handle;
+}
 /** 이 모듈이 발급한 진짜 실행 권능인가(테스트·감사용 판정 — 실행 명세는 돌려주지 않는다). */
 export function isGenuineLaunchCapability(v) {
     return typeof v === "object" && v !== null && GENUINE_LAUNCH_CAPABILITIES.has(v);
