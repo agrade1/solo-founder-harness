@@ -171,6 +171,54 @@ test("[M9] T3②(B-30): resourceClasses·dependsOn·ownership이 kernel로 1:1 �
   assert.equal(k.getTask("impl-a")!.scope, "src/a 안에서만 작업한다");
 });
 
+test("[M9] T3② 리뷰 A: 유효 문서라도 kernel이 거부할 seed는 **만들기 전에** 걸러진다(durable 잔류 0)", () => {
+  // 적대적 리뷰가 실측한 4종. 전부 `validateTaskDag`를 통과하지만 kernel 생성 단계에서 거부되던
+  // 입력이고, 이전 판은 앞선 task를 durable에 남긴 채 죽어 재시도가 영구 차단됐다(run 벽돌화).
+  const cases: Array<[string, Record<string, unknown>[], Record<string, unknown>]> = [
+    // ⓐ title 개행 → 본문 안에서 가짜 h2 heading이 된다(`assertText`는 개행을 허용한다).
+    [
+      "title 개행",
+      [node({ taskId: "a-first", ownership: ["src/a"] }), node({ taskId: "b-second", ownership: ["src/b"], title: "ok\n## Rogue Heading" })],
+      { "a-first": ["src/a"], "b-second": ["src/b"] },
+    ],
+    // ⓑ 61자 이상 taskId → `asg-<taskId>`가 slug 상한(64)을 넘는다.
+    [
+      "긴 taskId",
+      [node({ taskId: "a-first", ownership: ["src/a"] }), node({ taskId: "b".repeat(62), ownership: ["src/b"] })],
+      { "a-first": ["src/a"], ["b".repeat(62)]: ["src/b"] },
+    ],
+    // ⓒ 승인 manifest의 ownershipByTask에 없는 task(문서는 manifest를 보지 않는다).
+    [
+      "manifest 미승인",
+      [node({ taskId: "a-first", ownership: ["src/a"] }), node({ taskId: "b-second", ownership: ["src/b"] })],
+      { "a-first": ["src/a"] },
+    ],
+    // ⓓ provides가 길어 본문이 maxBodyBytes를 넘는다(provides는 본문에 **두 번** 실린다).
+    [
+      "본문 상한 초과",
+      [
+        node({ taskId: "a-first", ownership: ["src/a"] }),
+        node({
+          taskId: "b-second",
+          ownership: ["src/b"],
+          provides: Array.from({ length: 16 }, (_, i) => `src/b/${"p".repeat(500)}${i}`),
+        }),
+      ],
+      { "a-first": ["src/a"], "b-second": ["src/b"] },
+    ],
+  ];
+  for (const [label, tasks, ownershipByTask] of cases) {
+    const k = kernelFor({ writableRoots: ["src"], ownershipByTask });
+    assert.equal(
+      codeOf(() => materializeTaskDag(k, { schemaVersion: TASK_DAG_SCHEMA_VERSION, tasks })),
+      "dag_materialize_seed_rejected",
+      label,
+    );
+    // **핵심**: 앞선 task가 durable에 남지 않는다 → 재시도가 막히지 않는다(run 벽돌화 0).
+    assert.equal(k.getState().tasks.length, 0, `${label}: durable 잔류가 생겼다`);
+  }
+});
+
 test("[M9] T3②: 검증에 걸리는 문서는 task를 하나도 만들지 않는다(부분 물질화 없음)", () => {
   // 호출자가 "이미 검증했다"고 주장해도 이 모듈은 다시 검증한다(deny-by-default).
   const k = kernelFor();
@@ -226,5 +274,11 @@ test("[M9] T3②: 오류 코드는 닫힌 목록이다", () => {
   materializeTaskDag(k, pipeline());
   assert.equal(codeOf(() => materializeTaskDag(k, pipeline())), "dag_materialize_run_not_empty");
   assert.ok((TASK_DAG_MATERIALIZE_CODES as readonly string[]).includes("dag_materialize_drift"));
-  assert.equal(TASK_DAG_MATERIALIZE_CODES.length, 2, "닫힌 목록이 승인 없이 늘었다");
+  // T3② 적대적 리뷰에서 `dag_materialize_seed_rejected`가 **사람 판단 아래** 더해졌다(크기 초과를
+  // drift로 보고하던 코드 오용도 함께 정정). 잠금은 그대로다 — 여기 없는 항목이 늘면 red다.
+  assert.deepEqual(
+    [...TASK_DAG_MATERIALIZE_CODES],
+    ["dag_materialize_drift", "dag_materialize_run_not_empty", "dag_materialize_seed_rejected"],
+    "닫힌 목록이 승인 없이 늘었다",
+  );
 });

@@ -1994,6 +1994,20 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 > (매핑이 옳으면 drift가 없어 그 블록만 지워도 green이다 — mutation으로 실측), 주석에 그렇게 적었다.
 > **집행이 증거를 대신한다고 주장하지 않는다.**
 >
+> **정정(T3② 적대적 리뷰 · A급 1건 · 2026-08-19)**: 처음 이 절과 커밋·주석·테스트명이 "부분 물질화
+> 없음"을 **일반 보장처럼** 서술했으나 거짓이었다. `validateTaskDag`를 통과한 문서도 **생성 루프 도중**
+> kernel에서 거부될 수 있고(리뷰어가 4종을 실측: title 개행이 만드는 가짜 h2 heading · 61자 이상 taskId로
+> `asg-<taskId>`가 slug 상한 초과 · manifest `ownershipByTask` 미승인 · `provides`가 길어 본문이
+> `maxBodyBytes` 초과), task 생성은 task마다 별도 커밋이라 **앞선 task가 durable에 남고** 재시도는
+> `dag_materialize_run_not_empty`로 막혀 **run이 벽돌이 됐다.**
+>
+> 수정: 생성 **전에** 전 node의 seed를 만들고 검증한다(`dag_materialize_seed_rejected`). 본문 검증은
+> kernel이 쓰는 **바로 그 함수**(`validateMessageBody`)를 부른다 — 두 번째 규칙을 만들지 않았다.
+> 크기 초과를 `dag_materialize_drift`로 보고하던 코드 오용도 함께 정정했다(drift가 아니다).
+> **여전히 "mid-loop 실패 불가"를 주장하지 않는다** — 알려진 원인 4종을 걷어냈을 뿐이고 남은 위험은
+> `C-76`이다. mutation 3종 red(본문 검증 생략 / slug 검사 생략 / manifest 대조 생략 — 각각 durable
+> 잔류가 생겨 잡힌다).
+>
 > 함께 고정한 것: ⓐ 위상 정렬이 **taskId 사전순이 아니다**(사전순이 의존 순서를 거스르는 fixture로
 > 판별 — 첫 fixture는 사전순이 우연히 의존 순서와 같아 순서 로직 제거가 red가 되지 않았다) ⓑ 검증에
 > 걸리는 문서는 task를 **하나도** 만들지 않는다(부분 물질화 0) ⓒ 이미 task가 있는 run에는 물질화하지
@@ -2005,6 +2019,7 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-73` | C (P3) | **디렉터리 단위 `provides`는 만들지 않을 파일까지 약속할 수 있다.** 의존이 `provides: ["src/m"]`(디렉터리)면 하류가 `src/m/never-written.ts`를 `consumes`해도 통과한다 → "영원히 오지 않을 입력이 계약에 남지 않는다"는 보장이 디렉터리 granularity에서는 **명목상**이다. 경로 계약의 본질적 한계이고, 파일 단위 선언을 강제하면 산출물 수가 `maxArtifactRefs`를 넘는 task를 표현할 수 없다 | 중 — 디렉터리 provides를 쓰는 만큼 | contract 검증의 정밀도(실행 안전성 무관 — 없는 입력은 실행 시점에 실패한다) | 낮음 | 중(산출물 실측과 대조하는 사후 검증, 또는 glob 계약) | 없음(bounded backlog) | 미정 | M9 T2 적대적 리뷰 C-3 · `taskDag.ts` consumes 검사의 `pathWithin(c, p)` | open |
 | `C-74` | C (P3) | **소유권 경합을 scheduler에서 직렬화하지 않는다(거부로만 닫혀 있다).** `B-29`는 동시 **쓰기**를 막지만 동시 **실행**은 허용한다 → 겹치는 소유권을 가진 두 task가 함께 running이 되어 한쪽이 `operation_ownership_contended`로 pause되고 그 attempt를 태운다(자원 낭비 + 사람이 볼 pause). 구조적 종결은 `selectSchedulable`에서 ownership을 암묵 배타 자원으로 취급하는 것인데, 그러려면 **기존 fixture 다수가 형제 task에 같은 경로를 편의상 선언하는 것을 전수 정정**해야 한다(실측: 그 판으로 `test:exec` 20건 이상 red) | 확실 — 겹치는 소유권 DAG를 실제로 돌릴 때마다 | 낭비된 attempt·pause 소음(**`write_file` 채널의** 데이터 무결성은 `B-29`가 지킨다 — `run_process` 부수 효과는 `C-75` 참조) | 낮음 — 거부가 이미 손실을 막고 있어 나중에 얹으면 된다 | 중(scheduler 5줄 + fixture 소유권 분리 sweep) | 없음(bounded) — 병렬 worker의 attempt 낭비가 실측으로 문제될 때(`C-10` starvation과 함께 본다) | 미정 | M9 T3 구현 시 실측(scheduler 판 시도 후 기각) · `selectSchedulable` · `heldResourceClasses` | open |
 | `C-75` | C (P3) | **`run_process`의 부수 효과 쓰기는 소유권 게이트 밖이다.** `B-29`가 덮는 것은 typed `write_file` 채널뿐이다. `run-tests` action은 승인된 `projectPath`에서 고정 controller entrypoint를 spawn하는데, **테스트 러너가 만드는 캐시·스냅샷·빌드 산출물 쓰기는 어떤 소유권 판정도 지나지 않는다**(`executeRunProcessOperation`에 `resolveWriteAuthority` 호출이 없다 — 설계상 그렇다). 시나리오: 겹치는 소유권 없이도 두 running task가 같은 `projectPath`로 `run-tests`를 동시에 승인받아 실행하면 러너가 같은 캐시/스냅샷을 동시에 갱신해 한쪽 산출이 조용히 덮인다 | 낮음~중 — 같은 `projectPath`를 두 task에 승인해야 하고, 그것은 사람의 승인 문서 판단이다 | 러너 캐시·스냅샷(하네스 산출물은 `write_file` 채널을 지나므로 무관) | 낮음 | 중(러너 산출 경로를 승인 축으로 올리거나, `projectPath`를 배타 자원으로 취급) | 없음(bounded backlog) — 같은 `projectPath`를 병렬로 승인하는 첫 DAG 전 | 미정 | M9 T3① 적대적 리뷰 C-1(read-only · `controllerActionArgs` · `superviseProcess` 호출부 · `executeRunProcessOperation`에 소유권 판정 부재 확인) | open |
+| `C-76` | C (P2) | **DAG 물질화의 mid-loop kernel 거부는 여전히 부분 물질화를 남기고 run을 벽돌로 만든다.** T3② 리뷰 A 수정으로 알려진 원인 4종은 생성 **전에** 걸러지지만, 사전 검증이 kernel 거부 사유를 **전부 열거한 것은 아니다**. 남은 사유로 루프 도중 거부되면 앞선 task가 durable에 남고(task 생성이 task마다 별도 커밋) 재시도는 `dag_materialize_run_not_empty`로 막혀 **사람이 손대야 한다** | 낮음 — 알려진 4종이 닫혔고 나머지는 문서 검증이 이미 걸러낸다 | 그 run 하나(데이터 손실 아님 — 만들어진 task는 유효하다) | 낮~중 — 나중에 닫으려면 물질화를 한 커밋으로 만드는 kernel API가 필요하다 | 중(전 task를 **한 `#mutate`**로 만드는 `createTaskGraph` 계열 API, 또는 실패 시 정리 경로) | 없음(bounded) — 물질화가 사람 개입 없이 반복되는 마일스톤 전(M10 resume/crash recovery와 함께 본다) | 미정 | M9 T3② 적대적 리뷰 A(read-only · probe 4종 실측) · `taskDagMaterialize.ts` 생성 루프 · `dag_materialize_run_not_empty` | open |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
