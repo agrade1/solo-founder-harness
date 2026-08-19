@@ -309,7 +309,7 @@ export const CLEANUP_STATUSES = ["none", "required", "confirmed", "failed"] as c
 export type CleanupStatus = (typeof CLEANUP_STATUSES)[number];
 
 /** typed operation 종류 — 닫힌 union(shell 문자열·wildcard·런타임 실행 파일 선택은 없다). */
-export const APPROVED_OPERATION_KINDS = ["write_file", "run_process"] as const;
+export const APPROVED_OPERATION_KINDS = ["write_file", "run_process", "git_worktree"] as const;
 export type ApprovedOperationKind = (typeof APPROVED_OPERATION_KINDS)[number];
 
 /**
@@ -793,7 +793,26 @@ export interface ApprovedDirectory {
 export type ApprovedOperation =
   | { authorityId: string; kind: "write_file"; path: string; maxBytes: number }
   | { authorityId: string; kind: "run_process"; action: "validate-plan"; data: ValidatePlanData; timeoutMs: number }
-  | { authorityId: string; kind: "run_process"; action: "run-tests"; data: RunTestsData; timeoutMs: number };
+  | { authorityId: string; kind: "run_process"; action: "run-tests"; data: RunTestsData; timeoutMs: number }
+  | { authorityId: string; kind: "git_worktree"; action: GitWorktreeAction };
+
+/**
+ * **격리 worktree 조작 1건의 닫힌 action 집합**(V3 M9 T3③ — 로드맵 §7 병렬 계약 2 "worker마다 격리된
+ * git worktree 1개").
+ *
+ * 이것이 **kernel이 저장소를 바꾸는 유일한 면**이다. 그래서 열린 만큼 정확히 닫아 두었다:
+ *
+ * - **호출자·모델이 담을 수 있는 필드가 하나도 없다.** worktree 경로는 `runId`+`taskId`에서, 체크아웃할
+ *   커밋은 승인 manifest의 `approvedCommit`에서 **kernel이 파생한다**(`gitWorktreeArgs`). 승인 레코드가
+ *   고르는 것은 `add`/`remove` 둘 중 하나뿐이다.
+ * - **브랜치를 만들지 않는다**(`--detach`). 브랜치명을 담을 필드가 없어야 하고, M9에서 worker의 산출물은
+ *   worktree가 아니라 **kernel typed-write 채널**로 발행되므로 브랜치가 필요하지 않다.
+ * - `fetch`/`pull`/`push`/`remote`/`clone`/`merge`/`rebase`/`commit`/`tag`는 **표현할 타입이 없다**
+ *   (원격 쓰기 hard deny — §8).
+ * - 승인은 task별이다(`operationAuthorityByTask`) → 아무 task나 worktree를 만들 수 없다.
+ */
+export const GIT_WORKTREE_ACTIONS = ["add", "remove"] as const;
+export type GitWorktreeAction = (typeof GIT_WORKTREE_ACTIONS)[number];
 
 /**
  * **고정 controller entrypoint가 받아들이는 닫힌 action 집합**(3A 2차 리비전 B2 · 대장 `B-10`).

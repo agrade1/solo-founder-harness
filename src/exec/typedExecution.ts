@@ -69,7 +69,7 @@ export {
   readOwnData,
   validateTypedExecutionPlan,
 } from "./typedPlan.js";
-export type { PlanBinding, TypedRunProcessOperation, TypedWriteFileOperation } from "./typedPlan.js";
+export type { PlanBinding, TypedGitWorktreeOperation, TypedRunProcessOperation, TypedWriteFileOperation } from "./typedPlan.js";
 // 파일 시스템 판정의 테스트 seam **setter는 이 production facade에서 재수출하지 않는다**(대장 `C-1`).
 // 타입만 남긴다 — 타입은 런타임 표면이 아니다. 등록 함수는 kernel 모듈에만 있고, 거기서 다시
 // "호출자가 `*.test.ts`" 조건으로 막힌다(자세한 근거는 orchestrationKernel.ts의 seam 주석).
@@ -154,6 +154,22 @@ export {
   resolveProcessLaunchCapability,
 } from "./orchestrationKernel.js";
 export type { ProcessLaunchCapability } from "./orchestrationKernel.js";
+
+/**
+ * **격리 worktree**(V3 M9 T3③) — 등록부·집행기가 kernel 안에 있는 이유는 위 둘과 **정확히 같다**.
+ * 여기서는 이름만 재수출한다. 승인 레코드가 고르는 것은 `add`/`remove` 하나뿐이고 경로·커밋은
+ * kernel이 durable에서 파생하므로, 브랜치·remote·refspec을 담을 필드가 어디에도 없다.
+ *
+ * 경로 파생 헬퍼(`taskWorktreePath`)는 **facade로 내보내지 않는다** — 집행에 필요한 표면이 아니고,
+ * 내보내면 "인자 2개 초과 export 금지" 잠금(콜백 표면 재도입 차단)의 예외를 하나 늘려야 한다.
+ * 필요한 쪽은 kernel 모듈에서 직접 읽는다.
+ */
+export {
+  executeWorktreeOperation,
+  isGenuineWorktreeCapability,
+  resolveWorktreeCapability,
+} from "./orchestrationKernel.js";
+export type { WorktreeCapability } from "./orchestrationKernel.js";
 
 /**
  * **trusted Git**(task 3D · 대장 `C-26`) — 등록부·집행기는 launch 권능과 **같은 이유로** kernel 안에 있고

@@ -23,6 +23,7 @@ import { fileURLToPath } from "node:url";
 import {
   AGENT_MESSAGE_TYPES,
   APPROVED_OPERATION_KINDS,
+  GIT_WORKTREE_ACTIONS,
   ARTIFACT_ROLES,
   AUTOPILOT_MARKERS,
   CENTRAL_MESSAGE_TYPES,
@@ -2633,7 +2634,14 @@ test("[M5b] A2: 구조적으로 같은 위조 kernel은 증명을 받지 못한�
     // **읽기 전용 판정**이며 발급기가 아니다 — 아래에서 실제로 아무것도 만들지 못함을 단정한다.
     // `isGenuineTrustedGitCapability`(task 3D)도 같은 부류의 **읽기 전용 판정**이다 — 실행 명세를
     // 돌려주지 않고 아무것도 만들지 않는다(바로 아래에서 전수 거부를 단정한다).
-    ["attestOrchestrationKernel", "isGenuineLaunchCapability", "isGenuineTrustedGitCapability"],
+    // `isGenuineWorktreeCapability`(V3 M9 T3③)도 같다. **이 목록에 이름을 더하는 것 자체가 사람의
+    // 승인 대상이다** — 목록이 조용히 늘면 red다.
+    [
+      "attestOrchestrationKernel",
+      "isGenuineLaunchCapability",
+      "isGenuineTrustedGitCapability",
+      "isGenuineWorktreeCapability",
+    ],
     "임의 객체를 진짜 kernel로 만들어 줄 표면이 늘었다",
   );
   for (const v of [{}, { operationId: "op-1" }, k, new Proxy({}, {}), null, "cap", 1, () => undefined]) {
@@ -4339,7 +4347,16 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
   // 고정 controller entrypoint는 `executionAuthority`에만 있고 승인된 실행 파일과 같은 형태다.
   assert.deepEqual(s.properties.executionAuthority.properties.controllerEntrypoint.$ref, "#/definitions/approvedExecutable");
   // shell·network 같은 계약 밖 변종은 **표현할 타입이 없다**: 양쪽이 같은 자리에서 거부한다.
-  assert.deepEqual(s.definitions.approvedOperation.oneOf.length, 2, "typed operation union이 열렸다");
+  // V3 M9 T3③에서 `gitWorktreeAuthority`가 **사람 승인 아래** 세 번째 갈래로 더해졌다(경로·브랜치·
+  // 커밋·remote를 담을 필드가 없는 형태다). 잠금은 그대로다 — 여기 없는 갈래가 늘면 red다.
+  assert.deepEqual(s.definitions.approvedOperation.oneOf.length, 3, "typed operation union이 열렸다");
+  assert.deepEqual(
+    s.definitions.gitWorktreeAuthority.required,
+    ["authorityId", "kind", "action"],
+    "worktree 승인에 경로·브랜치·커밋 필드가 생겼다",
+  );
+  assert.deepEqual(s.definitions.gitWorktreeAuthority.properties.action.enum, [...GIT_WORKTREE_ACTIONS]);
+  assert.equal(s.definitions.gitWorktreeAuthority.additionalProperties, false);
   assert.equal(
     codeOf(() =>
       validateApprovalManifest(

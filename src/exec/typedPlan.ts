@@ -39,6 +39,8 @@ import {
 export type TypedWriteFileOperation = Extract<TypedOperation, { kind: "write_file" }>;
 /** `run_process` operation 하나(닫힌 union의 다른 갈래). */
 export type TypedRunProcessOperation = Extract<TypedOperation, { kind: "run_process" }>;
+/** `git_worktree` operation 하나(V3 M9 T3③ — 닫힌 union의 세 번째 갈래). */
+export type TypedGitWorktreeOperation = Extract<TypedOperation, { kind: "git_worktree" }>;
 
 // ── 계획 계약(닫힌 key 집합 — JSON Schema와 동치) ─────────────────────────────
 
@@ -234,14 +236,31 @@ function planOperation(raw: unknown, index: number): TypedOperation {
     });
   }
   if (isSameKeySet(keys, RUN_PROCESS_OPERATION_KEYS)) {
-    if (read.kind !== "run_process") throw planInvalid(`${what}.kind가 key 집합과 맞지 않는다`);
-    return Object.freeze({
-      operationId: planSlug(read.operationId, `${what}.operationId`),
-      kind: "run_process" as const,
-      authorityId: planSlug(read.authorityId, `${what}.authorityId`),
-    });
+    // **V3 M9 T3③에서 규칙을 정확히 다시 적는다**: `run_process`와 `git_worktree`는 key 집합이
+    // `{operationId, kind, authorityId}`로 **같다**. 그래서 "kind는 key 집합이 정한다"는 문장은
+    // 이제 "**key 집합이 모양을 정하고, 같은 모양 안에서는 kind가 갈래를 정한다**"이다.
+    //
+    // 원래 규칙의 목적(교대 getter가 갈래를 바꾸는 통로 차단)은 그대로 지켜진다: `readOwnData`가
+    // accessor·proxy를 이미 거부하고 순수 데이터만 남기므로, 여기서 읽는 `read.kind`는 **한 번 굳은
+    // 값**이고 두 번 읽어도 달라지지 않는다. 아래 `enumOf` 대신 명시 비교를 쓰는 이유도 같다 —
+    // 닫힌 두 값 밖은 전부 거부다.
+    if (read.kind === "run_process") {
+      return Object.freeze({
+        operationId: planSlug(read.operationId, `${what}.operationId`),
+        kind: "run_process" as const,
+        authorityId: planSlug(read.authorityId, `${what}.authorityId`),
+      });
+    }
+    if (read.kind === "git_worktree") {
+      return Object.freeze({
+        operationId: planSlug(read.operationId, `${what}.operationId`),
+        kind: "git_worktree" as const,
+        authorityId: planSlug(read.authorityId, `${what}.authorityId`),
+      });
+    }
+    throw planInvalid(`${what}.kind가 key 집합과 맞지 않는다`);
   }
-  throw planInvalid(`${what}는 write_file|run_process의 닫힌 key 집합이어야 한다`);
+  throw planInvalid(`${what}는 write_file|run_process|git_worktree의 닫힌 key 집합이어야 한다`);
 }
 
 /** bounded 짧은 텍스트(title/scope/reason/note) — 상한은 durable state가 받는 것과 같다. */

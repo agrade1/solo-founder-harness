@@ -43,6 +43,16 @@ export type TypedOperation =
       operationId: string;
       kind: "run_process";
       authorityId: string;
+    }
+  | {
+      /**
+       * **격리 worktree 조작 1건**(V3 M9 T3③). `run_process`와 같은 이유로 **필드가 셋뿐**이다:
+       * 경로·브랜치·커밋은 kernel이 durable(`runId`·`taskId`·`approvedCommit`)에서 파생하고, 무엇을
+       * 할지(`add`/`remove`)는 **승인 레코드**가 정한다. worker가 고를 수 있는 것은 `authorityId`뿐이다.
+       */
+      operationId: string;
+      kind: "git_worktree";
+      authorityId: string;
     };
 
 /** typed operation의 종류를 읽는 단일 지점(닫힌 union의 판별자). */
