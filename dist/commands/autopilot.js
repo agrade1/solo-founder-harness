@@ -53,15 +53,23 @@ import { isAbsolute, join, resolve } from "node:path";
 import { LIMITS, ORCHESTRATOR_ID, OrchestrationError, REQUIRED_BODY_HEADINGS, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, assertSlug, formatTimestamp, opensProcess, } from "../exec/orchestrationTypes.js";
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
+import { LIVE_PLAN_BACKEND, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
 import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
 import { createProgressReporter } from "./progress.js";
 import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
 import { applyAgentRequests, requestsOfKind } from "../exec/spawnRouting.js";
 import { openOrchestrationRun } from "../exec/orchestrationKernel.js";
+import { acquireOwnedLock, releaseOwnedLock, runPaths } from "../exec/orchestrationStore.js";
 // **집행 진입점은 facade 하나만 쓴다** — kernel 사설 집행기에 직접 닿는 통로를 만들지 않는다.
 import { applyWriteFile, executeRunProcessOperation, executeWorktreeOperation, resolveProcessLaunchCapability, resolveWorktreeCapability, resolveWriteFileAuthority, } from "../exec/typedExecution.js";
 /** 한 번의 `autopilot` 실행이 도는 iteration 상한(무인 loop는 언제나 bounded다). */
 export const DEFAULT_MAX_ITERATIONS = 16;
+/**
+ * 무인 loop가 아는 **worker backend 전부**(닫힌 집합). 호출자가 실행 파일·인자·프롬프트를 고르는 통로가
+ * 아니라 **두 값 중 하나**다: `offline-plan`은 운영자가 authoring한 계획 파일을 읽고, `claude-plan`은
+ * 승인 manifest가 못 박은 실행 파일로 실제 모델 세션을 돌린다(승인에 그 키가 없으면 표현 불가).
+ */
+export const AUTOPILOT_WORKER_BACKENDS = [OFFLINE_PLAN_BACKEND, LIVE_PLAN_BACKEND];
 /** 이 모듈이 낼 수 있는 run 수준 거부 코드(닫힌 집합). */
 export const AUTOPILOT_BLOCKED_CODES = [
     "approval_milestone_mismatch",
@@ -69,12 +77,15 @@ export const AUTOPILOT_BLOCKED_CODES = [
     "budget_elapsed_exhausted",
     "budget_tokens_exhausted",
     "run_unavailable",
+    /** 같은 run에 이미 살아 있는 controller가 붙어 있다(V3 M10 T3 — 대장 `B-32`). */
+    "controller_active",
 ];
 // ── 진입점 ──────────────────────────────────────────────────────────────────
 export async function runAutopilot(opts) {
     const emit = opts.onEvent ?? (() => undefined);
     const clock = opts.clock ?? (() => new Date());
     const tasks = [];
+    // **run을 먼저 연다**: 없는 run에 lease 파일을 만들면 그것이 곧 durable 부작용이다(디렉터리 생성).
     let kernel;
     try {
         kernel = openOrchestrationRun({ workspaceRoot: opts.workspaceRoot, runId: opts.runId, clock });
@@ -82,6 +93,37 @@ export async function runAutopilot(opts) {
     catch (err) {
         return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
     }
+    // **한 run에 controller 하나**(대장 `B-32`). 크래시 복구 pass는 "iteration 시작에 `running`+lease가
+    // 보이면 이전 프로세스가 죽었다"를 전제하는데, 두 번째 controller가 붙으면 그 전제가 거짓이 되어
+    // **살아 있는 attempt를 크래시로 오판**하고 같은 task의 agent가 잠시 둘 돈다. 그래서 복구 pass를
+    // 고치는 대신 **동시 controller 자체를 표현 불가로** 만든다 — writer lock과 **같은 기계**이므로
+    // 죽은 controller의 lease는 사망을 **관측했을 때만** 회수되고(pid 재사용은 회수하지 않는다 = 안전한
+    // 방향), 살아 있으면 두 번째는 시작조차 못 한다. 읽기(위 open)는 막지 않는다.
+    const paths = runPaths(opts.workspaceRoot, opts.runId);
+    let lease;
+    try {
+        lease = acquireOwnedLock(paths.controllerLeaseFile, `run ${opts.runId}에 이미 controller가 붙어 있다`);
+    }
+    catch (err) {
+        return { blocked: "controller_active", iterations: 0, tasks, stoppedBecause: codeOf(err) };
+    }
+    try {
+        return await runAutopilotUnderLease(opts, kernel, { emit, clock, tasks });
+    }
+    finally {
+        // 해제 실패를 삼키지 않는다 — 다음 실행이 사망 관측으로 회수하므로 영구 차단은 아니지만,
+        // 그 사실이 보이지 않으면 "왜 두 번째 실행이 거부되는가"를 사람이 되짚을 수 없다.
+        try {
+            releaseOwnedLock(lease);
+        }
+        catch (err) {
+            emit({ kind: "run_finished", marker: codeOf(err), detail: "controller_lease_release_failed" });
+        }
+    }
+}
+/** lease를 쥔 상태의 본체. lease 획득·해제는 위 진입점 하나에만 있다. */
+async function runAutopilotUnderLease(opts, kernel, ctx) {
+    const { emit, clock, tasks } = ctx;
     // **승인 게이트**: 운영자가 지목한 승인과 durable run의 승인이 같아야 한다. 다르면 아무것도 하지 않는다.
     const state = kernel.getState();
     if (state.milestoneId !== opts.milestoneId) {
@@ -91,6 +133,30 @@ export async function runAutopilot(opts) {
     if (entry)
         return { blocked: entry, iterations: 0, tasks, stoppedBecause: entry };
     emit({ kind: "run_started", detail: `${state.runId}@${state.milestoneId}` });
+    // backend는 실행 하나에 **하나로 고정**된다. 닫힌 집합 밖 값은 조용히 offline으로 강등하지 않는다 —
+    // 강등이 곧 "live를 요청했는데 offline이 돌았다"는 거짓 성공이다.
+    const backend = opts.workerBackend ?? OFFLINE_PLAN_BACKEND;
+    if (!AUTOPILOT_WORKER_BACKENDS.includes(backend)) {
+        return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: "worker_backend_unsupported" };
+    }
+    // live backend는 **시작 전에** 승인을 본다(첫 turn에서 알게 되면 그때까지 상태를 바꿨을 수 있다).
+    if (backend === LIVE_PLAN_BACKEND) {
+        try {
+            kernel.approvedWorkerExecutable();
+        }
+        catch (err) {
+            return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
+        }
+    }
+    /**
+     * **무인 전진의 자격**(`B-11`)은 backend마다 다르다:
+     * - `offline-plan`: 운영자가 authoring한 계획 파일이 **실제로 있는가**. 없으면 `deferred`다.
+     * - `claude-plan`: 계획을 **모델이 만든다** → 파일 자격이 존재하지 않는다. 그 자리의 자격은 위에서
+     *   이미 본 **승인**(`executionAuthority.claude`)이고, 그것이 없으면 여기까지 오지 못한다.
+     *   파일 자격을 그대로 요구하면 live backend는 영원히 `no_plans_available`이다(공허한 게이트).
+     */
+    const LIVE_PLACEHOLDER = { operations: undefined, requests: undefined, result: undefined };
+    const planFor = (taskId) => backend === LIVE_PLAN_BACKEND ? LIVE_PLACEHOLDER : readPlanDocument(opts.planDir, taskId);
     const maxIterations = boundedIterations(opts.maxIterations);
     let iterations = 0;
     let stoppedBecause = "iteration_limit";
@@ -122,7 +188,7 @@ export async function runAutopilot(opts) {
         for (const task of kernel.getState().tasks) {
             if (task.state !== "prepared")
                 continue;
-            const doc = readPlanDocument(opts.planDir, task.taskId);
+            const doc = planFor(task.taskId);
             if (doc) {
                 reclaimed.set(task.taskId, doc);
                 continue;
@@ -149,7 +215,7 @@ export async function runAutopilot(opts) {
         // 되찾은 `prepared`가 먼저 들어가 있다(같은 turn loop 하나가 둘을 함께 진행한다).
         const plans = new Map(reclaimed);
         for (const task of batch.items) {
-            const doc = readPlanDocument(opts.planDir, task.taskId);
+            const doc = planFor(task.taskId);
             if (doc)
                 plans.set(task.taskId, doc);
         }
@@ -189,7 +255,7 @@ export async function runAutopilot(opts) {
             // `runTaskTurn` 안에 있다). 바뀌는 것은 **나머지 batch를 조용히 계속 밀지 않는다**는 점이다.
             let outcome;
             try {
-                outcome = await runTaskTurn({ kernel, taskId, planDoc, clock, signal: opts.signal, emit });
+                outcome = await runTaskTurn({ kernel, taskId, planDoc, backend, clock, signal: opts.signal, emit });
             }
             catch (err) {
                 const marker = codeOf(err);
@@ -402,11 +468,23 @@ async function runTaskTurn(ctx) {
     let marker = "worker_failed";
     let usage = { inputTokens: 0, outputTokens: 0 };
     try {
-        const stream = startOfflinePlanTurn({
-            backend: OFFLINE_PLAN_BACKEND,
-            planJson: encodePlan(ctx.planDoc, { runId: kernel.getState().runId, taskId, attemptId, turnId }),
-            binding: { runId: kernel.getState().runId, taskId, attemptId, turnId },
-        });
+        const binding = { runId: kernel.getState().runId, taskId, attemptId, turnId };
+        const stream = ctx.backend === LIVE_PLAN_BACKEND
+            ? startLivePlanTurn({
+                // 실행 파일은 **kernel이 지금 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이
+                // 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
+                executable: kernel.approvedWorkerExecutable().path,
+                prompt: workerPrompt(kernel, taskId),
+                binding,
+                // 세션 상한은 **승인된 attempt 상한**에서 나온다(호출자가 고르는 값이 아니다).
+                timeoutMs: kernel.getManifest().autopilotPolicy.maxAttemptElapsedMs,
+                signal: ctx.signal,
+            })
+            : startOfflinePlanTurn({
+                backend: OFFLINE_PLAN_BACKEND,
+                planJson: encodePlan(ctx.planDoc, binding),
+                binding,
+            });
         let seq = 0;
         for await (const ev of stream) {
             const deadline = attemptDeadline(kernel, taskId, clock);
@@ -564,6 +642,33 @@ async function runTaskTurn(ctx) {
     }
     emit({ kind: "task_completed", taskId, marker });
     return { taskId, state: "completed", marker };
+}
+/**
+ * **live worker에게 주는 프롬프트.** 전부 **durable에서만** 나온다: 이 task의 assignment 본문(중앙이
+ * 발행한 지시)과 `contextBundle`(M6의 "새 coordinator가 맥락을 이어받는" 그 값 — 포인터·inbox·bounded
+ * 요약뿐이고 원문은 없다) + 계획 계약(검증기 상수에서 파생).
+ *
+ * 그래서 프롬프트에 들어가지 않는 것: 다른 task의 원문 · 프롬프트 이력 · 자격증명 · 파일 내용.
+ * inbox가 여기 실리므로 **전달받은 메시지가 그 task의 행동을 바꾼다**(대장 `B-17` 잔여의 관측면).
+ */
+function workerPrompt(kernel, taskId) {
+    const task = kernel.getTask(taskId);
+    const assignment = kernel.getState().messages.find((m) => m.taskId === taskId && m.type === "task_assignment");
+    const body = assignment === undefined ? "(지시 없음)" : kernel.messageBody(assignment.messageId);
+    return [
+        "너는 이 harness의 worker다. 아래 지시와 문맥만 근거로 **계획 문서 하나**를 낸다.",
+        "",
+        "## 지시(중앙이 발행한 task assignment)",
+        body,
+        "",
+        "## 문맥(durable에서 파생 — 포인터와 요약뿐이다)",
+        kernel.contextBundle(taskId),
+        "",
+        "## 출력 계약",
+        planContractPrompt(),
+        "",
+        `이 task의 role은 \`${task?.roleId ?? "unknown"}\`이다.`,
+    ].join("\n");
 }
 // ── 오케스트레이션 요청 배선 (V3 M6 T2) ────────────────────────────────────
 /**
