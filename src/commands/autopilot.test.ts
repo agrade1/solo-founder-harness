@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { LIMITS } from "../exec/orchestrationTypes.js";
+import { LIMITS, OrchestrationError } from "../exec/orchestrationTypes.js";
 import type { OrchestrationTask } from "../exec/orchestrationTypes.js";
 import { __setPublicationSeamsForTest, createOrchestrationRun, openOrchestrationRun } from "../exec/orchestrationKernel.js";
 import { runPaths } from "../exec/orchestrationStore.js";
@@ -1344,4 +1344,313 @@ test("[M10-T1] prepared 잔여 pause가 kernel에 거부돼도 CLI가 죽지 않
   assert.equal(report.blocked, null);
   assert.equal(report.stoppedBecause, "stale_writer");
   assert.equal(taskOf(f.ws, "t2").state, "prepared", "거부된 pause가 상태를 바꿨다");
+});
+
+// ── ⑩ V3 M10 T2 — 통합 시나리오 (로드맵: rotation·요약 변질·문서 누락·의존성 실패·권한 요청) ──
+//
+// **red-path가 먼저다.** 각 축은 결함을 심어 게이트가 실제로 **중단시키는지** 확인한 뒤 green을 만든다.
+//
+// 이 절이 덮는 것은 **통합 층(runAutopilot 왕복)에 공백이 있던 축**뿐이다. kernel/store 층에서 이미
+// 전수로 덮인 것을 다시 쓰지 않는다(중복 테스트가 최악이다):
+// - **문서 누락**: `orchestrationKernel.test.ts`가 **전 메시지 타입 × 각 필수 heading 누락**을 전수로
+//   본다(`body_missing_heading`). autopilot 경로에서는 result body를 autopilot이 `REQUIRED_BODY_HEADINGS`
+//   에서 **직접 만들므로** 계획 문서로 heading을 뺄 통로가 아예 없다 → **통합 red는 표현 불가**이고,
+//   green(발행된 본문이 heading 전부를 갖춘다)은 위 "[M5c-3E] durable 결과 본문에 …" 테스트가 이미 본다.
+// - **요약 변질** 중 bound 초과·artifact 위조·state 손편집 자체: kernel/store 층 테스트가 덮는다.
+//   여기서는 **실행 사이에 durable 파일을 건드리면 다음 실행이 시작조차 못 한다**만 본다.
+
+test("[M10-T2] 쓰지 않고 닫힌 operation을 durable 본문이 집행 성공처럼 적지 않는다 (리뷰 B1)", async () => {
+  // `write_conflict`는 **예외가 아니다**: 집행기가 preimage 불일치를 보고 **쓰지 않고** 영수증만 남기며,
+  // 그 turn은 여전히 `turn_completed`로 완료된다. 계획 기준으로 본문을 적으면 "집행했다"만 남아
+  // 바이트가 바뀌지 않은 것을 바뀐 것처럼 읽힌다.
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "actual\n");
+  const stale = createHash("sha256").update("stale\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "next\n", expectedBeforeSha256: stale },
+    ],
+    result: { summary: "preimage가 어긋난다", outputs: [{ path: "docs/x.md", role: "output" }] },
+  });
+
+  const report = await pilot(f);
+  const task = taskOf(f.ws, "root");
+  assert.equal(task.execution.operationReceipts[0]?.marker, "write_conflict", "이 테스트의 전제(conflict 완료)가 성립하지 않았다");
+  assert.equal(report.tasks[0].state, "completed", `전제: conflict turn도 완료된다 — ${JSON.stringify(report.tasks)}`);
+  assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "actual\n", "conflict인데 바이트가 바뀌었다");
+
+  const entry = reopen(f.ws).getState().messages.find((m) => m.type === "result");
+  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry.bodyPath), "utf8");
+  assert.match(body, /write_file→write_conflict×1/, body);
+  assert.ok(body.includes("쓰지 않고"), `쓰지 않았다는 사실이 본문에 없다:\n${body}`);
+});
+
+test("[M10-T2] 권한 요청: 결정 없이는 완료로 못 가고, 결정 뒤에만 재개된다 (사람 gate 우회 없음)", async () => {
+  const f = boot();
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const done = { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } };
+  // red: 계획이 사람에게 물었다 → 답이 없는 동안 결과를 발행할 수 없다.
+  writePlan(f.planDir, "root", {
+    requests: [{ kind: "request_decision", question: "계약을 바꿔야 하는가?", safeDefault: "현행 계약 유지" }],
+    ...done,
+  });
+
+  const first = await pilot(f);
+  assert.equal(first.tasks[0].state, "paused", `결정 없이 진행했다: ${JSON.stringify(first.tasks)}`);
+  assert.equal(first.tasks[0].marker, "decision_pending", first.tasks[0].marker);
+  const asked = reopen(f.ws);
+  assert.equal(asked.getTask("root").state, "paused");
+  assert.equal(asked.getState().artifacts.length, 0, "결정을 기다리는 turn이 결과를 발행했다");
+  assert.equal(
+    asked.getState().messages.filter((m) => m.type === "decision_request").length,
+    1,
+    "사람에게 물은 기록이 durable에 없다",
+  );
+
+  // green: 사람이 답한다 — **중앙 API로만** 가능하다(agent 요청 union에 답 갈래가 없다).
+  const answering = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 200_000, 1000) });
+  answering.recordDecision({
+    envelope: {
+      schemaVersion: "1",
+      messageId: "dec-root",
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      taskId: "root",
+      parentTaskId: null,
+      sender: "orchestrator",
+      recipient: "tech-lead",
+      type: "decision",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      dependsOn: [],
+      artifactRefs: [],
+      supersedes: null,
+    },
+    body: REQUIRED_BODY_HEADINGS.decision.map((h) => `## ${h}\n\n본문 한 줄.\n`).join("\n"),
+    summary: "현행 계약 유지",
+  });
+  answering.resumeTask({ taskId: "root", actionId: "act.resume" });
+  // 계획에서 요청을 뺀다 — 남겨두면 **재실행이 또 물어서** 다시 결정 대기가 된다(그것도 정상 동작이다).
+  writePlan(f.planDir, "root", done);
+
+  const second = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 300_000, 1000),
+  });
+  assert.ok(
+    second.tasks.some((t) => t.taskId === "root" && t.state === "completed"),
+    `결정 뒤에도 재개되지 않았다: ${JSON.stringify(second.tasks)}`,
+  );
+  const k = reopen(f.ws);
+  assert.equal(k.getState().messages.filter((m) => m.type === "decision").length, 1);
+  assert.equal(k.getState().artifacts.length, 1);
+});
+
+test("[M10-T2] 의존성 실패: 상류가 blocked면 하류에 표시되고 loop가 조용히 진행하지 않는다", async () => {
+  // ownership은 승인 manifest가 정본이다 — 하류 task도 승인 안에 있어야 만들 수 있다(`ownership_not_approved`).
+  const f = boot({ ownershipByTask: { up: ["docs", "src"], down: ["docs", "src"] } }, ["up"]);
+  const k0 = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 10_000, 1000) });
+  k0.createDependentTask({ ...seed("down"), dependsOn: ["up"] });
+  assert.equal(taskOf(f.ws, "down").state, "pending", "의존이 남은 task가 pending이 아니다");
+
+  // red: 상류가 막혔다고 보고된다(worker 계획에는 blocker 갈래가 **없다** — 차단은 중앙 API로만 기록된다).
+  // blocker는 **확인된 정리 뒤에만** 수락된다(`B-13`) → lifecycle을 그대로 지난다.
+  const blocking = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 60_000, 1000) });
+  const lease = `lease.${"c".repeat(32)}`;
+  const batch = blocking.planRunnableBatch();
+  blocking.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: "act.pf",
+    decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: `att.${t.taskId}` })),
+  });
+  blocking.startPreparedTask({ taskId: "up", actionId: "act.start", leaseMarker: lease });
+  blocking.recordTerminal({ taskId: "up", actionId: "act.term", marker: "worker_failed" });
+  blocking.confirmCleanup({ taskId: "up", actionId: "act.clean", leaseMarker: lease });
+  blocking.submitBlocker({
+    envelope: {
+      schemaVersion: "1",
+      messageId: "blk-up",
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      taskId: "up",
+      parentTaskId: null,
+      sender: "tech-lead",
+      recipient: "orchestrator",
+      type: "blocker",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      dependsOn: [],
+      artifactRefs: [],
+      supersedes: null,
+    },
+    body: REQUIRED_BODY_HEADINGS.blocker.map((h) => `## ${h}\n\n본문 한 줄.\n`).join("\n"),
+    summary: "상류 계약이 정해지지 않았다",
+  });
+  assert.equal(taskOf(f.ws, "up").state, "blocked", "이 테스트의 전제(상류 blocked)가 성립하지 않았다");
+
+  // 하류는 **조용히 pending으로 남지 않는다** — 의존이 막혔다는 사실이 durable에 표시된다.
+  const down = taskOf(f.ws, "down");
+  assert.equal(down.state, "blocked", `하류가 의존 실패를 반영하지 않았다: ${down.state}`);
+  // **왜 blocked인지가 감사 로그에 남는다** — 상태만 바뀌고 이유가 없으면 사람이 원인을 되짚을 수 없다.
+  const blockedFor = readFileSync(runPaths(f.ws, RUN_ID).eventsFile, "utf8")
+    .split("\n")
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l))
+    .filter((e) => e.type === "task_state_changed" && e.taskId === "down" && e.toState === "blocked")
+    .map((e) => e.reason);
+  assert.deepEqual(blockedFor, ["dependency_blocked"], JSON.stringify(blockedFor));
+
+  // 그리고 loop는 **계획이 있어도** 막힌 task를 돌리지 않고 소리내어 멈춘다.
+  writePlan(f.planDir, "up", { result: { summary: "완료", outputs: [] } });
+  writePlan(f.planDir, "down", { result: { summary: "완료", outputs: [] } });
+  const after = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 120_000, 1000),
+  });
+  assert.equal(after.stoppedBecause, "no_runnable_tasks", after.stoppedBecause);
+  assert.equal(after.tasks.length, 0, "막힌 그래프에서 task를 시작했다");
+  assert.equal(taskOf(f.ws, "down").state, "blocked", "막힌 하류가 실행됐다");
+  assert.equal(taskOf(f.ws, "up").state, "blocked", "막힌 상류가 실행됐다");
+
+  // **`blocked`는 종료 상태다**(`isTerminal` — completed·blocked·cancelled). 그래서 차단된 상류를
+  // autopilot이 스스로 되살리는 경로는 **없고** `resumeTask`도 거부한다(`paused`만 받는다). 이것이
+  // 계약이며, 여기서 "풀린다"고 적으면 그것이 과대주장이다 — 막힌 그래프는 **사람이 새 run을 만든다**.
+  assert.equal(
+    codeOfThrow(() => reopen(f.ws).resumeTask({ taskId: "up", actionId: "act.unblock" })),
+    "invalid_transition",
+    "종료 상태인 blocked가 되살아났다",
+  );
+  // 반복 실행이 상태를 흔들지 않는다(멱등하게 같은 곳에 멈춘다).
+  const again = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 300_000, 1000),
+  });
+  assert.equal(again.stoppedBecause, "no_runnable_tasks");
+  assert.equal(taskOf(f.ws, "up").state, "blocked");
+  assert.equal(taskOf(f.ws, "down").state, "blocked");
+});
+
+/** 던질 것으로 기대하는 호출의 안정 코드(던지지 않으면 그것 자체가 실패다). */
+function codeOfThrow(fn: () => unknown): string {
+  try {
+    fn();
+    return "no-error";
+  } catch (e) {
+    return e instanceof OrchestrationError ? e.code : `non-orchestration:${String(e)}`;
+  }
+}
+
+test("[M10-T2] context rotation: 프로세스를 다시 띄워도 같은 durable에서 같은 snapshot digest가 나온다", async () => {
+  const f = boot({}, ["root", "sibling"]);
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const plan = { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } };
+  writePlan(f.planDir, "root", plan);
+  writePlan(f.planDir, "sibling", plan);
+
+  // 1차 실행(= 한 coordinator 수명) 뒤 digest를 찍는다.
+  await pilot(f);
+  const first = reopen(f.ws).snapshotDigest();
+  const bundle = reopen(f.ws).contextBundle("sibling");
+
+  // **회전**: 새 프로세스를 흉내내 kernel을 완전히 다시 열고 같은 것을 다시 계산한다. bundle은 durable의
+  // 순수 파생물이므로 시각·revision이 섞이면 여기서 갈린다(M6 계약).
+  const rotated = openOrchestrationRun({ workspaceRoot: f.ws, runId: RUN_ID, clock: clockFrom(T0 + 900_000, 7) });
+  assert.deepEqual(rotated.snapshotDigest(), first, "재열기가 다른 digest를 냈다(회전이 문맥을 바꿨다)");
+  assert.equal(rotated.contextBundle("sibling"), bundle, "재열기가 다른 context bundle을 냈다");
+
+  // 회전 뒤 **재실행이 앞선 결과를 덮거나 중복 발행하지 않는다**. (첫 실행이 두 task를 이미 완주시켰으므로
+  // 이 재실행은 유휴 실행이다 — 여기서 증명되는 것은 "재실행이 중복·유실을 만들지 않는다"까지이고
+  // "회전 뒤 새 진행이 앞을 덮지 않는다"는 더 넓은 주장은 하지 않는다.)
+  const second = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: clockFrom(T0 + 1_000_000, 1000),
+  });
+  assert.equal(second.blocked, null);
+  const k = reopen(f.ws);
+  assert.equal(k.getState().messages.filter((m) => m.type === "result").length, 2, "회전 뒤 결과가 유실·중복됐다");
+});
+
+test("[M10-T2] 요약 변질: 실행 사이 durable 원문이 바뀌면 다음 실행이 시작조차 하지 못한다 (fail closed)", async () => {
+  for (const target of ["body", "state"] as const) {
+    const f = boot();
+    writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+    writePlan(f.planDir, "root", { result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } });
+    await pilot(f);
+    assert.equal(taskOf(f.ws, "root").state, "completed", "전제(완료된 run)가 성립하지 않았다");
+
+    const paths = runPaths(f.ws, RUN_ID);
+    if (target === "body") {
+      // 중앙이 옮긴 **요약의 원문**(message body)을 사람이 몰래 고친다.
+      const entry = reopen(f.ws).getState().messages.find((m) => m.type === "result");
+      const file = join(paths.dir, entry.bodyPath);
+      writeFileSync(file, `${readFileSync(file, "utf8")}\n## Result Summary\n\n위조된 한 줄.\n`);
+    } else {
+      // state의 요약 필드만 바꾼다(문법은 여전히 유효하다).
+      const raw = JSON.parse(readFileSync(paths.stateFile, "utf8"));
+      raw.messages[raw.messages.length - 1].summary = "위조된 요약";
+      writeFileSync(paths.stateFile, JSON.stringify(raw));
+    }
+
+    const report = await runAutopilot({
+      workspaceRoot: f.ws,
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      planDir: f.planDir,
+      clock: clockFrom(T0 + 300_000, 1000),
+    });
+    // **시작조차 하지 못한다**: task를 하나도 건드리지 않고 run 수준에서 거부된다.
+    assert.equal(report.blocked, "run_unavailable", `${target}: 변조된 run이 진행됐다`);
+    assert.equal(report.tasks.length, 0, `${target}: 변조된 run에서 task를 건드렸다`);
+    assert.equal(
+      report.stoppedBecause,
+      target === "body" ? "message_body_hash_mismatch" : "state_event_binding_mismatch",
+      `${target}: ${report.stoppedBecause}`,
+    );
+  }
+});
+
+test("[M10-T2] durable 결과 본문은 실제로 집행한 operation을 적는다 (고정 문구 금지)", async () => {
+  // 이전 판은 이 절을 **"typed operation은 집행하지 않았다"로 고정**해 두었다. M5c에서는 참이었지만
+  // M5d task 2가 집행을 연 뒤로는 **집행한 turn의 결과 본문에 남는 거짓 진술**이었다(사람이 읽는
+  // durable 감사 산출물이므로 과대주장 부류다).
+  const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
+  writeOutput(f.ws, "docs/x.md", "same\n");
+  const same = createHash("sha256").update("same\n").digest("hex");
+  writePlan(f.planDir, "root", {
+    operations: [
+      { operationId: "op-1", kind: "write_file", authorityId: "auth-1", path: "docs/x.md", content: "same\n", expectedBeforeSha256: same },
+    ],
+    result: { summary: "멱등 쓰기 1건", outputs: [{ path: "docs/x.md", role: "output" }] },
+  });
+  const report = await pilot(f);
+  assert.equal(report.tasks[0].state, "completed", JSON.stringify(report.tasks));
+
+  const k = reopen(f.ws);
+  const entry = k.getState().messages.find((m) => m.type === "result");
+  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry.bodyPath), "utf8");
+  assert.ok(!body.includes("집행하지 않았다"), `집행한 turn의 본문이 집행하지 않았다고 적었다:\n${body}`);
+  // **영수증에서 파생한다**: 계획이 아니라 실제 결과(marker)를 적는다(리뷰 B1).
+  assert.match(body, /typed operation 1건을 집행했다 — 영수증: write_file→already_applied×1/, body);
+  // 원문·계측값은 여전히 새지 않는다(kind는 닫힌 enum · 개수는 정수뿐).
+  assert.ok(!body.includes("same\n"), "본문에 쓰기 내용이 새어 들어갔다");
+  assert.ok(!/token|사용량/i.test(body), "본문에 계측값이 새어 들어갔다");
+
+  // operation이 없는 turn은 여전히 그렇게 적는다(반대 방향도 참이어야 한다).
+  const g = boot();
+  writePlan(g.planDir, "root", { result: { summary: "operation 없음", outputs: [] } });
+  await pilot(g);
+  const gk = reopen(g.ws);
+  const gEntry = gk.getState().messages.find((m) => m.type === "result");
+  const gBody = readFileSync(join(runPaths(g.ws, RUN_ID).dir, gEntry.bodyPath), "utf8");
+  assert.match(gBody, /typed operation을 집행하지 않았다\(이 계획에 operation이 없다\)/, gBody);
 });

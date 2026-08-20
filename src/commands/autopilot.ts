@@ -655,7 +655,7 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   try {
     kernel.completeTaskWithArtifacts({
       envelope: resultEnvelope(kernel, started.task),
-      body: resultBody(taskId, plan),
+      body: resultBody(taskId, plan, kernel.getTask(taskId)?.execution.operationReceipts ?? [], turnId),
       summary: plan.result.summary,
       outputs: [...plan.result.outputs],
     });
@@ -1040,12 +1040,56 @@ function resultEnvelope(kernel: OrchestrationKernel, task: OrchestrationTask): A
  * §5.2 `result` 필수 heading 전부 + **bounded 안정 서술만**. raw 출력·프롬프트·토큰 카운터는 들어가지
  * 않는다. heading 목록을 상수에서 **파생**하므로 계약이 바뀌면 자동으로 따라간다(하드코딩 사본 없음).
  */
-function resultBody(taskId: string, plan: TypedExecutionPlan): string {
+/**
+ * 이 turn의 typed operation을 **durable 영수증에서** kind·marker별로 적는다.
+ *
+ * **계획에서 파생하지 않는 이유**(T2 적대적 리뷰 B1): 계획은 "무엇을 하려 했는가"이고 영수증은
+ * "무엇이 일어났는가"다. 둘이 갈리는 완료 경로가 실재한다 — `write_file`의 preimage가 어긋나면
+ * 집행기가 **쓰지 않고** `write_conflict` 영수증을 내는데, 그 turn은 여전히 `turn_completed`로
+ * 완료된다(fail closed는 영수증에 남지만 예외를 던지지 않는다). 계획 기준으로 적으면 그 본문에
+ * "집행했다"만 남아 **바이트가 바뀌지 않은 것을 바뀐 것처럼** 읽힌다.
+ *
+ * 담는 것은 닫힌 값뿐이다: kind(닫힌 union 3종) · marker(닫힌 6종) · 개수(정수). 경로·내용·계측값은
+ * 담지 않는다(경로는 Deliverables 절이 검증된 산출물로만 적는다).
+ */
+function operationsPerformed(plan: TypedExecutionPlan, receipts: readonly { kind: string; marker: string; turnId: string }[], turnId: string): string {
+  if (plan.operations.length === 0) {
+    return "- typed operation을 집행하지 않았다(이 계획에 operation이 없다).";
+  }
+  const mine = receipts.filter((r) => r.turnId === turnId);
+  if (mine.length === 0) {
+    // 계획에 operation이 있는데 이 turn의 영수증이 없다 = 완료 경로가 아니다(도달 불가). 지어내지 않는다.
+    return `- 이 turn의 typed operation 영수증이 durable에 없다(계획 ${plan.operations.length}건).`;
+  }
+  const counts = new Map<string, number>();
+  for (const r of mine) {
+    const key = `${r.kind}→${r.marker}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  const summary = [...counts.entries()]
+    .sort((a, b) => (a[0] < b[0] ? -1 : 1))
+    .map(([key, n]) => `${key}×${n}`)
+    .join(" · ");
+  return `- 승인 경계 안에서 typed operation ${mine.length}건을 집행했다 — 영수증: ${summary}. (\`write_conflict\`는 **쓰지 않고** 닫힌 것이다.)`;
+}
+
+function resultBody(
+  taskId: string,
+  plan: TypedExecutionPlan,
+  receipts: readonly { kind: string; marker: string; turnId: string }[],
+  turnId: string,
+): string {
   const deliverables = plan.result.outputs.length === 0 ? "- (없음)" : plan.result.outputs.map((o) => `- ${o.path} (${o.role})`).join("\n");
   const filled: Record<string, string> = {
     "Result Summary": `- task: ${taskId}\n- backend: ${OFFLINE_PLAN_BACKEND}`,
     "Work Performed": "- autopilot이 승인 경계 안에서 offline plan turn 1회를 진행했다.",
-    "Decisions and Assumptions": "- typed operation은 집행하지 않았다(계획에 operation이 없는 turn만 발행된다).",
+    // **durable 본문은 실제로 일어난 일만 적는다**(V3 M10 T2 — A급 수정). 이전 판은 이 줄을
+    // `"typed operation은 집행하지 않았다(계획에 operation이 없는 turn만 발행된다)"`로 **고정**해
+    // 두었다. M5c에서는 참이었지만 **M5d task 2가 typed operation 집행을 연 뒤로 거짓**이다 —
+    // operation을 실제로 집행하고 완료한 turn의 결과 본문에 "집행하지 않았다"가 남았다.
+    // 사람이 읽는 durable 감사 산출물의 거짓 진술이므로 계획에서 파생한다(kind는 닫힌 enum이고
+    // 개수는 정수라 원문·계측값이 새지 않는다).
+    "Decisions and Assumptions": operationsPerformed(plan, receipts, turnId),
     Deliverables: deliverables,
     "Tests and Evidence": `- 검증된 산출물 ${plan.result.outputs.length}건 · kernel이 소유권·hash를 재확인했다.`,
     "Risks / Known Limitations": "- 중앙은 bounded 요약과 검증된 포인터만 옮긴다 — 원문·계측값은 durable에 남기지 않는다.",

@@ -1,5 +1,5 @@
 /**
- * V3 M10 T1 offline acceptance — resume / crash recovery (acceptance Test 22).
+ * V3 M10 T1·T2 offline acceptance — resume/crash recovery + 통합 시나리오 (acceptance Test 22).
  *
  * ## 무엇을 증명하는가
  * - ① **관측된 정리는 확인으로 적는다**: 실제 프로세스가 deadline으로 죽어도 `superviseProcess`가 그룹
@@ -13,6 +13,8 @@
  * - ④ **크래시 잔재가 정착하고 재개된다**(`C-55` 잔여): `running`+lease 잔재가 `controller_lost`로
  *   기록되고 정리 확인 뒤 새 attempt로 완주한다. 중복 결과·중복 artifact가 없다.
  * - ⑤ **부분 물질화가 벽돌이 아니다**(`C-76`): 같은 문서로 이어받아 완성되고, 다른 문서는 여전히 거부된다.
+ * - ⑥ **T2 통합 시나리오**: 사람 결정 gate(red→green 왕복) · context rotation 등가 · 의존성 실패의
+ *   하류 표시와 loop 정지 · 실행 사이 원문 변조의 fail-closed 거부. 한 run에서 순서대로 일어난다.
  *
  * ## 증명하지 않는다 (정직하게 적는다)
  * - **live LLM 0회.** worker는 offline plan 백엔드다.
@@ -372,8 +374,162 @@ console.log("\n⑤ 부분 물질화는 벽돌이 아니다 — 같은 문서로 
   check("state 축 밖 필드만 바뀐 문서도 거부한다(assignment 본문 대조)", driftCode === "dag_materialize_run_not_empty", driftCode);
 }
 
-console.log("\n이 스크립트가 증명하지 않는 것: live LLM 0회 · 좌초 프로세스 탐색(관측자 없음) · supervisor 관측 실패 경로 · 동시 controller 2대");
+console.log("\n⑥ T2 통합 시나리오 — 사람 gate · 의존성 실패 · 변조 fail-closed (red-path 먼저)");
+{
+  const ws = makeDir("m10-t2-ws-");
+  const planDir = makeDir("m10-t2-plans-");
+  mkdirSync(join(ws, "docs"), { recursive: true });
+  writeFileSync(join(ws, "docs/out.md"), "# 산출물\n");
+  const kernel = OrchestrationKernel.create({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: baseManifest({ ownershipByTask: { up: ["docs", "src"], down: ["docs", "src"], tail: ["docs", "src"] } }),
+    clock: clockFrom(T0),
+  });
+  seedRoot(kernel, "up");
+  kernel.createDependentTask({
+    taskId: "down",
+    roleId: "tech-lead",
+    title: "down 제목",
+    scope: "down bounded scope",
+    ownership: ["docs", "src"],
+    assignmentMessageId: "asg-down",
+    assignmentBody: ASSIGNMENT_BODY,
+    dependsOn: ["up"],
+  });
+  // `down`의 하류를 하나 더 둔다 — 그래야 차단 **전파**(`dependency_blocked`)를 실제로 관측한다.
+  kernel.createDependentTask({
+    taskId: "tail",
+    roleId: "tech-lead",
+    title: "tail 제목",
+    scope: "tail bounded scope",
+    ownership: ["docs", "src"],
+    assignmentMessageId: "asg-tail",
+    assignmentBody: ASSIGNMENT_BODY,
+    dependsOn: ["down"],
+  });
+
+  // ── 권한 요청: 답이 없으면 완료로 못 간다 ──
+  writeFileSync(
+    join(planDir, "up.json"),
+    JSON.stringify({
+      operations: [],
+      requests: [{ kind: "request_decision", question: "계약을 바꿔야 하는가?", safeDefault: "현행 유지" }],
+      result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] },
+    }),
+  );
+  const asked = await runAutopilot({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, planDir, clock: clockFrom(T0 + 60_000), maxIterations: 1 });
+  const askedTask = taskOf(ws, "up");
+  check("결정 없이는 결과를 발행하지 못한다(사람 gate 우회 없음)", askedTask.state === "paused" && asked.tasks[0]?.marker === "decision_pending", `${askedTask.state}/${asked.tasks[0]?.marker}`);
+  check("사람에게 물은 기록이 durable에 남는다", openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 90_000) }).getState().messages.filter((m) => m.type === "decision_request").length === 1);
+  check("결정 대기 turn이 artifact를 발행하지 않았다", openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 90_000) }).getState().artifacts.length === 0);
+
+  // 사람이 답한다 — **중앙 API로만** 가능하다(요청 union에 답 갈래가 없다).
+  const answering = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 120_000) });
+  answering.recordDecision({
+    envelope: {
+      schemaVersion: "1",
+      messageId: "dec-up",
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      taskId: "up",
+      parentTaskId: null,
+      sender: "orchestrator",
+      recipient: "tech-lead",
+      type: "decision",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      dependsOn: [],
+      artifactRefs: [],
+      supersedes: null,
+    },
+    body: REQUIRED_BODY_HEADINGS.decision.map((h) => `## ${h}\n\n본문 한 줄.\n`).join("\n"),
+    summary: "현행 계약 유지",
+  });
+  answering.resumeTask({ taskId: "up", actionId: "act.resume" });
+  writeFileSync(join(planDir, "up.json"), JSON.stringify({ operations: [], result: { summary: "완료", outputs: [{ path: "docs/out.md", role: "output" }] } }));
+
+  // ── context rotation: 재열기가 같은 문맥을 낸다 ──
+  const beforeBundle = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 150_000) }).contextBundle("down");
+  const afterBundle = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 700_000, 13) }).contextBundle("down");
+  check("회전(재열기)이 같은 context bundle을 낸다 — 시각이 섞이지 않는다", beforeBundle === afterBundle);
+
+  const answered = await runAutopilot({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, planDir, clock: clockFrom(T0 + 200_000), maxIterations: 1 });
+  check("결정 뒤에만 재개된다", answered.tasks.some((t) => t.taskId === "up" && t.state === "completed"), JSON.stringify(answered.tasks));
+
+  // ── 의존성 실패: 상류가 막히면 하류에 이유가 남고 loop가 멈춘다 ──
+  const lease = `lease.${"c".repeat(32)}`;
+  const blocking = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 300_000) });
+  const batch = blocking.planRunnableBatch();
+  blocking.commitPreflightBatch({
+    baseRevision: batch.revision,
+    actionId: "act.pf2",
+    decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared", attemptId: `att2.${t.taskId}` })),
+  });
+  blocking.startPreparedTask({ taskId: "down", actionId: "act.start2", leaseMarker: lease });
+  blocking.recordTerminal({ taskId: "down", actionId: "act.term2", marker: "worker_failed" });
+  blocking.confirmCleanup({ taskId: "down", actionId: "act.clean2", leaseMarker: lease });
+  blocking.submitBlocker({
+    envelope: {
+      schemaVersion: "1",
+      messageId: "blk-down",
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      taskId: "down",
+      parentTaskId: null,
+      sender: "tech-lead",
+      recipient: "orchestrator",
+      type: "blocker",
+      createdAt: "2026-08-19T00:00:00.000Z",
+      dependsOn: [],
+      artifactRefs: [],
+      supersedes: null,
+    },
+    body: REQUIRED_BODY_HEADINGS.blocker.map((h) => `## ${h}\n\n본문 한 줄.\n`).join("\n"),
+    summary: "계약이 정해지지 않았다",
+  });
+  check("차단은 종료 상태다(autopilot이 스스로 되살리지 않는다)", taskOf(ws, "down").state === "blocked", taskOf(ws, "down").state);
+  const tailBlocked = eventLog(ws)
+    .filter((e) => e.type === "task_state_changed" && e.taskId === "tail" && e.toState === "blocked")
+    .map((e) => e.reason);
+  check(
+    "차단이 의존 하류로 전파되고 **이유가 감사 로그에 남는다**",
+    taskOf(ws, "tail").state === "blocked" && tailBlocked.join(",") === "dependency_blocked",
+    `${taskOf(ws, "tail").state}/${tailBlocked.join(",")}`,
+  );
+  check(
+    "종료 상태는 되살아나지 않는다(resumeTask 거부)",
+    (() => {
+      try {
+        openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 350_000) }).resumeTask({ taskId: "down", actionId: "act.un" });
+        return false;
+      } catch (e) {
+        return e?.code === "invalid_transition";
+      }
+    })(),
+  );
+  writeFileSync(join(planDir, "down.json"), JSON.stringify({ operations: [], result: { summary: "완료", outputs: [] } }));
+  const stopped = await runAutopilot({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, planDir, clock: clockFrom(T0 + 400_000), maxIterations: 2 });
+  check("막힌 그래프에서 loop가 조용히 진행하지 않는다", stopped.stoppedBecause === "no_runnable_tasks" && stopped.tasks.length === 0, `${stopped.stoppedBecause}/${stopped.tasks.length}`);
+
+  // ── 요약 변질: 실행 사이 원문이 바뀌면 시작조차 못 한다 ──
+  const entry = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 500_000) }).getState().messages.find((m) => m.type === "result");
+  const bodyFile = join(runPaths(ws, RUN_ID).dir, entry.bodyPath);
+  writeFileSync(bodyFile, `${readFileSync(bodyFile, "utf8")}\n위조된 한 줄.\n`);
+  const tampered = await runAutopilot({ workspaceRoot: ws, runId: RUN_ID, milestoneId: MILESTONE, planDir, clock: clockFrom(T0 + 600_000), maxIterations: 1 });
+  check(
+    "변조된 run은 task를 하나도 건드리지 않고 거부된다(fail closed)",
+    tampered.blocked === "run_unavailable" && tampered.tasks.length === 0 && tampered.stoppedBecause === "message_body_hash_mismatch",
+    `${tampered.blocked}/${tampered.stoppedBecause}`,
+  );
+}
+
+console.log(
+  "\n이 스크립트가 증명하지 않는 것: live LLM 0회 · 좌초 프로세스 탐색(관측자 없음) · supervisor 관측 실패 경로 · " +
+    "동시 controller 2대 · **문서 누락 red는 통합 경로에서 표현 불가**(autopilot이 result 본문을 직접 만든다 — kernel 층이 전 타입 전수 커버) · " +
+    "v1 `runWorkflow`의 헤더 검사는 여전히 경고 수준이다(대장 C-70)",
+);
 console.log("\n===================================");
-console.log(` M10 T1 결과: PASS=${pass}  FAIL=${fail}`);
+console.log(` M10 T1·T2 결과: PASS=${pass}  FAIL=${fail}`);
 console.log("===================================");
 process.exit(fail === 0 ? 0 : 1);

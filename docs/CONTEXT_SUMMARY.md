@@ -1,13 +1,23 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-19 (M10 T1 — resume/crash recovery 완료)
+최종 갱신: 2026-08-20 (M10 T1·T2 완료)
 
-## 최신 (2026-08-19 — **V3 M10 T1 완료. 다음은 T2** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-20 — **V3 M10 T1·T2 완료. 다음은 T3** · 이 블록이 가장 최신이다)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
-- 실측 `test:exec` **605/605** · `test:core` **446/446** · acceptance **PASS=181 / FAIL=0**
-  (M10은 **Test 22**) · `tsc --noEmit` clean. **live LLM 0회**(T1은 offline이지만 실제 프로세스와
-  실제 SIGKILL을 쓴다). 판정 정본은 로드맵 **`M10 진행 판정 ①`** 절이다.
+- 실측 `test:exec` **605/605** · `test:core` **452/452** · acceptance **PASS=185 / FAIL=0**
+  (M10은 **Test 22** · 내부 32건) · `tsc --noEmit` clean. **live LLM 0회**(offline이지만 실제 프로세스와
+  실제 SIGKILL을 쓴다). 판정 정본은 로드맵 **`M10 진행 판정 ②`**(T2) · **`①`**(T1) 절이다.
+
+**T2에서 선 것 (통합 시나리오 5축)**
+- **A급 1건 수정 — durable 결과 본문의 거짓 진술.** `resultBody`가 "typed operation은 집행하지 않았다"를
+  **고정 문구로** 담고 있었다(M5d task 2가 집행을 연 뒤로 거짓). 계획에서 파생하도록 고쳤다.
+- 통합 층 공백 4축을 red-path 먼저로 세웠다: **사람 결정 gate**(답 없이는 결과 발행 불가 → 중앙 API로만
+  답 → 재개) · **의존성 실패**(`dependency_blocked`가 감사 로그에 남고 loop가 멈춘다 · `blocked`는 **종료
+  상태**라 되살리지 않는다) · **요약 변질**(실행 사이 원문 변조 → 시작조차 못 한다) · **rotation 등가**.
+- **문서 누락은 통합 층에서 red 표현 불가**(autopilot이 result 본문을 직접 만든다) → kernel 층 전수 커버로
+  두고 새로 쓰지 않았다. v1 `runWorkflow`는 여전히 경고 수준이다(`C-70` open).
+- 신규 대장 1건: `C-85`(`cancelled`가 의존 하류로 전파되지 않는다 — 표식 없이 pending에 남는다).
 
 **T1에서 선 것**
 - **A급 1건 수정 — 거짓 성공 영수증.** autopilot이 `superviseProcess`의 정리 미확인
