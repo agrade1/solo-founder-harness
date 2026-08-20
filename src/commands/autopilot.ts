@@ -17,9 +17,15 @@
  *   turn마다 `chargeTurnUsage`로 durable하게 적는다. 그래서 프로세스를 다시 띄워도 같은 승인 아래
  *   예산이 새로 생기지 않는다. **`--resume` 같은 재예산 플래그를 만들지 않았다.**
  * - **`B-13`(정리 확인보다 durable 완료가 먼저)** / **`B-18`·`B-20`·`C-18`** — 소비하지 않는다.
- *   이 loop는 **프로세스를 하나도 띄우지 않는다**(worker는 in-memory 데이터 어댑터다) → 자손이
- *   구조적으로 0이고, 그럼에도 kernel의 순서 계약을 그대로 지난다:
- *   `recordTerminal`(→`cleaning`) → `confirmCleanup` → 완료/pause.
+ *   kernel의 순서 계약을 그대로 지난다: `recordTerminal`(→`cleaning`) → 정리 판정 → 완료/pause.
+ *
+ *   **정정(V3 M10 T1 — 이전 판의 과대주장).** 이전 판은 "이 loop는 프로세스를 하나도 띄우지 않는다 →
+ *   자손이 구조적으로 0이다"라고 적고 그 근거로 `confirmCleanup`을 **무조건** 불렀다. 그 주장은 M5d
+ *   task 2(typed operation 집행)와 M9 T3③(`git_worktree`)이 열린 뒤로 **거짓이다** — `run_process`·
+ *   `git_worktree`는 `superviseProcess`로 실제 프로세스 그룹을 띄운다. 그래서 supervisor가 그룹이 빈 것을
+ *   **관측하지 못한 turn**(`process_cleanup_unconfirmed` → marker `cleanup_unconfirmed`)에도 durable에
+ *   `cleanup_confirmed`(= survivors 0)를 적고 있었다 = **거짓 성공 영수증**. 지금은 관측하지 못한 정리를
+ *   `failCleanup`으로 적고 자원을 놓지 않는다(§ "정리 착지" 참조).
  * - **`B-17`(실패한 전달이 `activeAttemptId`를 남긴다)** — 소비하지 않는다. 이 loop는
  *   `beginDeliveryAttempt`를 **부르지 않는다**(inbox 전달은 provider 세션 계약이며 이 slice 밖이다) →
  *   열린 채 남을 attempt가 생기지 않는다. inbox가 있는 task도 여기서는 그냥 pause될 뿐이다.
@@ -52,6 +58,7 @@ import {
   TYPED_EXECUTION_PLAN_SCHEMA_VERSION,
   assertSlug,
   formatTimestamp,
+  opensProcess,
 } from "../exec/orchestrationTypes.js";
 import type { AgentMessageEnvelope, AutopilotMarker, OrchestrationTask, PauseReason } from "../exec/orchestrationTypes.js";
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
@@ -188,6 +195,14 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
       stoppedBecause = gate;
       break;
     }
+    // **V3 M10 T1 — 크래시 잔재를 먼저 정착시킨다.** `prepared`보다 먼저 보는 이유: `running`/`cleaning`
+    // 잔재는 lease를 쥐고 있어 같은 task를 다시 시작하면 **중복 agent**가 되고, 정착시키지 못하는 잔재는
+    // loop를 아예 멈춰야 하기 때문이다(정착 실패를 지나쳐 batch를 계획하면 그것이 조용한 진행이다).
+    const residue = recoverCrashedAttempts(kernel, emit, tasks);
+    if (residue !== null) {
+      stoppedBecause = residue;
+      break;
+    }
     // **`B-21`: 중단된 batch가 남긴 `prepared`를 먼저 되찾는다.** `prepared`는 자원 점유 상태
     // (`RESOURCE_HOLDING_STATES`)인데 `selectSchedulable`은 `ready`/`retry_wait`만 고르므로, 되찾지
     // 않으면 그 task가 배타 class와 `maxSessions` 자리를 영구히 붙잡아 **이후 모든 batch가 조용히
@@ -202,10 +217,16 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
         reclaimed.set(task.taskId, doc);
         continue;
       }
-      kernel.pauseTask({ taskId: task.taskId, actionId: id("pause"), pauseReason: "approval_required" });
+      // `C-59`: 이 pause는 `C-55` catch **밖**이었다 → 동시 writer의 `stale_writer`가 CLI를 죽였다.
+      const failed = safePause(kernel, task.taskId, "approval_required");
+      if (failed !== null) {
+        stoppedBecause = failed;
+        break;
+      }
       emit({ kind: "task_paused", taskId: task.taskId, marker: "plan_missing", detail: "prepared_reclaimed" });
       tasks.push({ taskId: task.taskId, state: "paused", marker: "plan_missing" });
     }
+    if (stoppedBecause !== "iteration_limit") break;
 
     const batch = kernel.planRunnableBatch();
     if (batch.items.length === 0 && reclaimed.size === 0) {
@@ -273,9 +294,19 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
       // 시작이 거부된 잔여(`preflight_drift` 등)를 `prepared`에 두면 그것이 곧 `B-21`을 다시 만든다 —
       // 자원을 놓아주고 사람이 보게 한다. attempt는 이미 소모된 뒤이므로 여기서 더 태우지 않는다.
       if (outcome.state === "prepared") {
-        kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+        // `C-59`: 위와 같은 이유로 보호 안에서 부른다.
+        const failed = safePause(kernel, taskId, "approval_required");
+        if (failed !== null) {
+          stoppedBecause = failed;
+          break;
+        }
         emit({ kind: "task_paused", taskId, marker: outcome.marker, detail: "start_rejected" });
         outcome.state = "paused";
+      }
+      // **정리를 관측하지 못한 turn**(위 A급 수정)은 자원을 쥔 채 `cleaning`에 남는다 — 사람이 본다.
+      if (outcome.state === "cleaning") {
+        stoppedBecause = "cleanup_unobservable";
+        break;
       }
       // `B-22`: 원장에 들어가지 않은 turn이 있으면 이후 예산 판정은 낡은 총량을 본다 → 멈춘다.
       // 이미 지난 task는 `paused`로 착지해 있으므로 사람이 회계를 맞춘 뒤 그대로 이어서 부를 수 있다.
@@ -293,6 +324,147 @@ export async function runAutopilot(opts: AutopilotOptions): Promise<AutopilotRep
 
   emit({ kind: "run_finished", marker: stoppedBecause });
   return { blocked: null, iterations, tasks, stoppedBecause };
+}
+
+// ── 크래시 잔재 정착 (V3 M10 T1) ────────────────────────────────────────────
+
+/**
+ * **정리가 관측 불가인 이유**(있으면 그 코드, 없으면 `null`) — `confirmCleanup`을 부를 자격의 **단일 판정**.
+ * turn 착지(`runTaskTurn`)와 크래시 복구 pass가 **같은 이 함수**를 쓴다.
+ *
+ * 판정은 **durable 증거만** 본다. 재시작한 controller에는 이전 attempt의 pgid가 없고(`TaskExecution`은
+ * PID/PGID를 의도적으로 담지 않는다) 같은 프로세스 안에서도 supervisor가 이미 "관측하지 못했다"고 보고한
+ * 뒤이므로, 어느 쪽에서도 **다시 관측할 방법은 없다**.
+ *
+ * 그래서 여기서 `null`이 나온다는 것은 "프로세스가 죽은 것을 확인했다"가 **아니라** "이 attempt가 프로세스를
+ * 띄우는 집행 경계에 **들어간 적이 없거나 들어간 것이 전부 관측된 채로 닫혔다**"는 뜻이다 — 그때만
+ * survivors 0이 구조적으로 참이다. 그 밖에는 확인할 수단이 없으므로 확인했다고 적지 않는다.
+ *
+ * **turn 착지에서 marker 하나만 보지 않는 이유**: turn의 최종 marker는 마지막 실패만 담는다. 앞선
+ * `run_process`가 `outcome_unknown`으로 닫힌 뒤 다음 operation이 `operation_denied`로 끝나면 marker는
+ * `operation_denied`이지만 **프로세스는 여전히 살아 있을 수 있다** → marker가 아니라 영수증을 본다.
+ */
+function cleanupUnobservableReason(task: OrchestrationTask): string | null {
+  const exec = task.execution;
+  // ① supervisor가 그룹이 빈 것을 관측하지 못했다고 **이미 durable에 적혀 있다**(`process_cleanup_unconfirmed`
+  //    → 이 marker). 이것이 "미관측"의 정본 증거다.
+  if (exec.terminalMarker === "cleanup_unconfirmed") return "cleanup_unconfirmed";
+  // ② 프로세스를 여는 operation이 **집행 경계 안에서** 미확정으로 남아 있다(`attemptedAt !== null`) →
+  //    supervisor가 돌아오지 못했다 = 자손을 거둔 관측이 없다.
+  if (exec.pendingOperations.some((p) => p.attemptedAt !== null && opensProcess(p.kind))) {
+    return "operation_effect_uncertain";
+  }
+  // ③ **turn이 자기 종료를 적지 못한 채**(`terminalMarker === null`) 프로세스 kind의 `outcome_unknown`
+  //    영수증이 남아 있다 → 영수증과 종료 기록 **사이**에서 죽었으므로 관측 여부를 알 수 없다.
+  //
+  //    `terminalMarker !== null`이면 이 판정을 하지 않는다. **중요**: `outcome_unknown` 영수증은
+  //    미관측의 증거가 아니다 — deadline·취소·비정상 종료는 `superviseProcess`가 그룹 소멸을 **관측한
+  //    뒤**(`orchestrationKernel.ts:1212` 통과) `process_deadline_exceeded`로 던지고, 그 pending도
+  //    `outcome_unknown`으로 닫힌다. 그 경우까지 미관측으로 보면 **정상 취소·timeout이 run을 영구
+  //    격리시키고**, 관측했는데 못 했다고 적는 반대 방향의 거짓 기록이 durable에 남는다
+  //    (T1 적대적 리뷰 A1). 그래서 ①이 정본이고 ③은 **기록이 끊긴 창**만 덮는다.
+  if (exec.terminalMarker === null) {
+    for (const r of exec.operationReceipts) {
+      if (r.attemptId !== exec.attemptId) continue;
+      if (r.marker === "outcome_unknown" && opensProcess(r.kind)) return "process_outcome_unknown";
+    }
+  }
+  return null;
+}
+
+/**
+ * **이 attempt를 소유했던 controller가 사라진 잔재를 정착시킨다**(대장 `C-55` 잔여 · `C-4` 운영면).
+ *
+ * `running`/`cleaning` + `processLeaseMarker`는 크래시 등가 상태다: 한 `runAutopilot` 실행 안에서는
+ * `runTaskTurn`이 언제나 task를 착지시키므로, **iteration 시작에 그 상태가 보인다는 것 자체가** 이전
+ * 프로세스가 turn 도중 죽었다는 durable 증거다(또는 이전 실행이 관측 불가로 격리해 둔 것이다).
+ *
+ * 처분은 두 갈래이고 **둘 중 하나를 고르는 근거는 durable 증거뿐이다**:
+ *
+ * 1. **정착(settle)** — 프로세스를 띄우는 집행 경계에 들어간 적이 없다는 것이 durable에 남아 있으면
+ *    survivors 0이 구조적으로 참이다 → `confirmCleanup` → `settleCleanedAttempt`(attempt 여유가 있으면
+ *    `retry_wait`, 없으면 `blocked`, 취소 요청이 있었으면 `cancelled`). 자원이 풀리고 **다음 iteration이
+ *    새 attempt로 이어 간다** — 이것이 "중단 후 재개"의 실체다. 새 attempt는 새 `attemptId`를 받으므로
+ *    죽은 attempt의 결과가 부활할 수 없다(중복 결과 없음).
+ * 2. **격리(isolate)** — 그 밖에는 **정리를 확인했다고 적지 않는다**. `failCleanup`으로 관측 실패를
+ *    durable에 적고 task를 `cleaning`(자원 점유)에 남긴 뒤 loop를 멈춘다. 좌초 프로세스가 살아 있을 수
+ *    있는데 자원을 놓으면 다음 batch의 배타 자원 판정이 거짓이 된다(`B-13`/`C-18`).
+ *
+ * **여기서 하지 않는 것**: 프로세스 탐색·`ps` 스캔·pgid 추측. lease marker는 durable하지만 그것을 들고
+ * 있는 프로세스를 찾는 관측자는 **존재하지 않는다**(`MANAGED_PROCESS_ENV`는 닫혀 있고 argv에도 lease가
+ * 없다) → "lease로 좌초 프로세스를 찾아 거둔다"는 것은 지금 이 아키텍처에서 **표현 불가**이며, 그렇다고
+ * 적는 대신 격리한다.
+ *
+ * @returns loop를 멈출 안정 사유(격리했거나 kernel이 거부했다) 또는 `null`(잔재 없음/전부 정착).
+ */
+function recoverCrashedAttempts(
+  kernel: OrchestrationKernel,
+  emit: (e: AutopilotEvent) => void,
+  tasks: AutopilotTaskOutcome[],
+): string | null {
+  for (const found of kernel.getState().tasks) {
+    if (found.state !== "running" && found.state !== "cleaning") continue;
+    if (found.execution.processLeaseMarker === null) continue;
+    const taskId = found.taskId;
+    const lease = found.execution.processLeaseMarker;
+    // **판정은 이 pass가 무엇을 적기 전에 한다.** 아래 ①이 `terminalMarker`를 채우고 ②가 pending을
+    // 영수증으로 바꾸므로, 나중에 판정하면 **이 pass 자신의 기록** 때문에 증거가 사라진다
+    // (`cleanupUnobservableReason` ③의 "기록이 끊긴 창" 조건이 우리 기록으로 닫혀 버린다).
+    const unobservable = cleanupUnobservableReason(found);
+    try {
+      // ① 관측한 사실을 그대로 적는다 — 이 attempt의 controller가 사라졌다.
+      if (found.state === "running") {
+        kernel.recordTerminal({ taskId, actionId: id("term"), marker: "controller_lost" });
+      }
+      // ② 미확정 operation은 **durable 신원으로만** 닫는다(살아 있던 grant는 크래시와 함께 사라졌다).
+      //    marker는 kernel이 durable `attemptedAt`에서 파생하므로 여기서 결과를 지어낼 수 없다.
+      for (const p of kernel.getTask(taskId)?.execution.pendingOperations ?? []) {
+        kernel.reconcileUncertainOperation({
+          runId: kernel.getState().runId,
+          taskId,
+          attemptId: p.attemptId,
+          turnId: p.turnId,
+          planDigest: p.planDigest,
+          operationId: p.operationId,
+          kind: p.kind,
+          authorityId: p.authorityId,
+          actionId: id("recon"),
+        });
+      }
+      if (unobservable !== null) {
+        // 관측하지 못한 정리는 **적지 않는다**. 두 번째 관측 실패로 `cleanupStatus`가 `failed`(안정 격리)가
+        // 되면 사람이 `pauseTask`→`resumeTask`로 복구할 수 있다 — autopilot이 대신 놓아주지는 않는다.
+        kernel.failCleanup({ taskId, actionId: id("failclean") });
+        emit({ kind: "task_aborted", taskId, marker: unobservable, detail: "crash_isolated" });
+        tasks.push({ taskId, state: "cleaning", marker: unobservable });
+        return "cleanup_unobservable";
+      }
+      kernel.confirmCleanup({ taskId, actionId: id("clean"), leaseMarker: lease });
+      const landed = kernel.settleCleanedAttempt({ taskId, actionId: id("settle") });
+      emit({ kind: "task_aborted", taskId, marker: "controller_lost", detail: `crash_settled:${landed.state}` });
+      tasks.push({ taskId, state: landed.state, marker: "controller_lost" });
+    } catch (err) {
+      // 정착 자체가 거부되면(동시 writer·시계·상한) **조용히 넘기지 않는다** — 잔재는 그대로 남아 있고
+      // 다음 실행이 같은 판정을 다시 한다(이 pass는 멱등이다).
+      emit({ kind: "task_aborted", taskId, marker: codeOf(err), detail: "crash_recovery_rejected" });
+      tasks.push({ taskId, state: found.state, marker: codeOf(err) });
+      return "crash_recovery_rejected";
+    }
+  }
+  return null;
+}
+
+/**
+ * `C-59`: kernel 거부(동시 writer의 `stale_writer` 등)로 CLI가 죽지 않게 하는 pause. 실패는 삼키지 않고
+ * **안정 코드로 올려** 호출자가 loop를 멈추게 한다 — task는 그대로 남으므로 다음 실행이 다시 본다.
+ */
+function safePause(kernel: OrchestrationKernel, taskId: string, reason: PauseReason): string | null {
+  try {
+    kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: reason });
+    return null;
+  } catch (err) {
+    return codeOf(err);
+  }
 }
 
 // ── task turn 하나 ──────────────────────────────────────────────────────────
@@ -426,7 +598,16 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
 
   const sealed = marker === "turn_completed" && plan !== null ? { summary: plan.result.summary, outputs: [...plan.result.outputs] } : null;
   kernel.recordTerminal({ taskId, actionId: id("term"), marker, pendingResult: sealed });
-  // 이 loop는 프로세스를 띄우지 않으므로 생존 자손이 **구조적으로 0**이다 → 정리는 언제나 확인된다.
+  // **정리는 관측된 사실만 적는다**(V3 M10 T1 — A급 수정). 판정은 크래시 복구 pass와 **같은 함수**가
+  // 같은 durable 증거를 보고 한다(`cleanupUnobservableReason`) — 두 자리에 두 규칙을 두면 한쪽만
+  // 정직해진다. 이전 판은 여기서 `confirmCleanup`을 **무조건** 불러 supervisor가 그룹이 빈 것을
+  // 관측하지 못한 turn에도 durable에 survivors 0을 적었다.
+  const unobservable = cleanupUnobservableReason(kernel.getTask(taskId)!);
+  if (unobservable !== null) {
+    kernel.failCleanup({ taskId, actionId: id("failclean") });
+    emit({ kind: "task_aborted", taskId, marker: unobservable, detail: "cleanup_unobservable" });
+    return { taskId, state: "cleaning", marker: unobservable, ...(chargeFailed ? { chargeFailed } : {}) };
+  }
   kernel.confirmCleanup({ taskId, actionId: id("clean"), leaseMarker });
 
   if (marker === "cancelled") {

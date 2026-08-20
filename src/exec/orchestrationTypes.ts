@@ -280,6 +280,16 @@ export const AUTOPILOT_MARKERS = [
   "stream_invalid",
   "delivery_failed",
   "review_invalid",
+  /**
+   * **V3 M10 T1 — 이 attempt를 소유했던 controller가 사라졌다**(SIGKILL·전원 단절·프로세스 강제 종료).
+   * 재시작한 controller가 durable 잔재(`running`/`cleaning` + `processLeaseMarker`)를 보고 **관측한 사실**
+   * 그대로 기록하는 marker다.
+   *
+   * 기존 marker를 재사용하지 않은 이유: `worker_failed`는 worker가 프로토콜을 어겼다는 주장이고
+   * `cleanup_unconfirmed`는 정리를 시도했으나 관측하지 못했다는 주장이다. 크래시는 둘 다 아니다 —
+   * 어느 쪽으로 적어도 durable 감사 로그에 **일어나지 않은 일**이 남는다.
+   */
+  "controller_lost",
 ] as const;
 export type AutopilotMarker = (typeof AUTOPILOT_MARKERS)[number];
 
@@ -311,6 +321,18 @@ export type CleanupStatus = (typeof CLEANUP_STATUSES)[number];
 /** typed operation 종류 — 닫힌 union(shell 문자열·wildcard·런타임 실행 파일 선택은 없다). */
 export const APPROVED_OPERATION_KINDS = ["write_file", "run_process", "git_worktree"] as const;
 export type ApprovedOperationKind = (typeof APPROVED_OPERATION_KINDS)[number];
+
+/**
+ * **`superviseProcess`로 자식 프로세스 그룹을 여는 kind**(V3 M10 T1 — 이전에는 kernel의 spawn 상한과
+ * autopilot의 정리 판정이 이 목록을 **각자 수기로** 들고 있었다). 새 kind가 프로세스를 여는데 한쪽에서
+ * 빠지면 ⓐ spawn 상한이 실제 프로세스 수와 어긋나고 ⓑ 정리 판정이 거짓 confirm을 낸다 → 단일 출처로 둔다.
+ */
+export const PROCESS_LAUNCHING_KINDS = ["run_process", "git_worktree"] as const;
+
+/** 이 kind가 자식 프로세스 그룹을 여는가. `write_file`은 순수 파일 시스템 연산이라 자손이 없다. */
+export function opensProcess(kind: string): boolean {
+  return (PROCESS_LAUNCHING_KINDS as readonly string[]).includes(kind);
+}
 
 /**
  * bounded 상한. spawn 상한 3종은 M4a 필수 요건이고 나머지는 state·메시지가 무제한으로

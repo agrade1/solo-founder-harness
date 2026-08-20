@@ -382,7 +382,19 @@ console.log("\n⑤ T3② — B-30: 문서가 kernel task로 1:1 보존되고, �
   check("resourceClasses가 kernel로 1:1 보존된다(B-30)", kernel.getTask("integrate").resourceClasses.join(",") === "merge");
   check("dependsOn이 1:1 보존된다", [...kernel.getTask("integrate").dependsOn].sort().join(",") === "impl-a,impl-b");
   check("ownership이 1:1 보존된다", kernel.getTask("impl-a").ownership.join(",") === "src/a");
-  check("두 번째 물질화는 거부된다(중복 방지)", codeOf(() => materializeTaskDag(kernel, { schemaVersion: "1", tasks: PIPELINE_TASKS })) === "dag_materialize_run_not_empty");
+  // **V3 M10 T1에서 이 계약의 범위가 좁아졌다**(대장 `C-76` — 부분 물질화 이어받기): 같은 문서 재호출은
+  // **멱등**이고, 거부되는 것은 **다른 문서**를 얹는 경우다. 중복 방지 자체는 그대로 지킨다(개수 보존).
+  check(
+    "같은 문서 재호출은 멱등이다(중복 생성 0 — M10 T1에서 좁혀진 계약)",
+    materializeTaskDag(kernel, { schemaVersion: "1", tasks: PIPELINE_TASKS }).createdOrder.length === 0 && kernel.getState().tasks.length === 3,
+  );
+  const foreignTasks = JSON.parse(JSON.stringify(PIPELINE_TASKS));
+  foreignTasks.find((t) => t.taskId === "impl-a").title = "다른 계획의 제목";
+  check(
+    "다른 문서를 얹는 것은 여전히 거부된다(중복 방지)",
+    codeOf(() => materializeTaskDag(kernel, { schemaVersion: "1", tasks: foreignTasks })) === "dag_materialize_run_not_empty" &&
+      kernel.getState().tasks.length === 3,
+  );
 
   // kernel이 거부할 seed는 **만들기 전에** 걸러진다 → durable 잔류 0(리뷰 A급 수정).
   const ws2 = makeDir("m9-mat2-");

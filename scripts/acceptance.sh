@@ -395,6 +395,30 @@ echo "$M9_OUT" | grep -q "live LLM 0회"
 check "M9 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
 
 echo ""
+echo "== Test 22: M10 T1 resume/crash recovery — 죽은 writer lock 회수 · 거짓 정리 영수증 금지 · 잔재 정착 (offline · 무과금) =="
+# 임시 디렉터리 전용 · live LLM 0회. ①②는 **실제 프로세스**를 띄우고 ②는 controller를 실제 SIGKILL한다.
+M10_OUT="$(node scripts/m10-offline-acceptance.mjs 2>&1)"
+M10_RC=$?
+[ "$M10_RC" -eq 0 ];                              check "M10 T1 offline acceptance exit 0" $?
+echo "$M10_OUT" | grep -q "FAIL=0";               check "M10 T1 내부 체크 전부 통과" $?
+echo "$M10_OUT" | grep -q "정상 timeout이 run을 격리하지 않는다"
+check "M10 ① 관측된 정리는 확인으로 적는다(과격리 없음) 확인 출력" $?
+echo "$M10_OUT" | grep -q "관측하지 못한 정리를 확인으로 적지 않는다"
+check "M10 ② 거짓 성공 영수증 금지 확인 출력" $?
+echo "$M10_OUT" | grep -q "자원을 놓지 않고 격리한다"
+check "M10 ② 격리가 자원을 놓지 않음 확인 출력" $?
+echo "$M10_OUT" | grep -q "죽은 writer의 lock을 회수해 재시작이 열린다"
+check "M10 ③ stale lock 회수로 재시작이 열림 확인 출력" $?
+echo "$M10_OUT" | grep -q "새 attempt로 재개해 완주한다"
+check "M10 ④ 크래시 잔재 정착·재개 확인 출력" $?
+echo "$M10_OUT" | grep -q "결과·artifact가 중복 발행되지 않았다"
+check "M10 ④ 중복 없음 확인 출력" $?
+echo "$M10_OUT" | grep -q "같은 문서로 이어받아 완성한다"
+check "M10 ⑤ C-76 부분 물질화 이어받기 확인 출력" $?
+echo "$M10_OUT" | grep -q "좌초 프로세스 탐색(관측자 없음)"
+check "M10 스크립트가 자신의 범위(미증명 4건)를 밝힘" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

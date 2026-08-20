@@ -1234,35 +1234,179 @@ export function stateContentDigest(state) {
     }));
 }
 const O_NOFOLLOW_SUPPORTED = typeof fsConstants.O_NOFOLLOW === "number";
-/**
- * run 하나의 커밋을 직렬화하는 배타 lock. `O_CREAT|O_EXCL`(= `wx`) 하나로 성립하며
- * **대기하지 않는다**: 이미 있으면 즉시 `run_lock_held`로 fail-closed다(retry loop 없음).
- *
- * ponytail: 최소 파일 lock이다. **stale lock 자동 회수·소유자 생존 확인·크래시 복구·분산 lock은 넣지 않았다** —
- * writer가 커밋 도중 죽으면 lock이 남아 그 run의 이후 커밋을 전부 거부하고 사람이 지워야 한다(fail closed).
- * 상향 경로는 기존 suite lock(`scripts/lib/suite-exclusive-lock.mjs`)의 guard/격리 계약이며 별도 승인 범위다.
- * 그 계약은 suite 전용 의미(ownership token 상속·pgid 스캔·격리)를 함께 들고 오므로 여기서는 재사용하지 않았다.
- */
-export function acquireRunWriterLock(paths) {
-    ensureRunDir(paths);
-    const nonce = randomBytes(16).toString("hex");
+/** lock 파일을 `O_NOFOLLOW`로만 읽어 소유자 record로 파싱한다. 형태가 아니면 `null`(= 미상 소유자). */
+function readLockOwner(paths) {
+    let text;
     let fd;
     try {
-        fd = openSync(paths.lockFile, "wx", 0o600);
+        fd = openSync(paths.lockFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     }
-    catch (e) {
-        if (e.code === "EEXIST") {
-            throw new OrchestrationError("run_lock_held", `이 run에 다른 writer가 커밋 중이다(대기하지 않는다): ${paths.runId}`);
-        }
-        throw e;
+    catch {
+        return null;
     }
     try {
-        writeFileSync(fd, `${nonce}\n`, { encoding: "utf8" });
+        text = readFileSync(fd, "utf8");
     }
     finally {
         closeSync(fd);
     }
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        return null;
+    }
+    if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+        return null;
+    const o = parsed;
+    if (typeof o.nonce !== "string" || !/^[0-9a-f]{32}$/.test(o.nonce))
+        return null;
+    if (typeof o.pid !== "number" || !Number.isInteger(o.pid) || o.pid <= 1)
+        return null;
+    return { nonce: o.nonce, pid: o.pid };
+}
+/**
+ * **그 pid가 지금 존재하지 않는다는 것을 관측했는가.** `ESRCH`만 "없다"이며 `EPERM`(살아 있으나 신호를
+ * 보낼 수 없다)과 그 밖의 오류는 **모두 "알 수 없다"** 로 접는다(fail closed — 미확인이 회수 근거가 되지
+ * 않는다). `managedProcess.groupAlive`와 같은 규율이고 부호만 다르다(그쪽은 그룹, 이쪽은 단일 pid).
+ */
+function pidProvablyGone(pid) {
+    try {
+        process.kill(pid, 0);
+        return false;
+    }
+    catch (e) {
+        return e.code === "ESRCH";
+    }
+}
+/**
+ * run 하나의 커밋을 직렬화하는 배타 lock. 발행은 **temp + `link`(no-clobber)** 이므로 이미 있으면
+ * `EEXIST`이고 **대기하지 않는다**. lock 파일에는 `{nonce, pid}` 한 줄이 들어간다.
+ *
+ * **stale lock 회수(V3 M10 T1 — 대장 `C-8` · `C-4` 보강).** 이전 판은 lock이 남으면 그 run의 이후 커밋을
+ * **영구히** 거부했다(사람이 지워야 했다). 그 결과 `commitRun` 도중 SIGKILL이면 journal 기반 복구가
+ * 이미 결정론적으로 준비돼 있는데도 `loadRun`이 lock 획득에서 먼저 죽어 **복구에 도달하지 못했다** —
+ * "재시작하면 복구된다"가 실제로는 거짓이었다.
+ *
+ * 회수 규칙은 **한 방향으로만 fail closed**다: `process.kill(pid, 0)`가 `ESRCH`를 낼 때, 즉 **그 pid가
+ * 존재하지 않는다는 것을 관측했을 때만** 회수한다. 살아 있거나(`EPERM` 포함) 소유자 record가 미상이면
+ * 이전과 똑같이 `run_lock_held`다.
+ *
+ * **회수 자체는 전용 lock 안에서 한다**(T1 적대적 리뷰 A2). 첫 판은 "재확인 → unlink → 발행"이었는데,
+ * 두 프로세스가 같은 죽은 lock을 보면 **둘 다 재확인을 통과**하고 나중 쪽의 `unlink`가 **먼저 회수한
+ * 쪽의 살아 있는 lock을 지운다** → 두 writer가 동시에 커밋을 열고, 그 창에서는 `assertDurableBase`도
+ * 둘 다 통과할 수 있어 event chain이 깨진다. `run_state.lock.reclaim`을 `O_EXCL`로 잡아 **회수자를
+ * 하나로 직렬화**하고, 그 안에서 소유자를 다시 읽는다 → 나중 쪽은 살아 있는 lock을 보고 거부한다.
+ *
+ * ponytail: 남는 구멍 셋을 그대로 적는다. ⓐ **pid 재사용** — 죽은 소유자의 pid가 재사용되면 회수하지
+ * 않고 사람 개입이 필요하다(= 이전 판의 동작이며 안전한 방향이다). `ps lstart`로 시작 신원까지 보면
+ * 닫히지만 그것은 store 계층에서 **프로세스를 spawn한다**는 뜻이라(이 파일은 spawn이 0이다) 비용이
+ * 값어치를 넘는다. ⓑ **회수 lock 자체가 새는 경우** — 회수 도중 죽으면 `run_state.lock.reclaim`이 남아
+ * 그 run의 **회수만** 영구히 닫힌다(커밋은 여전히 `run_lock_held`로 fail closed이고 사람이 파일 하나를
+ * 지우면 된다). 회수 lock을 또 회수하지는 않는다 — 거북이 탑이 된다. ⓒ **같은 기계 가정** — pid는 호스트
+ * 로컬이므로 네트워크 파일 시스템에 run을 두고 다른 호스트에서 커밋하면 이 판정은 성립하지 않는다.
+ * suite lock(`scripts/lib/suite-exclusive-lock.mjs`)의 pgid 스캔·ownership token 상속은 여기서도
+ * 재사용하지 않는다 — 그쪽은 자식 프로세스를 쥔 suite 전용 의미이고, 커밋은 순수 파일 트랜잭션이라
+ * 소유자 사망 뒤의 복구가 journal로 결정론적이다(그래서 회수가 원리적으로 건전하다).
+ */
+export function acquireRunWriterLock(paths) {
+    ensureRunDir(paths);
+    const nonce = randomBytes(16).toString("hex");
+    if (!publishLockFile(paths, nonce)) {
+        reclaimDeadLock(paths, nonce);
+    }
     return { file: paths.lockFile, nonce };
+}
+/**
+ * **죽은 소유자의 lock만 회수하고 이 프로세스 것으로 발행한다.** 회수자는 `<lock>.reclaim`(`O_EXCL`)로
+ * 직렬화되므로 동시에 둘이 회수하지 못한다 — 그것이 A2(나중 회수자가 먼저 회수한 쪽의 **살아 있는** lock을
+ * 지우는 경로)를 없애는 근거다. 실패는 전부 `run_lock_held`(= 아무것도 바꾸지 않았다)로 접힌다.
+ */
+function reclaimDeadLock(paths, nonce) {
+    const held = (what) => new OrchestrationError("run_lock_held", `${what}: ${paths.runId}`);
+    const reclaimFile = `${paths.lockFile}.reclaim`;
+    let guard;
+    try {
+        guard = openSync(reclaimFile, "wx", 0o600);
+    }
+    catch (e) {
+        // 다른 프로세스가 이미 회수 중이거나(EEXIST) 회수 도중 죽어 남은 잔재다 — 어느 쪽이든 회수하지 않는다.
+        if (e.code === "EEXIST")
+            throw held("다른 writer가 lock을 회수 중이다");
+        throw e;
+    }
+    try {
+        closeSync(guard);
+        // **회수 lock 안에서 다시 읽는다**: 앞선 회수자가 이미 자기 lock을 발행했다면 여기서 살아 있는
+        // 소유자를 보고 거부한다.
+        const owner = readLockOwner(paths);
+        if (owner === null)
+            throw held("writer lock 소유자를 알 수 없다(회수하지 않는다)");
+        if (!pidProvablyGone(owner.pid))
+            throw held("이 run에 다른 writer가 커밋 중이다(대기하지 않는다)");
+        try {
+            unlinkSync(paths.lockFile);
+        }
+        catch {
+            throw held("죽은 writer의 lock을 회수할 수 없다");
+        }
+        if (!publishLockFile(paths, nonce))
+            throw held("회수한 lock을 다른 writer가 먼저 잡았다");
+    }
+    finally {
+        try {
+            unlinkSync(reclaimFile);
+        }
+        catch {
+            /* 회수 lock 잔재는 회수만 닫는다(커밋은 fail closed 그대로) — 위 ponytail ⓑ. */
+        }
+    }
+}
+/**
+ * lock 파일을 **완성된 내용으로 원자적으로** 발행한다(temp write → `link` no-clobber → temp 정리).
+ * `false`는 `EEXIST`(이미 있다)뿐이고 그 밖의 오류는 그대로 올린다.
+ *
+ * `open("wx")` + write를 쓰지 않는 이유(대장 `C-4` 보강 ⓒ): 그 순서는 **빈 lock 파일**이 남는 창을
+ * 만들고, 빈 파일은 소유자 미상이라 회수할 수 없어 run을 영구히 막는다. link은 완성된 파일에만
+ * 이름을 붙이므로 그 창이 0이다. body 발행(`publishOwnedBodies`)이 쓰는 것과 같은 idiom이다.
+ */
+function publishLockFile(paths, nonce) {
+    const staging = `${paths.lockFile}.${nonce}`;
+    let fd;
+    try {
+        fd = openSync(staging, "wx", 0o600);
+    }
+    catch (e) {
+        if (e.code === "EEXIST") {
+            // 같은 nonce의 staging이 남아 있다 = 난수 충돌이거나 앞선 실패 잔재다. 남의 것일 수 있으니 지우지 않는다.
+            throw new OrchestrationError("run_lock_held", "writer lock staging 이름이 이미 있다");
+        }
+        throw e;
+    }
+    try {
+        writeFileSync(fd, `${JSON.stringify({ nonce, pid: process.pid })}\n`, { encoding: "utf8" });
+    }
+    finally {
+        closeSync(fd);
+    }
+    try {
+        linkSync(staging, paths.lockFile);
+        return true;
+    }
+    catch (e) {
+        if (e.code === "EEXIST")
+            return false;
+        throw e;
+    }
+    finally {
+        try {
+            unlinkSync(staging);
+        }
+        catch {
+            /* staging 잔재는 다음 acquire가 새 nonce로 우회한다 — 발행 성공 여부를 바꾸지 않는다. */
+        }
+    }
 }
 /**
  * **이 acquire가 만든 lock만** 해제한다. 최종 엔트리는 `O_NOFOLLOW`로만 읽고(symlink 교체 거부),
@@ -1275,21 +1419,11 @@ export function releaseRunWriterLock(paths, lock) {
     if (!O_NOFOLLOW_SUPPORTED) {
         throw new OrchestrationError("run_lock_nofollow_unsupported", "이 플랫폼은 O_NOFOLLOW를 지원하지 않는다");
     }
-    let text;
-    let fd;
-    try {
-        fd = openSync(paths.lockFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
-    }
-    catch {
+    const owner = readLockOwner(paths);
+    if (owner === null) {
         throw new OrchestrationError("run_lock_release_failed", "해제할 writer lock을 읽을 수 없다(교체·삭제됨)");
     }
-    try {
-        text = readFileSync(fd, "utf8");
-    }
-    finally {
-        closeSync(fd);
-    }
-    if (text.trim() !== lock.nonce) {
+    if (owner.nonce !== lock.nonce) {
         throw new OrchestrationError("run_lock_owner_mismatch", "writer lock 소유자가 다르다 — 남의 lock은 지우지 않는다");
     }
     unlinkSync(paths.lockFile);
