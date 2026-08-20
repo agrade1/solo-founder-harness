@@ -67,6 +67,7 @@ export function runPaths(workspaceRoot, runId) {
         messagesDir: join(dir, "messages"),
         snapshotFile: join(dir, "snapshot.md"),
         lockFile: join(dir, "run_state.lock"),
+        controllerLeaseFile: join(dir, "controller.lock"),
         journalFile: join(dir, "commit.journal"),
     };
 }
@@ -1235,11 +1236,11 @@ export function stateContentDigest(state) {
 }
 const O_NOFOLLOW_SUPPORTED = typeof fsConstants.O_NOFOLLOW === "number";
 /** lock 파일을 `O_NOFOLLOW`로만 읽어 소유자 record로 파싱한다. 형태가 아니면 `null`(= 미상 소유자). */
-function readLockOwner(paths) {
+function readLockOwner(file) {
     let text;
     let fd;
     try {
-        fd = openSync(paths.lockFile, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        fd = openSync(file, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
     }
     catch {
         return null;
@@ -1312,20 +1313,43 @@ function pidProvablyGone(pid) {
  */
 export function acquireRunWriterLock(paths) {
     ensureRunDir(paths);
+    return acquireOwnedLock(paths.lockFile, `이 run에 다른 writer가 커밋 중이다(대기하지 않는다): ${paths.runId}`);
+}
+/**
+ * **pid 소유 배타 lock 하나를 잡는다** — writer lock과 controller lease가 **같은 기계**를 쓴다
+ * (V3 M10 T3에서 일반화했다). 규칙·한계는 전부 `acquireRunWriterLock` 주석에 있다: temp+`link` 발행 ·
+ * `ESRCH` 관측에만 회수 · 회수는 `<lock>.reclaim`(`O_EXCL`)로 직렬화 · pid 재사용·회수 lock 누출·
+ * 같은 기계 가정이 남는 구멍이다. **두 번째 lock 구현을 만들지 않는 것이 이 함수의 존재 이유다.**
+ */
+export function acquireOwnedLock(file, heldMessage) {
     const nonce = randomBytes(16).toString("hex");
-    if (!publishLockFile(paths, nonce)) {
-        reclaimDeadLock(paths, nonce);
+    if (!publishLockFile(file, nonce)) {
+        reclaimDeadLock(file, nonce, heldMessage);
     }
-    return { file: paths.lockFile, nonce };
+    return { file, nonce };
+}
+/** 이 acquire가 만든 lock만 해제한다(`releaseRunWriterLock`과 같은 규율). */
+export function releaseOwnedLock(lock) {
+    if (!O_NOFOLLOW_SUPPORTED) {
+        throw new OrchestrationError("run_lock_nofollow_unsupported", "이 플랫폼은 O_NOFOLLOW를 지원하지 않는다");
+    }
+    const owner = readLockOwner(lock.file);
+    if (owner === null) {
+        throw new OrchestrationError("run_lock_release_failed", "해제할 lock을 읽을 수 없다(교체·삭제됨)");
+    }
+    if (owner.nonce !== lock.nonce) {
+        throw new OrchestrationError("run_lock_owner_mismatch", "lock 소유자가 다르다 — 남의 lock은 지우지 않는다");
+    }
+    unlinkSync(lock.file);
 }
 /**
  * **죽은 소유자의 lock만 회수하고 이 프로세스 것으로 발행한다.** 회수자는 `<lock>.reclaim`(`O_EXCL`)로
  * 직렬화되므로 동시에 둘이 회수하지 못한다 — 그것이 A2(나중 회수자가 먼저 회수한 쪽의 **살아 있는** lock을
  * 지우는 경로)를 없애는 근거다. 실패는 전부 `run_lock_held`(= 아무것도 바꾸지 않았다)로 접힌다.
  */
-function reclaimDeadLock(paths, nonce) {
-    const held = (what) => new OrchestrationError("run_lock_held", `${what}: ${paths.runId}`);
-    const reclaimFile = `${paths.lockFile}.reclaim`;
+function reclaimDeadLock(file, nonce, heldMessage) {
+    const held = (what) => new OrchestrationError("run_lock_held", `${what} (${heldMessage})`);
+    const reclaimFile = `${file}.reclaim`;
     let guard;
     try {
         guard = openSync(reclaimFile, "wx", 0o600);
@@ -1333,26 +1357,26 @@ function reclaimDeadLock(paths, nonce) {
     catch (e) {
         // 다른 프로세스가 이미 회수 중이거나(EEXIST) 회수 도중 죽어 남은 잔재다 — 어느 쪽이든 회수하지 않는다.
         if (e.code === "EEXIST")
-            throw held("다른 writer가 lock을 회수 중이다");
+            throw held("다른 소유자가 lock을 회수 중이다");
         throw e;
     }
     try {
         closeSync(guard);
         // **회수 lock 안에서 다시 읽는다**: 앞선 회수자가 이미 자기 lock을 발행했다면 여기서 살아 있는
         // 소유자를 보고 거부한다.
-        const owner = readLockOwner(paths);
+        const owner = readLockOwner(file);
         if (owner === null)
-            throw held("writer lock 소유자를 알 수 없다(회수하지 않는다)");
+            throw held("lock 소유자를 알 수 없다(회수하지 않는다)");
         if (!pidProvablyGone(owner.pid))
-            throw held("이 run에 다른 writer가 커밋 중이다(대기하지 않는다)");
+            throw held("살아 있는 소유자가 lock을 쥐고 있다(대기하지 않는다)");
         try {
-            unlinkSync(paths.lockFile);
+            unlinkSync(file);
         }
         catch {
-            throw held("죽은 writer의 lock을 회수할 수 없다");
+            throw held("죽은 소유자의 lock을 회수할 수 없다");
         }
-        if (!publishLockFile(paths, nonce))
-            throw held("회수한 lock을 다른 writer가 먼저 잡았다");
+        if (!publishLockFile(file, nonce))
+            throw held("회수한 lock을 다른 소유자가 먼저 잡았다");
     }
     finally {
         try {
@@ -1371,8 +1395,8 @@ function reclaimDeadLock(paths, nonce) {
  * 만들고, 빈 파일은 소유자 미상이라 회수할 수 없어 run을 영구히 막는다. link은 완성된 파일에만
  * 이름을 붙이므로 그 창이 0이다. body 발행(`publishOwnedBodies`)이 쓰는 것과 같은 idiom이다.
  */
-function publishLockFile(paths, nonce) {
-    const staging = `${paths.lockFile}.${nonce}`;
+function publishLockFile(file, nonce) {
+    const staging = `${file}.${nonce}`;
     let fd;
     try {
         fd = openSync(staging, "wx", 0o600);
@@ -1391,7 +1415,7 @@ function publishLockFile(paths, nonce) {
         closeSync(fd);
     }
     try {
-        linkSync(staging, paths.lockFile);
+        linkSync(staging, file);
         return true;
     }
     catch (e) {
@@ -1416,17 +1440,7 @@ function publishLockFile(paths, nonce) {
  * (대장 `C-5`와 같은 한계 — 창 최소화 + 사후 탐지).
  */
 export function releaseRunWriterLock(paths, lock) {
-    if (!O_NOFOLLOW_SUPPORTED) {
-        throw new OrchestrationError("run_lock_nofollow_unsupported", "이 플랫폼은 O_NOFOLLOW를 지원하지 않는다");
-    }
-    const owner = readLockOwner(paths);
-    if (owner === null) {
-        throw new OrchestrationError("run_lock_release_failed", "해제할 writer lock을 읽을 수 없다(교체·삭제됨)");
-    }
-    if (owner.nonce !== lock.nonce) {
-        throw new OrchestrationError("run_lock_owner_mismatch", "writer lock 소유자가 다르다 — 남의 lock은 지우지 않는다");
-    }
-    unlinkSync(paths.lockFile);
+    releaseOwnedLock({ file: paths.lockFile, nonce: lock.nonce });
 }
 /**
  * lock을 쥔 상태에서 디스크가 아직 호출자의 기준과 같은지 확인한다.

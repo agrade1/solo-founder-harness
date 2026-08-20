@@ -117,14 +117,14 @@ export const DEPENDENCY_KEYS = ["name", "version"] as const;
  * 승인된 실행 권위 key. M5c(v2)에서 `node`·`processObserver`가 필수로 더해졌고 `codex`는 null 허용이다.
  * 더 넣거나 빼면 `invalid_manifest`이고, v1(`codex`+`git`만)은 `manifest_pre_m5c_unsupported`다.
  */
-export const EXECUTION_AUTHORITY_KEYS = ["codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"] as const;
+export const EXECUTION_AUTHORITY_KEYS = ["claude", "codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"] as const;
 /**
  * 위 집합 중 **필수** key(대장 `B-7ⓐ`). `codexHome`만 선택이다 — 없으면 "live 인증 미승인"이고
  * 격리 홈은 기존 계약대로 완전히 비어 있어야 한다(조용한 fallback이 아니라 인증 없는 fail closed다).
  * 필수로 만들지 않은 이유는 호환이 아니라 **의미**다: 자격증명을 넣어 둔 홈은 사람이 별도로 승인해야
  * 하는 자산이고, 그것이 없는 승인은 codex를 인증 없이 돌리라는 뜻이지 "아무 홈이나 쓰라"는 뜻이 아니다.
  */
-export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["codexHome"] as const;
+export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["claude", "codexHome"] as const;
 export const EXECUTION_AUTHORITY_REQUIRED_KEYS = ["codex", "controllerEntrypoint", "git", "node", "processObserver"] as const;
 export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"] as const;
 /** 승인된 디렉터리 record의 key 집합. **digest는 없다** — 자격증명 내용은 해싱조차 하지 않는다. */
@@ -351,7 +351,20 @@ function validateExecutionAuthority(raw: unknown): MilestoneApprovalManifest["ex
     o.codexHome === undefined || o.codexHome === null
       ? null
       : validateApprovedDirectory(o.codexHome, "manifest.executionAuthority.codexHome");
+  /**
+   * **V3 M10 T3 — worker 세션 실행 파일**(선택). 무인 loop가 live worker backend를 쓸 때 **유일하게**
+   * 실행할 수 있는 프로그램이며, 없으면(부재·`null`) live worker는 **표현 불가**다(offline backend만 남는다).
+   *
+   * `codexHome`과 같은 이유로 선택이다: 부재와 `null`이 같은 뜻이고, 그 경우 정규화 결과에 키가 없으므로
+   * **기존 승인의 canonical digest가 바이트 단위로 그대로다**(예산 회계·state binding 불변).
+   * 필수로 만들지 않은 것은 호환이 아니라 의미다 — live worker를 쓰지 않는 승인에 그 권능을 넣지 않는다.
+   */
+  const claude =
+    o.claude === undefined || o.claude === null
+      ? null
+      : validateApprovedExecutable(o.claude, "manifest.executionAuthority.claude");
   return {
+    ...(claude === null ? {} : { claude }),
     codex: o.codex === null ? null : validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
     ...(codexHome === null ? {} : { codexHome }),
     // **고정 controller entrypoint**(3A 2차 리비전 B2): 모든 typed `run_process`가 실행하는 **유일한**

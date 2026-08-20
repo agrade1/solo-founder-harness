@@ -2467,6 +2467,10 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
   // `preflight_required` stub으로만 남아 있다 — 대장 `B-11`).
   assert.deepEqual(actual, [
     "acknowledgeDelivery",
+    // V3 M10 T3 — **읽기 전용 권위 조회**다: 승인 manifest가 못 박은 worker 실행 파일이 **지금도 그
+    // 내용인지** 확인해 경로를 돌려줄 뿐이고 spawn하지 않는다(spawn은 provider 계약이다). 인자가 없으므로
+    // 호출자가 다른 프로그램을 요구할 통로가 없고, 승인에 그 키가 없으면 `worker_backend_unapproved`다.
+    "approvedWorkerExecutable",
     "beginDeliveryAttempt",
     // M5c 3A 2차 리비전 A2 — 집행 **직전** durable 등록 + 일회용 grant 발급. 자기 task의 자기 계획
     // 안에서만 열리고, 남의 task 상태를 바꾸는 통로는 여전히 없다.
@@ -2501,6 +2505,9 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
     "issueOperationDispatchPermit",
     "listPendingInbox",
     "listReady",
+    // V3 M10 T3 — **읽기 전용**이며 durable state를 바꾸지 않는다. 읽으면서 body digest를 다시 확인한다
+    // (모델 프롬프트로 나가는 값이므로 "중앙이 발행한 지시"임이 지금 참이어야 한다).
+    "messageBody",
     "nextPendingDelivery",
     // M5b 4차 리뷰 A2: `paths`는 own field가 아니라 **prototype getter**다(freeze된 값만 돌려준다).
     "paths",
@@ -4190,12 +4197,14 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
   assert.deepEqual(s.properties.executionAuthority.required, [...EXECUTION_AUTHORITY_REQUIRED_KEYS]);
   assert.equal(s.properties.executionAuthority.additionalProperties, false);
   assert.deepEqual(Object.keys(s.properties.executionAuthority.properties).sort(), [...EXECUTION_AUTHORITY_KEYS].sort());
-  // `B-7ⓐ` — 선택 key는 **정확히 `codexHome` 하나**여야 한다(런타임 closed 집합 − schema required).
-  // 새 선택 key가 조용히 늘어나면 여기서 걸린다.
+  // `B-7ⓐ` — 선택 key 집합의 **잠금**이다(런타임 closed 집합 − schema required). 새 선택 key가
+  // **조용히** 늘어나면 여기서 red가 된다. V3 M10 T3에서 `claude`가 사람 승인 아래 더해졌다(무인 loop의
+  // live worker 실행 권위) → 목록을 명시적으로 갱신했다. 여전히 **여기 없는 key는 늘 수 없다.**
   assert.deepEqual(
     EXECUTION_AUTHORITY_KEYS.filter((k) => !(EXECUTION_AUTHORITY_REQUIRED_KEYS as readonly string[]).includes(k)),
-    ["codexHome"],
+    ["claude", "codexHome"],
   );
+  assert.deepEqual(s.properties.executionAuthority.properties.claude.oneOf[0].$ref, "#/definitions/approvedExecutable");
   assert.equal(s.properties.executionAuthority.properties.codexHome.$ref, "#/definitions/approvedDirectory");
   assert.deepEqual(s.definitions.approvedDirectory.required, [...APPROVED_DIRECTORY_KEYS]);
   assert.equal(s.definitions.approvedDirectory.additionalProperties, false);

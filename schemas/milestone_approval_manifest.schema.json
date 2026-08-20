@@ -82,11 +82,15 @@
       "items": { "type": "string", "minLength": 3, "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" }
     },
     "executionAuthority": {
-      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. 각 항목은 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다. **M5c: node·processObserver가 필수로 추가됐고 codex는 null 허용이다**(M5c는 Codex를 인스턴스화하지 않는다). **M5c 3A 2차 리비전(B-10): controllerEntrypoint가 필수로 추가됐다** — 모든 typed run_process가 실행하는 유일한 script이며, 승인된 operation 레코드는 실행 대상을 고를 수 없다. key 집합은 닫혀 있고, node/processObserver/controllerEntrypoint가 없는 v1 manifest는 manifest_pre_m5c_unsupported다. **B-7ⓐ: codexHome이 유일한 선택 key다**(부재 = live 인증 미승인). 나머지 다섯은 필수다.",
+      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. 각 항목은 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다. **M5c: node·processObserver가 필수로 추가됐고 codex는 null 허용이다**(M5c는 Codex를 인스턴스화하지 않는다). **M5c 3A 2차 리비전(B-10): controllerEntrypoint가 필수로 추가됐다** — 모든 typed run_process가 실행하는 유일한 script이며, 승인된 operation 레코드는 실행 대상을 고를 수 없다. key 집합은 닫혀 있고, node/processObserver/controllerEntrypoint가 없는 v1 manifest는 manifest_pre_m5c_unsupported다. **B-7ⓐ: codexHome이 선택 key다**(부재 = live 인증 미승인). **V3 M10 T3: claude가 두 번째 선택 key로 더해졌다** — 무인 loop의 live worker backend가 실행할 수 있는 유일한 프로그램이며, 부재·null이면 live worker backend 자체가 표현 불가다(조용한 fallback이 아니라 backend 선택 거부다). 나머지 다섯은 필수다.",
       "type": "object",
       "additionalProperties": false,
       "required": ["codex", "controllerEntrypoint", "git", "node", "processObserver"],
       "properties": {
+        "claude": {
+          "description": "V3 M10 T3 — **worker 세션 실행 파일**(선택). 무인 loop(runAutopilot)의 live worker backend가 spawn할 수 있는 유일한 프로그램이고 digest는 spawn 직전에 다시 확인한다. 이 key가 없거나 null이면 live worker backend는 승인되지 않은 것이며 offline backend만 남는다. 부재와 null은 같은 뜻이고 그때 정규화 결과에 키가 없으므로 기존 승인의 canonical digest는 바이트 단위로 그대로다.",
+          "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
+        },
         "codex": {
           "description": "offline manifest는 live 추론을 승인하지 않는다 → null이 유효하다.",
           "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
