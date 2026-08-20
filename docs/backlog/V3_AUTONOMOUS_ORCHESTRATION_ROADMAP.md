@@ -1817,7 +1817,53 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M10 진행 판정 ① — T1 resume/crash recovery 완료** (2026-08-19 · 이 절이 M10의 현행이며 아래 M9 절보다 최신이다)
+##### **M10 진행 판정 ② — T2 통합 시나리오 완료** (2026-08-20 · 이 절이 M10의 현행이며 아래 ① 절보다 최신이다)
+
+> 범위: T2(통합 시나리오)다. **T3~T5는 아직 시작하지 않았다.** 전부 offline·무과금(live LLM 0회).
+
+**실측**: `test:exec` **605/605** · `test:core` **452/452**(+6) · `scripts/acceptance.sh`
+**PASS=185 / FAIL=0**(Test 22가 T2 절을 포함해 내부 **32건**) · `npx tsc --noEmit` clean.
+**mutation red 확인 7종**(사람 gate 제거 · 의존성 전파 제거 · body hash 재검증 제거 ·
+state↔event binding 제거 · bundle에 coordinator 시각 혼입 · durable 본문을 고정 문구로 되돌림 ·
+계획 파생으로 되돌림(리뷰 B1 회귀)).
+
+로드맵이 요구한 5축을 **축마다 어디서 집행되는지 확인한 뒤**, **통합 층(=`runAutopilot` 왕복)에 공백이
+있던 축만** 새로 세웠다. 이미 kernel/store 층에서 전수로 덮인 것은 다시 쓰지 않았다(중복 테스트가 최악이다).
+
+| 축(로드맵 원문) | 통합 층에서 무엇을 증명했나 | red-path |
+|---|---|---|
+| **권한 요청** | 계획이 사람에게 물으면(`request_decision`) 그 turn은 **결과를 발행하지 못하고**(`decision_pending`) `paused`로 착지한다. 답은 **중앙 API `recordDecision`으로만** 가능하다 — agent 요청 union에 답 갈래가 없고 CLI 배선도 없다. 답 뒤에만 재개돼 완주한다 | ✔ red→green 왕복 |
+| **의존성 실패** | 상류가 `blocked`가 되면 하류가 `blocked`가 되고 **그 이유(`dependency_blocked`)가 감사 로그에 남는다**. 계획이 있어도 막힌 그래프는 돌지 않고 loop가 `no_runnable_tasks`로 멈춘다. `blocked`는 **종료 상태**이므로 autopilot이 되살리지 않고 `resumeTask`도 거부한다(막힌 그래프는 사람이 새 run을 만든다 — "풀린다"고 적지 않았다) | ✔ |
+| **요약 변질** | 실행 **사이에** durable 원문(message body / `run_state.json` 요약 필드)을 고치면 다음 실행이 **task를 하나도 건드리지 않고** `run_unavailable`로 거부된다(`message_body_hash_mismatch` / `state_event_binding_mismatch`) | ✔ 두 종류 |
+| **context rotation** | 프로세스를 다시 띄워(=회전) 같은 durable에서 `snapshotDigest`·`contextBundle`이 **바이트 동일**하고, 이어 돌려도 앞선 결정이 유실·중복되지 않는다. bundle에 coordinator 시각을 섞는 mutation이 red다 | ✔ |
+| **문서 누락** | **heading을 빼는 red는 통합 층에서 표현 불가다** — autopilot이 result 본문을 `REQUIRED_BODY_HEADINGS`에서 **직접 만들기** 때문에 계획 문서로 heading을 뺄 통로가 없다. kernel 층이 **전 메시지 타입 × 각 필수 heading 누락**을 전수로 덮으므로(`body_missing_heading`) 통합 테스트를 새로 만들지 않았다. **한정**: 본문 계약 게이트 자체가 통합 층에서 도달 불가라는 뜻은 아니다(예: `result.outputs[].path`에 개행·`#`을 실으면 본문이 계약을 깨고 `publish_rejected` pause로 fail-closed 착지한다 — 이 diff 이전 동작이며 T2가 새로 세운 것이 아니다). **v1 `runWorkflow`의 헤더 검사는 여전히 경고 수준**이다(대장 `C-70` open) → 이 축에서 "v1도 fail-closed"라고 주장하지 않는다 | 해당 없음(설계상) |
+
+**A급 1건을 이 slice가 잡고 고쳤다 — durable 결과 본문의 거짓 진술.** `resultBody`의
+`Decisions and Assumptions` 절이 `"typed operation은 집행하지 않았다(계획에 operation이 없는 turn만
+발행된다)"`로 **고정**돼 있었다. M5c에서는 참이었지만 **M5d task 2가 typed operation 집행을 연 뒤로
+거짓**이다 — operation을 실제로 집행하고 완료한 turn의 결과 본문에 "집행하지 않았다"가 남았다.
+사람이 읽는 durable 감사 산출물의 거짓 진술이므로(과대주장 부류) **durable 영수증에서 파생**하도록 고쳤다
+(`operationsPerformed()` — kind(닫힌 3종)·marker(닫힌 6종)·개수만 담아 원문·계측값이 새지 않는다).
+
+**적대적 read-only 리뷰 ②(T2)**: **REVISE → 수정 완료 — A=0, B=1, C=4**. B1이 첫 판을 반증했다:
+처음에는 **계획**에서 파생했는데, `write_file`의 preimage가 어긋나면 집행기가 **쓰지 않고**
+`write_conflict` 영수증을 내면서도 그 turn은 `turn_completed`로 완료된다 → 계획 기준 문장은
+"집행했다"만 남겨 **바이트가 바뀌지 않은 것을 바뀐 것처럼** 읽히게 했다. 영수증 파생으로 고치고
+그 실패 시나리오를 red-path 테스트로 고정했다(`write_conflict` 완료 turn의 본문에 marker가 남고
+파일이 바뀌지 않았음을 함께 단정). C 4건 중 C1(acceptance ⑥이 "하류 표시"를 주장하나 전파를 관측하지
+않았다)은 하류 task를 하나 더 두어 실제로 관측하게 고쳤고, C3·C4는 서술 범위를 코드에 맞춰 좁혔다.
+C2(acceptance ⑥이 focused 테스트의 좁은 사본)는 유지한다 — 고유 가치는 "한 run에서 축들이 순차로
+일어난다"이며 그것이 통합 시나리오의 요구다.
+
+세 방향 테스트(집행 성공 turn / 쓰지 않고 닫힌 turn / operation 없는 turn)를 두고 mutation red를 확인했다.
+
+**§9.1 대장**: T2에서 닫은 항목 **없음**(T2는 증명 slice다). 새로 등록한 항목 **1건**:
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-85` | C (P3) | **`cancelled`는 의존 하류로 전파되지 않는다.** `recompute`는 `blocked`만 전파한다(`child_blocked`/`dependency_blocked`) → `dependsOn`에 `cancelled` task가 있으면 하류는 **아무 표식 없이 `pending`으로 영원히 남는다**. loop는 `no_runnable_tasks`로 멈추므로 조용한 진행은 아니지만, 사람이 "왜 이 task가 안 도는가"를 durable에서 되짚을 근거가 없다(blocked 경로에는 `dependency_blocked` 이유가 남는다) | 낮음 — 취소는 운영자가 명시적으로 하는 행위다 | 그 하류 task들의 진단 가능성(정확성·무결성 무관) | 낮음 | 소(`recompute`에 cancelled 전파 추가 — 새 이유 코드 1개가 닫힌 집합에 늘어난다) | 취소를 무인 loop가 스스로 발행하게 되는 마일스톤 전 | 미정 | V3 M10 T2 조사(STATIC) · `orchestrationKernel.ts` `recompute`(blocked만 전파) · 대장에 인접 항목 없음 | open |
+
+##### **M10 진행 판정 ① — T1 resume/crash recovery 완료** (2026-08-19 · 아래 M9 절보다 최신이다 — M10의 현행은 위 ② 절이다)
 
 > 범위: T1(resume/crash recovery)만이다. **T2~T5는 아직 시작하지 않았다.**
 > 전부 **offline·무과금**(live LLM 0회)이며, 실제 프로세스와 실제 SIGKILL은 쓴다.
