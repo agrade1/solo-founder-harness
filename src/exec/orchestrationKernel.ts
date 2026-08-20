@@ -46,6 +46,7 @@ import { createHash } from "node:crypto";
 import {
   closeSync,
   constants as fsConstants,
+  readFileSync,
   fstatSync,
   fsyncSync,
   ftruncateSync,
@@ -2642,6 +2643,38 @@ export class OrchestrationKernel {
    * `approvalManifest.ts`의 순수 술어(`commandAllowed`/`dependencyAllowed`/`networkDomainAllowed`)로
    * 권한을 **조회만** 한다 — kernel은 명령·설치·네트워크·merge를 실행하지 않는다.
    */
+  /**
+   * **V3 M10 T3 — live worker 세션 실행 파일 1건을 지금 검증해 돌려준다**(무인 loop의 worker backend용).
+   *
+   * 이것이 여는 것은 **하나뿐**이다: "승인 manifest가 `executionAuthority.claude`로 못 박은 그 파일이
+   * 지금도 그 내용인가". 인자·cwd·env·프롬프트는 여기서 정하지 않고(호출자의 provider 계약이다) 대신
+   * **경로를 호출자가 고를 통로가 없다** — 인자가 없으므로 다른 프로그램을 요구할 방법이 없다.
+   *
+   * 승인에 그 키가 없으면 `worker_backend_unapproved`다(조용한 fallback도, PATH 조회도 없다 — 그것이
+   * 곧 "승인 없이 live를 켜는" 경로다). digest는 **spawn 직전에** 다시 확인해야 하므로 호출자가 turn마다
+   * 이 함수를 다시 부른다(값을 캐시하면 그 재검증이 사라진다).
+   *
+   * `run_process`와 달리 kernel이 **spawn하지 않는다**: worker 세션은 typed operation이 아니라 provider
+   * 계약이고(그래서 영수증도 없다), 그 프로세스의 산출물은 계획 하나뿐이며 그 계획은 다시
+   * `validateTypedExecutionPlan` → 승인 레코드 대조를 지나야 아무 효과도 낼 수 있다.
+   */
+  approvedWorkerExecutable(): { path: string; sha256: string } {
+    const approved = this.#state.manifest.executionAuthority.claude;
+    if (approved === undefined || approved === null) {
+      throw new OrchestrationError(
+        "worker_backend_unapproved",
+        "이 승인에는 live worker 실행 파일(executionAuthority.claude)이 없다 — offline backend만 가능하다",
+      );
+    }
+    verifyApprovedExecutable(approved, "executionAuthority.claude", {
+      path: "worker_executable_untrusted",
+      invalid: "worker_executable_untrusted",
+      identity: "worker_executable_untrusted",
+      digest: "worker_digest_mismatch",
+    });
+    return { path: approved.path, sha256: approved.sha256 };
+  }
+
   getManifest(): MilestoneApprovalManifest {
     return clone(this.#state.manifest);
   }
@@ -2864,6 +2897,23 @@ export class OrchestrationKernel {
       lastSeq: -1,
     });
     return { task: clone(started), progress };
+  }
+
+  /**
+   * **메시지 본문 원문을 읽는다**(V3 M10 T3 — live worker 프롬프트가 지시를 그대로 읽어야 한다).
+   *
+   * 읽으면서 **digest를 다시 확인한다**: `loadRun`이 열 때 한 번 봤지만 그 뒤 디스크가 바뀌었을 수
+   * 있고, 이 값은 모델 프롬프트로 나가므로 "중앙이 발행한 지시"임이 지금 참이어야 한다.
+   * 본문을 durable state로 옮기지는 않는다(중앙은 포인터와 요약만 운반한다 — §3.2).
+   */
+  messageBody(messageId: string): string {
+    const entry = this.#state.messages.find((m) => m.messageId === assertSlug(messageId, "messageId"));
+    if (entry === undefined) throw new OrchestrationError("unknown_message", `없는 메시지다: ${messageId}`);
+    const bytes = readFileSync(joinPath(this.#paths.dir, entry.bodyPath));
+    if (sha256Hex(bytes) !== entry.bodySha256) {
+      throw new OrchestrationError("message_body_hash_mismatch", `message body hash 불일치: ${entry.bodyPath}`);
+    }
+    return bytes.toString("utf8");
   }
 
   getMessage(messageId: string): MessageIndexEntry | null {

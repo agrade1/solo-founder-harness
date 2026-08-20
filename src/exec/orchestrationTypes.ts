@@ -941,6 +941,12 @@ export interface MilestoneApprovalManifest {
    * 가능한 척" 하지 않게 한다(M5c는 Codex를 인스턴스화하지 않는다). 넷 다 정규 절대경로 + 내용 digest다.
    */
   executionAuthority: {
+    /**
+     * **V3 M10 T3 — worker 세션 실행 파일**(선택). 무인 loop의 live worker backend가 실행할 수 있는
+     * **유일한** 프로그램이고, digest는 실행 경계에서 다시 확인한다. 이 키가 없는 승인에서는 live worker가
+     * **표현 불가**다(backend 선택 자체가 거부된다 — 조용한 fallback이 아니다).
+     */
+    claude?: ApprovedExecutable;
     codex: ApprovedExecutable | null;
     /**
      * **대장 `B-7ⓐ` — 승인된 격리 `CODEX_HOME`**(선택). 사람이 **1회** `codex login`으로 자격증명을 넣어 둔
