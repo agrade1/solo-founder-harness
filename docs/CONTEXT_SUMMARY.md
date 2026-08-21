@@ -24,10 +24,15 @@
 - 신규 대장 3건: `C-86`(worker 자격증명 신원이 승인 축 밖) · `C-87`(`--tools ""`+`default` 표본 1) ·
   `C-88`(live 직후 suite가 timeout 민감 테스트에서 흔들린다 — 직렬 재실행은 clean).
 
-**T4 착수 전에 알아야 할 것**
-- F3 설계 정본은 `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`의 F3 절이고 경계가 못 박혀 있다:
-  **headless `execute --apply`가 아니다** — 대화형 Claude Code 세션을 여는 것까지다.
-- T5 도그푸딩 대상은 사용자 승인으로 **구독컷(~/Desktop/구독컷) + 이 harness 레포** 2개다.
+**T4·T5 인계 — `docs/handoff/M10_T4_T5_KICKOFF.md` 하나로 이어받는다**
+- **T4(F3)는 새 기능이 아니다**: F3는 **M3b.2/M3c.3b에서 이미 구현·증명됐다**(`src/core/handoff.ts` 562줄 ·
+  `harness handoff` · `run --handoff` · acceptance **Test 12** · live 스크립트 2개 · focused 테스트).
+  설계 문서 §F3.1~F3.2의 9항목을 전수 대조해 전부 구현됨을 확인했다(그 표가 인계 문서 §2다).
+  M10 KICKOFF의 "T4 = 유일한 신규 기능"은 **stale**이며 `B-12`·`B-21`·`B-22`와 같은 부류의 오류다.
+  남은 실체 있는 gap은 **v3 오케스트레이션 run에서의 핸드오프 미배선** 하나이고 그것은 **사용자 판단**이다.
+- T5 도그푸딩 대상은 사용자 승인으로 **구독컷(~/Desktop/구독컷) + 이 harness 레포** 2개(로드맵 "2~3개"의 하한).
+  `src/exec/manifestAudit.ts`(M7 · 규칙 R1~R5)를 **재사용**한다 — 새로 만들지 않는다.
+- 금지선 그대로: F3에서 **headless 자동 코드 수정 경로를 열지 마라**(대화형 세션을 여는 것까지다).
 
 ---
 
