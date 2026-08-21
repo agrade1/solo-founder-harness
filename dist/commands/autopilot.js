@@ -107,19 +107,25 @@ export async function runAutopilot(opts) {
     catch (err) {
         return { blocked: "controller_active", iterations: 0, tasks, stoppedBecause: codeOf(err) };
     }
+    let report = { blocked: null, iterations: 0, tasks, stoppedBecause: "unknown" };
     try {
-        return await runAutopilotUnderLease(opts, kernel, { emit, clock, tasks });
+        report = await runAutopilotUnderLease(opts, kernel, { emit, clock, tasks });
     }
     finally {
-        // 해제 실패를 삼키지 않는다 — 다음 실행이 사망 관측으로 회수하므로 영구 차단은 아니지만,
-        // 그 사실이 보이지 않으면 "왜 두 번째 실행이 거부되는가"를 사람이 되짚을 수 없다.
+        // 해제 실패를 삼키지 않는다. **report에도 남긴다**(리뷰 C1): 사람 모드 렌더러는 event의 marker·
+        // detail을 버리므로 emit만으로는 운영자가 이 사실을 볼 수 없고, 그러면 **같은 프로세스**가 다음에
+        // 부를 때 자기 pid의 lease를 "살아 있는 소유자"로 보고 `controller_active`로 거부되는 이유를
+        // 되짚을 수 없다(다른 프로세스는 사망 관측으로 회수하므로 자가 치유된다).
         try {
             releaseOwnedLock(lease);
         }
         catch (err) {
-            emit({ kind: "run_finished", marker: codeOf(err), detail: "controller_lease_release_failed" });
+            const code = codeOf(err);
+            emit({ kind: "run_finished", marker: code, detail: "controller_lease_release_failed" });
+            report = { ...report, leaseReleaseFailed: code };
         }
     }
+    return report;
 }
 /** lease를 쥔 상태의 본체. lease 획득·해제는 위 진입점 하나에만 있다. */
 async function runAutopilotUnderLease(opts, kernel, ctx) {
@@ -668,6 +674,10 @@ function workerPrompt(kernel, taskId) {
         planContractPrompt(),
         "",
         `이 task의 role은 \`${task?.roleId ?? "unknown"}\`이다.`,
+        // 계약을 **마지막에 한 번 더** 적는다: 모델은 끝부분 지시에 더 크게 반응하고, 첫 live 시도에서
+        // 실제로 계약 밖 산문이 나왔다(그 turn은 산출물로 승격되지 않았다 — 검증기가 막았다).
+        "",
+        "다시: 응답 전체가 JSON 객체 하나여야 한다.",
     ].join("\n");
 }
 // ── 오케스트레이션 요청 배선 (V3 M6 T2) ────────────────────────────────────
