@@ -93,7 +93,13 @@ acceptance 전부 통과"이므로, 그 실행이 **무인 loop 안에서** 일�
 백엔드**(`startOfflinePlanTurn`)다. 여기가 M10에서 가장 큰 설계 결정이다 — **§4의 유예 항목 1번을
 먼저 읽어라**(`B-17` autopilot 전달 루프가 여기 걸려 있다).
 
-### T4 — F3: 문서 완료 → Claude Code 핸드오프 (M10의 유일한 신규 기능)
+### T4 — F3: 문서 완료 → Claude Code 핸드오프 (~~M10의 유일한 신규 기능~~ — **stale**)
+
+> **정정(2026-08-21 · M10 T4 판정 ④)**: "M10의 유일한 신규 기능"은 **사실이 아니었다.** F3는
+> **M3b.2/M3c.3b에서 이미 구현·증명됐다**(`src/core/handoff.ts` 562줄 · `harness handoff` ·
+> acceptance Test 12 · live 스크립트 2개). T4는 **새 코드 0줄**로 "이미 완료" 판정을 받았고
+> 9항목 전수 대조는 로드맵 `M10 진행 판정 ④` 절에 있다. v3 오케스트레이션 run 쪽 미배선만
+> `C-89`로 대장에 남았다.
 
 설계 정본은 `V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`의 F3 절이다. **경계가 문서에 못 박혀 있다**:
 
