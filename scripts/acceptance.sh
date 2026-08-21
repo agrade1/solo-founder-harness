@@ -395,7 +395,7 @@ echo "$M9_OUT" | grep -q "live LLM 0회"
 check "M9 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
 
 echo ""
-echo "== Test 22: M10 T1·T2 — 죽은 writer lock 회수 · 거짓 정리 영수증 금지 · 잔재 정착 · 통합 시나리오 (offline · 무과금) =="
+echo "== Test 22: M10 T1·T2·T3 — 크래시 복구 · 통합 시나리오 · 무인 loop end-to-end (offline · 무과금) =="
 # 임시 디렉터리 전용 · live LLM 0회. ①②는 **실제 프로세스**를 띄우고 ②는 controller를 실제 SIGKILL한다.
 M10_OUT="$(node scripts/m10-offline-acceptance.mjs 2>&1)"
 M10_RC=$?
@@ -423,6 +423,14 @@ echo "$M10_OUT" | grep -q "변조된 run은 task를 하나도 건드리지 않�
 check "M10 T2 요약 변질 fail-closed 확인 출력" $?
 echo "$M10_OUT" | grep -q "회전(재열기)이 같은 context bundle을 낸다"
 check "M10 T2 context rotation 등가 확인 출력" $?
+echo "$M10_OUT" | grep -q "한 번의 실행이 세 단계를 \*\*의존 순서대로\*\* 완주한다"
+check "M10 T3 end-to-end가 무인 loop 한 번에 돈다 확인 출력" $?
+echo "$M10_OUT" | grep -q "계획 파일 0개로 돌았다"
+check "M10 T3 계획을 모델이 만들었다(정적 계획 파일 0개) 확인 출력" $?
+echo "$M10_OUT" | grep -q "프롬프트가 지시 본문·문맥·\*\*role\*\*을 담았다"
+check "M10 T3 프롬프트가 durable 지시·문맥·role을 담았다 확인 출력" $?
+echo "$M10_OUT" | grep -q "무인 loop가 사람 개입 없이 돌았다(pause 0건)"
+check "M10 T3 사람 개입 0건 확인 출력" $?
 echo "$M10_OUT" | grep -q "좌초 프로세스 탐색(관측자 없음)"
 check "M10 스크립트가 자신의 범위(미증명 4건 + 문서 누락 표현 불가)를 밝힘" $?
 

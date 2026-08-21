@@ -1817,7 +1817,81 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M10 진행 판정 ② — T2 통합 시나리오 완료** (2026-08-20 · 이 절이 M10의 현행이며 아래 ① 절보다 최신이다)
+##### **M10 진행 판정 ③ — T3 무인 loop end-to-end 완료 (live 8/8)** (2026-08-20 · 이 절이 M10의 현행이며 아래 ② 절보다 최신이다)
+
+> 범위: T3다. **T4(F3 핸드오프)·T5(도그푸딩 감사)는 아직 시작하지 않았다.**
+
+**실측**: `test:exec` **610/610** · `test:core` **458/458** · `scripts/acceptance.sh`
+**PASS=189 / FAIL=0**(Test 22 내부 **41건**) · `npx tsc --noEmit` clean.
+**live 1회 PASS=8/8**(`scripts/m10-live-autopilot.mjs` · 수동 전용 · acceptance 미등록).
+mutation red **10종**.
+
+**M9의 "부분" 판정이 닫혔다 — 단 loop-형태 축에 한정해서다.** M9 live는 스크립트가 단계를 불렀고
+(`askClaude()` → 발행 → 다음 단계) 그래서 판정이 "end-to-end가 `runAutopilot` 무인 loop가 아니다 —
+**부분**"이었다. 지금은 스크립트가 하는 일이 fixture·승인·task 3개를 만들고 **`runAutopilot`을 한 번
+부르는 것**뿐이고, 프롬프트 조립·모델 호출·계획 검증·operation 집행·결과 발행·의존 순서가 전부 loop
+안에서 일어난다. **한정**: M9 "부분" 행은 구현→테스트→리뷰→수정→verify를 포함했고, 이 live는
+**리뷰 왕복·in-loop 테스트 실행·최종 report를 포함하지 않는다**(그 축들은 M9가 스크립트 형태로 증명했다).
+
+| 완료 조건 | 증명 | 상태 |
+|---|---|---|
+| end-to-end가 **무인 loop 안에서** 돈다 | live: 기획(pm)→디자인(design)→개발(dev-lead) 3단계가 **한 번의 `runAutopilot`**으로 의존 순서대로 완주. 왕복 3회 · 29.4s · **사람 개입 0건** · 계획 파일 **0개**(계획을 모델이 만들었다) | **증명(live · 표본 1)** |
+| 모델 산출물이 승인 경계를 넓히지 못한다 | 개발 단계의 typed operation이 승인 레코드 대조를 지나 `already_applied` 영수증으로 닫혔고, 계약 밖 출력(가짜 tool-use · 승인 밖 operation · 계획 없음)은 offline 테스트에서 전부 `paused`로 접힌다 | **증명(live + offline)** |
+| 실제 사용량이 예산 게이트에 들어간다 | live에서 durable `tokensUsed` **16,425** 누적(0이면 토큰 축이 공허해진다) | **증명(live)** |
+| `B-32`(동시 controller) | run 단위 `controller.lock`(pid 소유)으로 **동시 controller가 표현 불가**. writer lock과 **같은 기계**(`acquireOwnedLock`)라 회수 규칙·한계가 자동으로 같다 | **닫힘** |
+| worker 자체 세션 상한 | `livePlanWorker.test.ts`가 실시간으로 고정(1초 상한 → `worker_deadline_exceeded`). **autopilot 경유로는** 끝없는 세션을 끊는 것이 worker timeout이 아니라 **kernel attempt wall deadline**이다(주입 시계) — 그대로 적는다 | **증명(모듈 층)** |
+| 리뷰 왕복·in-loop 테스트 실행·최종 report | 이 live 범위 밖이다(M9가 스크립트 형태로 증명했다) | **미증명(이 slice에서)** |
+| 산출물 **내용 생산** | live fixture는 산출물 파일을 **미리 만들어 둔다**(모델은 도구가 끊겨 파일을 쓰지 못한다). 증명한 것은 계약이고 "모델이 문서를 썼다"가 아니다 | **미증명 — 설계상** |
+
+**live가 잡은 결함 4건**(전부 offline에서는 보이지 않았다 — §7 위험 3의 재현):
+
+1. **닫힌 env가 자격증명을 끊었다.** 첫 시도는 `"Not logged in · Please run /login"` exit 1이었다.
+   부모 env에서 한 변수씩 빼며 이분해 **`USER` 하나**가 필요함을 실측했다(Keychain 계정 해석).
+   같은 이분이 **`HOME`은 불필요**함도 보였다 → 주지 않는다(단 이것은 env 위생이고 경계가 아니다 —
+   sandbox가 없고 같은 uid이므로 홈 접근 권능은 그대로다. 리뷰 B4).
+2. **`--permission-mode plan`이 계약을 깨뜨렸다.** plan 모드는 응답을 "계획 요약"으로 감싸므로 계약이
+   요구하는 JSON이 나오지 않았고 그 한 turn에 **output 67k 토큰**을 태웠다. 같은 프롬프트를 plan 모드
+   없이 돌리면 **87 토큰**으로 정확한 JSON이 나왔다 → `default`를 **명시**한다(생략하면 ambient
+   기본값에 의존하게 되고 그것이 곧 "환경이 권한을 고른다"는 뜻이다).
+3. **생산자 프롬프트에 닫힌 role 집합이 없었다** → 모델이 `role: "plan"`을 내 `plan_invalid`.
+   `ARTIFACT_ROLES` 상수에서 파생하도록 고쳤다(M8의 tokens 값 형식 사건과 **같은 부류**: 검증기와
+   생산자 프롬프트가 단일 출처여야 한다).
+4. **생산자 프롬프트에 소유 경로 규칙이 없었다** → 개발 단계가 `artifact_not_owned`로 거부됐다.
+   소유 경로는 이미 context bundle에 있으므로 계약 문장만 더했다.
+
+**네 경우 모두 계약이 잘못된 산출물을 거부했다** — 게이트가 통과시키고 나중에 발견된 것이 아니다.
+
+**적대적 read-only 리뷰 ③(T3)**: **REVISE → 수정 완료 — A=0, B=4, C=5**.
+가장 무거운 것은 **B1**: `LIVE_WORKER_ARGS`에 `--no-session-persistence`가 없어 turn마다 프롬프트 전문
+(assignment 본문 + context bundle)과 응답 원문이 **사용자 세션 저장소**에 기록됐다. "durable에 남지
+않는다"는 harness store에만 참이었다 — 레포의 다른 headless 세션(`src/tools/preflight.ts` ·
+`shadcnPilot.ts`)이 이미 끊는 축이라 같은 flag를 더했고 **live로 동작을 확인**했다(32 토큰).
+B2(헤더가 `plan`을 근거로 인용 — stale) · B3(**거짓 인용**: `src/tools/handoff.ts`는 없고 실체는
+`src/core/handoff.ts`이며 그쪽은 `--tools default`와 짝이라 **이유가 다르다**) · B4(위 1번) 모두 고쳤다.
+C 5건 중 C1(lease 해제 실패가 사람 모드에서 안 보인다 → `AutopilotReport.leaseReleaseFailed`로 올렸다) ·
+C2(live 스크립트의 죽은 조건) · C3(stderr 누적 상한) · C4(영수증 marker까지 대조) · C5(라벨을 role 축으로
+한정)를 이 slice에서 고쳤다. 리뷰가 **반증 실패**로 확인한 것: `B-32` 4경로 · 승인 경계 · 계약 소유
+필드 덮어쓰기 · `--tools ""`의 도구 차단 근거(M8 live 실측) · acceptance ⑦의 세 probe가 서로 다른
+프롬프트 조각과만 매칭됨.
+
+**live 비용**: 이 slice 전체에서 `claude -p` **왕복 11회**(실패 반복 5 + 성공 3 × 2회 실행 중 마지막 3 +
+flag 확인 1 + 프롬프트 probe 2). **Claude Code 구독 한도만 소모 · 실결제 $0**(M8·M9와 같은 경로) ·
+**Codex 0회**. 실행 직전 `~/.codex/auth.json`을 다시 확인했다: `auth_mode: chatgpt` ·
+`OPENAI_API_KEY` 없음(값은 읽지 않고 key 이름·mode만 확인).
+
+**M9 실측 패턴이 재현됐다**: live 직후 전체 suite를 돌리면 timeout에 민감한 테스트가 흔들린다
+(1차 `preflight` 계열 9건 · 2차 `managedProcess` 취소 1건). **직렬 재실행은 두 번 다 clean**이었다
+(610/458/189). 원인은 부하이며 코드 결함의 증거가 아니다 — 그래서 판정 수치는 직렬 재실행 값을 쓴다.
+
+**§9.1 대장**: T3에서 닫은 항목 **1건**(`B-32`). 새로 등록한 항목 **3건**:
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-86` | C (P2) | **live worker 세션의 자격증명 경로가 승인 축이 아니다.** Codex는 `executionAuthority.codexHome`으로 격리 홈을 **사람이 승인**하지만, Claude worker는 Keychain 자격증명을 `USER` 하나로 해석한다 → "어느 계정으로 도는가"가 승인 문서에 없다. 실행 **파일**은 digest로 고정되지만 **신원**은 ambient다 | 확실(현행 설계) | 그 세션이 누구의 구독으로 도는가(승인 문서가 말하지 않는다) | 중 — 나중에 닫으려면 승인 축을 하나 더 열어야 한다(`codexHome`과 같은 형태) | 중(격리 config dir을 승인 축으로 + CLI가 그것을 읽는지 실측) | 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전 | 미정 | V3 M10 T3 live 실측(`USER` 이분) · `livePlanWorker.ts` `LIVE_WORKER_ENV` 주석 · 대조: `codexHome`(`B-7ⓐ`) | open |
+| `C-87` | C (P3) | **`--tools ""`의 도구 차단이 `default` 권한 모드와 조합으로는 표본 1이다.** 근거 실측(M8 live의 가짜 tool-use)은 전부 `--permission-mode plan` 조합이었다. `default`+`--tools ""`는 M10 T3 live 표본 1 + CLI 의미론이다. 가정이 깨져도 headless에는 편집·명령을 승인할 사람이 없어 잔여 노출은 read 도구뿐이지만, **그것도 프롬프트 밖 파일을 읽는다는 뜻**이다 | 낮음 | 그 세션이 workspace 파일을 읽을 수 있는지 | 낮~중 | 소(도구 0을 실측하는 probe — 파일을 읽으라고 지시하고 거부를 확인) | CLI major 갱신 시 또는 live worker를 반복 운영하기 전 | 미정 | T3 적대적 리뷰 4번 반증 절 · 로드맵 M8 live 절 | open |
+| `C-88` | C (P3) | **live 직후 전체 suite가 timeout 민감 테스트에서 흔들린다.** M9에서 5건, M10 T3에서 9건+1건이 같은 양상으로 흔들렸고 **직렬 재실행은 매번 clean**이었다. 원인은 부하이지만, 이 성질 때문에 "live와 suite를 같은 명령으로 묶는" CI는 만들 수 없다(거짓 red를 낸다) | 확실(재현 3회) | CI 배선 형태 | 낮음 | 중(timeout 민감 테스트에 부하 내성 · 또는 live/suite 게이트 분리 명문화) | CI를 실제로 배선하는 마일스톤 전 | 미정 | 로드맵 M9 절 · 이 절(1차 preflight 9건 · 2차 managedProcess 1건) | open |
+
+##### **M10 진행 판정 ② — T2 통합 시나리오 완료** (2026-08-20 · 아래 ① 절보다 최신이다 — M10의 현행은 위 ③ 절이다)
 
 > 범위: T2(통합 시나리오)다. **T3~T5는 아직 시작하지 않았다.** 전부 offline·무과금(live LLM 0회).
 
@@ -1910,7 +1984,7 @@ pending ③**종료 기록이 없을 때만** 프로세스 kind `outcome_unknown
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-32` | **B (P1)** | **살아 있는 controller의 잔재를 크래시로 오판한다.** `recoverCrashedAttempts`는 "iteration 시작에 `running`+lease가 보이면 이전 프로세스가 죽었다"를 전제하는데, 두 번째 controller가 같은 run을 열면 **살아 있는** attempt를 `controller_lost`로 적고 settle한다. durable 중복 결과는 attempt 신원과 `stale_writer`가 막지만, live worker에서는 **같은 task의 agent가 잠시 둘** 실행된다. lease에는 pid가 없어(설계상 raw 미보관) writer lock의 `pidProvablyGone` 규율을 여기 쓸 수 없다 | 중 — 운영자가 두 번째 autopilot을 띄우는 순간 | 그 task의 agent 중복 실행(durable 무결성은 아니다) | 중 — live에서 발견하면 이미 두 세션이 돈 뒤다 | 중(controller 신원·heartbeat를 durable에 두는 설계 판단이 선행 — `TaskExecution`에 raw를 넣지 않는다는 원칙과 충돌한다) | **M10 T3에서 live provider worker를 autopilot에 배선하기 전 — 하드 게이트** | T3 구현 세션 + 사용자(설계 판단) | T1 적대적 리뷰 B2(STATIC) · `autopilot.ts` `recoverCrashedAttempts` 주석 · `orchestrationTypes.ts:639`("raw는 하나도 없다") | open |
+| `B-32` | **B (P1)** | **살아 있는 controller의 잔재를 크래시로 오판한다.** `recoverCrashedAttempts`는 "iteration 시작에 `running`+lease가 보이면 이전 프로세스가 죽었다"를 전제하는데, 두 번째 controller가 같은 run을 열면 **살아 있는** attempt를 `controller_lost`로 적고 settle한다. durable 중복 결과는 attempt 신원과 `stale_writer`가 막지만, live worker에서는 **같은 task의 agent가 잠시 둘** 실행된다. lease에는 pid가 없어(설계상 raw 미보관) writer lock의 `pidProvablyGone` 규율을 여기 쓸 수 없다 | 중 — 운영자가 두 번째 autopilot을 띄우는 순간 | 그 task의 agent 중복 실행(durable 무결성은 아니다) | 중 — live에서 발견하면 이미 두 세션이 돈 뒤다 | 중(controller 신원·heartbeat를 durable에 두는 설계 판단이 선행 — `TaskExecution`에 raw를 넣지 않는다는 원칙과 충돌한다) | **M10 T3에서 live provider worker를 autopilot에 배선하기 전 — 하드 게이트** | T3 구현 세션 + 사용자(설계 판단) | T1 적대적 리뷰 B2(STATIC) · `autopilot.ts` `recoverCrashedAttempts` 주석 · `orchestrationTypes.ts:639`("raw는 하나도 없다") | **fixed(V3 M10 T3)** — `runAutopilot`이 run 단위 `controller.lock`(pid 소유 · writer lock과 **같은 기계**)을 잡아 **동시 controller 자체가 표현 불가**다. 두 번째 진입은 `controller_active`로 시작조차 못 하고, 죽은 controller의 lease는 **사망 관측(ESRCH)에만** 회수된다. `autopilot.test.ts`가 동시 호출·생존 pid·사망 pid·미상 소유자 4경로를 고정하고 mutation red 2종을 확인했다 |
 | `C-81` | C (P2) | **`process_cleanup_unconfirmed` 경로를 실제로 재현하는 테스트가 없다.** `cleanupUnobservableReason` ①(정본 증거)의 판정은 durable 증거를 손으로 만들어 고정했고, 그 marker를 **실제 supervisor가 내는** 경로(자손이 유예 안에 죽지 않는 프로세스)는 만들지 않았다 → "미관측을 실제로 관측한다"는 증명이 아니라 "미관측이 durable에 적혀 있으면 확인으로 승격하지 않는다"까지다 | 낮음 — 판정 자체는 mutation으로 고정됐다 | 그 분기의 증거 강도 | 낮음 | 중(유예를 넘겨 살아남는 자손 fixture — flaky 위험이 있어 stress 게이트가 적절하다) | M10 하드닝 게이트 또는 실제 좌초 프로세스가 관측될 때 | 미정 | `scripts/m10-offline-acceptance.mjs` "증명하지 않는다" 절 · `autopilot.test.ts` "정리를 관측하지 못한 attempt…" | open |
 | `C-82` | C (P3) | **`PAUSE_REASONS`의 `interrupted`가 producer 0이다.** 주석이 "프로세스가 살아 있는 중에 controller가 사라졌다(재시작 복구 경로)"라고 적고 있는데, M10 T1은 그 경로를 `settleCleanedAttempt`(→`retry_wait`)로 착지시키기로 했다(자동 재개가 완료 조건이므로). `pauseReasonFor`의 `cancelled → interrupted` 분기도 도달 불가다(marker `cancelled`는 그 앞에서 착지한다) | 확실(정적) | 닫힌 enum 1항목의 의미 표류(오독 유발) | 낮음 | 소(주석 정정 또는 값 제거 — 값 제거는 schema 동치 테스트까지 함께 본다) | 닫힌 enum 정리 slice 또는 pause 경로가 늘 때 | 미정 | T1 리뷰 C1 · `orchestrationTypes.ts` `PAUSE_REASONS` · `autopilot.ts` `pauseReasonFor` | open |
 | `C-83` | C (P3) | **미시작 run에는 문서 superset도 이어받기를 통과한다.** `assertResumableRun`은 "기존 task ⊆ 문서"만 요구하므로, 아무것도 시작되지 않은 run에 **node가 더 많은** 문서를 얹으면 통과한다(의미상 신선 물질화와 등가라 지금은 무해하다). 주석은 "같은 문서로 이어받는다"라고 더 좁게 말한다 — 코드와 서술의 범위가 다르다 | 확실(정적) | 없음(현재) — 서술 정확성 | 낮음 | 소(문서 집합 등호를 요구하거나 주석을 코드에 맞추기) | DAG 문서를 사람이 수정하며 재물질화하는 운영이 생길 때 | 미정 | T1 리뷰 C3 · `taskDagMaterialize.ts` `assertResumableRun` | open |

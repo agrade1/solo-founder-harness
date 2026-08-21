@@ -1,5 +1,5 @@
 /**
- * V3 M10 T1·T2 offline acceptance — resume/crash recovery + 통합 시나리오 (acceptance Test 22).
+ * V3 M10 T1·T2·T3 offline acceptance — 크래시 복구 + 통합 시나리오 + 무인 loop end-to-end (Test 22).
  *
  * ## 무엇을 증명하는가
  * - ① **관측된 정리는 확인으로 적는다**: 실제 프로세스가 deadline으로 죽어도 `superviseProcess`가 그룹
@@ -15,6 +15,10 @@
  * - ⑤ **부분 물질화가 벽돌이 아니다**(`C-76`): 같은 문서로 이어받아 완성되고, 다른 문서는 여전히 거부된다.
  * - ⑥ **T2 통합 시나리오**: 사람 결정 gate(red→green 왕복) · context rotation 등가 · 의존성 실패의
  *   하류 표시와 loop 정지 · 실행 사이 원문 변조의 fail-closed 거부. 한 run에서 순서대로 일어난다.
+ * - ⑦ **T3 end-to-end**: 기획→디자인→개발 세 단계가 **한 번의 `runAutopilot`** 안에서 의존 순서대로
+ *   돈다. 계획 파일은 **0개**이고(계획을 worker가 만든다) 각 단계는 자기 지시·문맥·role을 프롬프트로
+ *   받는다(셋 중 하나라도 빠지면 worker가 계약 밖 텍스트를 내므로 이 검사는 공허하지 않다).
+ *   개발 단계는 승인된 typed operation을 실제로 집행하고 영수증으로 닫는다. **사람 개입 0건.**
  *
  * ## 증명하지 않는다 (정직하게 적는다)
  * - **live LLM 0회.** worker는 offline plan 백엔드다.
@@ -26,7 +30,7 @@
  *   테스트가 durable 증거로 고정한다(`src/commands/autopilot.test.ts` M10 절).
  * - **동시 controller 2대**(살아 있는 controller의 잔재를 크래시로 오판하는 경로)는 범위 밖이다 — 대장에 등록했다.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -524,12 +528,111 @@ console.log("\n⑥ T2 통합 시나리오 — 사람 gate · 의존성 실패 ·
   );
 }
 
+console.log("\n⑦ T3 end-to-end — 기획→디자인→개발을 **한 번의 runAutopilot**이 의존 순서대로 돈다 (LLM 0회)");
+{
+  const ws = makeDir("m10-e2e-ws-");
+  mkdirSync(join(ws, "docs"), { recursive: true });
+  mkdirSync(join(ws, "src"), { recursive: true });
+  // 각 단계의 산출물은 미리 있다(모델은 도구가 끊겨 파일을 쓰지 못한다 — 쓰기는 kernel typed-write만 한다).
+  writeFileSync(join(ws, "docs/PLAN.md"), "# 기획\n");
+  writeFileSync(join(ws, "docs/DESIGN.md"), "# 디자인\n");
+  writeFileSync(join(ws, "src/app.ts"), "export const app = 1;\n");
+  const appSha = createHash("sha256").update(readFileSync(join(ws, "src/app.ts"))).digest("hex");
+
+  /**
+   * **worker는 프롬프트를 읽어 자기가 어느 task인지 알아낸다.** 이것이 이 검사를 공허하지 않게 만든다:
+   * 프롬프트가 durable 지시·문맥을 담지 않으면 이 worker는 단계를 구분할 수 없어 계약 밖 출력을 낸다.
+   */
+  const workerBin = (() => {
+    const dir = realpathSync(makeDir("m10-e2e-bin-"));
+    const file = join(dir, "worker.mjs");
+    const plans = {
+      "role은 `pm`": '{"operations": [], "result": {"summary": "기획 완료", "outputs": [{"path": "docs/PLAN.md", "role": "output"}]}}',
+      "role은 `design`": '{"operations": [], "result": {"summary": "디자인 완료", "outputs": [{"path": "docs/DESIGN.md", "role": "output"}]}}',
+      // `write_file`의 닫힌 key 집합 전부. 내용이 이미 같으므로 **멱등 경로**(`already_applied`)다 —
+      // 이 절이 증명하는 것은 "계획의 operation이 승인 경계를 지나 영수증으로 닫힌다"이고 쓰기 성능이 아니다.
+      "role은 `dev-lead`": `{"operations": [{"operationId": "op-app", "kind": "write_file", "authorityId": "auth-app", "path": "src/app.ts", "content": "export const app = 1;\\n", "expectedBeforeSha256": "${appSha}"}], "result": {"summary": "구현 완료", "outputs": [{"path": "src/app.ts", "role": "output"}]}}`,
+    };
+    writeFileSync(
+      file,
+      `#!${process.execPath}\n` +
+        `import { readFileSync } from "node:fs";\n` +
+        `const prompt = readFileSync(0, "utf8");\n` +
+        `const plans = ${JSON.stringify(plans)};\n` +
+        // **프롬프트에 셋 다 있어야** 계획을 낸다: ⓐ 중앙이 발행한 assignment 본문(필수 heading)
+        // ⓑ durable에서 파생한 context bundle 머리말 ⓒ 이 task의 role. 하나라도 빠지면 계약 밖 텍스트를
+        // 내므로 **프롬프트가 무엇을 담는지**가 이 검사의 실질이 된다(빼면 red다 — mutation으로 확인).
+        `const hasAssignment = prompt.includes("## Objective") && prompt.includes("## Definition of Done");\n` +
+        `const hasBundle = prompt.includes("# Context Bundle") && prompt.includes("- revision:");\n` +
+        `const hit = Object.keys(plans).find((k) => prompt.includes(k));\n` +
+        `const ok = hasAssignment && hasBundle && hit;\n` +
+        `process.stdout.write(JSON.stringify({ result: ok ? plans[hit] : "프롬프트에 지시·문맥·role 중 빠진 것이 있다", usage: { input_tokens: 3, output_tokens: 5 } }));\n`,
+      { mode: 0o700 },
+    );
+    return { path: file, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") };
+  })();
+
+  const kernel = OrchestrationKernel.create({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: baseManifest({
+      ownershipByTask: { "plan-pm": ["docs"], "design-ui": ["docs"], "dev-impl": ["src"] },
+      executionAuthority: { ...baseManifest().executionAuthority, claude: workerBin },
+      operationAuthorityByTask: { "dev-impl": [{ authorityId: "auth-app", kind: "write_file", path: "src/app.ts", maxBytes: 256 }] },
+    }),
+    clock: clockFrom(T0),
+  });
+  const stage = (taskId, roleId, title, dependsOn) => ({
+    taskId,
+    roleId,
+    title,
+    scope: `${taskId} bounded scope`,
+    ownership: taskId === "dev-impl" ? ["src"] : ["docs"],
+    assignmentMessageId: `asg-${taskId}`,
+    assignmentBody: ASSIGNMENT_BODY,
+    ...(dependsOn ? { dependsOn } : {}),
+  });
+  kernel.createRootTask(stage("plan-pm", "pm", "기획"));
+  kernel.createDependentTask(stage("design-ui", "design", "디자인", ["plan-pm"]));
+  kernel.createDependentTask(stage("dev-impl", "dev-lead", "개발", ["design-ui"]));
+
+  const events = [];
+  const report = await runAutopilot({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: makeDir("m10-e2e-plans-"), // **비어 있다** — live backend는 계획을 모델이 만든다
+    clock: clockFrom(T0 + 60_000),
+    workerBackend: "claude-plan",
+    onEvent: (e) => events.push(e),
+  });
+
+  const landed = report.tasks.map((t) => `${t.taskId}:${t.state}`).join(" → ");
+  check("한 번의 실행이 세 단계를 **의존 순서대로** 완주한다", landed === "plan-pm:completed → design-ui:completed → dev-impl:completed", landed);
+  check("계획 파일 0개로 돌았다(계획을 모델이 만들었다)", report.blocked === null && report.stoppedBecause === "no_runnable_tasks", `${report.blocked}/${report.stoppedBecause}`);
+  const k = openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: clockFrom(T0 + 900_000) });
+  check("세 단계의 결과가 각각 1건씩 발행됐다", k.getState().messages.filter((m) => m.type === "result").length === 3, String(k.getState().messages.filter((m) => m.type === "result").length));
+  check(
+    "프롬프트가 지시 본문·문맥·**role**을 담았다(단계 구분은 role 축이다 — 세 task의 assignment 본문은 같은 상수다)",
+    ["기획 완료", "디자인 완료", "구현 완료"].every((want) =>
+      k.getState().messages.some((m) => m.type === "result" && m.summary === want),
+    ),
+    k.getState().messages.filter((m) => m.type === "result").map((m) => m.summary).join("|"),
+  );
+  check("개발 단계의 typed operation이 승인 경계를 지나 영수증으로 닫혔다", k.getTask("dev-impl").execution.operationReceipts.map((r) => `${r.kind}:${r.marker}`).join(",") === "write_file:already_applied", JSON.stringify(k.getTask("dev-impl").execution.operationReceipts.map((r) => r.marker)));
+  check("산출물이 검증된 포인터로 등록됐다", k.getState().artifacts.length === 3, String(k.getState().artifacts.length));
+  check("보고된 사용량이 durable 회계에 누적됐다(turn 3회 × 8)", k.getAccounting().tokensUsed === 24, String(k.getAccounting().tokensUsed));
+  check("controller lease를 끝나고 놓았다(실행 중 보유는 관측하지 않는다)", !existsSync(runPaths(ws, RUN_ID).controllerLeaseFile));
+  check("무인 loop가 사람 개입 없이 돌았다(pause 0건)", !events.some((e) => e.kind === "task_paused"), JSON.stringify(events.filter((e) => e.kind === "task_paused")));
+}
+
 console.log(
   "\n이 스크립트가 증명하지 않는 것: live LLM 0회 · 좌초 프로세스 탐색(관측자 없음) · supervisor 관측 실패 경로 · " +
     "동시 controller 2대 · **문서 누락 red는 통합 경로에서 표현 불가**(autopilot이 result 본문을 직접 만든다 — kernel 층이 전 타입 전수 커버) · " +
     "v1 `runWorkflow`의 헤더 검사는 여전히 경고 수준이다(대장 C-70)",
 );
 console.log("\n===================================");
-console.log(` M10 T1·T2 결과: PASS=${pass}  FAIL=${fail}`);
+console.log(` M10 T1·T2·T3 결과: PASS=${pass}  FAIL=${fail}`);
 console.log("===================================");
 process.exit(fail === 0 ? 0 : 1);

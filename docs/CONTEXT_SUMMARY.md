@@ -1,8 +1,39 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-20 (M10 T1·T2 완료)
+최종 갱신: 2026-08-20 (M10 T1·T2·T3 완료 · live 8/8)
 
-## 최신 (2026-08-20 — **V3 M10 T1·T2 완료. 다음은 T3** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-20 — **V3 M10 T1·T2·T3 완료 · live 8/8. 다음은 T4(F3)** · 이 블록이 가장 최신이다)
+
+- 실측(직렬 재실행 값): `test:exec` **610/610** · `test:core` **458/458** · acceptance **PASS=189 / FAIL=0**
+  (Test 22 내부 41건) · tsc clean. **live 1회 PASS=8/8**(`scripts/m10-live-autopilot.mjs` · 수동 전용).
+- 판정 정본은 로드맵 **`M10 진행 판정 ③`**(T3) · **②**(T2) · **①**(T1) 절이다.
+
+**T3에서 선 것 — 무인 loop end-to-end**
+- **M9의 "부분" 판정이 닫혔다(loop-형태 축에 한정)**: 기획→디자인→개발 3단계가 **한 번의
+  `runAutopilot`**으로 의존 순서대로 완주한다(왕복 3회 · 29.4s · 사람 개입 0 · 계획 파일 0개).
+  **한정**: 리뷰 왕복·in-loop 테스트 실행·최종 report는 이 live 범위 밖이다(M9가 스크립트로 증명).
+- **`B-32` 닫힘**: run 단위 `controller.lock`(pid 소유 · writer lock과 같은 기계) → 동시 controller 표현 불가.
+- **live worker backend `claude-plan`**: 승인 축 `executionAuthority.claude`(선택 key) · 실행 대상은
+  turn마다 digest 재검증 · 인자·env 상수 · 도구 0 · 세션 기록 0 · 모델 산출물은 계획 하나이고 offline과
+  같은 validator + kernel 승인 검사를 지난다.
+- **live가 잡은 결함 4건**(offline 불가시): 닫힌 env가 자격증명 차단(`USER` 필요 · `HOME` 불필요) ·
+  `--permission-mode plan`이 계약 JSON을 막음(그 turn 67k 토큰) · 생산자 프롬프트에 닫힌 role 집합 부재 ·
+  소유 경로 규칙 부재. **네 경우 다 계약이 거부했다**(통과 후 발견이 아니다).
+- 적대적 리뷰 ③이 **B급 4건**을 잡았고 가장 무거운 것은 `--no-session-persistence` 누락(프롬프트·응답
+  원문이 사용자 세션 저장소에 기록됐다) — 고치고 live로 확인했다.
+- 신규 대장 3건: `C-86`(worker 자격증명 신원이 승인 축 밖) · `C-87`(`--tools ""`+`default` 표본 1) ·
+  `C-88`(live 직후 suite가 timeout 민감 테스트에서 흔들린다 — 직렬 재실행은 clean).
+
+**T4 착수 전에 알아야 할 것**
+- F3 설계 정본은 `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`의 F3 절이고 경계가 못 박혀 있다:
+  **headless `execute --apply`가 아니다** — 대화형 Claude Code 세션을 여는 것까지다.
+- T5 도그푸딩 대상은 사용자 승인으로 **구독컷(~/Desktop/구독컷) + 이 harness 레포** 2개다.
+
+---
+
+## 이전 (2026-08-20 · M10 T2 완료 시점)
+
+## 최신 (2026-08-20 — **V3 M10 T1·T2 완료**)
 
 - worktree `/Users/jihun/Developer/solo-founder-harness-m5c` · 브랜치 `work/m5c-autopilot`.
 - 실측 `test:exec` **605/605** · `test:core` **452/452** · acceptance **PASS=185 / FAIL=0**
