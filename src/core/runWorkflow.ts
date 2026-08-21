@@ -1,4 +1,5 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import {
   loadAgentRegistry,
@@ -18,12 +19,18 @@ import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import {
   validateAgentOutput,
+  extractTokensJson,
   extractMainJudgment,
   extractCriticalRisks,
   extractDecision,
   extractSpawnDeclarations,
 } from "./validate.js";
-import type { Provider } from "../providers/provider.js";
+import type { Provider, ProviderExecContext } from "../providers/provider.js";
+import type { ProgressReporter, StepKind } from "./progress.js";
+import { loadToolProfiles, compileToolProfile, assertPolicyExecutable, hasMcpBinding } from "../tools/profiles.js";
+import { getProviderCapabilities } from "../providers/capabilities.js";
+
+export type { ProgressReporter } from "./progress.js"; // 하위 호환: 기존 import 경로 유지
 
 export interface StepWarning {
   agent_id: string;
@@ -47,6 +54,12 @@ export interface GateJumpEntry {
   decider: string;
   decision: string | null; // 매칭된 판정 키워드 (없으면 null)
   jumped_to: string | null; // 되돌아간 agent (점프 안 했으면 null)
+}
+
+/** 디자인 승인 게이트 결과 (design_gate). tokens_hash는 승인 시점 tokens.json 해시 — 코드화 단계 변경 감지용. */
+export interface DesignGateEntry {
+  status: "pending" | "approved";
+  tokens_hash: string | null;
 }
 
 export interface SpawnEntry {
@@ -91,15 +104,43 @@ export interface RunState {
   critique_rounds: CritiqueRoundEntry[];
   gate_jumps: GateJumpEntry[];
   spawned_agents: SpawnEntry[];
+  design_gate: DesignGateEntry | null; // 디자인 게이트 결과 (없으면 null)
+  step_timings: StepTiming[]; // 각 step 실행 타이밍 (F2.3). 진행 이벤트의 부산물.
   usage: UsageSummary;
   started_at: string;
   finished_at: string;
+  handoff?: HandoffRecord; // [M3b.2] interactive handoff가 실제 spawn된 경우에만 기록 (그 외 부재)
+}
+
+/**
+ * [M3b.2] interactive handoff 기록. **interactive child가 실제 spawn된 경우에만** 기록한다.
+ * print/reject/preflight 실패/spawn 실패에서는 기록하지 않는다. 대화형 종료코드는 담지 않는다.
+ */
+export interface HandoffRecord {
+  launched_at: string;
+  cwd: string;
+  prompt_bytes: number;
+  trace_path: string;
+  runtime_dir: string;
+  // [M3c-3b] filtered shadcn read profile 경로에서만 기록되는 optional 필드. status/completed는 불변.
+  tool_profile_id?: string;
+  config_hash?: string;
+  snapshot_path?: string;
 }
 
 export interface RunWorkflowResult {
   state: RunState;
   savedFiles: string[];
   runStatePath: string; // 프로젝트 상대경로
+}
+
+/** 한 step 실행의 타이밍 기록 (F2.3 — run_state.step_timings). */
+export interface StepTiming {
+  agent_id: string;
+  kind: string; // StepKind
+  started_at: string; // ISO
+  elapsed_ms: number;
+  ok: boolean; // 정상 산출 여부 (예외/검증 실패 시 false)
 }
 
 export interface RunWorkflowArgs {
@@ -112,9 +153,20 @@ export interface RunWorkflowArgs {
   maxTokens?: number; // 누적 토큰(input+output) 상한. 0/미지정 = 무제한. 초과 시 step 경계에서 중단
   approve?: (message: string, show?: string) => Promise<boolean>; // 승인 게이트 응답자. 미지정 시 자동 승인
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
+  reporter?: ProgressReporter; // 진행 상황 표시자 (CLI 주입). 미지정 시 조용히 동작
+  toolProfileId?: string; // [M2] 활성 도구 profile. 지정 시 run 시작 전 fail-fast 검증. 미지정 시 무영향.
+  bare?: boolean; // [M2] planning 격리(--strict-mcp-config + 내장도구 제한) — compile에 전달.
+  toolProfilesPath?: string; // [M2.1] profile 파일 경로 override (기본: registry/tool_profiles.json). 테스트/M3용.
 }
 
 const RUN_STATE_REL = "outputs/run_state.json";
+
+/** ms를 사람이 읽는 경과시간으로. 60초 미만은 "12s", 이상은 "1:23". */
+function fmtElapsed(ms: number): string {
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
 
 /** outputs/run_state.json을 읽는다. 없거나 파싱 실패면 null. */
 export function loadRunState(project: string): RunState | null {
@@ -143,6 +195,7 @@ interface StepOutcome {
   usageIn: number;
   usageOut: number;
   sawUsage: boolean;
+  elapsedMs: number; // 이 step의 LLM 호출 소요 시간 (진행 표시용)
 }
 
 /** 한 step에서 다음 primary agent id 힌트를 구한다 (프롬프트의 Next Agent 표시용). */
@@ -175,12 +228,37 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     throw new Error(`알 수 없는 workflow: ${workflowId} ('harness list'로 확인)`);
   }
 
+  // [M2/M2.1] 도구 profile: 지정 시 첫 모델 호출 전(run 시작 전)에 검증하고, compile된 정책을
+  // execContext로 보존해 provider 실행에 전달한다. 미충족/불가면 throw → run_start·run_state 미생성.
+  // 미지정이면 execContext=undefined → 기존 실행 경로·argv 완전 불변.
+  let execContext: ProviderExecContext | undefined;
+  if (args.toolProfileId) {
+    const profiles = loadToolProfiles(args.toolProfilesPath);
+    const profile = profiles.get(args.toolProfileId);
+    if (!profile) {
+      throw new Error(`알 수 없는 tool profile: ${args.toolProfileId} (registry/tool_profiles.json 확인)`);
+    }
+    // [M2.1] MCP profile fail-closed: MCP per-tool 노출 강제는 M3 preflight/snapshot enforcement가
+    // 필요하다. 현재 실행 경로는 그 강제가 없으므로 run_start 이전에 거부한다.
+    // (loader/compileToolProfile은 거부하지 않는다 — M3가 동일 profile을 로드할 수 있어야 함.)
+    if (hasMcpBinding(profile)) {
+      throw new Error(
+        `tool profile '${args.toolProfileId}'는 MCP binding을 포함한다 — M3 preflight/snapshot enforcement 이후 사용 가능 (현재 실행 경로에서 거부).`,
+      );
+    }
+    const policy = compileToolProfile(profile, { bare: args.bare });
+    assertPolicyExecutable(policy, { provider: getProviderCapabilities(provider.id) });
+    execContext = { claudeArgs: policy.claudeArgs, redactNames: policy.redactNames };
+  }
+
   const completed_steps: string[] = [];
   const warnings: StepWarning[] = [];
   const regenerations: RegenEntry[] = [];
   const critique_rounds: CritiqueRoundEntry[] = [];
   const gate_jumps: GateJumpEntry[] = [];
   const spawned_agents: SpawnEntry[] = [];
+  const step_timings: StepTiming[] = [];
+  let design_gate: DesignGateEntry | null = null;
   const savedFiles: string[] = [];
   const usagePerAgent: UsageEntry[] = [];
   const findings = new Map<string, string>(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
@@ -190,6 +268,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const allowSpawn = args.allowSpawn ?? false;
   const maxTokens = Math.max(0, args.maxTokens ?? 0);
   const approve = args.approve;
+  const reporter = args.reporter;
+  const total = workflow.steps.length;
   let failed_agent: string | null = null;
   let failed_reason: string | null = null;
   let failedIndex: number | null = null;
@@ -221,6 +301,10 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     critique_rounds.push(...prior.critique_rounds);
     gate_jumps.push(...prior.gate_jumps);
     spawned_agents.push(...prior.spawned_agents);
+    // 완료 step은 재개 시 재실행하지 않으므로 기존 타이밍을 그대로 보존한다 (중복/덮어쓰기 없음).
+    // resume_from 이후 step만 새로 실행되어 새 타이밍이 추가된다.
+    step_timings.push(...(prior.step_timings ?? []));
+    design_gate = prior.design_gate ?? null;
     usagePerAgent.push(...prior.usage.per_agent);
     for (const id of prior.completed_steps) {
       const rel = resolveOutputRel(id, registry, prior);
@@ -238,6 +322,12 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
 
   const findingsList = () => Array.from(findings.values());
 
+  // 한 step 실행의 step_start/step_end 이벤트를 방출하고 타이밍을 기록한다.
+  // ok:false(예외/검증 실패)에도 반드시 step_end + 타이밍이 남도록 try/finally로 감싼다.
+  function recordTiming(t: StepTiming): void {
+    step_timings.push(t);
+  }
+
   // 한 agent를 실행하고 스키마 재생성 루프를 적용한다. runAgent throw는 호출자에 전파.
   async function runStepWithRegen(
     agent: AgentDef,
@@ -248,13 +338,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       agentPromptText?: string;
       contextMode?: "full" | "conclusion_only";
       priorFindingsOverride?: string[];
-    } = {},
+      progressLabel?: string; // 표시 전용 라벨 (미지정 시 agent_id)
+      stepIndex: number; // 1-based top-level step 순번
+      kind: StepKind; // agent | critic | revise | spawn
+      round?: number; // critique 라운드 (critic/revise)
+    },
   ): Promise<StepOutcome> {
     currentAgentId = agent.agent_id;
-    // 테스트용 강제 실패 훅 (0-1 resume 검증): 지정 agent에서 throw → failed_agent로 기록.
-    if (process.env.HARNESS_FAIL_AT === agent.agent_id) {
-      throw new Error(`강제 실패(HARNESS_FAIL_AT=${agent.agent_id})`);
-    }
+    const startedAtIso = now();
+    const startedAt = Date.now();
     let markdown = "";
     let validation = { ok: false, missing: [] as string[] };
     let feedback: string | undefined;
@@ -262,40 +354,72 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     let usageIn = 0;
     let usageOut = 0;
     let sawUsage = false;
+    let ok = false;
 
-    while (true) {
-      const res = await runAgent({
-        agent,
-        registry,
-        workflowId,
-        project,
-        createdAt: now(),
-        priorFindings: opts.priorFindingsOverride ?? findingsList(),
-        contextMode: opts.contextMode,
-        nextAgentId,
-        provider,
-        retryFeedback: feedback,
-        revisionRequest: opts.revisionRequest,
-        spawnRequest: opts.spawnRequest,
-        agentPromptText: opts.agentPromptText,
-      });
-      markdown = res.markdown;
-      if (res.usage) {
-        sawUsage = true;
-        usageIn += res.usage.inputTokens;
-        usageOut += res.usage.outputTokens;
+    reporter?.emit({
+      type: "step_start",
+      index: opts.stepIndex,
+      total,
+      agentId: agent.agent_id,
+      kind: opts.kind,
+      round: opts.round,
+      label: opts.progressLabel,
+    });
+    try {
+      // 테스트용 강제 실패 훅 (resume 검증): 지정 agent에서 throw. step_start 이후라 step_end(ok:false)가 남는다.
+      if (process.env.HARNESS_FAIL_AT === agent.agent_id) {
+        throw new Error(`강제 실패(HARNESS_FAIL_AT=${agent.agent_id})`);
       }
-      validation = validateAgentOutput(markdown);
-      if (validation.ok || attempt >= maxRegen) break;
+      while (true) {
+        const res = await runAgent({
+          agent,
+          registry,
+          workflowId,
+          project,
+          createdAt: now(),
+          priorFindings: opts.priorFindingsOverride ?? findingsList(),
+          contextMode: opts.contextMode,
+          nextAgentId,
+          provider,
+          retryFeedback: feedback,
+          revisionRequest: opts.revisionRequest,
+          spawnRequest: opts.spawnRequest,
+          agentPromptText: opts.agentPromptText,
+          execContext,
+        });
+        markdown = res.markdown;
+        if (res.usage) {
+          sawUsage = true;
+          usageIn += res.usage.inputTokens;
+          usageOut += res.usage.outputTokens;
+        }
+        validation = validateAgentOutput(markdown, agent.required_headers ?? []);
+        if (validation.ok || attempt >= maxRegen) break;
 
-      attempt++;
-      feedback =
-        `직전 출력에 필수 섹션 헤더가 누락되었다: ${validation.missing.join(", ")}. ` +
-        `누락된 "## <헤더>"를 정확한 이름으로 포함하여 문서 전체를 다시 작성하라. 문서 외 텍스트는 출력하지 마라.`;
-      console.warn(`  ↻ ${agent.agent_id}: 필수 섹션 누락(${validation.missing.join(", ")}) — 재생성 ${attempt}/${maxRegen}`);
+        attempt++;
+        feedback =
+          `직전 출력에 필수 섹션 헤더가 누락되었다: ${validation.missing.join(", ")}. ` +
+          `누락된 "## <헤더>"를 정확한 이름으로 포함하여 문서 전체를 다시 작성하라. 문서 외 텍스트는 출력하지 마라.`;
+        const msg = `  ↻ ${agent.agent_id}: 필수 섹션 누락(${validation.missing.join(", ")}) — 재생성 ${attempt}/${maxRegen}`;
+        if (reporter) reporter.emit({ type: "note", level: "warn", message: msg });
+        else console.warn(msg);
+      }
+      ok = validation.ok;
+      return { markdown, validation, attempt, usageIn, usageOut, sawUsage, elapsedMs: Date.now() - startedAt };
+    } finally {
+      const elapsedMs = Date.now() - startedAt;
+      reporter?.emit({
+        type: "step_end",
+        index: opts.stepIndex,
+        agentId: agent.agent_id,
+        kind: opts.kind,
+        ok,
+        elapsedMs,
+        round: opts.round,
+        tokens: sawUsage ? { in: usageIn, out: usageOut } : undefined,
+      });
+      recordTiming({ agent_id: agent.agent_id, kind: opts.kind, started_at: startedAtIso, elapsed_ms: elapsedMs, ok });
     }
-
-    return { markdown, validation, attempt, usageIn, usageOut, sawUsage };
   }
 
   // step 결과를 저장하고 run_state 누산기에 반영한다.
@@ -312,12 +436,34 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     }
     const saved = saveArtifact(project, agent.default_output, o.markdown);
     savedFiles.push(saved);
+    // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
+    if (agent.token_output) {
+      const tokens = extractTokensJson(o.markdown);
+      if (tokens) {
+        const tSaved = saveArtifact(project, agent.token_output, tokens);
+        savedFiles.push(tSaved);
+        console.log(`  ⿻ ${agent.agent_id}: 토큰 추출 → ${tSaved}`);
+      } else {
+        console.warn(`  ⚠ ${agent.agent_id}: ${agent.token_output} 추출 실패 — 산출물에 \`\`\`json 블록 없음`);
+      }
+    }
     if (!completed_steps.includes(agent.agent_id)) completed_steps.push(agent.agent_id);
     findings.set(agent.agent_id, `${agent.agent_id}: ${extractMainJudgment(o.markdown)}`);
     lastMarkdown.set(agent.agent_id, o.markdown);
     return saved;
   }
 
+  // 실행 생명주기: run_start → (step_*)* → run_end. run_end는 예외가 나도 반드시 방출되도록
+  // try/finally로 감싼다 (렌더러의 spinner interval/stderr 정리 보장).
+  reporter?.emit({
+    type: "run_start",
+    workflow: workflowId,
+    totalSteps: total,
+    resumeFrom: args.resume ? startIndex : undefined,
+  });
+  const runStartMs = Date.now();
+  let runStatus: "completed" | "failed" = "failed";
+  try {
   for (let i = startIndex; i < workflow.steps.length; i++) {
     // ── 토큰 예산 검사 (step 경계) ──────────────────
     if (maxTokens > 0) {
@@ -359,20 +505,34 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             `SPAWN id=<영문소문자_id> | name=<이름> | focus=<한 줄 담당 범위>\n` +
             `분화가 불필요하면 정확히 "SPAWN none" 한 줄만 출력하라.`;
         }
-        const o = await runStepWithRegen(agent, nextHint(workflow.steps, i), { spawnRequest });
+        const o = await runStepWithRegen(agent, nextHint(workflow.steps, i), {
+          spawnRequest,
+          progressLabel: `[${i + 1}/${total}] ${agent.agent_id}`,
+          stepIndex: i + 1,
+          kind: "agent",
+        });
         const saved = commitOutcome(agent, o);
-        console.log(`  ✓ ${agent.agent_id} → ${saved}`);
+        console.log(`  [${i + 1}/${total}] ✓ ${agent.agent_id} → ${saved} (${fmtElapsed(o.elapsedMs)})`);
         continue;
       }
 
       if (isGate(step)) {
         // ── CEO 게이트 분기 ────────────────────────────
         const { decider, on, max_jumps } = step.gate;
+        const gateStartIso = now();
+        const gateT0 = Date.now();
+        reporter?.emit({ type: "step_start", index: i + 1, total, agentId: decider, kind: "gate" });
+        const endGate = (ok: boolean) => {
+          const elapsedMs = Date.now() - gateT0;
+          reporter?.emit({ type: "step_end", index: i + 1, agentId: decider, kind: "gate", ok, elapsedMs });
+          recordTiming({ agent_id: decider, kind: "gate", started_at: gateStartIso, elapsed_ms: elapsedMs, ok });
+        };
         if (!completed_steps.includes(decider)) {
           failed_agent = decider;
           failed_reason = `gate decider '${decider}'가 게이트 전에 실행되지 않음`;
           failedIndex = i;
           console.error(`  ✗ gate: decider '${decider}'이(가) 게이트 전에 실행되지 않음 — 중단`);
+          endGate(false);
           break;
         }
         if (!gateBudget.has(i)) gateBudget.set(i, Math.max(0, max_jumps ?? 0));
@@ -386,7 +546,9 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           if (targetIdx >= 0) {
             gateBudget.set(i, remaining - 1);
             gate_jumps.push({ decider, decision, jumped_to: jumpTarget });
+            reporter?.emit({ type: "gate_jump", decider, decision, target: jumpTarget }); // 실제 jump일 때만
             console.log(`  ⤴ 게이트: ${decider} 판정 '${decision}' → ${jumpTarget} 되돌림 (남은 되돌림 ${remaining - 1})`);
+            endGate(true);
             i = targetIdx - 1; // 다음 i++가 targetIdx를 가리킴
             continue;
           }
@@ -394,6 +556,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         }
         gate_jumps.push({ decider, decision, jumped_to: null });
         console.log(`  ⤴ 게이트: ${decider} 판정 '${decision ?? "미매칭"}' → 진행`);
+        endGate(true);
         continue;
       }
 
@@ -433,10 +596,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             `너는 '${spec.name}' 전문 에이전트다. 담당 범위: ${spec.focus}.\n` +
             `아래는 상위 '${planner}'의 전체 계획이다. 이 중 네 담당 범위에 해당하는 부분을 구체화하라.\n\n` +
             `--- 상위 계획 시작 ---\n${plannerPlan}\n--- 상위 계획 끝 ---`;
-          const so = await runStepWithRegen(subAgent, undefined, { agentPromptText: brief });
+          const so = await runStepWithRegen(subAgent, undefined, {
+            agentPromptText: brief,
+            progressLabel: `[${i + 1}/${total}] ${spec.name} (하위)`,
+            stepIndex: i + 1,
+            kind: "spawn",
+          });
           const saved = commitOutcome(subAgent, so);
           spawned_agents.push({ parent: planner, id: spec.id, name: spec.name, focus: spec.focus, executed: true, output: saved });
-          console.log(`  ⑂ 하위 실행: ${spec.id} (${spec.name}) → ${saved}`);
+          console.log(`  ⑂ 하위 실행: ${spec.id} (${spec.name}) → ${saved} (${fmtElapsed(so.elapsedMs)})`);
         }
         if (!allowSpawn) {
           console.log(`  ⑂ 계획만 기록 (실행하려면 --allow-spawn) — 사람 승인 게이트`);
@@ -447,21 +615,41 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       if (isApproval(step)) {
         // ── 승인 게이트 ────────────────────────────────
         const { message, show } = step.approval;
+        const apprStartIso = now();
+        const apprT0 = Date.now();
+        reporter?.emit({ type: "step_start", index: i + 1, total, agentId: "approval", kind: "approval" });
+        const endApproval = (ok: boolean) => {
+          const elapsedMs = Date.now() - apprT0;
+          reporter?.emit({ type: "step_end", index: i + 1, agentId: "approval", kind: "approval", ok, elapsedMs });
+          recordTiming({ agent_id: "approval", kind: "approval", started_at: apprStartIso, elapsed_ms: elapsedMs, ok });
+        };
         if (show) {
           const abs = join(projectPaths(project).root, show);
           if (existsSync(abs)) {
             console.log(`\n--- 승인 검토 문서: ${show} ---\n${readFileSync(abs, "utf8")}\n--- (문서 끝) ---`);
           }
         }
+        const isDesignGate = Boolean(step.approval.tokens_path);
         const ok = approve ? await approve(message, show) : true; // approver 없으면 자동 승인(프로그램 호출 기본)
         if (!ok) {
+          if (isDesignGate) design_gate = { status: "pending", tokens_hash: null };
           failed_reason = "user_rejected";
           failedIndex = i; // 승인 step 자체 — resume 시 다시 묻는다
           rejected = true;
           console.error(`  ✗ 승인 거부: "${message}" — 중단 (--resume으로 재개)`);
+          endApproval(false);
           break;
         }
-        console.log(`  ✔ 승인: "${message}"`);
+        if (isDesignGate) {
+          // 승인 시점 tokens.json 해시 기록 — 이후 코드화 단계에서 토큰 변경 감지용 (§4.3)
+          const tp = join(projectPaths(project).root, step.approval.tokens_path as string);
+          const hash = existsSync(tp) ? createHash("sha256").update(readFileSync(tp)).digest("hex") : null;
+          design_gate = { status: "approved", tokens_hash: hash };
+          console.log(`  ✔ 디자인 게이트 승인 — tokens_hash: ${hash ? hash.slice(0, 12) + "…" : "(tokens.json 없음)"}`);
+        } else {
+          console.log(`  ✔ 승인: "${message}"`);
+        }
+        endApproval(true);
         continue;
       }
 
@@ -499,9 +687,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         const co = await runStepWithRegen(criticAgent, target, {
           contextMode: "conclusion_only",
           priorFindingsOverride: targetFinding ? [targetFinding] : [],
+          progressLabel: `[${i + 1}/${total}] ${critic} (비평 R${round})`,
+          stepIndex: i + 1,
+          kind: "critic",
+          round,
         });
         const criticSaved = commitOutcome(criticAgent, co);
-        console.log(`  ✓ ${critic} → ${criticSaved}`);
+        console.log(`  ✓ ${critic} → ${criticSaved} (${fmtElapsed(co.elapsedMs)})`);
 
         // 2) Critical 리스크 추출
         const critical = extractCriticalRisks(co.markdown);
@@ -518,9 +710,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           critical.map((c, idx) => `${idx + 1}. ${c}`).join("\n") +
           `\n이 리스크들을 정면으로 반영해 이전 판단을 수정하고 문서 전체를 다시 작성하라. ` +
           `각 리스크에 대한 대응·완화책을 Decisions / Assumptions / Risks에 반영하라.`;
-        const to = await runStepWithRegen(targetAgent, critic, { revisionRequest });
+        const to = await runStepWithRegen(targetAgent, critic, {
+          revisionRequest,
+          progressLabel: `[${i + 1}/${total}] ${target} (수정 R${round})`,
+          stepIndex: i + 1,
+          kind: "revise",
+          round,
+        });
         const targetSaved = commitOutcome(targetAgent, to);
-        console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved}`);
+        console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved} (${fmtElapsed(to.elapsedMs)})`);
       }
 
       critique_rounds.push({ target, critic, rounds: round, resolved });
@@ -541,6 +739,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     per_agent: usagePerAgent,
   };
   const stopped = failed_agent !== null || budgetStopped || rejected;
+  runStatus = stopped ? "failed" : "completed";
   const state: RunState = {
     workflow_id: workflowId,
     project,
@@ -556,6 +755,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     critique_rounds,
     gate_jumps,
     spawned_agents,
+    design_gate,
+    step_timings,
     usage,
     started_at,
     finished_at,
@@ -566,4 +767,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   writeFileSync(runStateAbs, JSON.stringify(state, null, 2) + "\n", "utf8");
 
   return { state, savedFiles, runStatePath: RUN_STATE_REL };
+  } finally {
+    // 정상/실패/예외 모든 경로에서 run_end 방출 → 렌더러가 spinner interval·stderr를 정리한다.
+    reporter?.emit({ type: "run_end", status: runStatus, elapsedMs: Date.now() - runStartMs });
+  }
 }

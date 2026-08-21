@@ -1,17 +1,30 @@
 #!/usr/bin/env node
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
 import { runList } from "./commands/list.js";
 import { runInit } from "./commands/init.js";
 import { runRun } from "./commands/run.js";
 import { runSummary } from "./commands/summary.js";
 import { runTaskPrompt } from "./commands/taskPrompt.js";
+import { runExec } from "./commands/exec.js";
+import { runMissionCommand } from "./commands/mission.js";
+import { runHandoffCommand } from "./commands/handoff.js";
+import { runAutopilotCommand } from "./commands/autopilot.js";
+
+// 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
+// import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
+const pkg = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"),
+) as { version: string };
 
 const program = new Command();
 
 program
   .name("harness")
-  .description("Solo Founder AI Harness v1 (mock provider CLI)")
-  .version("0.1.0");
+  .description("Solo Founder AI Harness (문서 자동화 + 실행 계층 exec/mission)")
+  .version(pkg.version);
 
 program
   .command("list")
@@ -39,10 +52,27 @@ program
   .option("--resume", "이전 실패 지점부터 재개 (outputs/run_state.json status=failed일 때)", false)
   .option("--max-tokens <n>", "누적 토큰(input+output) 상한. 초과 시 step 경계에서 중단(--resume 재개 가능). 미지정 시 HARNESS_MAX_TOKENS, 기본 무제한")
   .option("--yes", "승인 게이트를 비대화로 전부 승인 (CI/스크립트)", false)
+  .option("--tool-profile <id>", "[v3-M2] 활성 도구 profile (registry/tool_profiles.json). 지정 시 run 시작 전 fail-fast 검증")
+  .option("--bare", "[v3-M2] planning 격리(--strict-mcp-config + 내장도구 제한) 정책으로 컴파일", false)
+  .option("--handoff", "[v3-M3b.2] run 완료(completed) 후 서비스 레포에서 Claude Code 대화형 세션을 연다 (승인 게이트·headless preflight 통과 후)", false)
+  .option("--cwd <serviceRepo>", "[v3-M3b.2] --handoff 대상 서비스 레포 경로 (기본: 현재 디렉터리)")
+  .option("--handoff-tool-profile <id>", "[v3-M3c.3b] --handoff 세션에 적용할 MCP tool profile (파일럿: handoff-shadcn-readonly). workflow용 --tool-profile과 별개")
   .description("workflow를 순서대로 실행하고 결과를 저장한다")
-  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean; vault?: string; resume: boolean; maxTokens?: string; yes: boolean }) => {
+  .action(async (workflowName: string, opts: { project: string; provider: string; maxRegen: string; allowSpawn: boolean; vault?: string; resume: boolean; maxTokens?: string; yes: boolean; toolProfile?: string; bare: boolean; handoff: boolean; cwd?: string; handoffToolProfile?: string }) => {
     const maxTokens = Number(opts.maxTokens ?? process.env.HARNESS_MAX_TOKENS ?? 0) || 0;
-    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes);
+    await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes, opts.toolProfile, opts.bare, opts.handoff, opts.cwd, opts.handoffToolProfile);
+  });
+
+program
+  .command("handoff")
+  .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+  .option("--cwd <serviceRepo>", "핸드오프할 서비스 레포 경로 (기본: 현재 디렉터리)")
+  .option("--print", "실행·preflight·상태 변경 없이 셸 재진입 명령만 출력 (원격/tmux 탈출구)", false)
+  .option("--yes", "승인 게이트를 스킵하고 바로 세션을 연다", false)
+  .option("--tool-profile <id>", "[v3-M3c.3b] MCP tool profile (파일럿: handoff-shadcn-readonly). 미지정 시 기존 empty-MCP 경로")
+  .description("[v3-M3b.2] 완료된 판단 문서를 근거로 Claude Code 대화형 세션을 연다 (headless preflight 통과 후)")
+  .action(async (opts: { project: string; cwd?: string; print: boolean; yes: boolean; toolProfile?: string }) => {
+    await runHandoffCommand({ project: opts.project, cwd: opts.cwd, print: opts.print, yes: opts.yes, toolProfileId: opts.toolProfile });
   });
 
 program
@@ -59,6 +89,61 @@ program
   .description("Claude Code 작업 지시문을 생성한다")
   .action((opts: { project: string }) => {
     runTaskPrompt(opts.project);
+  });
+
+program
+  .command("exec")
+  .description("[v3] 실행 세션 1개를 worktree에서 돌려 게이트·승인 후 base에 병합한다 (실제 claude 구독 토큰 사용)")
+  .requiredOption("--task <task>", "세션이 완수할 작업")
+  .option("--role <role>", "세션 역할 설명")
+  .option("--base <branch>", "병합 기준 브랜치", "develop")
+  .option("--session-id <uuid>", "세션 ID 사전 지정 (기본 자동 생성)")
+  .option("--input <path...>", "참고 문서 경로 (API_CONTRACT는 인라인)")
+  .option("--yes", "모든 승인 자동 통과 (비대화)", false)
+  .option("--keep-worktree", "종료 후 worktree 보존", false)
+  .option("--no-merge", "승인해도 병합하지 않음 (diff까지만)")
+  .option("--review", "L3 Opus 리뷰어 세션 실행 (Critical 시 revise 루프)", false)
+  .option("--review-rounds <n>", "리뷰 최대 라운드 (기본 2)", (v) => parseInt(v, 10))
+  .action(async (opts: { task: string; role?: string; base: string; sessionId?: string; input?: string[]; yes: boolean; keepWorktree: boolean; merge: boolean; review: boolean; reviewRounds?: number }) => {
+    await runExec({
+      task: opts.task,
+      role: opts.role,
+      base: opts.base,
+      sessionId: opts.sessionId,
+      inputs: opts.input,
+      yes: opts.yes,
+      keepWorktree: opts.keepWorktree,
+      merge: opts.merge,
+      review: opts.review,
+      reviewRounds: opts.reviewRounds,
+    });
+  });
+
+program
+  .command("mission")
+  .description("[v3.5] 목표를 태스크로 분해→승인→자율 완주(게이트·리뷰·develop 자동 병합)→MISSION_REPORT")
+  .requiredOption("--goal <goal>", "미션 목표")
+  .option("--base <branch>", "병합 기준 브랜치", "develop")
+  .option("--yes", "브리프 자동 승인 (비대화)", false)
+  .option("--max-tasks <n>", "브리프 태스크 상한", (v) => parseInt(v, 10))
+  .option("--review-rounds <n>", "태스크당 L3 리뷰 최대 라운드", (v) => parseInt(v, 10))
+  .option("--parallel", "[v4] 의존 없는 태스크를 병렬 세션으로 동시 실행 (직렬 병합)", false)
+  .option("--concurrency <n>", "병렬 모드 동시 세션 상한 (기본 3)", (v) => parseInt(v, 10))
+  .action(async (opts: { goal: string; base: string; yes: boolean; maxTasks?: number; reviewRounds?: number; parallel: boolean; concurrency?: number }) => {
+    await runMissionCommand({ goal: opts.goal, base: opts.base, yes: opts.yes, maxTasks: opts.maxTasks, reviewRounds: opts.reviewRounds, parallel: opts.parallel, concurrency: opts.concurrency });
+  });
+
+program
+  .command("autopilot")
+  .description("[v3-M5c] 승인 manifest 하나로 gate된 durable run을 offline plan worker로 전진시킨다 (추론·네트워크·프로세스 0)")
+  .requiredOption("--run <runId>", "대상 orchestration run id")
+  .requiredOption("--milestone <id>", "이 실행이 근거로 삼는 승인 milestone (durable run과 다르면 시작하지 않는다)")
+  .requiredOption("--plan-dir <path>", "task별 offline 계획 JSON 디렉터리 (<planDir>/<taskId>.json)")
+  .option("--workspace <path>", "orchestration workspace 루트 (기본: 현재 디렉터리)")
+  .option("--max-iterations <n>", `loop 상한 (기본·최대 ${16})`)
+  .option("--json", "진행 이벤트를 NDJSON으로 출력", false)
+  .action(async (opts: { run: string; milestone: string; planDir: string; workspace?: string; maxIterations?: string; json: boolean }) => {
+    await runAutopilotCommand(opts);
   });
 
 program.parse();

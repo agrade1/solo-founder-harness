@@ -9,15 +9,43 @@ const REQUIRED = [
     { label: "Risks", pattern: /^##\s+Risks\s*$/m },
     { label: "Next Actions", pattern: /^##\s+.*Next Actions\s*$/m },
 ];
-/** 필수 헤더 누락 여부를 검사한다. 비어있는 결과도 실패로 본다. */
-export function validateAgentOutput(markdown) {
+function escapeRegex(s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+/**
+ * markdown에서 첫 ```json 코드펜스 내용을 추출한다(design 에이전트의 tokens.json 분리용).
+ * JSON으로 파싱되면 예쁘게 정렬해 반환, 파싱 실패면 원문, 블록 없으면 null.
+ */
+export function extractTokensJson(markdown) {
+    const m = markdown.match(/```json\s*\n([\s\S]*?)\n```/);
+    if (!m)
+        return null;
+    const raw = m[1].trim();
+    try {
+        return JSON.stringify(JSON.parse(raw), null, 2) + "\n";
+    }
+    catch {
+        return raw + "\n"; // 파싱 실패해도 원문은 남긴다(토큰 린트가 잡음)
+    }
+}
+/**
+ * 필수 헤더 누락 여부를 검사한다. 비어있는 결과도 실패로 본다.
+ * @param extraHeaders 에이전트별 추가 필수 헤더(정확한 "## <이름>" 매칭). 공용 4개에 더해 검사.
+ *   (agent_registry.json의 required_headers — PM=PRD, tech_lead=Tech Spec, design=DESIGN.md 헤더)
+ */
+export function validateAgentOutput(markdown, extraHeaders = []) {
     const missing = [];
     if (markdown.trim().length === 0) {
-        return { ok: false, missing: REQUIRED.map((r) => r.label) };
+        return { ok: false, missing: [...REQUIRED.map((r) => r.label), ...extraHeaders] };
     }
     for (const r of REQUIRED) {
         if (!r.pattern.test(markdown))
             missing.push(r.label);
+    }
+    for (const h of extraHeaders) {
+        const pattern = new RegExp(`^##\\s+${escapeRegex(h)}\\s*$`, "m");
+        if (!pattern.test(markdown))
+            missing.push(h);
     }
     return { ok: missing.length === 0, missing };
 }

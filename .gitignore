@@ -8,3 +8,18 @@ projects/idea-discovery/IDEA_*.md
 # Phase 1 도그푸딩 프로젝트 — 실제 아이디어 내용 포함, 로컬 전용 (푸시 금지)
 projects/dogfood-*/
 *.tgz
+
+# 실행 계층 세션 worktree (ARCH §2) — 커밋 금지
+.harness/
+
+# 테스트용 임시 워크스페이스 (test:core)
+.tmp-test-workspace/
+
+# [M3a] 실행별 preflight 산출물 (mcp-config.json, tools-snapshot.json) — 커밋 금지
+projects/*/outputs/runtime/
+
+# [M3b.2] handoff tool-trace JSONL (정규화 trace, raw payload 미포함) — 커밋 금지
+projects/*/outputs/tool-trace/
+
+# [M4a] orchestration run 상태 (run_state.json / events.jsonl / messages / snapshot) — 커밋 금지
+outputs/orchestration/

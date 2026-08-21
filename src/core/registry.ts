@@ -7,6 +7,10 @@ export interface AgentDef {
   role: string;
   prompt_path: string;
   default_output: string;
+  /** 에이전트별 추가 필수 헤더(공용 4개 외). 스키마 검증 재생성 루프가 검사. 미지정 시 공용 4개만. */
+  required_headers?: string[];
+  /** 산출 markdown 안의 ```json 블록을 이 경로로 추출·저장(예: docs/tokens.json). design 에이전트용. */
+  token_output?: string;
 }
 
 export interface AgentRegistry {
@@ -38,6 +42,7 @@ export interface FanoutDef {
 export interface ApprovalDef {
   message: string; // 사용자에게 물을 문구
   show?: string; // 승인 전 보여줄 산출물 상대경로 (예: "outputs/chief_of_staff.md")
+  tokens_path?: string; // 지정 시 디자인 게이트 — 승인 시 이 파일 해시를 run_state.design_gate에 기록
 }
 
 /** workflow step: agent id 문자열, 비평 루프, CEO 게이트, 동적 분화, 또는 승인 게이트. */

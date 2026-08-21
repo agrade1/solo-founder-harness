@@ -10,6 +10,7 @@
     "dist",
     "agents",
     "registry",
+    "schemas",
     "README.md"
   ],
   "engines": {
@@ -24,7 +25,11 @@
     "build": "tsc && chmod +x dist/cli.js",
     "harness": "tsx src/cli.ts",
     "acceptance": "bash scripts/acceptance.sh",
-    "test": "bash scripts/acceptance.sh",
+    "test:exec": "tsx --test src/exec/*.test.ts",
+    "test:core": "HARNESS_WORKSPACE=.tmp-test-workspace tsx --test src/core/*.test.ts src/tools/*.test.ts src/providers/*.test.ts src/commands/*.test.ts",
+    "test:inner": "npm run test:exec && npm run test:core && bash scripts/acceptance.sh",
+    "test": "node scripts/suite-lock.mjs run test:inner",
+    "acceptance:stress:m3d2": "node scripts/m3d2-stress-acceptance.mjs",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

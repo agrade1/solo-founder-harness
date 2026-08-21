@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "id": "bad-reserved",
+      "capabilities": ["database_read"],
+      "bindings": { "database_read": { "kind": "mcp", "server": "supabase", "tools": ["query"] } },
+      "servers": [{ "name": "supabase" }],
+      "preapprovedTools": [],
+      "deniedTools": [],
+      "permissionMode": "read_only",
+      "allowedDomains": null,
+      "limits": { "maxCallsPerStep": 1, "maxResultChars": 1000, "maxElapsedMsPerCall": 1000 },
+      "secretRefs": []
+    }
+  ]
+}

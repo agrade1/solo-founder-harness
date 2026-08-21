@@ -35,7 +35,7 @@ done
 echo ""
 echo "== Test 2: list =="
 OUT="$($HARNESS list)"
-echo "$OUT" | grep -q "Core Agents (7)";            check "7 core agents" $?
+echo "$OUT" | grep -q "Core Agents (8)";            check "8 core agents" $?
 echo "$OUT" | grep -q "Common Prompt:.*(존재)";      check "common prompt 존재" $?
 echo "$OUT" | grep -q "Workflows (4)";              check "workflows 출력" $?
 
@@ -123,14 +123,316 @@ grep -q '"status": "completed"' "$RS";            check "--yes resume → 승인
 
 echo ""
 echo "== Test 10: Red Team 편향 분리 (critic 격리) =="
-# mvp-planning: pm→ux_ui→tech_lead→[red_team⟲tech_lead]→founder_ceo
-$HARNESS run mvp-planning --project "$PROJ" >/dev/null 2>&1
+# mvp-planning: pm→ux_ui→design→[디자인 게이트]→tech_lead→[red_team⟲tech_lead]→founder_ceo
+$HARNESS run mvp-planning --project "$PROJ" --yes >/dev/null 2>&1
 RT="$PDIR/docs/05_RED_TEAM.md"
 CEO="$PDIR/docs/06_CEO_DECISION.md"
 grep -q "tech_lead:" "$RT";                 check "critic가 target(tech_lead) 결론은 봄" $?
 if grep -q "ux_ui:" "$RT"; then false; else true; fi;  check "critic가 ux_ui 결론은 못 봄 (격리)" $?
 if grep -q "pm:" "$RT"; then false; else true; fi;     check "critic가 pm 결론은 못 봄 (격리)" $?
 grep -q "ux_ui:" "$CEO";                    check "일반 step(founder_ceo)은 full 컨텍스트 유지" $?
+
+echo "== Test 11: 토큰 린트 (scripts/token-lint.mjs) =="
+TL="$PDIR/tl"; mkdir -p "$TL/src"
+printf '{"primitive":{"color":{"blue-500":"#3b82f6"}},"semantic":{"color":{"action":"{primitive.color.blue-500}"}},"component":{"btn":{"bg":"{semantic.color.action}"}}}\n' > "$TL/tokens.json"
+printf 'const a="#ff0000";\nconst b="var(--primitive-color-blue-500)";\nconst c="#000"; // token-lint-ignore\n' > "$TL/src/bad.tsx"
+node scripts/token-lint.mjs --tokens "$TL/tokens.json" "$TL/src" > "$TL/out.txt" 2>&1
+[ $? -eq 1 ]; check "위반 소스 → exit 1" $?
+grep -q "미등록 raw hex #ff0000" "$TL/out.txt"; check "미등록 hex 검출" $?
+grep -q "primitive 토큰 직접 참조" "$TL/out.txt"; check "primitive 직접참조 검출" $?
+if grep -q "#000" "$TL/out.txt"; then false; else true; fi; check "token-lint-ignore 줄 건너뜀" $?
+printf 'const x="ok";\n' > "$TL/src/bad.tsx"
+node scripts/token-lint.mjs --tokens "$TL/tokens.json" "$TL/src" >/dev/null 2>&1
+[ $? -eq 0 ]; check "클린 소스 → exit 0" $?
+printf '{"primitive":{"c":{"x":"#fff"}},"semantic":{"a":"{semantic.b}"}}\n' > "$TL/broken.json"
+node scripts/token-lint.mjs --tokens "$TL/broken.json" "$TL/src" >/dev/null 2>&1
+[ $? -eq 1 ]; check "깨진 tokens.json(계층위반/없는참조) → exit 1" $?
+
+echo ""
+echo "== Test 12: handoff (offline — 실제 claude/TUI 미실행) =="
+# 직전 Test 10에서 run_state=completed. 실제 claude/preflight/spawn을 타지 않는 경로만 검증.
+# 12a) --print: preflight/spawn/state 변경 없이 재진입 명령만 출력.
+OUT="$($HARNESS handoff --project "$PROJ" --print 2>&1)"
+echo "$OUT" | grep -q "harness handoff --project '$PROJ'"; check "--print → 재진입 명령 출력" $?
+echo "$OUT" | grep -q -- "--yes";                          check "--print 재진입 명령에 --yes" $?
+if [ -d "$PDIR/outputs/runtime" ]; then false; else true; fi; check "--print → runtime 디렉터리 미생성" $?
+if grep -q '"handoff"' "$RS"; then false; else true; fi;   check "--print → run_state.handoff 미기록" $?
+# 12b) claude 바이너리 부재 → 설치/재진입 안내, spawn·기록 없음(비-TTY보다 먼저 판정).
+OUT="$(HARNESS_CLAUDE_BIN=/nonexistent/claude-xyz $HARNESS handoff --project "$PROJ" --yes 2>&1)"
+echo "$OUT" | grep -q "claude CLI를 찾을 수 없습니다"; check "missing binary → 설치 안내" $?
+if grep -q '"handoff"' "$RS"; then false; else true; fi;  check "missing binary → run_state.handoff 미기록" $?
+grep -q '"status": "completed"' "$RS";                    check "missing binary → completed 상태 불변" $?
+# 12c) run이 completed 아니면 handoff 거부.
+echo n | $HARNESS run dev-preflight --project "$PROJ" >/dev/null 2>&1   # user_rejected → failed
+# 출력을 먼저 캡처한다(handoff는 not_completed에서 exit 1 → pipefail 오판 방지).
+OUT="$($HARNESS handoff --project "$PROJ" 2>&1)"
+echo "$OUT" | grep -q "상태가 아닙니다"; check "not_completed → handoff 거부" $?
+
+echo ""
+echo "== Test 13: M4a durable orchestration (offline — network/LLM/provider/TTY 미사용) =="
+# 임시 workspace에서만 도는 kernel 수직 슬라이스. 상세 체크는 스크립트가 자체 출력한다.
+M4A_OUT="$(node scripts/m4a-offline-acceptance.mjs 2>&1)"
+M4A_RC=$?
+[ "$M4A_RC" -eq 0 ];                        check "M4a offline acceptance exit 0" $?
+echo "$M4A_OUT" | grep -q " FAIL=0";        check "M4a 내부 체크 전부 통과" $?
+echo "$M4A_OUT" | grep -q "child completed"; check "M4a result 전파 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
+echo "== Test 14: M4b 배타 자원 class · scheduler · writer lock (offline) =="
+# 임시 workspace 전용. 상세 체크는 스크립트가 자체 출력한다(기존 Test 1~13 무변경).
+M4B_OUT="$(node scripts/m4b-offline-acceptance.mjs 2>&1)"
+M4B_RC=$?
+[ "$M4B_RC" -eq 0 ];                          check "M4b offline acceptance exit 0" $?
+echo "$M4B_OUT" | grep -q " FAIL=0";          check "M4b 내부 체크 전부 통과" $?
+echo "$M4B_OUT" | grep -q "b-live는 ready로 유예(동시 실행 0)"
+check "M4b 같은 class 동시 실행 0 확인 출력" $?
+echo "$M4B_OUT" | grep -q "stale_writer";     check "M4b stale writer 거부 확인 출력" $?
+echo "$M4B_OUT" | grep -q "run_lock_held";    check "M4b writer lock 경합 거부 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
+echo "== Test 15: M4c 라우팅 · 메시지 10종 · 승인 manifest · specialist registry (offline) =="
+# 임시 workspace 전용. 상세 체크는 스크립트가 자체 출력한다(기존 Test 1~14 무변경).
+M4C_OUT="$(node scripts/m4c-offline-acceptance.mjs 2>&1)"
+M4C_RC=$?
+[ "$M4C_RC" -eq 0 ];                              check "M4c offline acceptance exit 0" $?
+echo "$M4C_OUT" | grep -q " FAIL=0";              check "M4c 내부 체크 전부 통과" $?
+echo "$M4C_OUT" | grep -q "중앙이 sibling inbox로 route"
+check "M4c 중앙 경유 sibling 전달 확인 출력" $?
+echo "$M4C_OUT" | grep -q "route_not_related";    check "M4c 무관한 수신자 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "ambiguous_recipient";  check "M4c 모호한 수신자 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "중앙 → fresh reviewer inbox"
+check "M4c reviewer 왕복 확인 출력" $?
+echo "$M4C_OUT" | grep -q "manifest_expired";     check "M4c 만료 승인 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "max_sessions_exceeded"; check "M4c maxSessions 초과 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "dependency_not_pinned"; check "M4c 미pin dependency 거부 확인 출력" $?
+echo "$M4C_OUT" | grep -q "state_pre_m4c_unsupported"
+check "M4c pre-M4c state fail-closed 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo ""
+echo "== Test 16: M5d offline self-hosting (승인 1건 · 실제 파일 수정 · 수동 복사 0회) =="
+# 임시 workspace 전용. 상세 체크는 스크립트가 자체 출력한다.
+M5D_OUT="$(node scripts/m5d-offline-acceptance.mjs 2>&1)"
+M5D_RC=$?
+[ "$M5D_RC" -eq 0 ];                              check "M5d offline acceptance exit 0" $?
+echo "$M5D_OUT" | grep -q " FAIL=0";              check "M5d 내부 체크 전부 통과" $?
+echo "$M5D_OUT" | grep -q "버그 파일이 실제로 고쳐졌다"
+check "M5d implement 단계가 실제 바이트를 냈다" $?
+echo "$M5D_OUT" | grep -q "의존 task도 같은 실행에서 완주했다"
+check "M5d DAG 전진(수동 개입 0) 확인 출력" $?
+echo "$M5D_OUT" | grep -q "신규 파일도 발행된다(B-16 개방"
+check "M5d B-16 완전 개방(신규 발행) 확인 출력 — V3 M9 선결 2" $?
+echo "$M5D_OUT" | grep -q "paused로 착지한다(hang 없음)"
+check "M5d hang 대신 pause 확인 출력" $?
+echo "$M5D_OUT" | grep -q "spawn 0회 — deadline/cancellation 자손 정리 증명 아님"
+check "M5d spawn 0회 확인 출력(자손 정리 증명 아님)" $?
+echo "$M5D_OUT" | grep -q "같은 배타 class의 두 task가 같은 batch에 함께 들어가지 않는다"
+check "M5d 배타 resource class 동시 실행 0 확인 출력 (B-25)" $?
+echo "$M5D_OUT" | grep -q "자식 프로세스가 durable 상태만으로 run을 이어받았다"
+check "M5d 별도 프로세스 재시작 확인 출력 (B-26)" $?
+
+echo ""
+echo "== Test 17: M5 deadline·cancellation 자손 정리 (실제 spawn) =="
+# 실제로 프로세스를 띄운다(다른 acceptance는 spawn 0회다). 임시 workspace 전용.
+M5CL_OUT="$(node scripts/m5d-cleanup-acceptance.mjs 2>&1)"
+M5CL_RC=$?
+[ "$M5CL_RC" -eq 0 ];                             check "M5 cleanup acceptance exit 0" $?
+echo "$M5CL_OUT" | grep -q " FAIL=0";             check "M5 cleanup 내부 체크 전부 통과" $?
+echo "$M5CL_OUT" | grep -q "실제로 손자를 낳았다"
+check "M5 실제 자손 생성 관측 출력" $?
+echo "$M5CL_OUT" | grep -q "deadline 초과 뒤 손자가 실제로 죽었다"
+check "M5 deadline 자손 정리 확인 출력 (B-24)" $?
+echo "$M5CL_OUT" | grep -q "취소 뒤 손자가 실제로 죽었다"
+check "M5 cancellation 자손 정리 확인 출력 (B-24)" $?
+echo "$M5CL_OUT" | grep -q "SIGKILL 경로를 밟았다"
+check "M5 SIGKILL 승격 경로 확인 출력" $?
+echo "$M5CL_OUT" | grep -q "관측한 손자 전부가 사라졌다"
+check "M5 reparent된 유출까지 확인 출력" $?
+
+echo ""
+echo "== Test 18: M6 계층 오케스트레이션 · context bundle · coordinator rotation (offline) =="
+# 임시 workspace 전용 · spawn 0회 · live 0회. 상세 체크는 스크립트가 자체 출력한다.
+M6_OUT="$(node scripts/m6-offline-acceptance.mjs 2>&1)"
+M6_RC=$?
+[ "$M6_RC" -eq 0 ];                               check "M6 offline acceptance exit 0" $?
+echo "$M6_OUT" | grep -q " FAIL=0";               check "M6 내부 체크 전부 통과" $?
+echo "$M6_OUT" | grep -q "parent가 결과 대신 위임으로 착지한다"
+check "M6 ① spawn 배선 — 위임 착지 확인 출력" $?
+echo "$M6_OUT" | grep -q "child 결과가 parent inbox로 route됐다"
+check "M6 ① parent→child→parent 결과 라우팅 확인 출력" $?
+echo "$M6_OUT" | grep -q "중앙이 sibling inbox로 route했다"
+check "M6 ① child→중앙→sibling 전달 확인 출력" $?
+echo "$M6_OUT" | grep -q "요청에 상태·권능·경로·예산 필드가 없다"
+check "M6 ② 요청 union에 권능 필드 부재 확인 출력" $?
+echo "$M6_OUT" | grep -q "거부된 spawn 요청은 child를 만들지 않는다"
+check "M6 ② 승인은 kernel이 한다(요청만으로 생성 0) 확인 출력" $?
+echo "$M6_OUT" | grep -q "거부된 전달은 durable 메시지를 남기지 않는다"
+check "M6 ② 거부된 요청의 durable 흔적 0 확인 출력" $?
+echo "$M6_OUT" | grep -q "spawn turn이 산출물을 주장하면 plan_invalid다"
+check "M6 위임 turn의 산출물 조용한 유실 차단 확인 출력" $?
+echo "$M6_OUT" | grep -q "같은 revision에서 두 번 만들면 byte-identical이다"
+check "M6 context bundle 결정성 확인 출력" $?
+echo "$M6_OUT" | grep -q "교체 전후 graph·decision·artifact hash가 전부 같다"
+check "M6 ③ coordinator 교체 등가성 확인 출력" $?
+echo "$M6_OUT" | grep -q "교체 후 완주한 run이 무교체 대조 run과 같은 graph 다이제스트에 도달한다"
+check "M6 ③ 무교체 대조 run 대비 등가성 확인 출력" $?
+echo "$M6_OUT" | grep -q "task 하나를 위조하면 graph 다이제스트가 갈린다"
+check "M6 ③ 다이제스트가 위조에 반응함 확인 출력(공허한 체크 아님)" $?
+echo "$M6_OUT" | grep -q "서로 다른 run의 decisionHash는 다르다"
+check "M6 ③ decisionHash의 run 사이 동일성을 주장하지 않음 확인 출력" $?
+echo "$M6_OUT" | grep -q "시각·revision만 바뀐 state는 세 다이제스트가 전부 그대로다"
+check "M6 ③ 다이제스트가 시각에 둔감함 확인 출력" $?
+if [ -d "outputs/orchestration" ]; then false; else true; fi
+check "레포에 orchestration 산출물 미생성(임시 workspace 전용)" $?
+
+echo "== Test 19: M7 research gateway · evidence · 승인 감사 · 사람 gate (offline · 무과금) =="
+# 임시 디렉터리 전용 · 검색 API 0회 · live LLM 0회. 상세 체크는 스크립트가 자체 출력한다.
+M7_OUT="$(node scripts/m7-offline-acceptance.mjs 2>&1)"
+M7_RC=$?
+[ "$M7_RC" -eq 0 ];                               check "M7 offline acceptance exit 0" $?
+echo "$M7_OUT" | grep -q "FAIL=0";                check "M7 내부 체크 전부 통과" $?
+echo "$M7_OUT" | grep -q "선언 밖 본문은 요청이 되지 않는다"
+check "M7 ① 선언 파서가 본문을 요청으로 삼지 않음" $?
+echo "$M7_OUT" | grep -q "중앙이 운반하는 것은 원문 전체가 아니라 상한 절삭된 발췌다"
+check "M7 ① 원문/발췌 분리 확인 출력" $?
+echo "$M7_OUT" | grep -q "같은 query 재호출이 backend를 다시 부르지 않는다"
+check "M7 ② 캐시 확인 출력" $?
+echo "$M7_OUT" | grep -q "extract는 미허용 도메인이면 거부된다"
+check "M7 ② 도메인 fail-closed(extract) 확인 출력" $?
+echo "$M7_OUT" | grep -q "적대적 문장이 데이터 블록 안에 있다"
+check "M7 ③ 주입 fixture가 데이터로 갇힘 확인 출력" $?
+echo "$M7_OUT" | grep -q "본문의 경계 위조가 무력화된다"
+check "M7 ③ 경계 위조 차단 확인 출력" $?
+echo "$M7_OUT" | grep -q "깨끗한 승인은 finding 0"
+check "M7 ④ 감사가 공허하지 않음(깨끗하면 0건) 확인 출력" $?
+echo "$M7_OUT" | grep -q "digest가 가리키는 부재 경로를 잡는다"
+check "M7 ④ C-67 규칙 동작 확인 출력" $?
+echo "$M7_OUT" | grep -q "상한 초과 도구 등록은 로드 자체가 거부된다"
+check "M7 ⑤ 도구 예산 상한 fail-closed 확인 출력" $?
+echo "$M7_OUT" | grep -q "답(decision)을 만드는 요청 갈래는 존재하지 않는다"
+check "M7 ⑥ 사람 gate — 결정 위조 경로 부재 확인 출력" $?
+echo "$M7_OUT" | grep -q "registry profile이 secret을 \*\*이름으로만\*\* 선언한다"
+check "M7 ⑦ secret은 registry에 이름만(값 없음) 확인 출력" $?
+echo "$M7_OUT" | grep -q "키가 없으면 호출 전에 fail-closed다"
+check "M7 ⑦ 키 부재 fail-closed 확인 출력" $?
+echo "$M7_OUT" | grep -q "안내가 값을 요구하지 않고 셸 설정을 지시한다"
+check "M7 ⑦ 키 값을 사용자에게 요구하지 않음 확인 출력" $?
+echo "$M7_OUT" | grep -q "live 검색 API 실호출 0회"
+check "M7 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
+
+echo "== Test 20: M8 디자인 산출물 계약 · shadcn read 배선 · handoff 접근성/범위 (offline · 무과금) =="
+# 임시 디렉터리 전용 · shadcn registry 실조회 0회 · live LLM 0회. 상세 체크는 스크립트가 자체 출력한다.
+M8_OUT="$(node scripts/m8-offline-acceptance.mjs 2>&1)"
+M8_RC=$?
+[ "$M8_RC" -eq 0 ];                               check "M8 offline acceptance exit 0" $?
+echo "$M8_OUT" | grep -q "FAIL=0";                check "M8 내부 체크 전부 통과" $?
+echo "$M8_OUT" | grep -q "계층 건너뛰기(semantic raw 값)는 거부된다"
+check "M8 ① tokens 3계층 강제 확인 출력" $?
+echo "$M8_OUT" | grep -q "선언된 쌍의 대비 미달을 실제로 잡는다"
+check "M8 ② 접근성이 계산 기반(공허하지 않음) 확인 출력" $?
+echo "$M8_OUT" | grep -q "min을 임의 값(1)으로 낮춰 통과시키는 우회를 거부한다"
+check "M8 ② 대비 기준 완화 우회 차단 확인 출력" $?
+echo "$M8_OUT" | grep -q "text-\* 토큰을 선언에서 빼 검사를 비우는 것을 거부한다"
+check "M8 ② 선언 누락으로 검사를 비울 수 없음 확인 출력" $?
+echo "$M8_OUT" | grep -q "M8이 새 tool profile을 추가하지 않았다(4개 유지)"
+check "M8 ③ shadcn read 계층 재사용(새 proxy·profile 없음) 확인 출력" $?
+echo "$M8_OUT" | grep -q "프로젝트 층: components.json의 custom registry는 거부된다"
+check "M8 ④ custom/private registry 차단(프로젝트 층) 확인 출력" $?
+echo "$M8_OUT" | grep -q "inventory 층: 비공식 출처 호스트는 거부된다"
+check "M8 ④ custom/private registry 차단(inventory 층) 확인 출력" $?
+echo "$M8_OUT" | grep -q "발췌가 원문이 아니다(절삭이 실제로 일어난다)"
+check "M8 ⑤ registry 원문/발췌 분리 확인 출력" $?
+echo "$M8_OUT" | grep -q "범위: UX flow에 없는 화면은 거부된다"
+check "M8 ⑥ handoff 범위 검증 확인 출력" $?
+echo "$M8_OUT" | grep -q "승인 후 토큰이 바뀌면 그 승인을 재사용할 수 없다"
+check "M8 ⑥ 사람 승인 재사용 금지 확인 출력" $?
+echo "$M8_OUT" | grep -q "같은 세션 재사용은 거부된다"
+check "M8 ⑦ fresh 세션 강제(자기 승인 금지) 확인 출력" $?
+echo "$M8_OUT" | grep -q "shadcn registry 실조회 0회"
+check "M8 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
+
+echo ""
+echo "== Test 21: M9 개발 파이프라인 — 선결 4건 · DAG 계약/물질화 · 소유권 경합 · 격리 worktree (offline · 무과금) =="
+# 임시 디렉터리 전용 · live LLM 0회. ⑥만 **실제 git**을 로컬에서 부른다(네트워크 0 · 원격 0).
+M9_OUT="$(node scripts/m9-offline-acceptance.mjs 2>&1)"
+M9_RC=$?
+[ "$M9_RC" -eq 0 ];                               check "M9 offline acceptance exit 0" $?
+echo "$M9_OUT" | grep -q "FAIL=0";                check "M9 내부 체크 전부 통과" $?
+echo "$M9_OUT" | grep -q "테스트 명령·러너·argv를 담을 통로가 없다"
+check "M9 ① run-tests가 닫힌 채로 열렸다 확인 출력" $?
+echo "$M9_OUT" | grep -q "승인된 신규 파일이 실제로 발행된다(B-16 개방)"
+check "M9 ② B-16 신규 발행이 실제 바이트를 냈다 확인 출력" $?
+echo "$M9_OUT" | grep -q "겹치는 소유권 아래 쓰기는 거부된다"
+check "M9 ③ B-29 동시 쓰기 거부 확인 출력" $?
+echo "$M9_OUT" | grep -q "겹치지 않는 경로는 열려 있다(병렬을 막지 않는다)"
+check "M9 ③ 게이트가 병렬을 막지 않음(공허하지 않음) 확인 출력" $?
+echo "$M9_OUT" | grep -q "순서가 강제되지 않는 두 task의 소유권 겹침은 거부된다"
+check "M9 ④ DAG 소유권 충돌 fail-closed 확인 출력" $?
+echo "$M9_OUT" | grep -q "문서가 실행 권한을 만들 통로가 없다"
+check "M9 ④ DAG 문서가 승인 manifest를 우회하지 못함 확인 출력" $?
+echo "$M9_OUT" | grep -q "resourceClasses가 kernel로 1:1 보존된다(B-30)"
+check "M9 ⑤ B-30 문서→kernel 1:1 보존 확인 출력" $?
+echo "$M9_OUT" | grep -q "거부된 물질화가 durable 잔류를 남기지 않는다(run 벽돌화 0)"
+check "M9 ⑤ 부분 물질화 방지(리뷰 A급 수정) 확인 출력" $?
+echo "$M9_OUT" | grep -q "격리 worktree 디렉터리가 실제로 생겼다"
+check "M9 ⑥ 실제 git worktree 생성 확인 출력" $?
+echo "$M9_OUT" | grep -q "브랜치를 만들지 않았다(--detach)"
+check "M9 ⑥ 브랜치 미생성(원격 쓰기 표현 불가 유지) 확인 출력" $?
+echo "$M9_OUT" | grep -q "멈춘 marker가 표시에서 사라지지 않는다"
+check "M9 ⑦ F2 진행 표시가 실패를 숨기지 않음 확인 출력" $?
+echo "$M9_OUT" | grep -q "세 리뷰어가 한 세션을 겸할 수 없다"
+check "M9 ⑧ 리뷰 3종이 각각 다른 fresh 세션 확인 출력" $?
+echo "$M9_OUT" | grep -q "저자가 자기 코드를 리뷰할 수 없다"
+check "M9 ⑧ 자기 승인 금지 확인 출력" $?
+echo "$M9_OUT" | grep -q "테스트 실행 책임은 test 렌즈에 못 박힌다"
+check "M9 ⑧ test 렌즈 책임 고정 확인 출력" $?
+echo "$M9_OUT" | grep -q "live LLM 0회"
+check "M9 offline 스크립트가 자신의 범위(live 미포함)를 밝힘" $?
+
+echo ""
+echo "== Test 22: M10 T1·T2·T3 — 크래시 복구 · 통합 시나리오 · 무인 loop end-to-end (offline · 무과금) =="
+# 임시 디렉터리 전용 · live LLM 0회. ①②는 **실제 프로세스**를 띄우고 ②는 controller를 실제 SIGKILL한다.
+M10_OUT="$(node scripts/m10-offline-acceptance.mjs 2>&1)"
+M10_RC=$?
+[ "$M10_RC" -eq 0 ];                              check "M10 T1·T2 offline acceptance exit 0" $?
+echo "$M10_OUT" | grep -q "FAIL=0";               check "M10 T1·T2 내부 체크 전부 통과" $?
+echo "$M10_OUT" | grep -q "정상 timeout이 run을 격리하지 않는다"
+check "M10 ① 관측된 정리는 확인으로 적는다(과격리 없음) 확인 출력" $?
+echo "$M10_OUT" | grep -q "관측하지 못한 정리를 확인으로 적지 않는다"
+check "M10 ② 거짓 성공 영수증 금지 확인 출력" $?
+echo "$M10_OUT" | grep -q "자원을 놓지 않고 격리한다"
+check "M10 ② 격리가 자원을 놓지 않음 확인 출력" $?
+echo "$M10_OUT" | grep -q "죽은 writer의 lock을 회수해 재시작이 열린다"
+check "M10 ③ stale lock 회수로 재시작이 열림 확인 출력" $?
+echo "$M10_OUT" | grep -q "새 attempt로 재개해 완주한다"
+check "M10 ④ 크래시 잔재 정착·재개 확인 출력" $?
+echo "$M10_OUT" | grep -q "결과·artifact가 중복 발행되지 않았다"
+check "M10 ④ 중복 없음 확인 출력" $?
+echo "$M10_OUT" | grep -q "같은 문서로 이어받아 완성한다"
+check "M10 ⑤ C-76 부분 물질화 이어받기 확인 출력" $?
+echo "$M10_OUT" | grep -q "결정 없이는 결과를 발행하지 못한다"
+check "M10 T2 사람 결정 gate 우회 없음 확인 출력" $?
+echo "$M10_OUT" | grep -q "막힌 그래프에서 loop가 조용히 진행하지 않는다"
+check "M10 T2 의존성 실패가 조용히 진행하지 않음 확인 출력" $?
+echo "$M10_OUT" | grep -q "변조된 run은 task를 하나도 건드리지 않고 거부된다"
+check "M10 T2 요약 변질 fail-closed 확인 출력" $?
+echo "$M10_OUT" | grep -q "회전(재열기)이 같은 context bundle을 낸다"
+check "M10 T2 context rotation 등가 확인 출력" $?
+echo "$M10_OUT" | grep -q "한 번의 실행이 세 단계를 \*\*의존 순서대로\*\* 완주한다"
+check "M10 T3 end-to-end가 무인 loop 한 번에 돈다 확인 출력" $?
+echo "$M10_OUT" | grep -q "계획 파일 0개로 돌았다"
+check "M10 T3 계획을 모델이 만들었다(정적 계획 파일 0개) 확인 출력" $?
+echo "$M10_OUT" | grep -q "프롬프트가 지시 본문·문맥·\*\*role\*\*을 담았다"
+check "M10 T3 프롬프트가 durable 지시·문맥·role을 담았다 확인 출력" $?
+echo "$M10_OUT" | grep -q "무인 loop가 사람 개입 없이 돌았다(pause 0건)"
+check "M10 T3 사람 개입 0건 확인 출력" $?
+echo "$M10_OUT" | grep -q "좌초 프로세스 탐색(관측자 없음)"
+check "M10 스크립트가 자신의 범위(미증명 4건 + 문서 누락 표현 불가)를 밝힘" $?
 
 echo ""
 echo "==================================="

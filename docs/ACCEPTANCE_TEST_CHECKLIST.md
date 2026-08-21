@@ -135,11 +135,128 @@ harness run idea-validation --project sample-project --vault <vault경로>
 
 ---
 
+---
+
+## 2-2. V3 확장 테스트 (v1 완료 기준 아님)
+
+### Test 13. M4a durable orchestration (offline)
+
+명령:
+
+```bash
+npm run build && node scripts/m4a-offline-acceptance.mjs
+```
+
+확인:
+
+```text
+- 네트워크 / LLM / provider spawn / TTY / git write 없이 exit 0
+- 임시 workspace에서만 동작 (레포에 outputs/orchestration 생성하지 않음)
+- parent running → spawn_request → child 생성 → parent=waiting_children, child=ready
+- child에 의존하는 dependent task = pending
+- kernel 인스턴스를 버리고 같은 run을 다시 열어 state/ready 목록 복원
+- child running → workspace 안 artifact 등록(SHA-256/revision/producer/role) → result 제출
+- child=completed, parent=ready, dependent=ready
+- 재시작 후 동일 ready 목록 / revision / artifact 포인터 / 바이트 동일 snapshot
+- run_state.json · snapshot.md · message index 어디에도 raw artifact 본문·transcript 없음
+- 형태가 유효한 run_state.json 편집(state/resultSummary 위조)은 state↔event binding으로 거부
+  (`state_event_binding_mismatch`), 원상 복구하면 다시 열림
+```
+
+현재 이 스크립트는 **31개 체크**를 수행한다(2026-07-27 P0-1 수정으로 29 → 31).
+
+`scripts/acceptance.sh` Test 13이 위 스크립트의 exit code와 내부 체크 결과를 검증한다
+(기존 Test 1~12는 변경하지 않았다). 세부 계약은
+`docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4a 절을 본다.
+
+---
+
+### Test 14. M4b 배타 자원 class · deterministic scheduler · run writer lock (offline)
+
+명령:
+
+```bash
+npm run build && node scripts/m4b-offline-acceptance.mjs
+```
+
+확인:
+
+```text
+- 네트워크 / LLM / provider spawn / TTY / git write 없이 exit 0
+- 임시 workspace에서만 동작 (레포에 outputs/orchestration 생성하지 않음)
+- 같은 배타 class(suite-lock)를 요구하는 ready task 2건 + 자원 요구 없는 ready task 1건
+- 선언이 run_state.json과 snapshot.md에 durable하게 남음(task.resourceClasses)
+- 결정론적 schedule(scheduleReady)은 같은 class 중 taskId가 앞선 하나만 고르고,
+  자원 요구가 없는 task는 같은 batch에서 함께 고른다 → startScheduledBatch는 커밋 1회
+- 같은 class를 요구하는 나머지 task는 ready로 유예된다(동시 running 0)
+- scheduler를 거치지 않는 직접 startTask도 같은 규칙을 받는다(`resource_conflict`, 전이 0)
+- 재시작(같은 run을 새로 열기) 후 점유·class 선언·schedule 결정이 동일
+- holder가 completed되면 class가 풀리고 대기 task가 다시 schedulable해진다
+- 같은 revision에서 열린 두 kernel: 첫 커밋 성공, 낡은 기준의 두 번째 커밋은 `stale_writer`로
+  거부(파일 전이 0), 다시 열면 첫 writer 결과가 온전하고 정상 커밋이 가능
+- 보유 중인 run writer lock은 mutation을 대기 없이 `run_lock_held`로 거부하고 state/event/body
+  전이가 0이다. 남의 lock은 `run_lock_owner_mismatch`로 보존하며, 해제 후에는 정상 커밋된다
+```
+
+현재 이 스크립트는 **42개 체크**를 수행한다(2026-07-27 M4b 신규).
+
+`scripts/acceptance.sh` Test 14가 위 스크립트의 exit code와 내부 체크 결과를 검증한다
+(**기존 Test 1~13은 변경하지 않았다**). 세부 계약은
+`docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4b 절을 본다.
+
+> M4c부터 orchestration run은 §8 승인 manifest를 **필수 인자**로 받는다. 그래서 이 스크립트와
+> Test 13 스크립트에 manifest 상수 1개와 `createOrchestrationRun` 인자 1개를 더했다.
+> **기존 체크·단정은 하나도 바뀌지 않았고 카운트도 31/42 그대로다.**
+
+---
+
+### Test 15. M4c sibling/reviewer 라우팅 · 메시지 10종 · 승인 manifest · specialist registry (offline)
+
+명령:
+
+```bash
+npm run build && node scripts/m4c-offline-acceptance.mjs
+```
+
+확인:
+
+```text
+- 네트워크 / LLM / provider spawn / TTY / git write 없이 exit 0
+- 임시 workspace에서만 동작 (레포에 outputs/orchestration 생성하지 않음)
+- 닫힌 유효 manifest와 7 specialist registry가 durable하고 재시작 후에도 동일(snapshot 바이트 동일)
+- 승인 밖 요청이 안정적인 code로 거부되고 durable 전이가 0이다:
+  ownership_not_approved / ownership_outside_writable_root / unknown_role /
+  dependency_not_pinned(latest·범위) / 미상 command·domain deny /
+  manifest_expired / max_sessions_exceeded / state_pre_m4c_unsupported
+- child → 중앙 → 정당한 sibling 전달: bounded summary + 검증된 artifact 포인터만 옮기고
+  결정론적 inbox 순서를 유지하며, 무관(route_not_related)·모호(ambiguous_recipient)·
+  미상(unknown_recipient)·자기 자신(route_self)·orchestrator(invalid_recipient) 수신자는 거부한다.
+  run_state.json·snapshot.md 어디에도 raw artifact 본문·body 전문·transcript가 없다
+- 중앙 review_request → fresh reviewer inbox → reviewer review_result → 중앙 →
+  revision_request → 수정 worker inbox 왕복. fresh하지 않은 reviewer·리뷰 없는 수정 지시는 거부
+- decision_request → 중앙 → decision 회신, 요청 없는 결정은 거부
+- 재시작이 manifest·route·수령 상태·**같은 다음 전달**을 복원하고, 수령은 durable event
+  (delivery_acknowledged)를 남기며 재수령은 거부된다
+- 메시지 10종이 runtime 상수와 두 schema(agent_message · orchestration_run_state)에서 정렬되고,
+  manifest schema가 run state에서 참조된다
+```
+
+현재 이 스크립트는 **77개 체크**를 수행한다(2026-07-27 M4c 신규).
+
+`scripts/acceptance.sh` Test 15가 위 스크립트의 exit code와 내부 체크 결과를 검증한다
+(**기존 Test 1~14는 변경하지 않았다**). 세부 계약은
+`docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §M4 → M4c 절을 본다.
+
+---
+
 ## 3. v1 통과 조건
 
 ```text
 위 5개 테스트(Test 1~5)가 모두 통과하면 v1 MVP 완료로 본다.
-(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~6 총 35 checks 검증.)
+(Test 6은 v2 Obsidian 확장 — scripts/acceptance.sh는 현재 Test 1~15 총 92 checks 검증.
+ 2026-07-27 M4a에서 Test 13 4 checks 추가: 71 → 75.
+ 2026-07-27 M4b에서 Test 14 6 checks 추가: 75 → 81.
+ 2026-07-27 M4c에서 Test 15 11 checks 추가: 81 → 92. 기존 checks는 변경하지 않았다.)
 ```
 
 ## 4. v1 실패 조건

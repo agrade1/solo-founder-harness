@@ -11,6 +11,7 @@
 | research | Research Agent | 시장, 고객, 경쟁, 기존 대안, 진입 가능성 조사 | agents/research_agent.md | docs/01_RESEARCH.md |
 | pm | PM / Product Strategy Agent | MVP 범위 축소, 기능 우선순위, PRD, 사용자 흐름 | agents/pm_product_strategy_agent.md | docs/02_PRD.md |
 | ux_ui | UX/UI Design Agent | 최소 화면 흐름, 랜딩/입력/결과/피드백 UX 설계 | agents/ux_ui_design_agent.md | docs/03_UX_FLOW.md |
+| design | Design Agent (디자인 시스템) | 디자인 시스템 — 3계층 토큰, 컴포넌트 인벤토리, 레이아웃/접근성 (DESIGN.md + tokens.json) | agents/design_agent.md | docs/DESIGN.md (+ docs/tokens.json) |
 | tech_lead | Tech Lead Agent | 기술 판단, 최소 아키텍처, 구현 순서, Preflight | agents/tech_lead_agent.md | docs/04_TECH_PLAN.md |
 | red_team | Red Team / Critic Agent | 실패 가능성, 고객이 안 쓸 이유, 리스크 반박 | agents/red_team_critic_agent.md | docs/05_RED_TEAM.md |
 

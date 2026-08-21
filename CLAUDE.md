@@ -1,6 +1,7 @@
 # CLAUDE.md
 
-이 레포는 Solo Founder AI Harness v1 (TypeScript CLI MVP)이다.
+이 레포는 Solo Founder AI Harness다 (TypeScript CLI). v1은 문서 자동화(init/list/run/summary/task-prompt),
+이후 exec/mission 실행 계층이 추가되었다. 실행 계층은 승인·권한 게이트 안에서만 동작한다 — 승인 없는 코드 수정·production 변경은 없다.
 
 ## 세션 시작 시 읽을 문서 (이것만)
 
@@ -16,7 +17,11 @@ agents/AGENTS_INDEX.md
 ## 읽지 말 것
 
 - agents/*.md 원문 전체 (경로/존재 확인만, 특정 agent 디버깅 시에만 해당 파일 하나를 연다)
-- docs/backlog/*
+- docs/backlog/* — 단, 예외: 사용자가 V3 작업을 명시적으로 요청한 경우에만 아래 세 활성 문서를 읽는다.
+    - `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`
+    - `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`
+    - `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
+  - 그 외 backlog 문서는 사용자가 직접 지정하지 않는 한 구현 근거로 사용하지 않는다.
 - docs/IMPLEMENTATION_PLAYBOOK.md (사람용 진행 플레이북 — 사용자가 범위를 지정해주므로 직접 읽을 필요 없음)
 - docs/reference/* (아래 호출 조건에 해당할 때만)
 - docs/reference/ROADMAP.md (v2/v3 계획 — v1 개발 중 읽지 않는다. 범위 확장 방지)
@@ -28,18 +33,53 @@ agents/AGENTS_INDEX.md
 - EVALUATION_CHECKLIST.md: acceptance test 보강 시
 - FAILURE_RECOVERY.md: error handling / failed_agent 기록 구현 시
 
-## v1 규칙
+## 규칙 (현행)
 
-- mock provider 기반 CLI MVP. 실제 LLM 호출 없이 동작해야 한다.
-- 필수 명령: init / list / run / summary / task-prompt
-- 금지: Claude Code 자동 실행, Codex 자동 리뷰, OMC 연동, Agent Teams 연동, 웹 UI, DB, 배포, 결제
+- mock provider는 무과금 테스트 기본값이다. claude-code/anthropic provider와 exec/mission 실행 계층은 실제 LLM 호출을 한다.
+- 필수 명령: init / list / run / summary / task-prompt (+ 실행 계층: exec / mission)
+- exec/mission 실행은 승인·권한 게이트 안에서만 동작한다. 승인 없는 코드 수정·production 변경(배포/DB/live 결제)은 금지.
+- 금지(v1 문서 자동화 범위): Codex 자동 리뷰, OMC 연동, Agent Teams 연동, 웹 UI, DB, 배포, 결제
 - 패키지 설치는 사전 승인 후 진행한다.
 - 완료 기준: docs/ACCEPTANCE_TEST_CHECKLIST.md의 Test 1~5 전부 통과
 - workflow 실행마다 outputs/run_state.json 기록, 결과 저장 시 필수 섹션 헤더 검증(경고)
 - Opus 모델 세션: 지시를 문자 그대로 따르고, 명세에 없는 기능을 추가하지 않으며, 승인 전 파일 수정 금지 (상세: prompts/opus_optimization_guide.md)
+- **배송 우선(MVP-first)**: 기능 전체를 먼저 세우고 개선은 그 다음이다. **A급·크리티컬은 즉시 수정**,
+  **B/C는 대장에 기록하고 보류**하며 진행을 멈추지 않는다. 기능이 다 선 뒤 하드닝 slice에서 비용순 처리.
+  단 **테스트 완화·삭제 금지**와 **과대주장 금지**는 배송 속도와 교환하지 않는다. (상세: AGENTS.md)
+- **모델 분업**: 맥락 파악·계획·**적대적 비판 리뷰**는 fresh **Fable 5**(리뷰는 read-only·구현자와 다른 세션),
+  구현·리비전·통합은 fresh **Claude Code Opus 5**. 병렬 가능한 작업은 병렬로 돌린다(격리 worktree +
+  파일 소유권 분리 조건 아래). (상세: AGENTS.md)
+- 리뷰 finding은 **A(지금 차단) / B(지정 마일스톤·트리거 전 필수) / C(개선 backlog)** 로 분류한다.
+  **C만으로는 리비전 루프를 다시 돌리거나 기능 진행을 멈추지 않는다.** 유예 항목은 조용히 버리지 않고
+  대장에 남긴다(심각도·확률·영향 반경·유예 비용·수정 공수·기한·담당·증거·상태). 상세: AGENTS.md + 로드맵 §9.1
+- 테스트는 위험 비례: 변경마다 focused, handoff 전 전체 suite 1회, 반복·stress·live는 마일스톤/하드닝
+  게이트에서만(해당 계약을 건드린 변경은 예외). 테스트 완화·삭제는 여전히 금지.
+- 병렬 Claude Opus 5 세션은 **격리 worktree + 파일 소유권 분리**가 성립할 때만 쓴다. 공유 schema/API 변경·
+  통합·상태 마이그레이션·최종 전체 테스트·배타 자원 테스트는 직렬. 공유 dirty 체크아웃은 단일 세션. (AGENTS.md)
 
 ## 작업 종료 시
 
-- WORKLOG.md 업데이트
-- 중요 결정은 DECISIONS.md 기록
-- CONTEXT_SUMMARY.md를 짧게 갱신 (다음 세션 시작용)
+- **`docs/CONTEXT_SUMMARY.md`를 짧게 갱신** (다음 세션 시작용 — 실측 수치·남은 것·미증명을 포함)
+- **마일스톤 진행/완료 판정은 로드맵에 `<M#> 진행 판정` 절로** 적는다(증명과 미증명을 같은 무게로)
+- **유예·신규 리스크는 `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md` §9.1 대장에** 등록한다
+  (심각도·확률·영향 반경·유예 비용·수정 공수·기한·담당·증거·상태)
+- **중요 결정은 그 결정을 만든 코드의 주석과 커밋 메시지에** 남긴다 — 기각한 대안과 그 이유를 함께
+
+> `WORKLOG.md`·`DECISIONS.md`는 **이 레포에 존재하지 않는다**(M5~M9 내내 만들어지지 않았다).
+> 실제 기록은 위 네 곳이 담고 있으므로 중복 문서를 만들지 않는다 — 2026-08-19에 계약을 실상에 맞춰
+> 고쳤다. 되살리려면 그 자체를 하나의 slice로 승인받아야 한다.
+
+## V3 활성 설계 문서
+
+V3 작업은 아래 세 문서만 구현 기준으로 사용한다. M3d 이후 로드맵·오케스트레이션 충돌은
+1번 문서가 우선한다.
+
+1. `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`
+2. `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`
+3. `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
+
+`docs/archive/V3_KICKOFF_SUPERSEDED.md`는 기존 `V3_KICKOFF.md`의 과거 계획 기록이며(archive로 이동됨)
+구현 근거로 사용하지 않는다. 문서 간 충돌 시 위 세 활성 문서와 위 우선순위를 적용한다.
+
+`docs/backlog/V3_FIELD_NOTES.md`는 실측 근거로만 참고하며,
+해당 문서만을 근거로 신규 기능을 구현하지 않는다.

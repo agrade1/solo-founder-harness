@@ -1,0 +1,70 @@
+import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
+import { writeFileSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
+import { WORKSPACE_ROOT } from "../core/paths.js";
+import { ClaudeCliProvider } from "../exec/claudeCliProvider.js";
+import { generateBrief } from "../exec/briefGenerator.js";
+import { runMission, renderMissionReport } from "../exec/mission.js";
+import { runParallelMission } from "../exec/parallelMission.js";
+import { StatusBoard } from "../exec/statusBoard.js";
+function askYes(message) {
+    return new Promise((resolve) => {
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        rl.question(`\n${message} (y/N): `, (a) => {
+            rl.close();
+            resolve(/^y(es)?$/i.test(a.trim()));
+        });
+    });
+}
+/** harness mission --goal <g> [--base develop] [--yes] [--max-tasks n] [--review-rounds n] */
+export async function runMissionCommand(opts) {
+    console.log(`미션: ${opts.goal}\n브리프 생성 중 (플래너 Opus)...`);
+    const { brief } = await generateBrief({
+        goal: opts.goal,
+        provider: new ClaudeCliProvider(),
+        sessionId: randomUUID(),
+        cwd: WORKSPACE_ROOT,
+        maxTasks: opts.maxTasks,
+    });
+    console.log(`\n=== 미션 브리프 (${brief.tasks.length} 태스크) ===`);
+    for (const t of brief.tasks) {
+        console.log(`- [${t.id}] (${t.role}) ${t.task}${t.deps?.length ? ` · deps: ${t.deps.join(",")}` : ""}${t.difficulty ? ` · ${t.difficulty}` : ""}`);
+    }
+    if (!opts.yes) {
+        const ok = await askYes("이 브리프로 자율 실행할까요? (승인 후엔 develop 자동 병합, 사람 개입 없음)");
+        if (!ok) {
+            console.log("취소됨 — 실행하지 않음.");
+            return;
+        }
+    }
+    const mode = opts.parallel ? `병렬(최대 ${opts.concurrency ?? 3} 세션 동시)` : "순차";
+    console.log(`\n자율 실행 시작 [${mode}] (사람 개입 없음, 게이트 통과 시 develop 자동 병합)...\n`);
+    const board = new StatusBoard(brief.tasks.map((t) => t.id));
+    const onPhase = (id, phase) => board.update(id, phase);
+    const onEvent = (id, e) => {
+        if (e.kind === "rateLimit" && e.status !== "allowed")
+            board.note(`  [${id}] ⚠ rate limit ${e.status} (resetsAt ${e.resetsAt})`);
+    };
+    const common = {
+        repoRoot: WORKSPACE_ROOT,
+        brief,
+        coderProvider: new ClaudeCliProvider(),
+        reviewProvider: new ClaudeCliProvider(),
+        baseBranch: opts.base,
+        reviewRounds: opts.reviewRounds,
+        onEvent,
+        onPhase,
+    };
+    const report = opts.parallel
+        ? await runParallelMission({ ...common, concurrency: opts.concurrency })
+        : await runMission(common);
+    board.done();
+    const md = renderMissionReport(report);
+    const outDir = join(WORKSPACE_ROOT, "outputs");
+    mkdirSync(outDir, { recursive: true });
+    const path = join(outDir, "MISSION_REPORT.md");
+    writeFileSync(path, md, "utf8");
+    console.log(`\n${md}`);
+    console.log(`MISSION_REPORT: ${path}`);
+}

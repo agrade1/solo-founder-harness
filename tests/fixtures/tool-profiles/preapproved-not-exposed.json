@@ -1,0 +1,16 @@
+{
+  "profiles": [
+    {
+      "id": "bad-preapproved",
+      "capabilities": ["repo_read"],
+      "bindings": { "repo_read": { "kind": "builtin", "tools": ["Read", "Glob"] } },
+      "servers": [],
+      "preapprovedTools": ["Bash"],
+      "deniedTools": [],
+      "permissionMode": "read_only",
+      "allowedDomains": null,
+      "limits": { "maxCallsPerStep": 1, "maxResultChars": 1000, "maxElapsedMsPerCall": 1000 },
+      "secretRefs": []
+    }
+  ]
+}

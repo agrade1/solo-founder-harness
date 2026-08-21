@@ -2,6 +2,8 @@ import { createInterface } from "node:readline";
 import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
+import { createProgressReporter } from "./progress.js";
+import { runHandoffCommand } from "./handoff.js";
 
 /** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
 function stdinApprover(message: string): Promise<boolean> {
@@ -25,6 +27,12 @@ export async function runRun(
   resume = false,
   maxTokens = 0,
   yes = false,
+  toolProfileId?: string,
+  bare = false,
+  handoff = false,
+  handoffCwd?: string,
+  handoffToolProfileId?: string, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
+  handoffRunner: (o: { project: string; cwd?: string; yes?: boolean; toolProfileId?: string }) => Promise<unknown> = runHandoffCommand, // [M3b.2] 테스트 주입 seam
 ): Promise<void> {
   const provider = getProvider(providerId);
   const approve = yes ? async () => true : stdinApprover;
@@ -55,6 +63,9 @@ export async function runRun(
     resume,
     maxTokens,
     approve,
+    reporter: createProgressReporter(),
+    toolProfileId,
+    bare,
   });
 
   console.log("");
@@ -70,6 +81,9 @@ export async function runRun(
   }
   for (const c of state.critique_rounds) {
     console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
+  }
+  if (state.design_gate) {
+    console.log(`디자인 게이트: ${state.design_gate.status}${state.design_gate.tokens_hash ? ` (tokens ${state.design_gate.tokens_hash.slice(0, 12)}…)` : ""}`);
   }
   for (const g of state.gate_jumps) {
     console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${g.jumped_to ? `${g.jumped_to} 되돌림` : "진행"}`);
@@ -111,5 +125,16 @@ export async function runRun(
   }
 
   // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호
-  if (state.status === "failed") process.exitCode = 1;
+  if (state.status === "failed") {
+    process.exitCode = 1;
+    return;
+  }
+
+  // [M3b.2] --handoff: run이 completed일 때만 대화형 Claude Code 핸드오프로 이어붙인다.
+  // (failed면 위에서 return — 핸드오프하지 않고 resume 안내만 남는다.)
+  if (handoff) {
+    console.log("");
+    // [M3c-3b] --handoff-tool-profile은 handoff 경로 전용. workflow용 --tool-profile(toolProfileId)과 혼용하지 않는다.
+    await handoffRunner({ project, cwd: handoffCwd, yes, toolProfileId: handoffToolProfileId });
+  }
 }

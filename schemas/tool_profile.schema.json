@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/tool_profile.schema.json",
+  "title": "ToolProfile",
+  "description": "V3 MCP M2 — capability 기반 도구 정책. 계약 문서용. 런타임 검증은 src/tools/profiles.ts의 수동 validator가 담당(신규 런타임 의존성 0). 향후 정식 validator 도입 시 이 스키마를 사용.",
+  "type": "object",
+  "required": ["profiles"],
+  "properties": {
+    "profiles": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/profile" }
+    }
+  },
+  "definitions": {
+    "profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "capabilities", "bindings", "servers",
+        "preapprovedTools", "deniedTools", "permissionMode",
+        "allowedDomains", "limits", "secretRefs"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "capabilities": { "type": "array", "items": { "type": "string" } },
+        "bindings": {
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/binding" }
+        },
+        "servers": { "type": "array", "items": { "$ref": "#/definitions/server" } },
+        "preapprovedTools": { "type": "array", "items": { "type": "string" } },
+        "deniedTools": { "type": "array", "items": { "type": "string" } },
+        "permissionMode": { "enum": ["read_only", "dev_write", "approval_write"] },
+        "allowedDomains": {
+          "oneOf": [{ "type": "null" }, { "type": "array", "items": { "type": "string" } }]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["maxCallsPerStep", "maxResultChars", "maxElapsedMsPerCall"],
+          "properties": {
+            "maxCallsPerStep": { "type": "integer", "minimum": 0 },
+            "maxResultChars": { "type": "integer", "minimum": 0 },
+            "maxElapsedMsPerCall": { "type": "integer", "minimum": 0 }
+          }
+        },
+        "secretRefs": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" } },
+        "source": { "enum": ["official", "vendor", "community"] }
+      }
+    },
+    "binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "tools"],
+          "properties": { "kind": { "const": "builtin" }, "tools": { "type": "array", "items": { "type": "string" } } }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "adapter", "operations"],
+          "properties": {
+            "kind": { "const": "internal_adapter" },
+            "adapter": { "type": "string" },
+            "operations": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "server", "tools"],
+          "properties": {
+            "kind": { "const": "mcp" },
+            "server": { "type": "string" },
+            "tools": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "command"],
+          "properties": {
+            "kind": { "const": "cli" },
+            "command": { "type": "string" },
+            "operations": { "type": "array", "items": { "type": "string" } }
+          }
+        }
+      ]
+    },
+    "server": {
+      "description": "[M3c-3b] launcher / stdio / http / bare(name만) 배타. additionalProperties:false로 unknown key 거부. 런타임 계약은 src/tools/profiles.ts validateServer가 강제(이 스키마는 계약 문서용).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "launcher"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "launcher": { "enum": ["shadcn_read_proxy"] }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "command"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "command": { "type": "string", "minLength": 1 },
+            "args": { "type": "array", "items": { "type": "string" } },
+            "transport": { "const": "stdio" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name", "url"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "url": { "type": "string", "pattern": "^https://" },
+            "transport": { "const": "http" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["name"],
+          "properties": { "name": { "type": "string", "minLength": 1 } }
+        }
+      ]
+    }
+  }
+}

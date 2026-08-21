@@ -1,0 +1,192 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/agent_message.schema.json",
+  "title": "AgentMessageEnvelope",
+  "description": "V3 M4a/M4c — agent message envelope 계약(로드맵 §5.1). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/agentMessage.ts다(신규 검증 의존성 0). 두 정의의 핵심 동치(type enum · required · bounds · pattern)는 src/exec/orchestrationKernel.test.ts가 강제한다. M4c에서 §5.1의 **10종 전부**를 구현했고 envelope 필드 집합은 M4a와 동일하다 — routing·권한은 envelope가 아니라 중앙 run state(message index의 routeToTaskId/acknowledgedAt)가 들고 간다. Markdown body는 이 envelope와 함께 다니는 별도 문서이며 타입별 필수 heading은 messageBodyHeadings에 계약으로 적어 둔다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "messageId",
+    "runId",
+    "milestoneId",
+    "taskId",
+    "parentTaskId",
+    "sender",
+    "recipient",
+    "type",
+    "createdAt",
+    "dependsOn",
+    "artifactRefs",
+    "supersedes"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1" },
+    "messageId": { "$ref": "#/definitions/slug" },
+    "runId": { "$ref": "#/definitions/slug" },
+    "milestoneId": { "$ref": "#/definitions/slug" },
+    "taskId": { "$ref": "#/definitions/slug" },
+    "parentTaskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
+    "sender": {
+      "description": "중앙→agent 타입(task_assignment/review_request/revision_request/decision)은 'orchestrator', 나머지는 대상 task의 roleId. 방향 계약은 런타임 validator가 state와 대조해 강제한다(§5.3). sibling 전달도 예외가 아니다 — 발신 agent의 recipient는 언제나 'orchestrator'이고 실제 전달 대상은 중앙이 message index에 route로 남긴다.",
+      "$ref": "#/definitions/slug"
+    },
+    "recipient": { "$ref": "#/definitions/slug" },
+    "type": {
+      "description": "로드맵 §5.1의 10종 전부(M4c).",
+      "enum": [
+        "task_assignment",
+        "spawn_request",
+        "status_update",
+        "result",
+        "review_request",
+        "review_result",
+        "revision_request",
+        "blocker",
+        "decision_request",
+        "decision"
+      ]
+    },
+    "createdAt": { "$ref": "#/definitions/timestamp" },
+    "dependsOn": {
+      "description": "선행 taskId 또는 messageId. 미상 id는 거부한다.",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/slug" }
+    },
+    "artifactRefs": {
+      "description": "검증된 artifact 포인터만. raw 본문은 어떤 레벨에서도 담지 않는다(§3.2).",
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/definitions/artifactPointer" }
+    },
+    "supersedes": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] }
+  },
+  "definitions": {
+    "slug": {
+      "description": "소문자·숫자로 시작하고 [a-z0-9._-]만 허용, 1..64자.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "timestamp": {
+      "description": "UTC ISO-8601, 밀리초 3자리 고정. clock 주입으로 테스트 결정성을 확보한다.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "workspacePath": {
+      "description": "workspace-relative 정규화 경로. absolute path, '..', 빈 segment, backslash는 거부한다.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^/\\\\][^\\\\]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "artifactPointer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "revision", "producerTaskId", "role"],
+      "properties": {
+        "path": { "$ref": "#/definitions/workspacePath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "revision": { "type": "integer", "minimum": 1, "maximum": 1000000 },
+        "producerTaskId": { "$ref": "#/definitions/slug" },
+        "role": { "enum": ["input", "contract", "output", "evidence", "diff", "test"] }
+      }
+    },
+    "messageBodyHeadings": {
+      "description": "타입별 human-readable Markdown body의 필수 h2 heading 계약(로드맵 §5.2). 런타임 validator는 이 heading이 전부 있고, 이 목록 밖의 h2가 없으며, 중복이 없고, body가 16384 바이트 이하일 것을 요구한다. JSON Schema는 Markdown 본문을 검증할 수 없으므로 여기엔 계약만 기록한다. task_assignment·spawn_request·result·review_result·blocker/decision_request(공유)는 §5.2가 지정한 heading 그대로이고, §5.2가 지정하지 않은 status_update·review_request·revision_request·decision은 M4c가 정한 최소 closed set(각 3개)이다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxBodyBytes",
+        "task_assignment",
+        "spawn_request",
+        "status_update",
+        "result",
+        "review_request",
+        "review_result",
+        "revision_request",
+        "blocker",
+        "decision_request",
+        "decision"
+      ],
+      "properties": {
+        "maxBodyBytes": { "const": 16384 },
+        "task_assignment": {
+          "const": [
+            "Objective",
+            "Scope / Ownership",
+            "Out of Scope / Forbidden",
+            "Inputs and Contracts",
+            "Dependencies",
+            "Definition of Done",
+            "Budget and Permission Envelope",
+            "Expected Deliverables"
+          ]
+        },
+        "spawn_request": {
+          "const": [
+            "Why Split Is Needed",
+            "Requested Specialty",
+            "Child Scope",
+            "Required Inputs",
+            "Expected Deliverables",
+            "Dependency and Budget Impact"
+          ]
+        },
+        "result": {
+          "const": [
+            "Result Summary",
+            "Work Performed",
+            "Decisions and Assumptions",
+            "Deliverables",
+            "Tests and Evidence",
+            "Risks / Known Limitations",
+            "Unresolved Questions",
+            "Recommended Next Action"
+          ]
+        },
+        "blocker": {
+          "const": [
+            "Blocking Condition",
+            "Evidence",
+            "Options and Trade-offs",
+            "Required Authority",
+            "Safe Default While Waiting"
+          ]
+        },
+        "decision_request": {
+          "description": "§5.2가 blocker와 같은 section을 지정한 타입.",
+          "const": [
+            "Blocking Condition",
+            "Evidence",
+            "Options and Trade-offs",
+            "Required Authority",
+            "Safe Default While Waiting"
+          ]
+        },
+        "review_result": {
+          "const": [
+            "Reviewed Revision and Hash",
+            "Findings (P0/P1/P2)",
+            "Reproduction or Evidence",
+            "Missing Tests",
+            "Contract Deviations",
+            "Verdict: pass | revise | block"
+          ]
+        },
+        "status_update": { "const": ["Current Status", "Progress Since Last Update", "Next Step"] },
+        "review_request": { "const": ["Review Target and Hash", "Review Scope", "Required Checks"] },
+        "revision_request": { "const": ["Findings to Address", "Required Changes", "Verification Required"] },
+        "decision": { "const": ["Decision", "Rationale", "Scope of Effect"] }
+      }
+    }
+  }
+}

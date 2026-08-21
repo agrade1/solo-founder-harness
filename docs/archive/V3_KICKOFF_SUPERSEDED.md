@@ -1,4 +1,20 @@
 # V3_KICKOFF.md
+> 상태: 폐기된 과거 계획
+>
+> 이 문서는 v2.4.0 이후 초기 v3 방향을 기록한 역사 문서다.
+> 현재 구현 기준으로 사용하지 않는다.
+>
+> 현재 활성 v3 설계 문서:
+>
+> 1. `docs/backlog/V3_DESIGN_LEARN_PROGRESS_HANDOFF.md`
+> 2. `docs/backlog/V3_MCP_CAPABILITY_TOOL_PROFILES.md`
+>
+> 충돌 시 위 두 문서가 항상 우선한다.
+> 특히 이 문서의 `harness execute`, `execute --apply`,
+> headless 코드 수정 설계는 폐기됐다.
+
+
+
 
 v3 착수 시 이 문서부터 읽는다. v2(v2.4.0, 2026-07-07 완료) 이후 계획.
 작성일: 2026-07-07. 위치 제안: `docs/backlog/V3_KICKOFF.md`.

@@ -24,6 +24,20 @@ export interface AgentRunInput {
   revisionRequest?: string;
   /** 동적 분화: planner에게 하위 에이전트를 SPAWN 형식으로 선언하라는 지시. mock은 미사용. */
   spawnRequest?: string;
+  /** [M2.1] 도구 정책 실행 context. --tool-profile 지정 시에만 채워진다. mock/anthropic은 미사용. */
+  execContext?: ProviderExecContext;
+}
+
+/**
+ * [M2.1] compile된 도구 정책을 실제 provider 실행에 전달하는 context.
+ * claude-code만 소비한다. secret "값"은 담지 않는다 — 이름(redactNames)만 전달하고
+ * provider가 내부에서 collectSecretValues로 값을 조회한다.
+ */
+export interface ProviderExecContext {
+  /** CompiledToolPolicy.claudeArgs (--strict-mcp-config/--tools/--permission-mode/...). */
+  claudeArgs: string[];
+  /** redaction용 환경변수 이름 목록 (값 아님). */
+  redactNames: string[];
 }
 
 /** token 사용량. 실제 API provider만 채운다 (mock=0, claude-code=계측 불가 시 생략). */

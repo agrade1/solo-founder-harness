@@ -3,6 +3,8 @@ import { mockProvider } from "./mockProvider.js";
 import { claudeCodeProvider } from "./claudeCodeProvider.js";
 import { anthropicProvider } from "./anthropicProvider.js";
 
+export { getProviderCapabilities, type ProviderCapabilities } from "./capabilities.js";
+
 /**
  * provider id → 구현체:
  *   mock         — 테스트/오프라인 (기본)

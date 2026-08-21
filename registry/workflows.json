@@ -11,6 +11,8 @@
       "steps": [
         "pm",
         "ux_ui",
+        "design",
+        { "approval": { "message": "디자인 게이트 — DESIGN.md/tokens.json 확인 후 승인. (선택) Claude Design/Stitch/Figma로 시안 검증하고 변경은 DESIGN.md/tokens.json에 역반영한 뒤 재개. md/json이 source of truth.", "show": "docs/DESIGN.md", "tokens_path": "docs/tokens.json" } },
         "tech_lead",
         { "critique_loop": { "target": "tech_lead", "critic": "red_team", "max_rounds": 2 } },
         "founder_ceo"
@@ -35,6 +37,8 @@
         "research",
         "pm",
         "ux_ui",
+        "design",
+        { "approval": { "message": "디자인 게이트 — DESIGN.md/tokens.json 확인 후 승인. (선택) Claude Design/Stitch/Figma로 시안 검증하고 변경은 DESIGN.md/tokens.json에 역반영한 뒤 재개. md/json이 source of truth.", "show": "docs/DESIGN.md", "tokens_path": "docs/tokens.json" } },
         "tech_lead",
         "red_team",
         "founder_ceo",

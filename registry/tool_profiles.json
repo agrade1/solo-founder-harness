@@ -1,0 +1,80 @@
+{
+  "profiles": [
+    {
+      "id": "planning-none",
+      "capabilities": [],
+      "bindings": {},
+      "servers": [],
+      "preapprovedTools": [],
+      "deniedTools": ["mcp__*"],
+      "permissionMode": "read_only",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 0, "maxResultChars": 0, "maxElapsedMsPerCall": 0 },
+      "secretRefs": []
+    },
+    {
+      "id": "planning-local-readonly",
+      "capabilities": ["repo_read"],
+      "bindings": {
+        "repo_read": { "kind": "builtin", "tools": ["Read", "Glob", "Grep"] }
+      },
+      "servers": [],
+      "preapprovedTools": ["Read", "Glob", "Grep"],
+      "deniedTools": ["mcp__*"],
+      "permissionMode": "read_only",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 6, "maxResultChars": 8000, "maxElapsedMsPerCall": 60000 },
+      "secretRefs": []
+    },
+    {
+      "id": "research-tavily",
+      "capabilities": ["web_search", "page_extract"],
+      "bindings": {
+        "web_search": { "kind": "internal_adapter", "adapter": "research", "operations": ["search"] },
+        "page_extract": { "kind": "internal_adapter", "adapter": "research", "operations": ["extract"] }
+      },
+      "servers": [],
+      "preapprovedTools": [],
+      "deniedTools": [],
+      "permissionMode": "read_only",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 8, "maxResultChars": 8000, "maxElapsedMsPerCall": 30000 },
+      "secretRefs": ["TAVILY_API_KEY"],
+      "source": "official"
+    },
+    {
+      "id": "handoff-shadcn-readonly",
+      "capabilities": ["component_registry_read"],
+      "bindings": {
+        "component_registry_read": {
+          "kind": "mcp",
+          "server": "shadcn",
+          "tools": [
+            "get_project_registries",
+            "list_items_in_registries",
+            "search_items_in_registries",
+            "view_items_in_registries",
+            "get_item_examples_from_registries"
+          ]
+        }
+      },
+      "servers": [{ "name": "shadcn", "launcher": "shadcn_read_proxy" }],
+      "preapprovedTools": [
+        "mcp__shadcn__get_project_registries",
+        "mcp__shadcn__list_items_in_registries",
+        "mcp__shadcn__search_items_in_registries",
+        "mcp__shadcn__view_items_in_registries",
+        "mcp__shadcn__get_item_examples_from_registries"
+      ],
+      "deniedTools": [
+        "mcp__shadcn__get_add_command_for_items",
+        "mcp__shadcn__get_audit_checklist"
+      ],
+      "permissionMode": "approval_write",
+      "allowedDomains": [],
+      "limits": { "maxCallsPerStep": 6, "maxResultChars": 8000, "maxElapsedMsPerCall": 60000 },
+      "secretRefs": [],
+      "source": "official"
+    }
+  ]
+}

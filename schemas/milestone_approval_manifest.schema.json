@@ -1,0 +1,301 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/milestone_approval_manifest.schema.json",
+  "title": "MilestoneApprovalManifest",
+  "description": "V3 M4c/M5c — 로드맵 §8 milestone 승인 envelope. **계약 버전은 2다**(M5c): v1 manifest(autopilotPolicy·operationAuthorityByTask 없음, 또는 executionAuthority가 codex+git뿐)는 마이그레이션·기본값 없이 manifest_pre_m5c_unsupported로 거부한다 — 없는 정책·권위를 채우면 그것이 곧 조용한 자동 승인이다. run 생성 시 반드시 bind되고 outputs/orchestration/<run-id>/run_state.json의 manifest 필드로 durable하게 저장된다(= stateContentDigest에 포함 → 손편집은 state_event_binding_mismatch로 거부). M5c가 더한 것: ⓐ executionAuthority에 node(managed process supervisor를 띄우는 승인된 Node)와 processObserver(자손 프로세스 관측 = zero-survivor 확인)가 필수로 추가되고 codex는 **null 허용**이다(offline manifest가 'live 추론이 가능한 척' 하지 않게 한다) ⓑ autopilotPolicy(deadline·재시도 정책 — 전부 필수이고 조용한 기본값이 없다) ⓒ operationAuthorityByTask(taskId → 그 task가 요청할 수 있는 typed operation 권위; **목록에 없는 task는 어떤 write·process도 할 수 없다** — 부재가 hard deny다, 대장 B-10). typed operation union은 닫혀 있고 shell 문자열 · 인자 wildcard · 런타임 실행 파일 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없으므로 승인될 수도 없다**. run_process 레코드에는 **실행 대상 필드가 없다**(3A 2차 리비전에서 executable/args를 삭제했다) — 실행 대상은 executionAuthority.node + controllerEntrypoint로 manifest 전체에 하나로 고정되고, 승인 문서가 고르는 것은 닫힌 action enum과 그 action의 입력 객체(data)뿐이다. git은 typed operation이 아니다(승인된 argv 하나로 push/remote가 표현되면 레포 hard deny를 승인 문서가 덮는 형태가 된다). 이 파일은 계약 문서이고 실제 보안 경계는 런타임 validator src/exec/approvalManifest.ts의 validateApprovalManifest다(신규 검증 의존성 0). 두 정의가 **어긋나지 않는지**는 src/exec/orchestrationKernel.test.ts가 key 집합·enum·상한·pattern을 대조해 강제한다. 그 테스트는 draft-07 구현을 **실행하지 않으므로** 이 문서와 런타임이 완전히 동치라고 주장하지 않는다 — 런타임이 더 엄격한 항목(경로 정규화 항등 · 고립 UTF-16 surrogate 거부 · 코드 포인트 길이 · 배열 항목 간 유일성 · 교차 필드 규칙)은 각 자리 description에 **런타임 전용**으로 적어 둔다. 실제 draft-07 적대적 corpus 검증은 외부 provider/worker에 schema를 넘기기 전(늦어도 M5d 계약 handoff)에 한다(대장 C2). M4c가 **강제**하는 것은 state 관련 권한뿐이다: ownership 명시 승인 · writableRoots · child 위임(부모 부분집합) · maxSessions · expiresAt. allowedCommands/allowedDependencies/allowedNetworkDomains/maxTokens/localMergeAllowed는 **기록·조회 전용**이며 kernel은 명령 실행·패키지 설치·네트워크 접근·git merge·provider 호출을 하지 않는다(순수 술어 commandAllowed/dependencyAllowed/networkDomainAllowed로 조회만 한다, deny-by-default). 레포의 hard deny(production deploy · live billing · 원격 저장소 직접 쓰기 · PR merge 자동화 · MCP @latest)는 manifest 내용과 무관하게 항상 더 강하다.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "milestoneId",
+    "approvedCommit",
+    "writableRoots",
+    "ownershipByTask",
+    "allowedCommands",
+    "allowedDependencies",
+    "allowedNetworkDomains",
+    "executionAuthority",
+    "autopilotPolicy",
+    "operationAuthorityByTask",
+    "maxSessions",
+    "maxTokens",
+    "maxElapsedMs",
+    "localMergeAllowed",
+    "expiresAt"
+  ],
+  "properties": {
+    "milestoneId": {
+      "description": "bind되는 run의 milestoneId와 같아야 한다(다르면 manifest_milestone_mismatch).",
+      "$ref": "#/definitions/slug"
+    },
+    "approvedCommit": {
+      "description": "승인 시점의 구체적인 commit hash. 40자 소문자 hex만 — 짧은 해시·브랜치·tag는 거부한다.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "writableRoots": {
+      "description": "쓰기가 허용된 workspace-relative root(정규화·사전순·중복 없음). 모든 task ownership과 모든 write_file 권위 경로는 이 안에 있어야 한다.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/definitions/workspacePath" }
+    },
+    "ownershipByTask": {
+      "description": "taskId → 명시적으로 승인된 ownership 경로. 여기에 없는 taskId로는 root/dependent task를 만들 수 없다(ownership_not_approved). child task는 이 표가 아니라 **parent가 가진 ownership의 부분집합**만 위임받는다(ownership_not_delegated).",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/definitions/slug" },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "maxItems": 16,
+        "uniqueItems": true,
+        "items": { "$ref": "#/definitions/workspacePath" }
+      }
+    },
+    "allowedCommands": {
+      "description": "정확히 이 문자열인 명령만 승인된다. kernel은 shell을 파싱하지 않고 실행하지도 않는다.",
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[A-Za-z0-9][A-Za-z0-9 ._:@/+-]{0,79}$" }
+    },
+    "allowedDependencies": {
+      "description": "정확히 pin된 버전만 승인한다. latest·범위(^ ~ >=)·x·dist-tag·2자리 버전은 dependency_not_pinned로 거부한다(레포 hard deny의 MCP @latest 금지와 같은 규칙).",
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "version"],
+        "properties": {
+          "name": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^(@[a-z0-9][a-z0-9._-]*/)?[a-z0-9][a-z0-9._-]*$" },
+          "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?$" }
+        }
+      }
+    },
+    "allowedNetworkDomains": {
+      "description": "소문자 도메인만(scheme·port·path·wildcard·trailing dot 금지). 하위 도메인은 자동 허용하지 않는다.",
+      "type": "array",
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 3, "maxLength": 253, "pattern": "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$" }
+    },
+    "executionAuthority": {
+      "description": "V3 M5b 6차 리뷰 A1 — **승인된 실행 권위**이며 실행 파일 선택의 유일한 trust root다. 각 항목은 정규 절대경로와 **내용 SHA-256**을 담는다. provider·controller·실행 경계는 이 경로만 열고(O_RDONLY|O_NOFOLLOW · 같은 fd에서 fstat·해싱) 내용 digest가 정확히 같을 때만 실행하며, 생성 시점과 **모든 spawn 직전**에 다시 확인한다 → 같은 inode 제자리 덮어쓰기도 fail closed다. 호출자가 경로를 지정하는 옵션은 존재하지 않는다. **M5c: node·processObserver가 필수로 추가됐고 codex는 null 허용이다**(M5c는 Codex를 인스턴스화하지 않는다). **M5c 3A 2차 리비전(B-10): controllerEntrypoint가 필수로 추가됐다** — 모든 typed run_process가 실행하는 유일한 script이며, 승인된 operation 레코드는 실행 대상을 고를 수 없다. key 집합은 닫혀 있고, node/processObserver/controllerEntrypoint가 없는 v1 manifest는 manifest_pre_m5c_unsupported다. **B-7ⓐ: codexHome이 선택 key다**(부재 = live 인증 미승인). **V3 M10 T3: claude가 두 번째 선택 key로 더해졌다** — 무인 loop의 live worker backend가 실행할 수 있는 유일한 프로그램이며, 부재·null이면 live worker backend 자체가 표현 불가다(조용한 fallback이 아니라 backend 선택 거부다). 나머지 다섯은 필수다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["codex", "controllerEntrypoint", "git", "node", "processObserver"],
+      "properties": {
+        "claude": {
+          "description": "V3 M10 T3 — **worker 세션 실행 파일**(선택). 무인 loop(runAutopilot)의 live worker backend가 spawn할 수 있는 유일한 프로그램이고 digest는 spawn 직전에 다시 확인한다. 이 key가 없거나 null이면 live worker backend는 승인되지 않은 것이며 offline backend만 남는다. 부재와 null은 같은 뜻이고 그때 정규화 결과에 키가 없으므로 기존 승인의 canonical digest는 바이트 단위로 그대로다.",
+          "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
+        },
+        "codex": {
+          "description": "offline manifest는 live 추론을 승인하지 않는다 → null이 유효하다.",
+          "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
+        },
+        "codexHome": {
+          "description": "V3 M5c 대장 B-7ⓐ — **승인된 격리 CODEX_HOME**(유일한 선택 key). 사람이 **1회** `codex login CODEX_HOME=<path>`으로 자격증명을 넣어 둔 전용 디렉터리이며, harness는 로그인을 대행·자동화·프록시하지 않고 auth 파일을 복사·영속화·해싱·기록하지 않는다(그래서 내용 digest 필드가 없다 — digest를 남기는 것 자체가 유출 경로다). 이 key가 **없으면** live 인증이 승인되지 않은 것이고 격리 홈은 기존 계약대로 **완전히 비어 있어야** 한다(자식 env는 CODEX_HOME 하나뿐이므로 ambient 자격증명이 도달할 통로가 없다 → 인증 없이 fail closed이며 ~/.codex로의 fallback은 존재하지 않는다). 있으면 spec.codex.codexHome이 이 경로와 **정확히 같아야** 하고(다르면 codex_home_not_approved → spawn 0), 그때만 홈 안에 승인된 자격증명 파일(auth.json)이 있는 것이 허용된다 — 그 밖의 항목이 하나라도 있으면 여전히 codex_home_not_empty다. 런타임 전용 계약(spawn 직전 동기 게이트): 홈은 정규·비symlink·0700·프로세스 uid 소유·사용자 홈 아님이어야 하고 자격증명 파일은 정규 파일·비symlink·group/other 비트 0·프로세스 uid 소유여야 하며, 첫 invocation에서 고정된 dev+ino가 이후 invocation마다 다시 대조된다.",
+          "$ref": "#/definitions/approvedDirectory"
+        },
+        "controllerEntrypoint": {
+          "description": "M5c 3A 2차 리비전(대장 B-10) — **digest로 고정된 controller entrypoint**. 모든 typed run_process는 `node <controllerEntrypoint> <action> <data...>` 형태로만 표현되며, 이 경로는 승인 문서 전체에 하나뿐이고 operation 레코드가 바꿀 수 없다. argv[1]이 절대 경로 script이므로 --eval/--require 같은 Node 옵션 자리 자체가 없다.",
+          "$ref": "#/definitions/approvedExecutable"
+        },
+        "git": { "$ref": "#/definitions/approvedExecutable" },
+        "node": {
+          "description": "M5c — managed process supervisor를 띄우는 승인된 Node 실행 파일. typed run_process의 실행 파일은 **항상 이 경로**이며 operation 레코드에는 그 필드가 없다.",
+          "$ref": "#/definitions/approvedExecutable"
+        },
+        "processObserver": {
+          "description": "M5c — 자손 프로세스 관측(zero-survivor 확인)에 쓰는 승인된 실행 파일. 정리 관측 전용이며 typed operation이 아니다.",
+          "$ref": "#/definitions/approvedExecutable"
+        }
+      }
+    },
+    "autopilotPolicy": {
+      "description": "M5c — autopilot 실행 정책(전부 필수 · 전부 bounded · **조용한 기본값이 없다**). 사람이 승인하는 것은 '얼마나 오래 · 몇 번 · 얼마나 기다릴 수 있는가'이며 이 값들이 deadline·재시도의 정본이다. maxAttemptElapsedMs는 manifest.maxElapsedMs 이하여야 한다(런타임 교차 검사).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxTaskAttempts",
+        "maxDeliveryAttempts",
+        "retryBackoffMs",
+        "deliveryDeadlineMs",
+        "maxNoProgressMs",
+        "maxAttemptElapsedMs",
+        "cleanupTermGraceMs",
+        "cleanupKillGraceMs"
+      ],
+      "properties": {
+        "maxTaskAttempts": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "maxDeliveryAttempts": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "retryBackoffMs": { "type": "integer", "minimum": 0, "maximum": 60000 },
+        "deliveryDeadlineMs": { "type": "integer", "minimum": 1000, "maximum": 3600000 },
+        "maxNoProgressMs": {
+          "description": "인정되는 진행 신호 없이 지날 수 있는 최대 시간(heartbeat·미상 이벤트는 시계를 되돌리지 않는다).",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 900000
+        },
+        "maxAttemptElapsedMs": {
+          "description": "attempt 하나의 wall deadline 원천. manifest.maxElapsedMs 이하여야 한다.",
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 3600000
+        },
+        "cleanupTermGraceMs": {
+          "description": "TERM 후 KILL까지의 유예.",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        },
+        "cleanupKillGraceMs": {
+          "description": "KILL 후 zero-survivor 확인까지의 유예.",
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 30000
+        }
+      }
+    },
+    "operationAuthorityByTask": {
+      "description": "M5c — taskId → 그 task가 요청할 수 있는 typed operation 권위 목록(대장 B-10). **목록에 없는 task는 어떤 write·process도 할 수 없다** — 빈 목록이 기본이고 부재는 hard deny다. worker는 authorityId만 고를 수 있고 경로·바이트 상한·실행 파일·argv는 사람이 승인한 이 레코드에서 나온다. task 안에서 authorityId는 유일하며 사전순으로 저장된다(digest 결정성).",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/definitions/slug" },
+      "additionalProperties": {
+        "type": "array",
+        "maxItems": 32,
+        "items": { "$ref": "#/definitions/approvedOperation" }
+      }
+    },
+    "maxSessions": {
+      "description": "동시에 **자원을 점유**할 수 있는 task 수의 상한. 커밋·load 공용 불변식(assertSessionLimit)이 강제하며, M5c부터 점유 상태는 prepared·running·cleaning 세 가지다(대장 B-11/B-13).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 16
+    },
+    "maxTokens": {
+      "description": "선택 예산. 없으면 null이지만 키는 durable 계약이라 항상 존재한다. M5c의 durable 회계(run_state.accounting.tokensUsed)가 이 값에 대해 남은 예산을 계산한다.",
+      "oneOf": [{ "type": "integer", "minimum": 1, "maximum": 100000000 }, { "type": "null" }]
+    },
+    "maxElapsedMs": {
+      "description": "승인된 경과 예산. run 생성 시 min(budgetStartedAt + maxElapsedMs, expiresAt)이 durable budgetDeadlineAt이 되고 **재시작이 그 창을 새로 만들지 못한다**(대장 B-12).",
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400000
+    },
+    "localMergeAllowed": {
+      "description": "기록·조회 전용. true여도 kernel은 어떤 git 조작도 하지 않는다.",
+      "type": "boolean"
+    },
+    "expiresAt": {
+      "description": "만료 후에는 **전진 작업이** manifest_expired로 거부된다. 경계 포함이다(now >= expiresAt — 대장 C-17). M5c 예외(DECISIONS 2026-07-30 · 로드맵 §8.1): 이미 태운 자원의 회계 · 취소 요청 · 정리 · fail-closed pause만 만료 뒤에도 지나간다(safety-only reducer). 그 reducer들은 작업을 시작하지 않고, 완료하지 않고, 실패한 전달을 수령하지 않고, artifact를 발행하지 않는다. 읽기는 계속 가능하다.",
+      "$ref": "#/definitions/timestamp"
+    }
+  },
+  "definitions": {
+    "approvedExecutable": {
+      "description": "승인된 실행 파일 1건: 정규 절대경로(NUL·`.`/`..` segment·중복/후행 `/` 금지) + 내용 SHA-256(64자 소문자 hex). maxLength는 draft-07 의미대로 **Unicode 코드 포인트** 수이며 런타임도 같은 의미로 센다(대장 C-40 — 이전 판의 UTF-16 `.length`는 astral 경로에서 schema와 판정이 갈렸다).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "approvedDirectory": {
+      "description": "V3 M5c 대장 B-7ⓐ — 승인된 디렉터리 1건: 정규 절대경로 하나뿐이고 **내용 digest가 없다**. 이 record가 가리키는 곳에는 사람이 넣어 둔 자격증명이 있으므로 harness는 내용을 읽지도 해싱하지도 기록하지도 않는다. 경로 계약은 approvedExecutable.path와 같은 pattern·maxLength(코드 포인트)이며, 신원·권한·항목 계약은 런타임 전용이다(verifyCodexHome).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 512, "pattern": "^(?:/(?!\\.\\.?(?:/|$))[^/\\0]+)+$" }
+      }
+    },
+    "approvedOperation": {
+      "description": "M5c — **승인된 typed operation 1건**(대장 B-10). kind별로 key 집합이 닫혀 있다: write_file은 {authorityId, kind, path, maxBytes}, run_process는 {authorityId, kind, action, data, timeoutMs}뿐이다. **3A 2차 리비전에서 run_process의 executable/args를 삭제했다** — 1차 판은 승인된 Node 경로 + bounded 문자열 argv라 --eval·--require·임의 script 경로가 그대로 통과했고, 그것은 승인된 Node 하나가 곧 임의 로컬 코드 권위라는 뜻이었다. 지금 실행 대상은 executionAuthority.node + controllerEntrypoint로 고정이고 승인 문서가 고르는 것은 닫힌 action enum과 데이터 전용 인자뿐이다. shell 문자열 · 인자 wildcard · 런타임 실행 파일/script 선택 · 네트워크 · dependency 설치 · 원격 git · deploy · billing · PR merge 변종은 **표현할 타입이 없다**. 런타임은 여기에 더해 write_file.path가 writableRoots 안이고(operation_outside_writable_root) 그 task의 승인 ownership 안이며(operation_not_owned), action이 승인 목록 안이고(operation_action_not_approved) data 항목이 NUL·고립 surrogate 없고 '-'로 시작하지 않으며(operation_data_not_approved) timeoutMs가 autopilotPolicy.maxAttemptElapsedMs 이하임을 함께 본다.",
+      "oneOf": [{ "$ref": "#/definitions/writeFileAuthority" }, { "$ref": "#/definitions/runProcessAuthority" }, { "$ref": "#/definitions/gitWorktreeAuthority" }]
+    },
+    "writeFileAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "path", "maxBytes"],
+      "properties": {
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "write_file" },
+        "path": { "$ref": "#/definitions/workspacePath" },
+        "maxBytes": {
+          "description": "typed write_file 본문 바이트 상한(최대 1 MiB).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        }
+      }
+    },
+    "runProcessAuthority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "action", "data", "timeoutMs"],
+      "properties": {
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "run_process" },
+        "action": {
+          "description": "고정 controller entrypoint가 받아들이는 **닫힌 action 집합**. 여기 없는 문자열은 승인될 수 없고, 목록에 항목을 더하는 것 자체가 사람의 승인 대상이다. 정본은 src/exec/orchestrationTypes.ts의 CONTROLLER_ACTIONS다.",
+          "enum": ["validate-plan", "run-tests"]
+        },
+        "data": {
+          "description": "M5c 3A 3차 리비전(B2) — **action별 입력 계약**. 이전 판은 0..16개의 임의 문자열 배열이라 arity·경로 의미·소유권·읽기 범위를 미래 launcher가 지어내야 했다(과승인이거나 폐기 대상). 지금 action마다 key 집합이 닫혀 있다: validate-plan은 {planPath} 하나뿐이다. 런타임(src/exec/approvalManifest.ts)은 여기에 더해 planPath가 **이미 정규화된** 형태이고(normalizeWorkspacePath 항등) 고립 UTF-16 surrogate가 없으며 승인된 writableRoots 안이고 그 task의 승인 ownership 안임을 함께 본다(operation_data_not_approved / operation_outside_writable_root / operation_not_owned). **읽기 전용 action이지만 별도의 readableRoots를 새로 만들지 않고 이미 승인된 쓰기 범위 안쪽으로 좁힌다**(더 좁은 쪽이 fail closed다). 정규화 항등·surrogate 판정은 draft-07 pattern으로 표현하지 않으며 **런타임 전용 불변식**이다. **V3 M9 선결 1 — run-tests 추가**: 입력은 정확히 {projectPath} 하나이고 planPath와 **같은 경로 계약**을 지난다(같은 검증 함수를 공유한다). 테스트 명령·인자·러너를 담는 key는 어느 action에도 없다 — 무엇을 어떻게 실행할지는 고정된 controller entrypoint가 정한다.",
+          "oneOf": [{ "$ref": "#/definitions/validatePlanData" }, { "$ref": "#/definitions/runTestsData" }]
+        },
+        "timeoutMs": { "type": "integer", "minimum": 100, "maximum": 3600000 }
+      }
+    },
+    "validatePlanData": {
+      "description": "`validate-plan` action의 입력. 정확히 planPath 하나이며 검증할 계획 파일의 정규화된 workspace-relative 경로다(읽기 전용).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["planPath"],
+      "properties": { "planPath": { "$ref": "#/definitions/workspacePath" } }
+    },
+    "gitWorktreeAuthority": {
+      "description": "V3 M9 T3③ — 격리 worktree 조작 승인 1건. 경로·브랜치·커밋·remote·refspec·timeout을 담을 필드가 하나도 없다: worktree 경로는 <workspaceRoot>/.harness/worktrees/<runId>/<taskId>로, 체크아웃 커밋은 approvedCommit으로 kernel이 파생한다. add는 --detach라 브랜치를 만들지 않는다. 이것이 kernel이 저장소를 바꾸는 유일한 면이며, 집행은 typed operation 경로(durable pending·A4 표시·영수증·outcome_unknown 정합화)를 그대로 지난다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["authorityId", "kind", "action"],
+      "properties": {
+        "authorityId": { "$ref": "#/definitions/slug" },
+        "kind": { "const": "git_worktree" },
+        "action": {
+          "description": "정본은 src/exec/orchestrationTypes.ts의 GIT_WORKTREE_ACTIONS다.",
+          "enum": ["add", "remove"]
+        }
+      }
+    },
+    "runTestsData": {
+      "description": "`run-tests` action의 입력(V3 M9 선결 1). 정확히 projectPath 하나이며 테스트를 돌릴 프로젝트의 정규화된 workspace-relative 디렉터리다. 명령·인자·러너는 표현할 필드가 없다.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["projectPath"],
+      "properties": { "projectPath": { "$ref": "#/definitions/workspacePath" } }
+    },
+    "slug": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
+    },
+    "workspacePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512,
+      "pattern": "^[^/\\\\][^\\\\]*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "specialistRegistry": {
+      "description": "로드맵 §6의 기본 상위 specialist 7종 — 이 레포의 정본 registry(src/exec/approvalManifest.ts의 SPECIALIST_ROLES)다. task.roleId는 이 목록의 값이거나 그 하위 role(<상위>.<하위>, 한 겹, 하위는 ^[a-z0-9][a-z0-9_-]{0,31}$)이어야 한다. 중앙이 들고 있는 서술 metadata이며 run마다 7개 task를 요구하지 않고 실제 프로세스도 띄우지 않는다. 모델·provider 라우팅은 여기서 다루지 않는다.",
+      "const": ["research", "pm", "ux", "design", "tech-lead", "dev-lead", "qa-security"]
+    }
+  }
+}

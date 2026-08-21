@@ -1,0 +1,176 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://solo-founder-harness/schemas/live_evidence.schema.json",
+  "title": "LiveEvidence",
+  "description": "V3 M3d.2 — live acceptance runner의 성공 전용 redacted evidence 계약. 계약 문서용이며 런타임 검증은 src/tools/liveEvidence.ts의 수동 closed validator가 담당한다(신규 검증 의존성 0). 두 정의는 src/tools/liveEvidence.test.ts의 cross-check 테스트로 동기 상태를 강제한다. 허용 필드는 version/contract/status/timestamp + 계약별 정수/불리언 파생 지표뿐이다. raw transcript, tool/MCP 입출력, argv, 명령, 파일 경로, hostname/user, PID, session/call/request ID, 환경변수·secret 참조/값, config 본문, free-form error/message는 어떤 레벨에서도 담지 않는다(additionalProperties:false + 금지 key 스캔).",
+  "oneOf": [
+    { "$ref": "#/definitions/m3a_live_preflight" },
+    { "$ref": "#/definitions/m3b2_live_handoff" },
+    { "$ref": "#/definitions/m3c3b_live_handoff" }
+  ],
+  "definitions": {
+    "version": { "const": "1" },
+    "status": {
+      "description": "성공 전용 evidence — 실패/스킵/미실행 run은 evidence를 남기지 않는다.",
+      "const": "pass"
+    },
+    "timestamp": {
+      "description": "UTC ISO-8601 (Z 고정, 밀리초 3자리 선택). 로컬 타임존·오프셋 금지. 시(00-23)/분/초 범위와 달력 실재성(2월 30·31일, 4·6·9·11월 31일, 비윤년 2월 29일 거부)까지 pattern 조합으로 제한한다. 연도를 2000..2099로 한정해 윤년 규칙이 4의 배수와 정확히 일치하게 만들었고, 런타임 validator(src/tools/liveEvidence.ts isValidEvidenceTimestamp)가 동일한 판정을 내린다(테스트가 동치를 강제).",
+      "type": "string",
+      "allOf": [
+        { "pattern": "^20[0-9]{2}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]{3})?Z$" },
+        { "not": { "pattern": "-02-3[01]T" } },
+        { "not": { "pattern": "-(04|06|09|11)-31T" } },
+        {
+          "anyOf": [
+            { "not": { "pattern": "-02-29T" } },
+            { "pattern": "^20([02468][048]|[13579][26])-02-29T" }
+          ]
+        }
+      ]
+    },
+    "metricInteger": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+    "metricBoolean": { "type": "boolean" },
+    "m3a_live_preflight": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contract", "status", "timestamp", "metrics"],
+      "properties": {
+        "version": { "$ref": "#/definitions/version" },
+        "contract": { "const": "m3a_live_preflight" },
+        "status": { "$ref": "#/definitions/status" },
+        "timestamp": { "$ref": "#/definitions/timestamp" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "expectedServerCount",
+            "expectedToolCount",
+            "expectedServerConnected",
+            "snapshotWritten",
+            "ambientCanarySpawned",
+            "fixtureExitedWithinLimit",
+            "sentinelLeakAbsent",
+            "sensitivePatternAbsent"
+          ],
+          "properties": {
+            "expectedServerCount": { "$ref": "#/definitions/metricInteger" },
+            "expectedToolCount": { "$ref": "#/definitions/metricInteger" },
+            "expectedServerConnected": { "$ref": "#/definitions/metricBoolean" },
+            "snapshotWritten": { "$ref": "#/definitions/metricBoolean" },
+            "ambientCanarySpawned": { "$ref": "#/definitions/metricBoolean" },
+            "fixtureExitedWithinLimit": { "$ref": "#/definitions/metricBoolean" },
+            "sentinelLeakAbsent": { "$ref": "#/definitions/metricBoolean" },
+            "sensitivePatternAbsent": { "$ref": "#/definitions/metricBoolean" }
+          }
+        }
+      }
+    },
+    "m3b2_live_handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contract", "status", "timestamp", "metrics"],
+      "properties": {
+        "version": { "$ref": "#/definitions/version" },
+        "contract": { "const": "m3b2_live_handoff" },
+        "status": { "$ref": "#/definitions/status" },
+        "timestamp": { "$ref": "#/definitions/timestamp" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hookKindCount",
+            "traceRecordCount",
+            "distinctSessionCount",
+            "toolRequestedCount",
+            "toolSucceededCount",
+            "toolFailedCount",
+            "permissionRequestedCount",
+            "sessionEndCount",
+            "emptyMcpServerCount",
+            "emptyMcpToolCount",
+            "ambientMcpCanarySpawned",
+            "ambientHookCanaryExecuted",
+            "rejectMarkerCreated",
+            "permissionBitsExact",
+            "runStateHandoffRecorded",
+            "sentinelLeakAbsent"
+          ],
+          "properties": {
+            "hookKindCount": { "$ref": "#/definitions/metricInteger" },
+            "traceRecordCount": { "$ref": "#/definitions/metricInteger" },
+            "distinctSessionCount": { "$ref": "#/definitions/metricInteger" },
+            "toolRequestedCount": { "$ref": "#/definitions/metricInteger" },
+            "toolSucceededCount": { "$ref": "#/definitions/metricInteger" },
+            "toolFailedCount": { "$ref": "#/definitions/metricInteger" },
+            "permissionRequestedCount": { "$ref": "#/definitions/metricInteger" },
+            "sessionEndCount": { "$ref": "#/definitions/metricInteger" },
+            "emptyMcpServerCount": { "$ref": "#/definitions/metricInteger" },
+            "emptyMcpToolCount": { "$ref": "#/definitions/metricInteger" },
+            "ambientMcpCanarySpawned": { "$ref": "#/definitions/metricBoolean" },
+            "ambientHookCanaryExecuted": { "$ref": "#/definitions/metricBoolean" },
+            "rejectMarkerCreated": { "$ref": "#/definitions/metricBoolean" },
+            "permissionBitsExact": { "$ref": "#/definitions/metricBoolean" },
+            "runStateHandoffRecorded": { "$ref": "#/definitions/metricBoolean" },
+            "sentinelLeakAbsent": { "$ref": "#/definitions/metricBoolean" }
+          }
+        }
+      }
+    },
+    "m3c3b_live_handoff": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "contract", "status", "timestamp", "metrics"],
+      "properties": {
+        "version": { "$ref": "#/definitions/version" },
+        "contract": { "const": "m3c3b_live_handoff" },
+        "status": { "$ref": "#/definitions/status" },
+        "timestamp": { "$ref": "#/definitions/timestamp" },
+        "metrics": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "allowedToolCount",
+            "deniedToolCount",
+            "snapshotToolCount",
+            "traceRecordCount",
+            "distinctSessionCount",
+            "mcpToolRequestedCount",
+            "mcpToolSucceededCount",
+            "unplannedMcpToolRequestedCount",
+            "forbiddenToolObservedCount",
+            "sessionEndCount",
+            "leftoverProcessCount",
+            "hashChainMatched",
+            "serviceRepoUnchanged",
+            "ambientMcpCanarySpawned",
+            "ambientHookCanaryExecuted",
+            "permissionBitsExact",
+            "runStateHandoffRecorded",
+            "sentinelLeakAbsent"
+          ],
+          "properties": {
+            "allowedToolCount": { "$ref": "#/definitions/metricInteger" },
+            "deniedToolCount": { "$ref": "#/definitions/metricInteger" },
+            "snapshotToolCount": { "$ref": "#/definitions/metricInteger" },
+            "traceRecordCount": { "$ref": "#/definitions/metricInteger" },
+            "distinctSessionCount": { "$ref": "#/definitions/metricInteger" },
+            "mcpToolRequestedCount": { "$ref": "#/definitions/metricInteger" },
+            "mcpToolSucceededCount": { "$ref": "#/definitions/metricInteger" },
+            "unplannedMcpToolRequestedCount": { "$ref": "#/definitions/metricInteger" },
+            "forbiddenToolObservedCount": { "$ref": "#/definitions/metricInteger" },
+            "sessionEndCount": { "$ref": "#/definitions/metricInteger" },
+            "leftoverProcessCount": { "$ref": "#/definitions/metricInteger" },
+            "hashChainMatched": { "$ref": "#/definitions/metricBoolean" },
+            "serviceRepoUnchanged": { "$ref": "#/definitions/metricBoolean" },
+            "ambientMcpCanarySpawned": { "$ref": "#/definitions/metricBoolean" },
+            "ambientHookCanaryExecuted": { "$ref": "#/definitions/metricBoolean" },
+            "permissionBitsExact": { "$ref": "#/definitions/metricBoolean" },
+            "runStateHandoffRecorded": { "$ref": "#/definitions/metricBoolean" },
+            "sentinelLeakAbsent": { "$ref": "#/definitions/metricBoolean" }
+          }
+        }
+      }
+    }
+  }
+}
