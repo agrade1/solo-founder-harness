@@ -16,9 +16,10 @@
  *   (offline backend와 **같은 validator**) → kernel의 승인 레코드 대조 → 소유권·`writableRoots`·digest
  *   재검증을 전부 지나야 한다. 계획에 없는 operation·승인 밖 경로·다른 task의 소유 경로는 그대로 거부다.
  *   **모델은 자기 권한을 스스로 넓힐 수 없다**(그래서 이 backend가 승인 경계를 바꾸지 않는다).
- * - **도구·네트워크** — 인자에서 도구를 끊는다(`--tools ""` · `--strict-mcp-config` ·
- *   `--setting-sources ""` · `--permission-mode plan`). 모델이 파일을 읽거나 쓰지 못하므로 산출물은
- *   **오직 계획 텍스트**이며, 실제 쓰기는 kernel typed-write 채널만 한다.
+ * - **도구·네트워크** — 인자에서 권능을 끊는다: `--tools ""`(도구 0) · `--strict-mcp-config`(MCP 0) ·
+ *   `--setting-sources ""`(사용자·프로젝트 설정 0) · `--no-session-persistence`(세션 기록 0).
+ *   `--permission-mode`는 `default`다(**`plan`이 아니다** — 이유는 `LIVE_WORKER_ARGS` 주석의 실측).
+ *   그래서 산출물은 **오직 계획 텍스트**이며, 실제 쓰기는 kernel typed-write 채널만 한다.
  *   (M8 live 실측: 도구를 끊은 세션도 **가짜 tool-use 텍스트**를 낼 수 있다. 그때 계약 검증이 그것을
  *   거부해 산출물로 승격되지 않았다 — 이 모듈도 같은 검증기 하나에 의존한다.)
  * - **원문 durable 반입** — stdout 전문은 여기서 끝난다. 중앙으로 가는 것은 검증된 계획과 bounded
@@ -31,13 +32,29 @@
  */
 import { spawn } from "node:child_process";
 import { dirname } from "node:path";
-import { LIMITS, OrchestrationError, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
+import { ARTIFACT_ROLES, LIMITS, OrchestrationError, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
 import { validateTypedExecutionPlan } from "./typedPlan.js";
 /** 무인 loop가 아는 **두 번째** backend 이름(닫힌 집합의 나머지 한 값). */
 export const LIVE_PLAN_BACKEND = "claude-plan";
 /**
- * 모델에게 주는 **도구 없는 plan 모드** 인자. 값이 상수인 이유: 호출자가 인자를 고를 수 있으면
- * 그것이 곧 임의 실행이다(`--eval`·`--settings`·`--add-dir`가 전부 그 통로다).
+ * 모델에게 주는 **도구 없는 세션** 인자. 값이 상수인 이유: 호출자가 인자를 고를 수 있으면 그것이 곧
+ * 임의 실행이다(`--eval`·`--settings`·`--add-dir`가 전부 그 통로다).
+ *
+ * 권능을 끊는 것은 세 축이다: `--tools ""`(도구 0) · `--strict-mcp-config`(MCP 서버 0) ·
+ * `--setting-sources ""`(사용자·프로젝트 설정 0). 그래서 이 세션은 파일을 읽거나 쓰거나 명령을
+ * 돌릴 수 없고, 낼 수 있는 것은 **텍스트 하나**뿐이다.
+ *
+ * **`--permission-mode plan`을 쓰지 않는다(V3 M10 T3 live 실측)**: plan 모드는 응답을 "계획 요약"으로
+ * 감싸므로 계약이 요구하는 JSON이 나오지 않았다(첫 live 시도가 그래서 `worker_plan_absent`였고 그 한
+ * turn에 output 67k 토큰을 태웠다). 같은 프롬프트를 plan 모드 없이 돌리면 **87 토큰**으로 정확한 JSON이
+ * 나왔다. 대신 `default`를 **명시한다** — 생략하면 ambient 기본값(`acceptEdits`일 수 있다)에 의존하게
+ * 되고, 그것이 곧 "환경이 권한을 고른다"는 뜻이다. 도구가 0이라 승인할 도구 호출 자체가 없다.
+ *
+ * **선례를 잘못 인용하지 않는다**(리뷰 B3): `src/core/handoff.ts`도 `--permission-mode default`를
+ * 쓰지만 그쪽은 `--tools default`(**전체 도구** · 사람이 감독하는 대화형 세션)와 짝이므로 **이유가
+ * 다르다**. 여기 근거는 그 선례가 아니라 ⓐ 도구 목록이 비어 있다는 것과 ⓑ headless에는 편집·명령을
+ * 승인해 줄 사람이 없다는 것이다. `--tools ""`가 실제로 도구를 끊는다는 근거는 M8 live 실측이다
+ * (도구를 끊은 세션이 **가짜** tool-use 텍스트를 냈고 실제 파일 접근은 없었다 — 로드맵 M8 절).
  */
 export const LIVE_WORKER_ARGS = Object.freeze([
     "-p",
@@ -49,7 +66,14 @@ export const LIVE_WORKER_ARGS = Object.freeze([
     "--tools",
     "",
     "--permission-mode",
-    "plan",
+    "default",
+    /**
+     * **세션 기록을 남기지 않는다**(T3 적대적 리뷰 B1). 이것이 없으면 CLI가 turn마다 프롬프트 전문
+     * (= assignment 본문 + context bundle)과 응답 원문을 **사용자 세션 저장소**에 쓴다. harness durable에
+     * 남지 않는다는 성질만으로는 "원문이 어디에도 남지 않는다"가 아니다. 레포의 다른 headless 세션
+     * (`src/tools/preflight.ts` · `src/tools/shadcnPilot.ts`)이 이미 같은 축을 끊는다.
+     */
+    "--no-session-persistence",
 ]);
 /** 자식 프로세스에 주는 환경 **전부**. 부모 환경을 상속하지 않는다(secret·proxy·NODE_OPTIONS 차단). */
 export const LIVE_WORKER_ENV = Object.freeze({
@@ -62,8 +86,27 @@ export const LIVE_WORKER_ENV = Object.freeze({
     LANG: "C",
     LC_ALL: "C",
     TZ: "UTC",
-    /** 세션 자격증명은 사람이 이미 넣어 둔 홈에 있다 — harness는 로그인을 대행하지 않는다. */
-    HOME: process.env.HOME ?? "",
+    /**
+     * **`USER`만 더한다 — 실측으로 필요한 최소 하나다**(V3 M10 T3 live 실측).
+     *
+     * 닫힌 env로 처음 돌렸을 때 CLI는 `"Not logged in · Please run /login"`으로 **exit 1**이었다.
+     * 부모 env에서 한 변수씩 빼며 이분한 결과: `USER`를 빼면 실패하고 `HOME`·`SHELL`·`TMPDIR`·`LANG`·
+     * `LC_ALL`·`TZ`·`PATH`는 빠져도 성공한다 → 세션 자격증명은 **파일이 아니라 macOS Keychain**에 있고
+     * 그 계정 해석에 `USER`가 쓰인다.
+     *
+     * **`HOME`을 주지 않는다** — 다만 이것은 **env 위생이고 경계가 아니다**(리뷰 B4). sandbox가 없고
+     * 같은 uid이므로 HOME을 빼도 홈 **접근 권능**이 사라지지 않는다(`os.homedir()`는 HOME 부재 시 passwd로
+     * 해석하고, Keychain 로그인이 성공한 것 자체가 계정 자원에 닿았다는 증거다). 주지 않는 이유는
+     * "줄 필요가 없는 값을 주지 않는다"이며 경계는 `--setting-sources ""`·`--strict-mcp-config`·
+     * `--no-session-persistence`가 만든다.
+     *
+     * **이 이분은 표본 1이다**(CLI 버전 하나). CLI가 갱신되면 다시 필요해질 수 있고 그 경우 실패 모드는
+     * "로그인 안 됨"으로 **fail closed**다(조용한 성공이 아니다).
+     *
+     * 호출자별 오버라이드 표면은 열지 않는다(`MANAGED_PROCESS_ENV`와 같은 규율 — 그것이 곧 임의 env
+     * 주입 통로다). 이 상수가 닫혀 있다는 성질 자체가 secret·`NODE_OPTIONS`·proxy 유입을 막는 근거다.
+     */
+    USER: process.env.USER ?? "",
 });
 /** stdout 수집 상한. 넘으면 그 자리에서 죽인다(무한 출력이 메모리를 먹지 않는다). */
 export const MAX_WORKER_STDOUT_BYTES = 4 * 1024 * 1024;
@@ -184,7 +227,11 @@ export function startLivePlanTurn(launch) {
             out += d;
         });
         child.stderr.setEncoding("utf8");
-        child.stderr.on("data", (d) => (errText += d.slice(0, 2000)));
+        // **누적 상한**(리뷰 C3): chunk당 절삭만으로는 deadline까지 무제한으로 자란다.
+        child.stderr.on("data", (d) => {
+            if (errText.length < 4_000)
+                errText += d.slice(0, 4_000 - errText.length);
+        });
         const exit = await new Promise((resolve) => {
             child.once("error", (e) => resolve({ code: null, spawnError: e }));
             child.once("close", (code) => resolve({ code, spawnError: null }));
@@ -257,13 +304,23 @@ export function startLivePlanTurn(launch) {
  */
 export function planContractPrompt() {
     return [
-        "출력은 **JSON 객체 하나**여야 한다. 설명·코드펜스·도구 호출 텍스트를 덧붙이지 마라.",
+        "**네 응답 전체가 JSON 객체 하나**여야 한다. 머리말·설명·코드펜스·계획 요약·도구 호출 텍스트를",
+        "하나도 붙이지 마라(첫 글자가 `{`이고 마지막 글자가 `}`다).",
         '필수 key: {"operations": [...], "result": {"summary": "...", "outputs": [...]}}.',
         '`requests`는 선택이다(spawn_child · deliver_status · request_decision).',
         '**`schemaVersion`·binding은 적지 마라** — 계약이 소유한 필드이고 중앙이 채운다.',
         `\`result.summary\`는 ${LIMITS.maxSummaryLength}자 이내의 한 줄 요약이다.`,
-        "`result.outputs[]`는 `{path, role}`이며 path는 workspace 상대경로다.",
-        "`operations[]`는 승인된 것만 가능하다: `{operationId, kind, authorityId, ...}`.",
+        // **닫힌 값 집합을 상수에서 파생한다**(M8 실측: 생산자 프롬프트에 값 형식 규칙이 없으면 계약이
+        // 매번 산출물을 거부한다 — 검증기와 프롬프트는 단일 출처여야 한다). 첫 live 시도가 `role: "plan"`을
+        // 내서 `plan_invalid`였다.
+        `\`result.outputs[]\`는 \`{path, role}\`이며 path는 workspace 상대경로, role은 다음 중 하나다: ${ARTIFACT_ROLES.map((r) => `\`${r}\``).join(" · ")}.`,
+        "`operations[]`는 **승인된 것만** 가능하다. 지시(`Inputs and Contracts`)에 operation 객체가 적혀 있으면",
+        "그것을 **그대로** 넣고, 없으면 `operations`는 빈 배열이다(스스로 만들어 낸 operation은 거부된다).",
+        // **소유 경로 규칙**(V3 M10 T3 live 실측 3번째 반복): 첫 성공 turn 2건 뒤 개발 단계가
+        // `artifact_not_owned`로 거부됐다 — 계약이 "이 task가 무엇을 발행할 수 있는가"를 말하지 않았기 때문이다.
+        // 소유 경로 자체는 문맥(context bundle)의 `ownership`에 이미 있다.
+        "`result.outputs[]`의 path는 **이 task의 소유 경로 안**이어야 한다(문맥의 `ownership` 참조).",
+        "지시가 요구한 산출물만 적어라 — 소유 밖 경로나 남의 단계 산출물을 적으면 발행이 거부된다.",
         "승인되지 않은 경로·명령·네트워크는 표현할 수 없다(적어도 거부된다).",
     ].join("\n");
 }
