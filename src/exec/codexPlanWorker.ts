@@ -173,10 +173,13 @@ export function startCodexPlanTurn(launch: CodexWorkerLaunch): WorkerStream {
     } catch {
       throw workerError("worker_plan_missing", "계획 JSON을 파싱할 수 없다");
     }
-    // 검증기는 offline·claude backend와 **같은 하나**다(계약이 backend마다 갈라지지 않는다).
-    const plan = validateTypedExecutionPlan(parsed, launch.binding);
+    // **여기서는 fail-fast로만 검증하고 terminal에는 원본 JSON을 싣는다**(V3 M10 T7 실측).
+    // 검증기가 돌려주는 값은 **정규화·동결된 계획**이라 그것을 다시 실으면 호출자(autopilot)의 재검증이
+    // 닫힌 key 집합에서 걸린다 — live 리뷰어 3턴이 전부 `plan_invalid`로 pause한 원인이 이것이었다.
+    // 계약의 정본은 여전히 검증기 하나이고, autopilot이 자기 binding으로 다시 본다.
+    validateTypedExecutionPlan(parsed, launch.binding);
     events.push({ kind: "progress", seq: 2, step: "codex-review" });
-    events.push({ kind: "terminal", seq: 3, plan, usage });
+    events.push({ kind: "terminal", seq: 3, plan: parsed, usage });
   };
 
   return {

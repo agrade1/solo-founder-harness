@@ -17,8 +17,15 @@
   전부 `plan_invalid`**로 pause했다(모델이 계약 JSON을 규격대로 내지 않았다 — 배선이 아니라 프롬프트·모델
   출력 축의 문제로 보인다). 그래서 **"in-loop 리뷰 왕복이 돈다"는 아직 증명되지 않았다**(`C-97` 유지).
   worker 자체는 실제 codex로 end-to-end 동작을 확인했다(직접 호출 → `terminal` 이벤트 · 계획 유효).
-- **다음 한 걸음**: 리뷰어 프롬프트가 codex에서 계약 JSON을 내게 만드는 것(claude용 프롬프트를 그대로 썼다)
-  → 실패한 응답 본문을 한 번 캡처해 원인을 보고 고친다.
+- **원인을 좁혔다(live 3회 추가 실측)**: ⓐ 라우팅은 **정상**이다 — `review-* role=qa-security.* → codex-plan`을
+  실측으로 찍었다 ⓑ 그런데 **worker 본문에 도달하지 않는다**(worker 안의 디버그 출력이 한 번도 찍히지 않았다)
+  → 실패 지점은 codex 갈래의 **`kernel.approvedCodexWorker()`(승인 홈·바이너리 재검증)** 또는 그 직후이고,
+  그 예외가 marker 매핑에서 `plan_invalid`로 접히고 있는 것으로 보인다(매핑도 함께 봐야 한다 — 원인과 다른
+  marker가 나오는 것 자체가 `C-96` 부류의 문제다).
+- **첫 turn에서 고친 것 하나**: worker가 **검증기가 돌려준 정규화·동결 계획**을 terminal에 실어 autopilot의
+  재검증이 닫힌 key 집합에서 걸렸다 → 이제 **원본 JSON**을 싣는다(fail-fast 검증은 그대로 둔다).
+- **다음 한 걸음**: `approvedCodexWorker()`를 live 홈·vendor 바이너리로 직접 호출해 실제 code를 보고,
+  autopilot의 marker 매핑이 `worker_backend_unapproved`를 삼키지 않는지 함께 확인한다(codex 왕복 0~1회).
 
 ---
 
