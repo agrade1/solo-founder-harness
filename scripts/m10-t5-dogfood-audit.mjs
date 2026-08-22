@@ -219,18 +219,40 @@ async function boundary(label, target, manifest, expected) {
 }
 // harness 레포에서 승인한 manifest(approvedCommit = harness HEAD)로 구독컷을 돌리려는 시도.
 //
-// 3a는 **경로 문자열의 유니코드 정규형** 때문에 HEAD 대조에 도달조차 하지 못한다: git은
-// `--show-toplevel`을 **NFD**(Hangul Jamo 분해)로 내놓고 `realpath`는 받은 형태를 보존하므로,
-// 한글 경로를 NFC로 넘기면 `topReal !== root`가 되어 checkout 신원이 거부된다(fail closed).
+// **`B-33`이 M10 T6에서 닫혔다**: 이전에는 경로 문자열의 유니코드 정규형 때문에 3a가 HEAD 대조에
+// 도달조차 하지 못했다(git은 `--show-toplevel`을 NFD로 내놓고 `realpath`는 받은 형태를 보존하므로
+// 한글 경로를 NFC로 넘기면 `boundary_not_checkout_root`였다). 지금 대조는 **dev+ino**라 두 형태가 같은
+// 판정을 받는다 → 3a·3b 둘 다 `approved_commit_mismatch`(= 다른 레포라는 진짜 이유)에서 막힌다.
 const appNfd = execFileSync("/usr/bin/git", ["-C", APP, "rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
 const cps = (s) => [...s].map((c) => c.codePointAt(0).toString(16)).join(" ");
 if (appNfd !== APP) {
   console.log(`  경로 정규형 불일치 — git: ${cps([...appNfd].slice(19, 22).join(""))} vs 호출자: ${cps([...APP].slice(19, 22).join(""))}`);
 }
-await boundary("3a 대상 = 구독컷 checkout(app/) · 호출자 경로 NFC", APP, harnessManifest, "boundary_not_checkout_root");
-// 3b는 git이 내놓은 형태를 그대로 넘긴다 → 신원 검사를 지나 **승인 커밋 대조**에서 막힌다.
+await boundary("3a 대상 = 구독컷 checkout(app/) · 호출자 경로 NFC", APP, harnessManifest, "approved_commit_mismatch");
+// 3b는 git이 내놓은 형태를 그대로 넘긴다 → 같은 판정이어야 한다(정규형이 판정을 바꾸지 않는다).
 await boundary("3b 대상 = 같은 checkout · git이 준 NFD 경로", appNfd, harnessManifest, "approved_commit_mismatch");
 await boundary("4  대상 = 구독컷 프로젝트 루트(git repo 아님)", PROJECT, harnessManifest, "boundary_git_failed");
+
+// ── probe 5: R6(대장 `B-27`) — wrapper script를 승인하면 감사가 잡는다(실물 근거) ──
+console.log(`\n── probe 5: R6 wrapper 함정 (실물 근거) ────────`);
+const codexBin = process.env.HARNESS_CODEX_BIN ?? "/Users/jihun/.nvm/versions/node/v24.18.0/bin/codex";
+if (!existsSync(codexBin)) {
+  console.log(`  건너뜀 — codex 실행 파일이 없다: ${codexBin} (R6 focused 테스트는 suite에 있다)`);
+} else {
+  const wrapperManifest = validateApprovalManifest({
+    ...harnessManifest,
+    executionAuthority: { ...authority(), codex: { path: codexBin, sha256: sha(codexBin) } },
+  });
+  const hits = auditApprovalManifest(wrapperManifest, { now: NOW.toISOString() }).filter(
+    (f) => f.rule === "approved_executable_is_script",
+  );
+  const ok = hits.length === 1 && hits[0].subject === "executionAuthority.codex";
+  if (!ok) fail += 1;
+  console.log(
+    `  ${ok ? "OK  " : "FAIL"} ${codexBin}는 '#!' script다 → R6 ${hits.length}건${ok ? "" : " (기대 1건)"}`,
+  );
+  if (ok) console.log(`         ${hits[0].message.slice(0, 100)}…`);
+}
 
 console.log(fail === 0 ? `\n감사·probe 전부 기대대로 (FAIL 0)` : `\nFAIL ${fail}`);
 process.exit(fail === 0 ? 0 : 1);
