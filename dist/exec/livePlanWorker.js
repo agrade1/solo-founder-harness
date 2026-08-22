@@ -34,6 +34,7 @@ import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import { ARTIFACT_ROLES, LIMITS, OrchestrationError, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
 import { validateTypedExecutionPlan } from "./typedPlan.js";
+import { readTopLevelNames, verifyIsolatedDir } from "./isolatedConfigDir.js";
 /** 무인 loop가 아는 **두 번째** backend 이름(닫힌 집합의 나머지 한 값). */
 export const LIVE_PLAN_BACKEND = "claude-plan";
 /**
@@ -75,6 +76,71 @@ export const LIVE_WORKER_ARGS = Object.freeze([
      */
     "--no-session-persistence",
 ]);
+/**
+ * 이 계약의 **안정 코드**(V3 M11 · 대장 `C-86`). 골격은 `isolatedConfigDir` 하나를 쓴다.
+ */
+const CLAUDE_CONFIG_CODES = Object.freeze({
+    notAbsolute: "claude_config_invalid",
+    invalid: "claude_config_invalid",
+    notApproved: "claude_config_not_approved",
+    permissive: "claude_config_permissive",
+    notOwned: "claude_config_not_owned",
+    ambient: "claude_config_ambient",
+    identityChanged: "claude_config_identity_changed",
+});
+/**
+ * **승인된 격리 `CLAUDE_CONFIG_DIR` 검증**(V3 M11 · 대장 `C-86`).
+ *
+ * ## 왜 이 축이 필요했나
+ *
+ * M10까지 claude worker의 자식 env는 `USER` 하나로 자격증명을 해석했다(macOS Keychain). 실행 **파일**은
+ * digest로 고정됐지만 **"누구의 구독으로 도는가"** 는 ambient였다 — 승인 문서가 말하지 않는 축이 하나
+ * 남아 있었다는 뜻이고, codex는 `codexHome`으로 이미 그것을 말하고 있었다.
+ *
+ * ## 실측이 먼저였다 (2026-08-23 · live claude 2회)
+ *
+ * `CLAUDE_CONFIG_DIR`을 **빈 디렉터리**로 주면 CLI는 `"Not logged in · Please run /login"`으로 **exit 1**
+ * 이고, 주지 않으면 exit 0이다. 즉 이 env가 **auth 해석 경로를 실제로 가른다** → 승인 축으로 표현
+ * 가능하다. 실측 없이 축을 열었으면 "신원을 고정한다"가 공허한 주장이 됐을 것이다.
+ *
+ * ## 내용 allowlist가 없는 이유 (정직하게 · 대장 `B-35`)
+ *
+ * codex 홈은 `CODEX_RUNTIME_DIRS`처럼 **관측된 이름만** 허용하는데, claude config dir은 **아직 실측하지
+ * 않았다**(승인된 디렉터리에 사람이 1회 로그인해야 그 구성이 생기고, harness는 그 로그인을 대행하지
+ * 않는다). 재보지 않은 allowlist를 지어 쓰면 codex가 0.145→0.146에서 겪은 것과 같은 일이 난다 —
+ * **만족 불가능한 계약**이거나 **구멍**이다. 그래서 지금 계약은 경로·권한·소유권·신원 + "비어 있지
+ * 않다"까지다.
+ *
+ * 그 대신 **행동 축은 인자가 이미 막고 있다**: `--setting-sources ""`(설정 파일 미로드) ·
+ * `--strict-mcp-config`(ambient MCP 미상속) · `--tools ""` · `--no-session-persistence`.
+ * 즉 이 디렉터리가 여는 것은 **자격증명 신원**이고 설정·MCP·도구 면이 아니다.
+ */
+export function verifyClaudeConfigDir(path, approved, 
+/**
+ * **spawn 직전 재확인용 신원**(V3 M11 적대적 리뷰 B-2). 주면 dev+ino가 **같아야** 한다 —
+ * kernel의 turn 검증과 실제 spawn 사이의 비동기 창에서 디렉터리가 교체되면 거부한다.
+ * 이 인자가 없던 판에서는 `claude_config_identity_changed`가 **도달 불가한 죽은 코드**였고
+ * 골격 주석의 "호출자가 spawn 직전 다시 확인한다"가 claude 갈래에서 거짓이었다.
+ */
+identity) {
+    const r = verifyIsolatedDir(path, {
+        what: "claudeHome",
+        codes: CLAUDE_CONFIG_CODES,
+        ambientDirName: ".claude",
+        approved,
+        ...(identity === undefined ? {} : { identity }),
+    });
+    // **비어 있으면 로그인이 없다** — CLI도 `Not logged in`으로 fail closed지만(실측), 여기서 먼저
+    // 거부해 "왜 실패했는지"가 worker 실패가 아니라 승인 축의 코드로 남게 한다.
+    // 자격증명을 **열지 않는다**: 이름조차 세지 않고 "비었는가"만 본다(`codexHome`과 같은 규율).
+    if (readTopLevelNames(r.path, "claudeHome", CLAUDE_CONFIG_CODES).length === 0) {
+        fail("claude_config_not_logged_in", "승인된 격리 claudeHome이 비어 있다(사람이 1회 `CLAUDE_CONFIG_DIR=<승인된 홈> claude`로 로그인해야 한다)");
+    }
+    return r;
+}
+function fail(code, message) {
+    throw new OrchestrationError(code, message);
+}
 /** 자식 프로세스에 주는 환경 **전부**. 부모 환경을 상속하지 않는다(secret·proxy·NODE_OPTIONS 차단). */
 export const LIVE_WORKER_ENV = Object.freeze({
     /**
@@ -189,12 +255,37 @@ export function extractPlanJson(text) {
  * 흘린다. 실패는 전부 닫힌 코드이며 성공을 만들어내는 경로가 없다.
  */
 export function startLivePlanTurn(launch) {
+    // **타입만으로는 이 축이 지켜지지 않는다**(V3 M11 실측): `tsconfig`가 `*.test.ts`를 **제외**하므로
+    // 호출부에서 `configDir`을 빠뜨려도 컴파일이 잡지 못하고, 그러면 `CLAUDE_CONFIG_DIR: undefined`가
+    // 자식 env에서 **조용히 사라져** 세션이 다시 ambient 자격증명으로 돈다(= `C-86` 재발). 그래서
+    // 경계에서 런타임으로 못 박는다 — 이 함수가 신원 없이 프로세스를 띄우는 경로는 없다.
+    if (typeof launch.configDir !== "string" || !launch.configDir.startsWith("/")) {
+        throw workerError("worker_spawn_failed", "승인된 격리 CLAUDE_CONFIG_DIR 없이 live worker를 띄우지 않는다");
+    }
+    // **spawn 직전 동기 게이트**(적대적 리뷰 B-2 · codex 갈래와 같은 규율): kernel이 검증한 그 디렉터리가
+    // **지금도 같은 inode·같은 권한·같은 소유자인지** 다시 본다. TOCTOU 창을 0으로 만들지는 못하지만
+    // (`C-5`와 같은 한계 — Node 18에 디렉터리 상대 열기가 없다) **비동기 경계 작업 중 교체**는 막힌다.
+    //
+    // **계약 전체가 아니라 창에서 바뀔 수 있는 축만** 본다: "로그인이 있는가"(= 비어 있지 않은가)는
+    // **승인 시점의 판정**이고 kernel이 이미 했다. 여기서 다시 요구하면 두 계층이 같은 규칙을 각자 들게
+    // 되고(한쪽만 정직해진다), 무엇보다 이 함수의 실패 코드가 "신원이 바뀌었다"가 아니라 "로그인이
+    // 없다"로 나와 **원인과 다른 코드**가 된다(`C-96` 부류).
+    verifyIsolatedDir(launch.configDir, {
+        what: "claudeHome",
+        codes: CLAUDE_CONFIG_CODES,
+        ambientDirName: ".claude",
+        approved: { path: launch.configDir },
+        identity: launch.configDirIdentity,
+    });
     const events = [];
     const run = async () => {
         let child;
         try {
             child = spawn(launch.executable, [...LIVE_WORKER_ARGS], {
-                env: { ...LIVE_WORKER_ENV },
+                // **`CLAUDE_CONFIG_DIR`이 자격증명 신원이다**(`C-86`): 승인 문서가 고정한 그 디렉터리 하나이고
+                // 호출자가 고를 통로가 없다(kernel이 검증해 준 값만 여기 온다). 실측: 이 값이 auth 해석 경로를
+                // 실제로 가른다 — 빈 디렉터리면 CLI가 `Not logged in`으로 fail closed다.
+                env: { ...LIVE_WORKER_ENV, CLAUDE_CONFIG_DIR: launch.configDir },
                 stdio: ["pipe", "pipe", "pipe"],
                 shell: false,
             });

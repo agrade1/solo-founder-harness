@@ -76,20 +76,30 @@ export const MANIFEST_KEYS = [
     "maxElapsedMs",
     "localMergeAllowed",
     "expiresAt",
+    // ── V3 M11 (대장 `C-98`) ──
+    "reviewRoundtrip",
 ];
+/**
+ * manifest 최상위의 **선택** key. 부재는 정규화 결과에 키를 남기지 않으므로 **기존 승인의 canonical
+ * digest가 바이트 단위로 그대로**다(`codexHome`과 같은 규율 — 예산 회계·state binding 불변).
+ */
+export const MANIFEST_OPTIONAL_KEYS = ["reviewRoundtrip"];
+/** 리뷰 왕복 선언의 닫힌 key 집합. */
+export const REVIEW_ROUNDTRIP_KEYS = ["author", "reviews", "revision", "verify"];
+export const REVIEW_ROUNDTRIP_LENS_KEYS = ["code", "security", "test"];
 export const DEPENDENCY_KEYS = ["name", "version"];
 /**
  * 승인된 실행 권위 key. M5c(v2)에서 `node`·`processObserver`가 필수로 더해졌고 `codex`는 null 허용이다.
  * 더 넣거나 빼면 `invalid_manifest`이고, v1(`codex`+`git`만)은 `manifest_pre_m5c_unsupported`다.
  */
-export const EXECUTION_AUTHORITY_KEYS = ["claude", "codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"];
+export const EXECUTION_AUTHORITY_KEYS = ["claude", "claudeHome", "codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"];
 /**
  * 위 집합 중 **필수** key(대장 `B-7ⓐ`). `codexHome`만 선택이다 — 없으면 "live 인증 미승인"이고
  * 격리 홈은 기존 계약대로 완전히 비어 있어야 한다(조용한 fallback이 아니라 인증 없는 fail closed다).
  * 필수로 만들지 않은 이유는 호환이 아니라 **의미**다: 자격증명을 넣어 둔 홈은 사람이 별도로 승인해야
  * 하는 자산이고, 그것이 없는 승인은 codex를 인증 없이 돌리라는 뜻이지 "아무 홈이나 쓰라"는 뜻이 아니다.
  */
-export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["claude", "codexHome"];
+export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["claude", "claudeHome", "codexHome"];
 export const EXECUTION_AUTHORITY_REQUIRED_KEYS = ["codex", "controllerEntrypoint", "git", "node", "processObserver"];
 export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"];
 /** 승인된 디렉터리 record의 key 집합. **digest는 없다** — 자격증명 내용은 해싱조차 하지 않는다. */
@@ -278,6 +288,12 @@ function validateExecutionAuthority(raw) {
     closedKeys(o, EXECUTION_AUTHORITY_KEYS, "manifest.executionAuthority", EXECUTION_AUTHORITY_OPTIONAL_KEYS);
     // `B-7ⓐ`: 선택 key. **부재와 `null`은 같은 뜻**(live 인증 미승인)이고, 그 경우 정규화 결과에 키 자체가
     // 없으므로 기존 승인의 canonical digest는 **바이트 단위로 그대로**다(예산 회계·state binding 불변).
+    // `C-86`: `claudeHome`도 같은 규율이다 — 부재와 `null`이 같은 뜻이고, 부재면 정규화 결과에 키가 없어
+    // 기존 승인의 canonical digest가 **바이트 단위로 그대로**다. "claude를 승인했으면 홈도 필요하다"는
+    // 짝 강제는 manifest가 아니라 `approvedWorkerExecutable()`이 한다(그 자리가 live 진입점이다).
+    const claudeHome = o.claudeHome === undefined || o.claudeHome === null
+        ? undefined
+        : validateApprovedDirectory(o.claudeHome, "manifest.executionAuthority.claudeHome");
     const codexHome = o.codexHome === undefined || o.codexHome === null
         ? null
         : validateApprovedDirectory(o.codexHome, "manifest.executionAuthority.codexHome");
@@ -294,6 +310,7 @@ function validateExecutionAuthority(raw) {
         : validateApprovedExecutable(o.claude, "manifest.executionAuthority.claude");
     return {
         ...(claude === null ? {} : { claude }),
+        ...(claudeHome === undefined ? {} : { claudeHome }),
         codex: o.codex === null ? null : validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
         ...(codexHome === null ? {} : { codexHome }),
         // **고정 controller entrypoint**(3A 2차 리비전 B2): 모든 typed `run_process`가 실행하는 **유일한**
@@ -450,7 +467,10 @@ export function validateApprovalManifest(raw) {
     if (!("autopilotPolicy" in o) || !("operationAuthorityByTask" in o)) {
         throw new OrchestrationError("manifest_pre_m5c_unsupported", "M5c 이전 승인 manifest다(autopilotPolicy/operationAuthorityByTask 없음). 마이그레이션하지 않으며 새 승인이 필요하다");
     }
-    closedKeys(o, MANIFEST_KEYS, "manifest");
+    closedKeys(o, MANIFEST_KEYS, "manifest", MANIFEST_OPTIONAL_KEYS);
+    // `C-98`: 부재와 `null`이 같은 뜻(강제하지 않음)이고, 부재면 정규화 결과에 키가 없어 기존 승인의
+    // canonical digest가 바이트 단위로 그대로다.
+    const reviewRoundtrip = o.reviewRoundtrip === undefined || o.reviewRoundtrip === null ? undefined : validateReviewRoundtrip(o.reviewRoundtrip);
     if (typeof o.approvedCommit !== "string" || !COMMIT_RE.test(o.approvedCommit)) {
         throw new OrchestrationError("invalid_manifest", "manifest.approvedCommit은 40자 소문자 hex commit이어야 한다");
     }
@@ -537,7 +557,37 @@ export function validateApprovalManifest(raw) {
         maxElapsedMs,
         localMergeAllowed: o.localMergeAllowed,
         expiresAt: assertTimestamp(o.expiresAt, "manifest.expiresAt"),
+        ...(reviewRoundtrip === undefined ? {} : { reviewRoundtrip }),
     };
+}
+/**
+ * 리뷰 왕복 선언(`C-98`) — **taskId 여섯 개뿐**이고 전부 slug다. provider·세션·sandbox 필드를 두지
+ * 않는 것이 계약이다: 승인 문서가 "리뷰어는 codex였다"고 **주장**할 수 있으면 게이트가 공허해진다.
+ * 참가자 성질은 durable(`roleId`·`turnId`)에서만 파생한다.
+ *
+ * **같은 task를 두 자리에 쓸 수 없다** — 그러면 "저자가 자기를 리뷰"가 승인 문서 수준에서 표현된다
+ * (계약 자신도 세션 재사용을 거부하지만, 여기서 먼저 fail closed로 막는다).
+ */
+function validateReviewRoundtrip(raw) {
+    const o = asObject(raw, "manifest.reviewRoundtrip");
+    closedKeys(o, REVIEW_ROUNDTRIP_KEYS, "manifest.reviewRoundtrip");
+    const lenses = asObject(o.reviews, "manifest.reviewRoundtrip.reviews");
+    closedKeys(lenses, REVIEW_ROUNDTRIP_LENS_KEYS, "manifest.reviewRoundtrip.reviews");
+    const out = {
+        author: assertSlug(o.author, "manifest.reviewRoundtrip.author"),
+        reviews: {
+            code: assertSlug(lenses.code, "manifest.reviewRoundtrip.reviews.code"),
+            security: assertSlug(lenses.security, "manifest.reviewRoundtrip.reviews.security"),
+            test: assertSlug(lenses.test, "manifest.reviewRoundtrip.reviews.test"),
+        },
+        revision: assertSlug(o.revision, "manifest.reviewRoundtrip.revision"),
+        verify: assertSlug(o.verify, "manifest.reviewRoundtrip.verify"),
+    };
+    const all = [out.author, out.reviews.code, out.reviews.security, out.reviews.test, out.revision, out.verify];
+    if (new Set(all).size !== all.length) {
+        throw new OrchestrationError("invalid_manifest", "manifest.reviewRoundtrip의 참가자 task는 서로 달라야 한다");
+    }
+    return out;
 }
 /**
  * **정확히 이 task의 이 authorityId가 승인됐는가**(deny-by-default). 없으면 `null`이고 호출자는
