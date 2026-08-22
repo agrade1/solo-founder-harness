@@ -1,6 +1,42 @@
 # CONTEXT_SUMMARY.md
 
-## 최신 (2026-08-23 — **V3 M10 T7 완료: `C-97` 닫힘 · in-loop 리뷰 왕복 live 8/8**)
+## 최신 (2026-08-23 — **V3 M11: 사용자 결정 4건 구현. M10 완료 조건 3개 전부 증명 · live는 로그인 1회 대기**)
+
+- **사용자 결정 4건을 그대로 구현했다**(판정 정본: 로드맵 **`M11 진행 판정 ①`**).
+  - **`C-80` 재정의**: M10 완료 조건 2번 "중복 **merge** 없음"은 v2 `mergeCoordinator` 전제라 이 구조에서
+    **공허 진리**였다(병합 단계가 없다). **"중복 발행 없음"** 으로 다시 쓰고 근거를 acceptance
+    **Test 23 ①**이 들게 했다(닫힌 action 집합 · 승인 문서가 branch/remote를 표현 불가 · **정상 record
+    통과 대조군**). 병합 계약이 다시 필요해지는 트리거는 그대로 남는다.
+  - **`C-86` closed**: `executionAuthority.claudeHome`(= `CLAUDE_CONFIG_DIR`) 승인 축. **live 실측이
+    선행했다** — 빈 config dir이면 CLI가 `Not logged in`으로 exit 1, 없으면 exit 0
+    (probe를 레포에 남겼다: `scripts/m11-c86-auth-probe.mjs`). 이제 "실행 파일만 승인하고 신원은
+    ambient"가 **표현 불가**다.
+  - **`C-93` closed(문서)**: v3 실행 층이 harness 레포 전용인 **이유**(양쪽 HEAD == `approvedCommit`)를
+    §10 본문에 적고 도그푸딩 bullet을 **v1 문서 층 한정**으로 좁혔다. 코드 변경 0 — 경계는 의도된 설계다.
+  - **`C-98` closed(잔여 `C-100`)**: 승인이 `reviewRoundtrip`(참가자 taskId 여섯)을 담으면 **loop가**
+    왕복 계약을 강제한다. 승인 문서가 provider·session을 **주장할 수 없게** 필드를 두지 않았다.
+- **구조**: `codexHome`·`claudeHome`의 경로·권한·소유권·신원 축을 `src/exec/isolatedConfigDir.ts` 골격
+  하나로 뽑았다(`B-7ⓐ` — 두 번째 홈 계약을 만들지 않는다). **codex의 관측 가능한 거부 코드는 하나도
+  바뀌지 않았다**(19/19 green).
+- **실측(직렬 · live와 동시 실행 금지)**: `test:exec` **630/630** · `test:core` **463/463** ·
+  acceptance **PASS=197 / FAIL=0**(신규 Test 23 · 내부 18 checks) · tsc clean · **mutation red 6종**.
+- **적대적 리뷰(fresh Fable 5 · read-only · live 0회)**: **A급 1건**(`reviewRoundtrip.verify`가 없는
+  task를 지목하면 게이트가 한 번도 돌지 않고 run이 조용히 완주 — 오타 하나로 강제가 사라진다) →
+  부트에서 여섯 참가자 실재를 요구하도록 고쳤다. **B급 2건**(C-86 주장이 실측 범위를 넘었다 ·
+  골격 주석의 "spawn 직전 재확인"이 claude 갈래에서 거짓이었고 `identityChanged`가 죽은 코드였다) →
+  둘 다 고쳤다. **C급 3건**은 대장(`C-101`·`C-102`·`C-103`).
+- **⚠️ live 경로가 지금 fail closed다**: `claude`를 승인한 manifest는 `claudeHome`이 필수이므로
+  **사람이 1회 로그인하기 전까지 모든 live 스크립트가 시작하지 않는다**(`claude_config_not_logged_in`).
+  의도된 상태이나 **T7 live 8/8을 이 slice에서 재확인하지 못했다**. 여는 명령:
+  `CLAUDE_CONFIG_DIR=~/harness-claude-home claude` → `/login`.
+- **M10 완료 조건 3개는 전부 증명됐다**(판정 ⑦에 빠져 있던 재판정 표를 M11 ⓕ가 메웠다). 열린 것은
+  완료 조건이 아니라 그 위의 강도·범위다: `C-100`(loop는 강제하나 kernel은 아니다) · `B-34`(codex 홈
+  최상위 이름까지만) · `B-35`(claude 홈 내용 allowlist 없음 · 계정 우선순위 미실측) ·
+  `B-18` · `B-31` · `C-93`(v3는 harness 레포 전용 — 이제 설계로 적혔다).
+
+---
+
+## (2026-08-23 — V3 M10 T7 완료: `C-97` 닫힘 · in-loop 리뷰 왕복 live 8/8**)
 
 - **닫힌 것 — `C-97`**: 무인 loop **한 번**이 저자(claude) → 리뷰 3종(codex) → 수정(claude) →
   verify(codex)를 전부 `turn_completed`로 완주한다. `scripts/m10-live-t7.mjs` **PASS=8 / FAIL=0** ·
