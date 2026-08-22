@@ -250,7 +250,14 @@ export const AUTOPILOT_MARKERS = [
     "no_progress_timeout",
     "wall_deadline_exceeded",
     "cancelled",
+    /**
+     * worker turn이 완료되지 못했다. **worker가 프로토콜을 어긴 경우만이 아니다**(V3 M10 T7):
+     * 승인 축 거부(`worker_backend_unapproved`·`worker_digest_mismatch`·`codex_home_*` — 프로세스가
+     * 뜨지도 않은 경우)도 여기로 온다. marker 집합은 durable schema라 원인마다 값을 늘리지 않고,
+     * **원본 안정 코드는 pause 이벤트의 `detail`로** 올린다(`autopilot.workerMarker` 주석이 정본).
+     */
     "worker_failed",
+    /** **계획 계약 위반만** 이 값이다 — `validateTypedExecutionPlan`이 낸 `plan_invalid` 하나에서만 온다. */
     "plan_invalid",
     "operation_denied",
     "process_failed",

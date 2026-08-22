@@ -54,6 +54,7 @@ import { LIMITS, ORCHESTRATOR_ID, OrchestrationError, REQUIRED_BODY_HEADINGS, TY
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
 import { LIVE_PLAN_BACKEND, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
+import { CODEX_PLAN_BACKEND, startCodexPlanTurn } from "../exec/codexPlanWorker.js";
 import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
 import { createProgressReporter } from "./progress.js";
 import { validateTypedExecutionPlan } from "../exec/typedPlan.js";
@@ -70,6 +71,23 @@ export const DEFAULT_MAX_ITERATIONS = 16;
  * 승인 manifest가 못 박은 실행 파일로 실제 모델 세션을 돌린다(승인에 그 키가 없으면 표현 불가).
  */
 export const AUTOPILOT_WORKER_BACKENDS = [OFFLINE_PLAN_BACKEND, LIVE_PLAN_BACKEND];
+/**
+ * **리뷰어 role family**(V3 M10 T7 · 대장 `C-97`). 이 family의 task는 live 실행에서 **codex 리뷰어
+ * 세션**으로 돈다 — 왕복 계약이 리뷰어를 fresh Codex read-only로 못박기 때문이다
+ * (`designReviewRoundtrip.assertCodeReviewRoundtrip`).
+ *
+ * **닫힌 상수이고 승인 문서가 고르는 값이 아니다.** role은 durable(`task.roleId`)이므로 이 판정은
+ * 재시작 뒤에도 같다. 하위 role(`qa-security.code` 등)은 한 겹까지 registry가 허용하므로 top-level
+ * family로 자른다. codex 권위가 승인에 없으면 `approvedCodexWorker()`가 `worker_backend_unapproved`로
+ * 거부한다(조용한 claude fallback이 없다 — 그것이 있으면 "리뷰어가 저자와 같은 엔진"이 조용히 성립한다).
+ */
+export const CODEX_REVIEWER_ROLE_FAMILY = "qa-security";
+/** 이 task를 어느 backend로 돌릴 것인가. live 실행에서만 갈라진다(offline은 한 갈래다). */
+export function backendForRole(backend, roleId) {
+    if (backend !== LIVE_PLAN_BACKEND)
+        return backend;
+    return roleId.split(".")[0] === CODEX_REVIEWER_ROLE_FAMILY ? CODEX_PLAN_BACKEND : LIVE_PLAN_BACKEND;
+}
 /** 이 모듈이 낼 수 있는 run 수준 거부 코드(닫힌 집합). */
 export const AUTOPILOT_BLOCKED_CODES = [
     "approval_milestone_mismatch",
@@ -261,7 +279,7 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
             // `runTaskTurn` 안에 있다). 바뀌는 것은 **나머지 batch를 조용히 계속 밀지 않는다**는 점이다.
             let outcome;
             try {
-                outcome = await runTaskTurn({ kernel, taskId, planDoc, backend, clock, signal: opts.signal, emit });
+                outcome = await runTaskTurn({ kernel, taskId, planDoc, backend, workspaceRoot: opts.workspaceRoot, clock, signal: opts.signal, emit });
             }
             catch (err) {
                 const marker = codeOf(err);
@@ -476,25 +494,42 @@ async function runTaskTurn(ctx) {
     let dispatchCharged = false;
     let dispatchChargeFailed = null;
     let marker = "worker_failed";
+    /** turn 예외의 **원본 안정 코드**. marker가 담지 못하는 원인을 pause 이벤트로 올린다(위 `workerMarker`). */
+    let workerFailureCode = null;
     let usage = { inputTokens: 0, outputTokens: 0 };
     try {
         const binding = { runId: kernel.getState().runId, taskId, attemptId, turnId };
-        const stream = ctx.backend === LIVE_PLAN_BACKEND
-            ? startLivePlanTurn({
-                // 실행 파일은 **kernel이 지금 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이
-                // 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
-                executable: kernel.approvedWorkerExecutable().path,
-                prompt: workerPrompt(kernel, taskId),
-                binding,
-                // 세션 상한은 **승인된 attempt 상한**에서 나온다(호출자가 고르는 값이 아니다).
-                timeoutMs: kernel.getManifest().autopilotPolicy.maxAttemptElapsedMs,
-                signal: ctx.signal,
-            })
-            : startOfflinePlanTurn({
-                backend: OFFLINE_PLAN_BACKEND,
-                planJson: encodePlan(ctx.planDoc, binding),
-                binding,
-            });
+        // **role이 backend를 고른다**(T7): 리뷰어 family는 codex 세션, 나머지는 claude 세션.
+        const effective = backendForRole(ctx.backend, started.task.roleId);
+        const stream = effective === CODEX_PLAN_BACKEND
+            ? (() => {
+                const cx = kernel.approvedCodexWorker();
+                return startCodexPlanTurn({
+                    executable: cx.path,
+                    codexHome: cx.codexHome,
+                    cwd: ctx.workspaceRoot,
+                    prompt: workerPrompt(kernel, taskId),
+                    binding,
+                    timeoutMs: kernel.getManifest().autopilotPolicy.maxAttemptElapsedMs,
+                    signal: ctx.signal,
+                });
+            })()
+            : effective === LIVE_PLAN_BACKEND
+                ? startLivePlanTurn({
+                    // 실행 파일은 **kernel이 지금 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이
+                    // 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
+                    executable: kernel.approvedWorkerExecutable().path,
+                    prompt: workerPrompt(kernel, taskId),
+                    binding,
+                    // 세션 상한은 **승인된 attempt 상한**에서 나온다(호출자가 고르는 값이 아니다).
+                    timeoutMs: kernel.getManifest().autopilotPolicy.maxAttemptElapsedMs,
+                    signal: ctx.signal,
+                })
+                : startOfflinePlanTurn({
+                    backend: OFFLINE_PLAN_BACKEND,
+                    planJson: encodePlan(ctx.planDoc, binding),
+                    binding,
+                });
         let seq = 0;
         for await (const ev of stream) {
             const deadline = attemptDeadline(kernel, taskId, clock);
@@ -550,6 +585,8 @@ async function runTaskTurn(ctx) {
         }
     }
     catch (err) {
+        // marker는 닫힌 집합이라 원인을 다 담지 못한다 → **원본 코드를 따로 들고** pause 이벤트에 싣는다.
+        workerFailureCode = codeOf(err);
         marker = workerMarker(err);
         plan = null;
     }
@@ -612,7 +649,8 @@ async function runTaskTurn(ctx) {
     if (marker !== "turn_completed" || plan === null) {
         const reason = pauseReasonFor(marker);
         kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: reason });
-        emit({ kind: "task_paused", taskId, marker, detail: reason });
+        // `pauseReason`은 durable task 상태에 이미 있다 → 이벤트 `detail`은 **원인 코드**에 쓴다(있을 때).
+        emit({ kind: "task_paused", taskId, marker, detail: workerFailureCode ?? reason });
         return { taskId, state: "paused", marker };
     }
     // **집행한 프로세스가 0이 아닌 코드로 끝났으면 전진하지 않는다**(V3 M10 T6 · 대장 `C-45` 소비면).
@@ -1007,9 +1045,25 @@ function boundedUsage(raw) {
     return { inputTokens: clamp(raw?.inputTokens), outputTokens: clamp(raw?.outputTokens) };
 }
 /** worker·계획 검증 오류를 닫힌 marker로 접는다(호출자·데이터가 marker를 고르지 못한다). */
+/**
+ * turn 예외 → **닫힌 durable marker**(V3 M10 T7 · `C-96` 부류 수정).
+ *
+ * 이전 판은 `worker_` 접두사가 **아닌 모든 코드**를 `plan_invalid`로 접었다. 그래서 승인 축의 거부
+ * (`codex_home_not_empty`·`codex_home_not_owned`·`codex_home_permissive`·`codex_home_identity_changed`
+ * 처럼 접두사가 다른 코드들)가 durable 감사 로그에 **"모델이 잘못된 계획을 냈다"** 로 남았다 —
+ * 일어나지 않은 일이다. T7 live에서 리뷰어 3턴이 전부 그 거짓 marker 뒤에 숨었고(실제 원인은
+ * `codex_home_not_empty`) 원인을 좁히는 데 세션 하나가 들었다.
+ *
+ * 이제 **계획 계약 위반만** `plan_invalid`다: `validateTypedExecutionPlan`은 모든 위반(미상 key·타입·
+ * 상한·binding·accessor/proxy)을 그 코드 **하나로** 접으므로(`TYPED_EXECUTION_CODES`) 이 대조 하나면
+ * 충분하다. 그 밖은 전부 `worker_failed`이고, **원본 코드는 pause 이벤트의 `detail`로 올린다**
+ * (marker 집합은 durable schema라 여기서 넓히지 않는다).
+ *
+ * 기각한 대안: 코드 이름이 우연히 marker 집합에 있으면 그대로 쓰는 것(`stream_invalid` 등). 이름
+ * 일치를 계약으로 삼으면 무관한 코드가 조용히 marker가 된다 — 지금 고치는 것과 같은 종류의 거짓이다.
+ */
 function workerMarker(err) {
-    const code = codeOf(err);
-    return code.startsWith("worker_") ? "worker_failed" : "plan_invalid";
+    return codeOf(err) === "plan_invalid" ? "plan_invalid" : "worker_failed";
 }
 function codeOf(err) {
     return err instanceof OrchestrationError ? err.code : "autopilot_internal_error";
