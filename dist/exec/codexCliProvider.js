@@ -93,14 +93,14 @@
  * 이벤트 payload 필드명은 provider live 경로로 확인하지 않았다(M5b 게이트).
  */
 import { spawn as nodeSpawn } from "node:child_process";
-import { homedir } from "node:os";
-import { lstatSync, readdirSync, realpathSync } from "node:fs";
+import { lstatSync, readdirSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { AsyncEventQueue } from "./eventQueue.js";
 import { validateApprovalManifest } from "./approvalManifest.js";
 import { CODEX_SESSION_ID_RE, CodexJsonlParser } from "./codexStreamParser.js";
 import { verifyApprovedExecutable, verifyExecutionBoundary, } from "./executionBoundary.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
+import { assertOwnedByThisUser as assertDirOwner, readTopLevelNames, verifyIsolatedDir } from "./isolatedConfigDir.js";
 /** 프롬프트 상한(문자). 넘으면 stdin에 쓰지 않고 거부한다. */
 export const MAX_PROMPT_CHARS = 262_144;
 const MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
@@ -217,6 +217,19 @@ export const CODEX_CODE_LOAD_DIRS = Object.freeze({
     skills: Object.freeze([".system"]),
 });
 /**
+ * 이 계약의 **안정 코드** — 골격(`isolatedConfigDir`)에 이 이름 그대로 주입한다. 값은 M5 이래 테스트·
+ * 문서에 고정돼 있으므로 골격을 공유한다고 바뀌지 않는다(바뀌면 관측 가능한 계약이 바뀐다).
+ */
+const CODEX_HOME_CODES = Object.freeze({
+    notAbsolute: "codex_config_invalid",
+    invalid: "codex_home_invalid",
+    notApproved: "codex_home_not_approved",
+    permissive: "codex_home_permissive",
+    notOwned: "codex_home_not_owned",
+    ambient: "codex_home_ambient",
+    identityChanged: "codex_home_identity_changed",
+});
+/**
  * 격리 `CODEX_HOME` 검증 — **provider 소유 수명**이다.
  *
  * - **첫 invocation**: 절대·정규·비-symlink 디렉터리 · 0700 · **비어 있음** · 사용자 홈 아님.
@@ -248,59 +261,18 @@ export function verifyCodexHome(path, expect = {}) {
     const owned = expect.identity;
     const approved = expect.approved ?? null;
     const requireEmpty = expect.requireEmpty ?? owned === undefined;
-    const p = requireAbsolute(path, "spec.codex.codexHome");
-    // `B-7ⓐ`: 승인이 홈을 고정했으면 **그 경로 하나뿐**이다. 다른 홈으로의 fallback이 없다
-    // (경로만 대조하고 값은 오류에 싣지 않는다). 승인이 홈을 담지 않았으면 자격증명도 허용되지 않는다.
-    if (approved && p !== approved.path) {
-        fail("codex_home_not_approved", "codexHome이 승인 manifest가 고정한 격리 홈이 아니다");
-    }
-    let real;
-    try {
-        real = realpathSync(p);
-    }
-    catch {
-        fail("codex_home_invalid", "codexHome의 realpath를 확인할 수 없다");
-    }
-    if (real !== p)
-        fail("codex_home_invalid", "codexHome은 정규 경로여야 한다(symlink 금지)");
-    let userHome = "";
-    try {
-        userHome = realpathSync(homedir());
-    }
-    catch {
-        userHome = "";
-    }
-    if (userHome && (p === userHome || p === join(userHome, ".codex"))) {
-        fail("codex_home_ambient", "codexHome으로 사용자 홈(또는 ~/.codex)을 쓸 수 없다");
-    }
-    let st;
-    try {
-        st = lstatSync(p);
-    }
-    catch {
-        fail("codex_home_invalid", "codexHome의 상태를 확인할 수 없다");
-    }
-    if (st.isSymbolicLink() || !st.isDirectory())
-        fail("codex_home_invalid", "codexHome은 symlink 아닌 디렉터리여야 한다");
-    if ((st.mode & 0o077) !== 0)
-        fail("codex_home_permissive", "codexHome은 0700(소유자 전용)이어야 한다");
-    // 승인된(=자격증명이 들어 있는) 홈은 **이 프로세스 소유**여야 한다. 다른 uid가 만든 홈을 승인 경로에
-    // 갖다 놓는 형태의 hijack을 막는다(비승인 홈에는 기존 계약을 그대로 두어 관측 가능한 변화가 없다).
-    if (approved)
-        assertOwnedByThisUser(st.uid, "codexHome");
-    const id = { dev: st.dev, ino: st.ino };
-    if (owned && (id.dev !== owned.dev || id.ino !== owned.ino)) {
-        fail("codex_home_identity_changed", "codexHome의 디렉터리 신원이 검증 이후 바뀌었다");
-    }
+    // **경로·권한·소유권·신원 축은 공용 골격 하나다**(`B-7ⓐ` — 두 번째 홈 계약을 만들지 않는다).
+    // 코드는 이 계약의 이름 그대로 주입하므로 관측 가능한 거부 코드는 바뀌지 않는다.
+    const { path: p, id } = verifyIsolatedDir(path, {
+        what: "codexHome",
+        codes: CODEX_HOME_CODES,
+        ambientDirName: ".codex",
+        approved,
+        ...(owned === undefined ? {} : { identity: owned }),
+    });
     if (!requireEmpty)
         return { path: p, id };
-    let entries;
-    try {
-        entries = readdirSync(p);
-    }
-    catch {
-        fail("codex_home_invalid", "codexHome을 읽을 수 없다");
-    }
+    const entries = readTopLevelNames(p, "codexHome", CODEX_HOME_CODES);
     // 승인이 홈을 고정하지 않았다 = live 인증 미승인 → **완전히 비어 있어야** 한다(기존 계약 그대로).
     // 승인된 홈이면 자격증명 + codex 런타임 디렉터리(`B-23` 실측)만 허용한다.
     const allowed = approved
@@ -358,13 +330,7 @@ function verifyRuntimeDir(dir) {
     }
     if (st.isSymbolicLink() || !st.isDirectory())
         fail("codex_home_invalid", "codex 런타임 항목은 symlink 아닌 디렉터리여야 한다");
-    assertOwnedByThisUser(st.uid, "codex 런타임 디렉터리");
-}
-/** 현재 프로세스 uid 소유가 아니면 거부. uid를 노출하지 않는다(대상 이름만 알린다). */
-function assertOwnedByThisUser(uid, what) {
-    const self = typeof process.getuid === "function" ? process.getuid() : undefined;
-    if (self === undefined || uid !== self)
-        fail("codex_home_not_owned", `${what}은 이 프로세스 소유여야 한다`);
+    assertDirOwner(st.uid, "codex 런타임 디렉터리", CODEX_HOME_CODES);
 }
 /**
  * 승인된 자격증명 파일 1건(대장 `B-7ⓐ`). **내용은 절대 열지 않는다** — `lstat` 한 번으로 존재 · 정규 파일 ·
@@ -383,7 +349,7 @@ function verifyCredentialFile(file) {
         fail("codex_home_invalid", "자격증명은 symlink 아닌 정규 파일이어야 한다");
     if ((st.mode & 0o077) !== 0)
         fail("codex_home_permissive", "자격증명 파일에 group/other 권한이 있으면 안 된다");
-    assertOwnedByThisUser(st.uid, "자격증명 파일");
+    assertDirOwner(st.uid, "자격증명 파일", CODEX_HOME_CODES);
 }
 /** 최초 상태(비어 있어야 하는) 검증만 필요한 호출자용 shim. */
 export function assertIsolatedCodexHome(path) {
