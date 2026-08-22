@@ -38,7 +38,9 @@ import {
   resolveCodexOptions,
   verifyCodexHome,
   CODEX_CREDENTIAL_FILES,
+  CODEX_EMPTY_ONLY_DIRS,
   CODEX_RUNTIME_DIRS,
+  CODEX_RUNTIME_FILES,
   type SpawnFn,
 } from "./codexCliProvider.js";
 import { OrchestrationError } from "./orchestrationTypes.js";
@@ -2585,9 +2587,38 @@ test("[M5 B-23] 넓힌 것은 이름 2개뿐이다 — 동작을 바꾸는 항�
       assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", `${name}이 통과했다`);
       rmSync(path, { force: true });
     }
-    // 넓힌 이름은 정확히 2개다(집합이 조용히 자라면 여기서 걸린다).
-    assert.deepEqual([...CODEX_RUNTIME_DIRS], ["log", "tmp"]);
+    // **넓힌 집합은 실측으로 고정한다**(V3 M10 T7 · codex-cli 0.146 실측 — 0.145에서는 log/tmp뿐이었고
+    // 그대로 두면 두 번째 invocation부터 홈이 거부되어 codex가 아예 뜨지 않았다). 조용히 자라면 여기서 걸린다.
+    assert.deepEqual([...CODEX_RUNTIME_DIRS], ["log", "tmp", "cache", "shell_snapshots"]);
+    assert.deepEqual([...CODEX_RUNTIME_FILES], ["installation_id", "models_cache.json", ".sandbox_migration"]);
+    assert.deepEqual([...CODEX_EMPTY_ONLY_DIRS], ["plugins", "skills"]);
     assert.deepEqual([...CODEX_CREDENTIAL_FILES], ["auth.json"]);
+
+    // 버전 접미사가 붙는 sqlite 상태는 **패턴**으로 받는다(`state_5.sqlite` → 다음 버전도 같은 형태).
+    for (const name of ["state_5.sqlite", "state_5.sqlite-wal", "logs_2.sqlite-shm", "memories_1.sqlite"]) {
+      const path = join(home, name);
+      writeFileSync(path, "x\n");
+      assert.equal(verifyCodexHome(home, { approved }).path, home, `${name}이 거부됐다`);
+      rmSync(path, { force: true });
+    }
+    // 패턴에 맞지 않는 sqlite 유사 이름은 여전히 거부다(패턴이 넓어지지 않았는지 본다).
+    for (const name of ["state.sqlite3", "evil.sqlite.sh", "A.sqlite"]) {
+      const path = join(home, name);
+      writeFileSync(path, "x\n");
+      assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", `${name}이 통과했다`);
+      rmSync(path, { force: true });
+    }
+
+    // **코드·지시 로드 면은 비어 있을 때만 통과한다**: 이름은 허용하되 내용이 있으면 거부다.
+    mkdirSync(join(home, "plugins"));
+    assert.equal(verifyCodexHome(home, { approved }).path, home, "빈 plugins가 거부됐다");
+    writeFileSync(join(home, "plugins", "evil.js"), "x\n");
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", "내용 있는 plugins가 통과했다");
+    rmSync(join(home, "plugins"), { recursive: true, force: true });
+    mkdirSync(join(home, "skills"));
+    mkdirSync(join(home, "skills", ".system"));
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", "내용 있는 skills가 통과했다");
+    rmSync(join(home, "skills"), { recursive: true, force: true });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

@@ -64,6 +64,7 @@ import type { AgentMessageEnvelope, AutopilotMarker, OrchestrationTask, PauseRea
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
 import { LIVE_PLAN_BACKEND, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
+import { CODEX_PLAN_BACKEND, startCodexPlanTurn } from "../exec/codexPlanWorker.js";
 import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
 import { createProgressReporter } from "./progress.js";
 import type { TypedExecutionPlan, WorkerEvent } from "../exec/autopilotTypes.js";
@@ -148,6 +149,24 @@ export interface AutopilotReport {
  * 승인 manifest가 못 박은 실행 파일로 실제 모델 세션을 돌린다(승인에 그 키가 없으면 표현 불가).
  */
 export const AUTOPILOT_WORKER_BACKENDS = [OFFLINE_PLAN_BACKEND, LIVE_PLAN_BACKEND] as const;
+
+/**
+ * **리뷰어 role family**(V3 M10 T7 · 대장 `C-97`). 이 family의 task는 live 실행에서 **codex 리뷰어
+ * 세션**으로 돈다 — 왕복 계약이 리뷰어를 fresh Codex read-only로 못박기 때문이다
+ * (`designReviewRoundtrip.assertCodeReviewRoundtrip`).
+ *
+ * **닫힌 상수이고 승인 문서가 고르는 값이 아니다.** role은 durable(`task.roleId`)이므로 이 판정은
+ * 재시작 뒤에도 같다. 하위 role(`qa-security.code` 등)은 한 겹까지 registry가 허용하므로 top-level
+ * family로 자른다. codex 권위가 승인에 없으면 `approvedCodexWorker()`가 `worker_backend_unapproved`로
+ * 거부한다(조용한 claude fallback이 없다 — 그것이 있으면 "리뷰어가 저자와 같은 엔진"이 조용히 성립한다).
+ */
+export const CODEX_REVIEWER_ROLE_FAMILY = "qa-security";
+
+/** 이 task를 어느 backend로 돌릴 것인가. live 실행에서만 갈라진다(offline은 한 갈래다). */
+export function backendForRole(backend: AutopilotWorkerBackend, roleId: string): AutopilotWorkerBackend | "codex-plan" {
+  if (backend !== LIVE_PLAN_BACKEND) return backend;
+  return roleId.split(".")[0] === CODEX_REVIEWER_ROLE_FAMILY ? CODEX_PLAN_BACKEND : LIVE_PLAN_BACKEND;
+}
 export type AutopilotWorkerBackend = (typeof AUTOPILOT_WORKER_BACKENDS)[number];
 
 export interface AutopilotOptions {
@@ -372,7 +391,7 @@ async function runAutopilotUnderLease(
       // `runTaskTurn` 안에 있다). 바뀌는 것은 **나머지 batch를 조용히 계속 밀지 않는다**는 점이다.
       let outcome: AutopilotTaskOutcome;
       try {
-        outcome = await runTaskTurn({ kernel, taskId, planDoc, backend, clock, signal: opts.signal, emit });
+        outcome = await runTaskTurn({ kernel, taskId, planDoc, backend, workspaceRoot: opts.workspaceRoot, clock, signal: opts.signal, emit });
       } catch (err) {
         const marker = codeOf(err);
         emit({ kind: "task_aborted", taskId, marker, detail: "turn_aborted" });
@@ -569,6 +588,8 @@ interface TurnCtx {
   /** `offline-plan` backend의 입력. live backend에서는 쓰이지 않는다(계획을 모델이 만든다). */
   planDoc: PlanDocument;
   backend: AutopilotWorkerBackend;
+  /** codex 리뷰어 세션의 cwd(= 승인된 workspace 루트). live 갈래에서만 쓰인다. */
+  workspaceRoot: string;
   clock: () => Date;
   signal?: AbortSignal;
   emit: (e: AutopilotEvent) => void;
@@ -605,8 +626,23 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   let usage = { inputTokens: 0, outputTokens: 0 };
   try {
     const binding = { runId: kernel.getState().runId, taskId, attemptId, turnId };
+    // **role이 backend를 고른다**(T7): 리뷰어 family는 codex 세션, 나머지는 claude 세션.
+    const effective = backendForRole(ctx.backend, started.task.roleId);
     const stream =
-      ctx.backend === LIVE_PLAN_BACKEND
+      effective === CODEX_PLAN_BACKEND
+        ? (() => {
+            const cx = kernel.approvedCodexWorker();
+            return startCodexPlanTurn({
+              executable: cx.path,
+              codexHome: cx.codexHome,
+              cwd: ctx.workspaceRoot,
+              prompt: workerPrompt(kernel, taskId),
+              binding,
+              timeoutMs: kernel.getManifest().autopilotPolicy.maxAttemptElapsedMs,
+              signal: ctx.signal,
+            });
+          })()
+        : effective === LIVE_PLAN_BACKEND
         ? startLivePlanTurn({
             // 실행 파일은 **kernel이 지금 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이
             // 사라진다). autopilot에는 그것을 바꿀 인자가 없다.

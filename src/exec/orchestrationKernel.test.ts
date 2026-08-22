@@ -2467,6 +2467,10 @@ test("[M4a] kernel 공개 API는 좁은 목록뿐 — agent가 상태를 직접 
   // `preflight_required` stub으로만 남아 있다 — 대장 `B-11`).
   assert.deepEqual(actual, [
     "acknowledgeDelivery",
+    // V3 M10 T7 — 위 `approvedWorkerExecutable`과 **같은 성질의** 읽기 전용 권위 조회다(codex 리뷰어용).
+    // 실행 파일 digest + 격리 홈 계약을 turn마다 다시 보고 경로를 돌려줄 뿐이며 spawn하지 않는다.
+    // 인자가 없으므로 호출자가 다른 프로그램·다른 홈을 요구할 통로가 없다(대장 `C-97`).
+    "approvedCodexWorker",
     // V3 M10 T3 — **읽기 전용 권위 조회**다: 승인 manifest가 못 박은 worker 실행 파일이 **지금도 그
     // 내용인지** 확인해 경로를 돌려줄 뿐이고 spawn하지 않는다(spawn은 provider 계약이다). 인자가 없으므로
     // 호출자가 다른 프로그램을 요구할 통로가 없고, 승인에 그 키가 없으면 `worker_backend_unapproved`다.
