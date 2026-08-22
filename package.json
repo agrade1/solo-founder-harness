@@ -22,7 +22,7 @@
   },
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "build": "tsc && chmod +x dist/cli.js",
+    "build": "tsc && chmod +x dist/cli.js dist/exec/controllerEntrypoint.js",
     "harness": "tsx src/cli.ts",
     "acceptance": "bash scripts/acceptance.sh",
     "test:exec": "tsx --test src/exec/*.test.ts",

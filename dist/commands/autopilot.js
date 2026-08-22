@@ -318,6 +318,10 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
  * 띄우는 집행 경계에 **들어간 적이 없거나 들어간 것이 전부 관측된 채로 닫혔다**"는 뜻이다 — 그때만
  * survivors 0이 구조적으로 참이다. 그 밖에는 확인할 수단이 없으므로 확인했다고 적지 않는다.
  *
+ * **survivors 0의 범위(대장 `B-18` · V3 M10 T6)**: supervisor의 관측 단위는 **승인된 프로세스 그룹**이다.
+ * 자손이 스스로 `setsid`해 그룹을 나가면 그 관측 밖이므로, 여기서 승격되는 "survivors 0"도 **그룹 범위의
+ * 주장**이다. 그룹 밖까지 보장하려면 cgroup·jail이 필요하고 darwin에는 없다 — 없는 보장을 적지 않는다.
+ *
  * **turn 착지에서 marker 하나만 보지 않는 이유**: turn의 최종 marker는 마지막 실패만 담는다. 앞선
  * `run_process`가 `outcome_unknown`으로 닫힌 뒤 다음 operation이 `operation_denied`로 끝나면 marker는
  * `operation_denied`이지만 **프로세스는 여전히 살아 있을 수 있다** → marker가 아니라 영수증을 본다.
@@ -610,6 +614,37 @@ async function runTaskTurn(ctx) {
         kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: reason });
         emit({ kind: "task_paused", taskId, marker, detail: reason });
         return { taskId, state: "paused", marker };
+    }
+    // **집행한 프로세스가 0이 아닌 코드로 끝났으면 전진하지 않는다**(V3 M10 T6 · 대장 `C-45` 소비면).
+    //
+    // kernel은 `run_process`의 exitCode를 **산출물**로 남기는 계약을 유지한다(0이 아니어도 marker는
+    // `applied`다 — 그것이 의도된 계약이고 여기서 바꾸지 않는다). 그런데 닫힌 action 집합
+    // (`validate-plan`·`run-tests`)은 둘 다 **술어**다: 0이 아니면 "계획이 유효하지 않다" 또는 "테스트가
+    // 실패했다"는 뜻이다. 그 turn을 전진시키면 **무인 loop에서 red 테스트가 통과로 세어진다** → 해석은
+    // loop 정책으로 여기서 한다.
+    //
+    // **위치가 계약이다**(T6 적대적 리뷰 A2): spawn 처리(`waiting_children` 조기 반환)와 결과 발행보다
+    // **먼저** 본다. 계획은 `operations`와 `spawn_child` 요청을 **함께** 담을 수 있고 operations는 이미
+    // 집행됐으므로, 게이트가 spawn 뒤에 있으면 red 영수증을 남긴 채 `waiting_children`으로 빠져나가고
+    // 자식이 끝난 **다음 attempt**에서 완료된다.
+    //
+    // **판정 범위도 attempt가 아니라 authority별 최신 영수증이다**(같은 리뷰): attempt로 좁히면 위 경로의
+    // 이전 attempt 영수증이 보이지 않는다. authority마다 **마지막** 영수증만 보므로 red 뒤에 같은 권위로
+    // 다시 돌려 green을 내면 전진할 수 있다(막다른 골목이 아니다).
+    {
+        const receipts = kernel.getTask(taskId)?.execution.operationReceipts ?? [];
+        const latestByAuthority = new Map();
+        for (const r of receipts) {
+            if (r.kind !== "run_process")
+                continue;
+            latestByAuthority.set(r.authorityId, { exitCode: r.exitCode, kind: r.kind });
+        }
+        const failed = [...latestByAuthority.entries()].find(([, r]) => r.exitCode !== null && r.exitCode !== 0);
+        if (failed !== undefined) {
+            kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: "approval_required" });
+            emit({ kind: "task_paused", taskId, marker, detail: `process_exit_${failed[1].exitCode}` });
+            return { taskId, state: "paused", marker };
+        }
     }
     // **M6 T2 — spawn 배선.** 정리가 확인된 지금이 위임의 자리다: `requestSpawn`이 parent를
     // `waiting_children`으로 내리며 lease와 봉인된 결과를 놓는다. child가 전부 completed되면 kernel의

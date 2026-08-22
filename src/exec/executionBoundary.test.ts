@@ -739,3 +739,85 @@ test("[M5b] A1(7차): revalidateSync의 checkout 루프도 회차마다 승인 d
     rmSync(repo.root, { recursive: true, force: true });
   }
 });
+
+/**
+ * [V3 M10 T6 · 대장 `B-33`] **비-ASCII 경로에서 checkout 신원 대조가 유니코드 정규형 때문에 깨졌다.**
+ *
+ * macOS APFS는 파일 이름의 정규형을 **보존**하므로, 디렉터리를 NFD(Hangul Jamo 분해)로 만들어 두고
+ * 호출자가 NFC 경로를 주면 ⓐ `realpath(주어진 경로) === 주어진 경로`(정규 경로 게이트 통과)이면서
+ * ⓑ `git rev-parse --show-toplevel`은 **NFD**를 돌려준다 → 이전 판의 **문자열 대조**는 같은
+ * 디렉터리를 다른 것으로 보고 `boundary_not_checkout_root`를 냈다(M10 T5 도그푸딩 실측 —
+ * `~/Desktop/구독컷`에서 v3가 시작조차 못 했다).
+ *
+ * 이 테스트는 **그 두 형태가 실제로 다른 문자열임을 먼저 단정**한다 — 정규형을 통일하는 파일 시스템에서는
+ * 전제가 성립하지 않으므로, 조용히 통과하는 공허한 테스트가 되지 않게 전제 자체를 red로 만든다.
+ */
+test("[M10 T6/B-33] 비-ASCII 경로: git이 NFD로 답해도 같은 디렉터리면 통과한다(dev+ino 대조)", async () => {
+  const base = realpathSync(tmpdir());
+  const nfdRoot = join(base, `m10-b33-${"구독컷".normalize("NFD")}-${process.pid}`);
+  rmSync(nfdRoot, { recursive: true, force: true });
+  mkdirSync(nfdRoot);
+  try {
+    await runProcess("git", ["-C", nfdRoot, "init", "-q", "-b", "main"]);
+    await runProcess("git", ["-C", nfdRoot, "config", "user.email", "t@t.io"]);
+    await runProcess("git", ["-C", nfdRoot, "config", "user.name", "t"]);
+    mkdirSync(join(nfdRoot, "src"), { recursive: true });
+    writeFileSync(join(nfdRoot, "src", "a.txt"), "a\n");
+    await runProcess("git", ["-C", nfdRoot, "add", "."]);
+    await runProcess("git", ["-C", nfdRoot, "commit", "-q", "-m", "init"]);
+    const head = (await runProcess("git", ["-C", nfdRoot, "rev-parse", "HEAD"])).stdout.trim();
+
+    const nfcRoot = nfdRoot.normalize("NFC");
+    const toplevel = (await runProcess("git", ["-C", nfcRoot, "rev-parse", "--show-toplevel"])).stdout.trim();
+    // 전제: 두 형태는 **다른 문자열**이고 그런데도 같은 디렉터리다. 하나라도 깨지면 이 테스트는 공허하다.
+    assert.notEqual(nfcRoot, toplevel, "이 파일 시스템은 정규형을 통일한다 — B-33 전제가 성립하지 않는다");
+    assert.equal(realpathSync(nfcRoot), nfcRoot, "정규 경로 게이트 전제가 깨졌다");
+    const a = lstatSync(nfcRoot);
+    const b = lstatSync(realpathSync(toplevel));
+    assert.ok(a.dev === b.dev && a.ino === b.ino, "두 형태가 같은 디렉터리를 가리키지 않는다");
+
+    // 본 판정: NFC 경로로도 경계를 지난다(문자열 대조였다면 boundary_not_checkout_root였다).
+    const v = await verify({
+      manifest: manifest({ approvedCommit: head }),
+      controllerRepoRoot: nfcRoot,
+      targetWorktree: nfcRoot,
+    });
+    assert.equal(v.approvedCommit, head);
+    assert.equal(v.sameCheckout, true);
+    v.revalidateSync(); // 동기 재검증도 같은 기계(dev+ino)로 통과한다
+  } finally {
+    rmSync(nfdRoot, { recursive: true, force: true });
+  }
+});
+
+/**
+ * [V3 M10 T6 · `B-33`] 신원 대조로 바꿔도 **거부해야 할 것은 그대로 거부한다**:
+ * 하위 디렉터리(위 M5a 테스트) 외에 **다른 저장소**를 대상으로 준 경우를 신원 축에서 다시 고정한다.
+ */
+test("[M10 T6/B-33] 신원 대조가 다른 저장소를 통과시키지 않는다", async () => {
+  const a = await initRepo("m10-b33-a-", "a");
+  const b = await initRepo("m10-b33-b-", "b");
+  try {
+    assert.notEqual(a.head, b.head);
+    assert.equal(
+      await code(() =>
+        verify({ manifest: manifest({ approvedCommit: a.head }), controllerRepoRoot: a.root, targetWorktree: b.root }),
+      ),
+      "approved_commit_mismatch",
+    );
+    // 대상이 대상 저장소의 **하위 디렉터리**면 신원 자체가 다르다.
+    assert.equal(
+      await code(() =>
+        verify({
+          manifest: manifest({ approvedCommit: a.head }),
+          controllerRepoRoot: a.root,
+          targetWorktree: join(b.root, "src"),
+        }),
+      ),
+      "boundary_not_checkout_root",
+    );
+  } finally {
+    rmSync(a.root, { recursive: true, force: true });
+    rmSync(b.root, { recursive: true, force: true });
+  }
+});

@@ -20,6 +20,7 @@
 import { test } from "node:test";
 import { spawnSync } from "node:child_process";
 import { MANAGED_PROCESS_ENV } from "./managedProcess.js";
+import { GIT_SANITIZED_ENV } from "./executionBoundary.js";
 import { renameSync } from "node:fs";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
@@ -994,4 +995,107 @@ test("[M5c/3C] supervisor: spawn 실패는 process_launch_failed이고 프로세
     }),
     (e: unknown) => (e as OrchestrationError).code === "process_launch_failed",
   );
+});
+
+/**
+ * [V3 M10 T6 · 대장 `C-81`] **실제 supervisor가 정리 미관측을 낸다(실제 프로세스 · 살아 있는 자손).**
+ *
+ * 지금까지 이 분기의 판정은 durable marker를 **손으로 주입해** 고정했고(`autopilot.test.ts`), 실제
+ * supervisor가 미관측을 내는 경로는 재현하지 않았다 → "미관측을 실제로 관측한다"가 미증명이었다.
+ *
+ * 재현 방법과 그 한계를 정직하게 적는다: **유예 0**을 주고 살아 있는 자손을 남긴다. "유예 안에 그룹이
+ * 비는 것을 관측할 수 없다"가 유예 0에서는 **정의상 참**이므로 flaky하지 않다.
+ *
+ * **여기서 kernel 경로까지 잇지 않는 이유**(그리고 그것이 `C-81`에 남는 잔여다): 승인 계약의
+ * `cleanupTermGraceMs`·`cleanupKillGraceMs`는 **최소 100ms**이고(`approvalManifest.ts:390-391`),
+ * SIGKILL을 100ms 넘게 견디는 정상 프로세스는 만들 수 없다 → `executeRunProcessOperation`이
+ * `process_cleanup_unconfirmed`를 던지는 상태는 **EPERM·비중단 I/O 같은 병리적 조건에서만** 도달한다.
+ * 그 조건을 테스트로 합성하지 않았고, 합성한 척도 하지 않는다.
+ */
+test("[M10 T6/C-81] 실제 supervisor가 살아 있는 자손을 미관측으로 보고한다(유예 0 · 양성 대조군 포함)", async () => {
+  const dir = makeDir("m10-c81-");
+  const leader = join(dir, "leader.sh");
+  // leader는 손자를 남기고 즉시 끝난다 → 그룹은 비어 있지 않다.
+  writeFileSync(leader, "#!/bin/sh\n( sleep 2 ) &\nexit 0\n", { mode: 0o755 });
+  const lonely = join(dir, "lonely.sh");
+  writeFileSync(lonely, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+
+  const survived = await superviseProcess({
+    executable: "/bin/sh",
+    args: [leader],
+    cwd: dir,
+    timeoutMs: 5_000,
+    termGraceMs: 0,
+    killGraceMs: 0,
+  });
+  assert.equal(survived.cleanupConfirmed, false, "살아 있는 자손 + 유예 0인데 정리를 확인했다고 적었다");
+  assert.equal(survived.terminatedBy, "exit");
+
+  // **양성 대조군**: 같은 유예 0에서 자손이 없으면 그룹 소멸이 즉시 관측된다 → 위 false가 "관측기가
+  // 언제나 실패한다"가 아니라 **살아 있는 자손** 때문임을 고정한다(공허한 red 방지).
+  const clean = await superviseProcess({
+    executable: "/bin/sh",
+    args: [lonely],
+    cwd: dir,
+    timeoutMs: 5_000,
+    termGraceMs: 0,
+    killGraceMs: 0,
+  });
+  assert.equal(clean.cleanupConfirmed, true, "자손이 없는데도 정리를 관측하지 못했다");
+});
+
+/**
+ * [V3 M10 T6 · 대장 `B-20`] 고정 env가 **system/global gitconfig를 사용자 상태 없이 끈다.**
+ * `TRUSTED_GIT_PREFIX`의 `-c`는 아는 키만 끄므로 `/etc/gitconfig` 자체를 읽지 않게 하는 축이 필요하다.
+ * 두 git 경로(관리 프로세스 · 실행 경계)가 **같은 값**을 쓰는 것도 함께 고정한다 — 갈라지면 한쪽만 안전하다.
+ */
+test("[M10 T6/B-20] 고정 env가 system/global gitconfig를 끈다(두 경계가 같은 값)", () => {
+  assert.equal(MANAGED_PROCESS_ENV.GIT_CONFIG_NOSYSTEM, "1", "system config 차단이 고정 env에서 사라졌다");
+  assert.equal(MANAGED_PROCESS_ENV.GIT_CONFIG_GLOBAL, "/dev/null", "global config 차단이 고정 env에서 사라졌다");
+  assert.equal(GIT_SANITIZED_ENV.GIT_CONFIG_NOSYSTEM, MANAGED_PROCESS_ENV.GIT_CONFIG_NOSYSTEM);
+  assert.equal(GIT_SANITIZED_ENV.GIT_CONFIG_GLOBAL, MANAGED_PROCESS_ENV.GIT_CONFIG_GLOBAL);
+  // 상속 통로가 열리지 않았는지도 같이 본다(호출자별 override 표면 금지 — `MANAGED_PROCESS_ENV`가 전부다).
+  assert.equal(MANAGED_PROCESS_ENV.HOME, undefined);
+  assert.equal(MANAGED_PROCESS_ENV.GIT_DIR, undefined);
+});
+
+/**
+ * [V3 M10 T6 · 대장 `B-18`] **관측 범위는 프로세스 그룹이다 — `setsid`로 그룹을 탈출한 자손은 그 밖이다.**
+ *
+ * 이 테스트는 결함을 고치는 것이 아니라 **한계를 계약으로 고정**한다. macOS/Linux에 cgroup 같은
+ * "우리가 만든 프로세스 전부"를 묶는 커널 개념이 없는 채로 pgid를 쓰는 한, `detached`(= `setsid`) 자손은
+ * 새 session/group으로 나가므로 `kill(-pgid, 0)`이 그것을 보지 못한다. 그래서 `cleanupConfirmed: true`는
+ * "**승인된 프로세스 그룹이** 비었다"이고 "이 turn이 만든 프로세스가 하나도 남지 않았다"가 **아니다**.
+ * 모듈 머리말·`SupervisedOutcome` 주석을 그 범위로 정정했고(과대주장 제거) 이 테스트가 그 문장을 고정한다.
+ */
+test("[M10 T6/B-18] setsid로 그룹을 탈출한 자손은 그룹 관측의 범위 밖이다(한계를 고정한다)", async () => {
+  const dir = makeDir("m10-b18-");
+  const marker = join(dir, "escaped.txt");
+  const escapee = join(dir, "escapee.mjs");
+  const leader = join(dir, "leader.mjs");
+  writeFileSync(escapee, `import { writeFileSync } from "node:fs";\nsetTimeout(() => writeFileSync(process.argv[2], "1"), 300);\n`);
+  // detached: true → setsid() → 새 session/group. 부모가 죽어도 이 프로세스는 우리 pgid에 없다.
+  writeFileSync(
+    leader,
+    `import { spawn } from "node:child_process";\nconst g = spawn(process.execPath, [process.argv[2], process.argv[3]], { detached: true, stdio: "ignore" });\ng.unref();\nprocess.exit(0);\n`,
+  );
+
+  const out = await superviseProcess({
+    executable: process.execPath,
+    args: [leader, escapee, marker],
+    cwd: dir,
+    timeoutMs: 5_000,
+    termGraceMs: 200,
+    killGraceMs: 200,
+  });
+  // 그룹은 실제로 비었다 → 관측은 참이다. 거짓 영수증이 아닌 이유는 **주장의 범위가 그룹**이라는 것이다.
+  assert.equal(out.cleanupConfirmed, true, "그룹이 비었는데 미관측으로 보고했다");
+
+  // 그런데 탈출한 자손은 살아 있었다: reap 이후에도 자기 일을 끝낸다.
+  //
+  // **고정 대기가 아니라 폴링이다**: 전체 suite와 함께 돌면 탈출 자손의 Node 기동이 수백 ms 밀린다
+  // (실측: 고정 900ms는 부하 아래에서 흔들렸다). 단정은 그대로이고 기다리는 방식만 부하 내성이 있다.
+  const deadline = Date.now() + 15_000;
+  while (!existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
+  assert.equal(existsSync(marker), true, "탈출 자손이 죽었다 — pgid reap이 그룹 밖까지 덮었다는 뜻이므로 계약 기술이 낡았다");
 });

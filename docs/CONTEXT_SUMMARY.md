@@ -1,8 +1,43 @@
 # CONTEXT_SUMMARY.md
 
-최종 갱신: 2026-08-21 (M10 T1~T5 완료 · 완료 조건 3개 중 2개 증명 + 1개 한정부 증명)
+최종 갱신: 2026-08-22 (M10 T1~T6 완료 · 남은 한정 3개: C-97 · C-80 · C-86)
 
-## 최신 (2026-08-21 — **V3 M10 T1~T5 완료. 릴리스 여부는 사용자 판단** · 이 블록이 가장 최신이다)
+## 최신 (2026-08-22 — **V3 M10 T6(잔여 하드닝) 완료. 남은 한정 3개는 사용자 결정 대상** · 이 블록이 가장 최신이다)
+
+- 실측(live 이전 직렬): `test:exec` **621/621**(+11) · `test:core` **458/458** · acceptance **PASS=189 / FAIL=0**
+  (Test 22 내부 **48건**) · tsc clean. **mutation red 7종**. **live `claude -p` 6회**(구독 한도 · Codex 0회).
+- 판정 정본은 로드맵 **`M10 진행 판정 ⑥`**(T6) → ⑤(T5) → ④(T4) → ③②① 절이다.
+
+**T6이 닫은 것**
+- **A급 1건 — acceptance 두 절이 공허했다**: `m10-offline-acceptance.mjs` ①②가 "실제 프로세스"라고 적었지만
+  ⓐ `makeDir`이 정규 경로가 아니고 ⓑ fixture entrypoint에 실행 비트가 없어 **spawn이 0회**였다. 게이트 거부와
+  "떴지만 결과 미확정"이 같은 marker(`outcome_unknown`)라 green이었다 → 정규화 + 0755 + **부수 효과 파일로
+  "자식이 실제로 떴다" 단정**(3중)으로 닫았다. 고친 뒤 ②가 red가 되어 fixture 조합도 바로잡았다.
+- **`B-33`(P1)**: checkout 루트 대조를 **dev+ino**로 → 한글 경로(`~/Desktop/구독컷`)에서 v3가 시작된다.
+- **`C-90`**: `controllerEntrypoint` 배송(`src/exec/controllerEntrypoint.ts` → dist · build가 실행 비트).
+  계약: 종료 코드 하나(0/1/2) · 닫힌 env · `node --test` 내장 러너 · `validate-plan`은 사전 점검이고 권위 아님.
+- **`C-45` 소비면**: loop가 `exitCode !== 0`을 보면 완료하지 않는다 → **red 테스트가 통과로 세이지 않는다**.
+- **`B-20`**(system/global gitconfig 차단) · **`B-27`**(감사 R6 — wrapper script 승인 탐지 · 실물 근거: 이
+  기계의 `codex`가 `#!` wrapper) · **`C-81`**(실제 supervisor·실제 프로세스로 미관측 재현 + 양성 대조군) ·
+  **`C-87`**(live probe로 도구 차단 실측 — 토큰이 응답에 없다).
+- **`B-18`**: 탐지는 여전히 불가(darwin에 cgroup 없음) → **주장 범위를 그룹으로 좁히고** 실제 `setsid` 탈출
+  프로세스로 한계를 고정. **open 유지**.
+- **live e2e**: 한 번의 `runAutopilot`이 기획→구현→**테스트**→**최종 report**를 완주(9/9 · 4왕복 · 33.5s ·
+  토큰 23,050 · 사람 개입 0). **in-loop 테스트가 승인된 dist entrypoint로 실제 실행**됐다.
+
+**남은 한정 3개(전부 새 승인 축·backend 결정이 선행 — 사용자 판단)**
+- `C-97` **in-loop 리뷰 왕복 표현 불가**: 리뷰어는 fresh Codex여야 하는데 autopilot backend는 `claude-plan` 하나다.
+- `C-80` 로컬 병합 미배선 → "중복 merge 없음"은 공허 진리.
+- `C-86` live worker 세션의 **자격증명 신원**이 승인 축 밖(실행 파일은 digest로 고정 · 신원은 ambient).
+
+**신규 대장 3건**: `C-95`(내장 러너는 테스트 0건도 exit 0) · `C-96`(영수증이 "spawn 0"과 "결과 미확정"을
+구분하지 않는다 — 위 A급의 근인) · `C-97`(위).
+
+---
+
+## 이전 (2026-08-21 · M10 T1~T5 완료 시점)
+
+## (2026-08-21 — **V3 M10 T1~T5 완료. 릴리스 여부는 사용자 판단**)
 
 - 실측: `test:exec` **610/610** · `test:core` **458/458** · acceptance **PASS=189 / FAIL=0** · tsc clean.
   **T4·T5는 `src/`를 건드리지 않았다** → 수치가 T3과 같은 것이 정상이다. live LLM **0회**(과금 0).

@@ -67,7 +67,11 @@ function check(label, ok, detail = "") {
 
 const dirs = [];
 function makeDir(prefix) {
-  const d = mkdtempSync(join(tmpdir(), prefix));
+  // **정규 경로로 돌려준다**(V3 M10 T6). macOS `TMPDIR`은 `/var/folders/...`이고 `/var`는 `/private/var`
+  // symlink다 → 정규화하지 않은 경로를 승인 manifest에 넣으면 `verifyApprovedExecutable`이
+  // "정규 경로여야 한다"로 거부하고 **프로세스가 아예 뜨지 않는다**. 그 상태에서도 marker는
+  // `process_failed`/`outcome_unknown`이라 아래 단정들이 그대로 통과했다 = 공허한 green이었다.
+  const d = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   dirs.push(d);
   return d;
 }
@@ -146,7 +150,13 @@ function clockFrom(startMs, stepMs = 1000) {
 function writePlan(planDir, taskId, plan) {
   writeFileSync(
     join(planDir, `${taskId}.json`),
-    JSON.stringify({ operations: plan.operations ?? [], result: plan.result ?? { summary: `${taskId} 완료`, outputs: [] } }),
+    JSON.stringify({
+      operations: plan.operations ?? [],
+      result: plan.result ?? { summary: `${taskId} 완료`, outputs: [] },
+      // `requests`는 **있을 때만** 싣는다: 닫힌 key 집합이 두 갈래이므로 빈 배열을 항상 넣으면 요청 없는
+      // 계획이 다른 집합으로 판정된다(T6에서 이 누락이 우회 테스트를 공허하게 만들고 있었다).
+      ...(plan.requests === undefined ? {} : { requests: plan.requests }),
+    }),
   );
 }
 
@@ -173,7 +183,17 @@ function bootWithRealProcess({ sleepMs, timeoutMs }) {
   mkdirSync(join(ws, "docs"), { recursive: true });
   const entrypoint = join(makeDir("m10-proc-bin-"), "controller.mjs");
   // `validate-plan` action이 받는 인자는 승인 레코드의 planPath 하나다(argv를 고를 통로가 없다).
-  writeFileSync(entrypoint, `setTimeout(() => process.exit(0), ${sleepMs});\n`);
+  // **부수 효과 파일**을 남긴다: "실제 프로세스를 띄웠다"를 단정할 수 있는 유일한 관측점이다
+  // (supervisor는 `stdio: "ignore"`이고 게이트에서 막혀도 marker가 같아 구분되지 않는다 — M10 T6).
+  const spawnedMarker = join(ws, "docs", "spawned.txt");
+  // **실행 비트가 있어야 승인된 실행 파일이다**(`verifyApprovedExecutable`). 0644로 쓰면 spawn이
+  // `process_executable_untrusted`로 막히고 marker는 여전히 `outcome_unknown`이라 구분되지 않는다
+  // (M10 T6에서 이 조합이 섹션 ①②를 공허하게 만들고 있었다 — 위 부수 효과 단정이 그것을 잡았다).
+  writeFileSync(
+    entrypoint,
+    `import { writeFileSync as w } from "node:fs";\nw(${JSON.stringify(spawnedMarker)}, "1");\nsetTimeout(() => process.exit(0), ${sleepMs});\n`,
+    { mode: 0o755 },
+  );
   const kernel = OrchestrationKernel.create({
     workspaceRoot: ws,
     runId: RUN_ID,
@@ -197,7 +217,7 @@ function bootWithRealProcess({ sleepMs, timeoutMs }) {
     operations: [{ operationId: "op-1", kind: "run_process", authorityId: "proc-1" }],
     result: { summary: "프로세스를 돌린다", outputs: [] },
   });
-  return { ws, planDir, entrypoint };
+  return { ws, planDir, entrypoint, spawnedMarker };
 }
 
 console.log("① 관측된 정리는 확인으로 적는다 — 실제 프로세스 deadline은 run을 격리하지 않는다 (리뷰 A1)");
@@ -215,6 +235,9 @@ console.log("① 관측된 정리는 확인으로 적는다 — 실제 프로세
   });
   const task = taskOf(f.ws, "root");
   const receipts = task.execution.operationReceipts.map((r) => `${r.kind}:${r.marker}`);
+  // **자식이 실제로 떴는지를 먼저 단정한다**: 승인 게이트에서 막혀도 marker는 같으므로(둘 다
+  // `outcome_unknown`) 이 단정이 없으면 "실제 프로세스" 주장이 공허해진다(M10 T6에서 실측으로 발견).
+  check("자식 프로세스가 실제로 떴다(부수 효과 파일)", existsSync(f.spawnedMarker));
   check("실제 프로세스가 deadline으로 종료됐다(효과 미확정 영수증)", receipts.join(",") === "run_process:outcome_unknown", receipts.join(","));
   check("정리를 관측했으므로 확인으로 적는다", task.execution.cleanupStatus === "confirmed", task.execution.cleanupStatus);
   check("정상 timeout이 run을 격리하지 않는다(복구 가능한 paused)", task.state === "paused", `${task.state}/${report.stoppedBecause}`);
@@ -251,7 +274,12 @@ await runAutopilot({
 process.exit(0);
 `;
 {
-  const f = bootWithRealProcess({ sleepMs: 20, timeoutMs: 5_000 });
+  // **deadline으로 끊기는 실제 프로세스**를 쓴다(섹션 ①과 같은 조합): 그래야 영수증이
+  // `outcome_unknown`이고, 종료 기록 커밋 직전에 controller가 죽었을 때 판정 ③("기록이 끊긴 창")이
+  // 실제로 성립한다. 이전 판은 `sleepMs: 20`(정상 종료 → `applied` 영수증)이었는데, 그 조합에서는
+  // 복구가 **정당하게** 정리를 확인하고 완료한다 → 섹션이 아무것도 증명하지 못한다(M10 T6 실측:
+  // 그때 spawn 자체가 게이트에서 막혀 `outcome_unknown`이 나오고 있었고, 그것이 green을 만들고 있었다).
+  const f = bootWithRealProcess({ sleepMs: 5_000, timeoutMs: 150 });
   const childFile = join(makeDir("m10-crash-child-"), "crash.mjs");
   writeFileSync(childFile, CRASH_AUTOPILOT_CHILD);
   const tsx = join(REPO_ROOT, "node_modules/.bin/tsx");
@@ -259,6 +287,7 @@ process.exit(0);
   // tsx는 래퍼라 안쪽 node의 SIGKILL이 `137`로 올라온다 — 둘 다 "신호로 죽었다"는 같은 사실이다.
   check("controller가 실제로 SIGKILL로 죽었다", child.signal === "SIGKILL" || child.status === 137, `status=${child.status} signal=${child.signal} ${child.stderr ?? ""}`);
   const paths = runPaths(f.ws, RUN_ID);
+  check("자식 프로세스가 실제로 떴다(부수 효과 파일)", existsSync(f.spawnedMarker));
   check("커밋 도중 죽어 writer lock이 남았다(전제)", existsSync(paths.lockFile));
 
   const before = eventLog(f.ws).length;
@@ -625,6 +654,138 @@ console.log("\n⑦ T3 end-to-end — 기획→디자인→개발을 **한 번의
   check("보고된 사용량이 durable 회계에 누적됐다(turn 3회 × 8)", k.getAccounting().tokensUsed === 24, String(k.getAccounting().tokensUsed));
   check("controller lease를 끝나고 놓았다(실행 중 보유는 관측하지 않는다)", !existsSync(runPaths(ws, RUN_ID).controllerLeaseFile));
   check("무인 loop가 사람 개입 없이 돌았다(pause 0건)", !events.some((e) => e.kind === "task_paused"), JSON.stringify(events.filter((e) => e.kind === "task_paused")));
+}
+
+console.log("\n⑨ 승인된 controller entrypoint가 in-loop 테스트를 실제로 돌린다 (C-90) + red 테스트가 완료를 막는다 (C-45 소비면)");
+{
+  // **실제 소스 entrypoint**를 kernel의 launch 경로로 띄운다(dist를 소비하지 않는다 — 낡은 계약 검사 방지).
+  // `node` 자리에는 **tsx를 exec하는 wrapper**를 digest로 고정해 넣는다(.ts를 node가 직접 못 읽으므로).
+  // production에서는 이 자리에 실제 `node`와 `dist/exec/controllerEntrypoint.js`가 온다.
+  const bin = makeDir("m10-c90-bin-");
+  const nodeWrapper = join(bin, "node-tsx.sh");
+  writeFileSync(
+    nodeWrapper,
+    `#!/bin/sh\nexec "${process.execPath}" --import "${join(REPO_ROOT, "node_modules/tsx/dist/esm/index.mjs")}" "$@"\n`,
+    { mode: 0o755 },
+  );
+  // 승인된 실행 파일은 **실행 비트**가 있어야 한다(`node <entry>`로 뜨는 경우에도 같은 계약이다) →
+  // `src/exec/controllerEntrypoint.ts`는 레포에 **0755로 커밋**돼 있다(dist에서는 `npm run build`가 준다).
+  // 사본을 만들지 않는다: 이 파일은 `./typedPlan.js`를 import하므로 트리 밖으로 옮기면 해석되지 않는다.
+  const entrypoint = join(REPO_ROOT, "src/exec/controllerEntrypoint.ts");
+
+  const bootTests = (dirName, body) => {
+    const ws = makeDir("m10-c90-ws-");
+    const planDir = makeDir("m10-c90-plans-");
+    mkdirSync(join(ws, "src", dirName), { recursive: true });
+    mkdirSync(join(ws, "docs"), { recursive: true });
+    writeFileSync(
+      join(ws, "src", dirName, "a.test.mjs"),
+      `import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("t", () => ${body});\n`,
+    );
+    const kernel = OrchestrationKernel.create({
+      workspaceRoot: ws,
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      manifest: baseManifest({
+        executionAuthority: {
+          ...baseManifest().executionAuthority,
+          node: { path: nodeWrapper, sha256: sha256Of(nodeWrapper) },
+          controllerEntrypoint: { path: entrypoint, sha256: sha256Of(entrypoint) },
+        },
+        operationAuthorityByTask: {
+          root: [
+            { authorityId: "tests-1", kind: "run_process", action: "run-tests", data: { projectPath: `src/${dirName}` }, timeoutMs: 120_000 },
+          ],
+        },
+      }),
+      clock: clockFrom(T0),
+    });
+    seedRoot(kernel);
+    writePlan(planDir, "root", {
+      operations: [{ operationId: "op-1", kind: "run_process", authorityId: "tests-1" }],
+      result: { summary: "테스트를 돌렸다", outputs: [] },
+    });
+    return { ws, planDir };
+  };
+
+  // ⓐ 통과하는 테스트: 승인된 entrypoint가 `node --test`로 실제 실행하고 loop는 완료로 착지한다.
+  const green = bootTests("green", "assert.equal(1, 1)");
+  await runAutopilot({
+    workspaceRoot: green.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: green.planDir,
+    clock: clockFrom(T0 + 60_000),
+    maxIterations: 2,
+  });
+  const gk = openOrchestrationRun({ workspaceRoot: green.ws, runId: RUN_ID, clock: clockFrom(T0 + 900_000) });
+  const gr = gk.getTask("root").execution.operationReceipts;
+  check(
+    "통과하는 in-loop 테스트: 승인된 entrypoint가 실제로 돌고 exitCode 0 영수증이 남는다",
+    gr.length === 1 && gr[0].kind === "run_process" && gr[0].exitCode === 0 && gr[0].marker === "applied",
+    JSON.stringify(gr.map((r) => ({ marker: r.marker, exitCode: r.exitCode }))),
+  );
+  check("통과하면 task가 completed로 착지한다", gk.getTask("root").state === "completed", gk.getTask("root").state);
+
+  // ⓑ 실패하는 테스트: 같은 경로가 exitCode 1을 내고 loop는 **완료하지 않는다**(red가 통과로 세이지 않는다).
+  const red = bootTests("red", "assert.equal(1, 2)");
+  await runAutopilot({
+    workspaceRoot: red.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: red.planDir,
+    clock: clockFrom(T0 + 60_000),
+    maxIterations: 2,
+  });
+  const rk = openOrchestrationRun({ workspaceRoot: red.ws, runId: RUN_ID, clock: clockFrom(T0 + 900_000) });
+  const rr = rk.getTask("root").execution.operationReceipts;
+  check(
+    "실패하는 in-loop 테스트: exitCode 1이 영수증에 남는다(kernel은 exitCode를 산출물로 남긴다)",
+    rr.some((r) => r.kind === "run_process" && r.exitCode === 1),
+    JSON.stringify(rr.map((r) => ({ marker: r.marker, exitCode: r.exitCode }))),
+  );
+  check("red 테스트는 완료를 막는다(loop 정책 — completed가 아니다)", rk.getTask("root").state !== "completed", rk.getTask("root").state);
+  check(
+    "결과 메시지도 발행되지 않았다(red를 성공 영수증으로 세지 않는다)",
+    rk.getState().messages.filter((m) => m.type === "result").length === 0,
+    String(rk.getState().messages.filter((m) => m.type === "result").length),
+  );
+
+  // ⓒ **spawn 갈래로 게이트를 우회하지 못한다**(T6 적대적 리뷰 A2). 계획은 `operations`(red 테스트)와
+  // `spawn_child` 요청을 **함께** 담을 수 있다 → 게이트가 spawn 처리 뒤에 있으면 red 영수증을 남긴 채
+  // `waiting_children`으로 빠져나가고 자식이 끝난 다음 attempt에서 완료된다. 게이트는 그보다 앞이어야 한다.
+  const redSpawn = bootTests("redspawn", "assert.equal(1, 2)");
+  writePlan(redSpawn.planDir, "root", {
+    operations: [{ operationId: "op-1", kind: "run_process", authorityId: "tests-1" }],
+    result: { summary: "테스트를 돌리고 자식을 만든다", outputs: [] },
+    requests: [
+      {
+        kind: "spawn_child",
+        childTaskId: "child-1",
+        roleId: "dev-lead",
+        title: "자식 task",
+        scope: "src 안에서만",
+        dependsOn: [],
+        reason: "게이트 우회 시도(red 영수증을 남긴 채 waiting_children으로 나간다)",
+      },
+    ],
+  });
+  await runAutopilot({
+    workspaceRoot: redSpawn.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: redSpawn.planDir,
+    clock: clockFrom(T0 + 60_000),
+    maxIterations: 2,
+  });
+  const sk = openOrchestrationRun({ workspaceRoot: redSpawn.ws, runId: RUN_ID, clock: clockFrom(T0 + 900_000) });
+  const sroot = sk.getTask("root");
+  check(
+    "red + spawn 요청을 함께 낸 계획도 게이트를 지나지 못한다(waiting_children이 아니다)",
+    sroot.state !== "waiting_children" && sroot.state !== "completed",
+    sroot.state,
+  );
+  check("우회 시도에서 자식 task가 만들어지지 않았다", sk.getState().tasks.length === 1, JSON.stringify(sk.getState().tasks.map((t) => t.taskId)));
 }
 
 console.log(

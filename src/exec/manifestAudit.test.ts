@@ -118,3 +118,49 @@ test("보고는 결정적으로 정렬된다", () => {
   const keys = f.map((x) => x.rule + x.subject);
   assert.deepEqual(keys, [...keys].sort());
 });
+
+/**
+ * [V3 M10 T6 · 대장 `B-27`] R6 — **직접 exec되는 승인 실행 파일이 interpreter script면 wrapper 함정이다.**
+ * digest는 script 바이트만 고정하고 script가 런타임에 찾아 exec하는 실제 프로그램은 고정하지 않는다
+ * (`@openai/codex/bin/codex.js`가 실례다 — 그 wrapper가 `findCodexExecutable`로 바이너리를 고른다).
+ */
+test("R6 — exec 대상이 `#!` script면 high (wrapper 함정)", () => {
+  const f = auditApprovalManifest(
+    validateApprovalManifest(
+      raw({
+        executionAuthority: {
+          ...(raw().executionAuthority as Record<string, unknown>),
+          codex: { path: "/opt/harness/codex-wrapper", sha256: "c".repeat(64) },
+        },
+      }),
+    ),
+    { now: NOW, exists: ALL_PRESENT, readMagic: (p) => (p === "/opt/harness/codex-wrapper" ? "#!" : "\x7fE") },
+  );
+  const hit = f.filter((x) => x.rule === "approved_executable_is_script");
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].subject, "executionAuthority.codex");
+  assert.equal(hit[0].severity, "high");
+});
+
+test("R6 — controllerEntrypoint는 대상이 아니다(node의 인자이지 exec 대상이 아니다)", () => {
+  // 전부 `#!`로 읽히게 해도 entrypoint에는 finding이 없다 — 여기서 걸면 정상 승인이 매번 high를 낸다.
+  const f = auditApprovalManifest(validateApprovalManifest(raw()), {
+    now: NOW,
+    exists: ALL_PRESENT,
+    readMagic: () => "#!",
+  });
+  const subjects = f.filter((x) => x.rule === "approved_executable_is_script").map((x) => x.subject);
+  assert.equal(subjects.includes("executionAuthority.controllerEntrypoint"), false);
+  // 나머지 exec 대상 셋(git·node·processObserver)은 전부 걸린다 — 규칙이 공허하지 않다는 대조군.
+  assert.deepEqual(subjects, ["executionAuthority.git", "executionAuthority.node", "executionAuthority.processObserver"]);
+});
+
+test("R6 — 부재 경로는 R6이 아니라 R5만 보고한다(같은 사실을 두 번 세지 않는다)", () => {
+  const f = auditApprovalManifest(validateApprovalManifest(raw()), {
+    now: NOW,
+    exists: () => false,
+    readMagic: () => "#!",
+  });
+  assert.equal(f.some((x) => x.rule === "approved_executable_is_script"), false);
+  assert.ok(f.every((x) => x.rule === "approved_path_missing"));
+});
