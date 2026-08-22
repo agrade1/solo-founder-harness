@@ -65,6 +65,7 @@ import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
 import { LIVE_PLAN_BACKEND, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
 import { CODEX_PLAN_BACKEND, startCodexPlanTurn } from "../exec/codexPlanWorker.js";
+import { assertCodeReviewRoundtrip, DesignRoundtripError, type RoundtripParticipant } from "../exec/designReviewRoundtrip.js";
 import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
 import { createProgressReporter } from "./progress.js";
 import type { TypedExecutionPlan, WorkerEvent } from "../exec/autopilotTypes.js";
@@ -277,6 +278,21 @@ async function runAutopilotUnderLease(
       kernel.approvedWorkerExecutable();
     } catch (err) {
       return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
+    }
+  }
+  // **리뷰 왕복을 요구한 승인은 그 참가자가 실재할 때만 시작한다**(V3 M11 적대적 리뷰 A-1).
+  //
+  // 게이트(`reviewRoundtripGate`)는 `spec.verify`인 turn에서만 돈다 → **verify가 DAG에 없으면 게이트가
+  // 한 번도 돌지 않고 run이 조용히 완주한다.** 나머지 다섯은 부재 시 `roundtrip_participant_missing`으로
+  // fail closed인데 verify만 fail open이었다(오타 하나로 강제가 사라진다). 비대칭을 여기서 없앤다 —
+  // **시작 전에** 여섯 개 전부의 실재를 요구하고, 하나라도 없으면 아무 상태도 건드리지 않고 거부한다.
+  {
+    const spec = kernel.getManifest().reviewRoundtrip;
+    if (spec !== undefined) {
+      const declared = [spec.author, spec.reviews.code, spec.reviews.security, spec.reviews.test, spec.revision, spec.verify];
+      if (declared.some((id) => kernel.getTask(id) === null)) {
+        return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: "roundtrip_participant_missing" };
+      }
     }
   }
 
@@ -645,16 +661,21 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
             });
           })()
         : effective === LIVE_PLAN_BACKEND
-        ? startLivePlanTurn({
-            // 실행 파일은 **kernel이 지금 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이
-            // 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
-            executable: kernel.approvedWorkerExecutable().path,
+        ? (() => {
+            // 실행 파일과 **자격증명 신원(`configDir`)** 둘 다 **kernel이 지금 검증해 준 값**이다
+            // (turn마다 다시 본다 — 캐시하면 그 재검증이 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
+            const cw = kernel.approvedWorkerExecutable();
+            return startLivePlanTurn({
+            executable: cw.path,
+            configDir: cw.configDir,
+            configDirIdentity: cw.configDirIdentity,
             prompt: workerPrompt(kernel, taskId),
             binding,
             // 세션 상한은 **승인된 attempt 상한**에서 나온다(호출자가 고르는 값이 아니다).
             timeoutMs: kernel.getManifest().autopilotPolicy.maxAttemptElapsedMs,
             signal: ctx.signal,
-          })
+            });
+          })()
         : startOfflinePlanTurn({
             backend: OFFLINE_PLAN_BACKEND,
             planJson: encodePlan(ctx.planDoc, binding),
@@ -705,6 +726,18 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
           const gate = routeRequestsInTurn(kernel, taskId, turnId, plan, clock, emit);
           if (gate !== null) {
             marker = gate;
+            plan = null;
+          }
+        }
+        // **리뷰 왕복 계약을 loop 안에서 강제한다**(V3 M11 · 대장 `C-98`). 승인 문서가
+        // `reviewRoundtrip`으로 참가자 task를 지목한 경우에만 돌고, 지목하지 않으면 아무 일도 없다.
+        if (marker === "turn_completed" && plan !== null) {
+          const rt = reviewRoundtripGate(kernel, taskId, turnId);
+          if (rt !== null) {
+            marker = "review_invalid";
+            // **왜 거부됐는지를 올린다**(오늘 `workerMarker`에서 고친 `C-96` 부류와 같은 규율):
+            // marker 하나로는 "렌즈 집합이 틀렸다"와 "리뷰어가 저자와 같은 엔진이다"를 구분할 수 없다.
+            workerFailureCode = rt;
             plan = null;
           }
         }
@@ -858,6 +891,75 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
  * 그래서 프롬프트에 들어가지 않는 것: 다른 task의 원문 · 프롬프트 이력 · 자격증명 · 파일 내용.
  * inbox가 여기 실리므로 **전달받은 메시지가 그 task의 행동을 바꾼다**(대장 `B-17` 잔여의 관측면).
  */
+/**
+ * **리뷰 왕복 계약을 loop 안에서 강제한다**(V3 M11 · 대장 `C-98`).
+ *
+ * M10 T7까지 `assertCodeReviewRoundtrip`을 부르는 것은 **live 스크립트**뿐이었다 → 리뷰 task를 지우거나
+ * 저자와 같은 엔진으로 돌려도 loop 자체는 완주하고 결과를 발행했다. 그때 참인 명제는 "이번 실행의
+ * 참가자 집합이 계약을 통과했다"였지 **"loop가 계약을 강제한다"** 가 아니었다. 이 함수가 그 차이를 닫는다.
+ *
+ * ## 어디서 무엇을 막는가 (범위를 정확히)
+ *
+ * 승인 문서의 `reviewRoundtrip.verify`로 지목된 task가 **완료되기 직전**에 한 번 돈다. 통과하지 못하면
+ * `review_invalid`이므로 그 task는 완료되지 않고 결과도 발행되지 않는다 → **리뷰 왕복이 성립하지 않으면
+ * run이 완주하지 못한다.** 지목된 여섯 참가자가 durable에 실재한다는 것은 `runAutopilot` 진입에서
+ * 이미 요구했다(없으면 시작조차 하지 않는다 — 그 검사가 없으면 verify 오타 하나로 이 게이트가 통째로
+ * 사라진다: M11 적대적 리뷰 A-1).
+ *
+ * **이 게이트는 `dispatchOperations`·`routeRequestsInTurn` 뒤에 있다**(적대적 리뷰 C-2): 계약을 어긴
+ * verify turn이라도 그 turn이 **승인 경계 안에서 집행한 write·run_process 영수증은 durable에 남는다**.
+ * 막는 것은 **완료와 결과 발행**이지 이미 승인된 효과의 되돌림이 아니다(되돌림은 이 계층에 없다).
+ *
+ * **막지 못하는 것(정직하게 · `C-98` 잔여)**: 앞선 참가자(저자·리뷰어·수정자)의 **개별 결과는 이미
+ * 발행된 뒤**다. 개별 발행까지 막으려면 참가자 신원을 durable schema에 넣고 kernel이 발행을 거부해야
+ * 하는데 그것은 state 마이그레이션(`C-9`)이 딸린 별도 승인 범위다. 지금 계약은 **run 완주 게이트**다.
+ *
+ * ## 참가자 신원을 어디서 가져오는가
+ *
+ * durable만 본다: `roleId`가 provider를(리뷰어 family → codex) `execution.turnId`가 세션을 표현한다.
+ * **`fresh: true`는 구조적으로 참이다** — worker는 turn마다 새 프로세스를 띄우고 resume하지 않는다.
+ * 다만 그래서 계약의 freshness 축은 이 배선에서 **동어반복**이고(늘 참), 실제로 판정되는 것은
+ * provider 분업 · sandbox · 세션 재사용 없음 · 렌즈 집합이다. 그 한정은 `C-86`/`C-98`에 적혀 있다.
+ */
+function reviewRoundtripGate(kernel: OrchestrationKernel, taskId: string, currentTurnId: string): string | null {
+  const spec = kernel.getManifest().reviewRoundtrip;
+  if (spec === undefined || spec.verify !== taskId) return null;
+  const participant = (id: string): RoundtripParticipant | null => {
+    const t = kernel.getTask(id);
+    if (t === null) return null;
+    const codex = t.roleId.split(".")[0] === CODEX_REVIEWER_ROLE_FAMILY;
+    return {
+      taskId: id,
+      roleId: t.roleId,
+      provider: codex ? "codex" : "claude",
+      // **진행 중인 turn은 durable에 아직 없다**: `execution.turnId`는 이 turn이 착지한 뒤에 적히므로
+      // 게이트가 도는 시점(결과 봉인 직전)에는 비어 있다. 그 자리에는 지금 이 turn의 신원을 쓴다 —
+      // 지어낸 값이 아니라 **이 세션의 실제 id**이고, 다른 참가자와 겹치지 않는다는 검사도 그대로 받는다.
+      sessionId: id === taskId ? currentTurnId : t.execution.turnId ?? "",
+      ...(codex ? { sandbox: "read-only" } : {}),
+      fresh: true,
+    };
+  };
+  const author = participant(spec.author);
+  const code = participant(spec.reviews.code);
+  const security = participant(spec.reviews.security);
+  const test = participant(spec.reviews.test);
+  const revision = participant(spec.revision);
+  const verify = participant(spec.verify);
+  // 승인이 지목한 task가 durable에 없으면 **통과시키지 않는다**(없는 참가자를 빈 값으로 채우면 그것이
+  // 곧 공허한 게이트다).
+  if (author === null || code === null || security === null || test === null || revision === null || verify === null) {
+    return "roundtrip_participant_missing";
+  }
+  try {
+    assertCodeReviewRoundtrip({ author, reviews: { code, security, test }, revision, verify, testLens: "test" });
+  } catch (err) {
+    // `DesignRoundtripError.code`는 닫힌 안정 slug다(경로·내용이 실리지 않는다).
+    return err instanceof DesignRoundtripError ? err.code : "roundtrip_check_failed";
+  }
+  return null;
+}
+
 function workerPrompt(kernel: OrchestrationKernel, taskId: string): string {
   const task = kernel.getTask(taskId);
   const assignment = kernel.getState().messages.find((m) => m.taskId === taskId && m.type === "task_assignment");

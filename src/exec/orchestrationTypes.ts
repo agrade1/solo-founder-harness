@@ -965,6 +965,15 @@ export interface MilestoneApprovalManifest {
      */
     codexHome?: ApprovedDirectory;
     /**
+     * **claude worker 세션의 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · 대장 `C-86`). `codexHome`과 같은 자리·
+     * 같은 의미다: "이 세션이 **누구의 자격증명**으로 도는가"를 승인 문서가 고정한다.
+     *
+     * manifest 수준에서는 **선택**이지만(offline 승인은 live worker 자체가 없다) `claude`를 승인한
+     * manifest에서는 **필수**다 — `approvedWorkerExecutable()`이 그 짝을 강제한다. 실행 파일만 승인하고
+     * 신원은 ambient로 두는 조합이 곧 `C-86`이었으므로 그 조합을 **표현 불가**로 만든다.
+     */
+    claudeHome?: ApprovedDirectory;
+    /**
      * M5c 3A 2차 리비전 B2 — **모든 typed `run_process`가 실행하는 유일한 script**. digest는 실행 경계에서
      * 다시 확인한다. 승인 문서의 operation 레코드는 이 값을 바꾸거나 다른 경로를 고를 수 없다.
      */
@@ -989,6 +998,20 @@ export interface MilestoneApprovalManifest {
   maxElapsedMs: number;
   /** **기록·조회 전용** — 이 값이 true여도 kernel은 git 조작을 하지 않는다. */
   localMergeAllowed: boolean;
+  /**
+   * **리뷰 왕복을 무인 loop의 하드 게이트로 쓴다는 선언**(V3 M11 · 대장 `C-98`). 값은 참가자 **taskId**
+   * 뿐이다 — provider·세션·sandbox는 승인 문서가 고르는 값이 아니라 durable에서 파생한다(그래야 승인이
+   * "리뷰어가 codex였다"고 **주장**할 수 없다).
+   *
+   * 선택인 이유는 호환이 아니라 의미다: 리뷰 왕복을 요구하지 않는 승인도 정당하며, 그 경우 loop는
+   * 이 게이트를 돌리지 않는다. 있으면 `verify` task는 계약을 통과해야만 완료된다.
+   */
+  reviewRoundtrip?: {
+    author: string;
+    reviews: { code: string; security: string; test: string };
+    revision: string;
+    verify: string;
+  };
   expiresAt: string;
 }
 

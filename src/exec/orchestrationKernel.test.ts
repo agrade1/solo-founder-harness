@@ -69,6 +69,7 @@ import {
   DEPENDENCY_VERSION_PATTERN,
   DOMAIN_PATTERN,
   MANIFEST_KEYS,
+  MANIFEST_OPTIONAL_KEYS,
   SPECIALIST_ROLES,
   commandAllowed,
   dependencyAllowed,
@@ -4184,7 +4185,11 @@ test("[M4c] 라우팅 진입점은 타입·방향·summary 계약을 강제한�
 
 test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runtime 상수와 구조적으로 일치한다", () => {
   const s = readSchema("milestone_approval_manifest.schema.json");
-  assert.deepEqual(s.required, [...MANIFEST_KEYS]);
+  // **manifest 최상위 선택 key의 잠금**(V3 M11 · `C-98`). schema `required`는 닫힌 집합에서 선택 key를
+  // 뺀 것과 정확히 같아야 하고, 그 선택 목록 자체를 아래에서 값으로 못 박는다 → 새 선택 key가
+  // **조용히** 늘면 여기서 red다(executionAuthority의 `B-7ⓐ` 잠금과 같은 형태).
+  assert.deepEqual(s.required, MANIFEST_KEYS.filter((k) => !(MANIFEST_OPTIONAL_KEYS as readonly string[]).includes(k)));
+  assert.deepEqual([...MANIFEST_OPTIONAL_KEYS], ["reviewRoundtrip"]);
   assert.deepEqual(Object.keys(s.properties).sort(), [...MANIFEST_KEYS].sort());
   assert.equal(s.additionalProperties, false);
   assert.equal(s.properties.approvedCommit.pattern, COMMIT_PATTERN);
@@ -4206,10 +4211,13 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
   // live worker 실행 권위) → 목록을 명시적으로 갱신했다. 여전히 **여기 없는 key는 늘 수 없다.**
   assert.deepEqual(
     EXECUTION_AUTHORITY_KEYS.filter((k) => !(EXECUTION_AUTHORITY_REQUIRED_KEYS as readonly string[]).includes(k)),
-    ["claude", "codexHome"],
+    // V3 M11에서 `claudeHome`이 사람 승인 아래 더해졌다(대장 `C-86` — worker 세션의 자격증명 신원).
+    // 목록을 명시적으로 갱신했다. 여전히 **여기 없는 key는 늘 수 없다.**
+    ["claude", "claudeHome", "codexHome"],
   );
   assert.deepEqual(s.properties.executionAuthority.properties.claude.oneOf[0].$ref, "#/definitions/approvedExecutable");
   assert.equal(s.properties.executionAuthority.properties.codexHome.$ref, "#/definitions/approvedDirectory");
+  assert.equal(s.properties.executionAuthority.properties.claudeHome.$ref, "#/definitions/approvedDirectory");
   assert.deepEqual(s.definitions.approvedDirectory.required, [...APPROVED_DIRECTORY_KEYS]);
   assert.equal(s.definitions.approvedDirectory.additionalProperties, false);
   assert.equal(s.definitions.approvedDirectory.properties.path.pattern, APPROVED_PATH_PATTERN);

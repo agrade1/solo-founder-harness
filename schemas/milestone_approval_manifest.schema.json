@@ -95,6 +95,10 @@
           "description": "offline manifest는 live 추론을 승인하지 않는다 → null이 유효하다.",
           "oneOf": [{ "$ref": "#/definitions/approvedExecutable" }, { "type": "null" }]
         },
+        "claudeHome": {
+          "description": "V3 M11 대장 C-86 — **승인된 격리 CLAUDE_CONFIG_DIR**(선택 key). codexHome과 같은 자리·같은 의미다: 이 worker 세션이 **누구의 자격증명**으로 도는가를 승인 문서가 고정한다. manifest 수준에서는 선택이지만 claude를 승인한 manifest에서는 **필수**다 — approvedWorkerExecutable()이 짝을 강제하므로 \"실행 파일만 승인하고 신원은 ambient\"인 조합은 표현 불가다(그 조합이 곧 C-86이었다). 사람이 **1회** `CLAUDE_CONFIG_DIR=<path> claude`로 로그인해 두는 디렉터리이며 harness는 로그인을 대행·자동화·프록시하지 않고 내용을 복사·해싱·기록하지 않는다(그래서 digest 필드가 없다). 실측(2026-08-23 live 2회 · scripts/m11-c86-auth-probe.mjs): 빈 디렉터리를 주면 CLI가 \"Not logged in\"으로 exit 1이고 주지 않으면 exit 0이다 → 이 env가 **로그인 상태 해석**을 가른다. **비어 있지 않은 dir + USER 공존 시 어느 계정이 이기는지는 미실측이다**(대장 B-35) → 지금 고정되는 것은 어떤 디렉터리인가이지 누구의 자격증명인가가 아니다. 런타임 계약: 정규·비symlink·0700·프로세스 uid 소유·사용자 홈(및 ~/.claude) 아님·**비어 있지 않음**(비면 claude_config_not_logged_in). turn 검증에서 확보한 dev+ino를 **spawn 직전에 다시 대조**한다. **내용 allowlist는 없다**(미실측 — 대장 B-35). 행동 축은 인자가 막는다: --setting-sources \"\" · --strict-mcp-config · --tools \"\" · --no-session-persistence.",
+          "$ref": "#/definitions/approvedDirectory"
+        },
         "codexHome": {
           "description": "V3 M5c 대장 B-7ⓐ — **승인된 격리 CODEX_HOME**(유일한 선택 key). 사람이 **1회** `codex login CODEX_HOME=<path>`으로 자격증명을 넣어 둔 전용 디렉터리이며, harness는 로그인을 대행·자동화·프록시하지 않고 auth 파일을 복사·영속화·해싱·기록하지 않는다(그래서 내용 digest 필드가 없다 — digest를 남기는 것 자체가 유출 경로다). 이 key가 **없으면** live 인증이 승인되지 않은 것이고 격리 홈은 기존 계약대로 **완전히 비어 있어야** 한다(자식 env는 CODEX_HOME 하나뿐이므로 ambient 자격증명이 도달할 통로가 없다 → 인증 없이 fail closed이며 ~/.codex로의 fallback은 존재하지 않는다). 있으면 spec.codex.codexHome이 이 경로와 **정확히 같아야** 하고(다르면 codex_home_not_approved → spawn 0), 그때만 홈 안에 승인된 자격증명 파일(auth.json)이 있는 것이 허용된다 — 그 밖의 항목이 하나라도 있으면 여전히 codex_home_not_empty다. 런타임 전용 계약(spawn 직전 동기 게이트): 홈은 정규·비symlink·0700·프로세스 uid 소유·사용자 홈 아님이어야 하고 자격증명 파일은 정규 파일·비symlink·group/other 비트 0·프로세스 uid 소유여야 하며, 첫 invocation에서 고정된 dev+ino가 이후 invocation마다 다시 대조된다.",
           "$ref": "#/definitions/approvedDirectory"
@@ -193,6 +197,27 @@
     "expiresAt": {
       "description": "만료 후에는 **전진 작업이** manifest_expired로 거부된다. 경계 포함이다(now >= expiresAt — 대장 C-17). M5c 예외(DECISIONS 2026-07-30 · 로드맵 §8.1): 이미 태운 자원의 회계 · 취소 요청 · 정리 · fail-closed pause만 만료 뒤에도 지나간다(safety-only reducer). 그 reducer들은 작업을 시작하지 않고, 완료하지 않고, 실패한 전달을 수령하지 않고, artifact를 발행하지 않는다. 읽기는 계속 가능하다.",
       "$ref": "#/definitions/timestamp"
+    },
+    "reviewRoundtrip": {
+      "description": "V3 M11 대장 C-98 — **리뷰 왕복을 무인 loop의 하드 게이트로 쓴다는 선언**(선택 key · 부재면 강제하지 않는다). 있으면 verify로 지목된 task는 assertCodeReviewRoundtrip을 통과해야만 완료된다(통과 못 하면 review_invalid · 결과 미발행). 지목된 여섯 참가자가 durable task로 **실재해야** run이 시작된다(없으면 roundtrip_participant_missing — 그 검사가 없으면 verify 오타 하나로 게이트가 통째로 사라진다). 값은 참가자 **taskId뿐**이다: provider·세션·sandbox 필드를 두지 않는 것이 계약이다 — 승인 문서가 \"리뷰어는 codex였다\"고 주장할 수 있으면 게이트가 공허해지므로 참가자 성질은 durable(roleId·turnId)에서만 파생한다. 여섯은 서로 다른 task여야 한다(같으면 invalid_manifest). **한정**: 게이트는 dispatchOperations 뒤에 있고 앞선 참가자의 개별 결과 발행은 막지 않는다(대장 C-100).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["author", "reviews", "revision", "verify"],
+      "properties": {
+        "author": { "$ref": "#/definitions/slug" },
+        "reviews": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "security", "test"],
+          "properties": {
+            "code": { "$ref": "#/definitions/slug" },
+            "security": { "$ref": "#/definitions/slug" },
+            "test": { "$ref": "#/definitions/slug" }
+          }
+        },
+        "revision": { "$ref": "#/definitions/slug" },
+        "verify": { "$ref": "#/definitions/slug" }
+      }
     }
   },
   "definitions": {

@@ -30,7 +30,7 @@
  *   테스트가 durable 증거로 고정한다(`src/commands/autopilot.test.ts` M10 절).
  * - **동시 controller 2대**(살아 있는 controller의 잔재를 크래시로 오판하는 경로)는 범위 밖이다 — 대장에 등록했다.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -66,6 +66,14 @@ function check(label, ok, detail = "") {
 }
 
 const dirs = [];
+/** 승인된 격리 `CLAUDE_CONFIG_DIR` fixture(V3 M11 · `C-86`). 계약: 0700 · 이 프로세스 소유 · 비어 있지 않음. */
+function fakeClaudeHome() {
+  const d = makeDir("m10-claude-home-");
+  chmodSync(d, 0o700);
+  writeFileSync(join(d, ".credentials.json"), "{}\n", { mode: 0o600 });
+  return { path: d };
+}
+
 function makeDir(prefix) {
   // **정규 경로로 돌려준다**(V3 M10 T6). macOS `TMPDIR`은 `/var/folders/...`이고 `/var`는 `/private/var`
   // symlink다 → 정규화하지 않은 경로를 승인 manifest에 넣으면 `verifyApprovedExecutable`이
@@ -607,7 +615,10 @@ console.log("\n⑦ T3 end-to-end — 기획→디자인→개발을 **한 번의
     milestoneId: MILESTONE,
     manifest: baseManifest({
       ownershipByTask: { "plan-pm": ["docs"], "design-ui": ["docs"], "dev-impl": ["src"] },
-      executionAuthority: { ...baseManifest().executionAuthority, claude: workerBin },
+      // **실행 파일과 자격증명 신원은 짝이다**(V3 M11 · 대장 `C-86`): `claude`만 승인하면
+      // `worker_backend_unapproved`다. offline acceptance이므로 홈은 계약만 만족시키는 fixture다
+      // (계약은 내용을 열지 않고 "비어 있지 않다"까지만 본다).
+      executionAuthority: { ...baseManifest().executionAuthority, claude: workerBin, claudeHome: fakeClaudeHome() },
       operationAuthorityByTask: { "dev-impl": [{ authorityId: "auth-app", kind: "write_file", path: "src/app.ts", maxBytes: 256 }] },
     }),
     clock: clockFrom(T0),

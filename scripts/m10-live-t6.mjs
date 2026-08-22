@@ -140,6 +140,8 @@ const entrypointSha = createHash("sha256").update(readFileSync(entrypoint)).dige
 
 const claudeReal = realpathSync(process.env.HARNESS_CLAUDE_BIN ?? "/Users/jihun/.nvm/versions/node/v24.18.0/bin/claude");
 const claudeSha = createHash("sha256").update(readFileSync(claudeReal)).digest("hex");
+// **승인된 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · `C-86`). 사람이 1회 로그인해 둔 디렉터리다.
+const CLAUDE_HOME = process.env.HARNESS_CLAUDE_HOME ?? "/Users/jihun/harness-claude-home";
 console.log(`\nV3 M10 T6 live — 무인 loop에서 in-loop 테스트 + 최종 report${DRY ? " (--dry: LLM 0회)" : ""}`);
 console.log(`  worker 실행 파일: ${claudeReal}`);
 console.log(`  digest: ${claudeSha.slice(0, 16)}…  (승인 manifest에 이 값으로 박는다)`);
@@ -156,6 +158,10 @@ const manifest = {
   executionAuthority: {
     // **live worker 실행 파일**(V3 M10 T3). 이 키가 없으면 live backend는 표현 불가다.
     claude: DRY ? null : { path: claudeReal, sha256: claudeSha },
+    // **worker 세션의 자격증명 신원**(V3 M11 · 대장 `C-86`). 실행 파일만 승인하고 신원을 비우는 조합은
+    // 이제 표현 불가다 — `approvedWorkerExecutable()`이 짝을 강제한다. 사람이 **1회**
+    // `CLAUDE_CONFIG_DIR=<이 경로> claude`로 로그인해 둬야 하고 harness는 그 로그인을 대행하지 않는다.
+    ...(DRY ? {} : { claudeHome: { path: CLAUDE_HOME } }),
     codex: null,
     controllerEntrypoint: { path: entrypoint, sha256: entrypointSha },
     git: { path: "/opt/harness/git", sha256: "d".repeat(64) },

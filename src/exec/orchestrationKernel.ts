@@ -117,6 +117,7 @@ import { MAX_PROGRESS_STEP_CHARS, MAX_WORKER_EVENTS, type TypedExecutionPlan, ty
 import { validateTypedExecutionPlan } from "./typedPlan.js";
 import { verifyApprovedExecutable } from "./executionBoundary.js";
 import { verifyCodexExecutable, verifyCodexHome } from "./codexCliProvider.js";
+import { verifyClaudeConfigDir } from "./livePlanWorker.js";
 import { superviseProcess } from "./managedProcess.js";
 import {
   OPERATION_RECEIPT_MARKERS,
@@ -2659,12 +2660,22 @@ export class OrchestrationKernel {
    * 계약이고(그래서 영수증도 없다), 그 프로세스의 산출물은 계획 하나뿐이며 그 계획은 다시
    * `validateTypedExecutionPlan` → 승인 레코드 대조를 지나야 아무 효과도 낼 수 있다.
    */
-  approvedWorkerExecutable(): { path: string; sha256: string } {
-    const approved = this.#state.manifest.executionAuthority.claude;
+  approvedWorkerExecutable(): { path: string; sha256: string; configDir: string; configDirIdentity: { dev: number; ino: number } } {
+    const auth = this.#state.manifest.executionAuthority;
+    const approved = auth.claude;
     if (approved === undefined || approved === null) {
       throw new OrchestrationError(
         "worker_backend_unapproved",
         "이 승인에는 live worker 실행 파일(executionAuthority.claude)이 없다 — offline backend만 가능하다",
+      );
+    }
+    // **실행 파일과 신원은 짝이다**(V3 M11 · 대장 `C-86`). 파일만 승인하고 자격증명은 ambient로 두는
+    // 조합이 곧 그 항목이었으므로 여기서 **표현 불가**로 만든다 — codex 갈래(`approvedCodexWorker`)가
+    // `codex` + `codexHome`을 함께 요구하는 것과 같은 규율이고, 조용한 ambient fallback은 없다.
+    if (auth.claudeHome === undefined) {
+      throw new OrchestrationError(
+        "worker_backend_unapproved",
+        "이 승인에는 live worker 자격증명 신원(executionAuthority.claudeHome)이 없다 — 실행 파일만으로는 live worker를 띄우지 않는다",
       );
     }
     verifyApprovedExecutable(approved, "executionAuthority.claude", {
@@ -2673,7 +2684,8 @@ export class OrchestrationKernel {
       identity: "worker_executable_untrusted",
       digest: "worker_digest_mismatch",
     });
-    return { path: approved.path, sha256: approved.sha256 };
+    const home = verifyClaudeConfigDir(auth.claudeHome.path, { path: auth.claudeHome.path });
+    return { path: approved.path, sha256: approved.sha256, configDir: home.path, configDirIdentity: home.id };
   }
 
   /**
