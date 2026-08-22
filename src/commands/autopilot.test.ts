@@ -19,7 +19,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, OrchestrationError } from "../exec/orchestrationTypes.js";
@@ -133,6 +133,39 @@ function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1
   });
   for (const id of taskIds) k.createRootTask(seed(id, roleId));
   return { ws, planDir, clock: clockFrom(T0 + 60_000, stepMs) };
+}
+
+/**
+ * 리뷰 왕복 DAG 하나(`C-98` 검증용). **offline backend**로 돈다 — 게이트가 보는 것은 계획의 출처가
+ * 아니라 durable 참가자 신원(`roleId`·`turnId`)이므로 모델을 띄우지 않고도 계약을 밟을 수 있다.
+ *
+ * `reviewRoundtrip`이 `null`이면 승인에 그 key를 넣지 않는다(= 강제하지 않는 승인).
+ */
+function bootRoundtrip(
+  ids: string[],
+  roundtrip: Record<string, unknown> | null,
+  reviewRoleId: string,
+): Fixture {
+  const ws = makeDir("m11-rt-ws-");
+  const planDir = makeDir("m11-rt-plans-");
+  const k = createOrchestrationRun({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: manifestFor(ids, roundtrip === null ? {} : { reviewRoundtrip: roundtrip }),
+    clock: clockFrom(T0),
+  });
+  const roleOf = (id: string): string =>
+    id.startsWith("rev-") ? reviewRoleId : id === "verify" ? `${CODEX_REVIEWER_ROLE_FAMILY}.verify` : "dev-lead";
+  k.createRootTask(seed(ids[0]!, roleOf(ids[0]!)));
+  // impl → 리뷰 3종 → revise → verify. 의존성이 곧 실행 순서다.
+  for (const id of ids.slice(1, 4)) {
+    k.createDependentTask({ ...seed(id, roleOf(id)), dependsOn: [ids[0]!] });
+  }
+  k.createDependentTask({ ...seed("revise", roleOf("revise")), dependsOn: ids.slice(1, 4) });
+  k.createDependentTask({ ...seed("verify", roleOf("verify")), dependsOn: ["revise"] });
+  for (const id of ids) writePlan(planDir, id, {});
+  return { ws, planDir, clock: clockFrom(T0 + 60_000, 1000) };
 }
 
 /**
@@ -1748,6 +1781,18 @@ test("[M10-T3] 같은 run에 controller가 둘 붙지 못한다 — 살아 있�
 // 돌고, 그 출력이 offline backend와 **같은 검증기**를 지나야 효과를 낸다"이며 모델 품질이 아니다.
 
 /** 승인에 넣을 수 있는 worker 실행 파일 하나를 만든다(내용 digest까지). */
+/**
+ * **승인된 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · 대장 `C-86`). 계약은 "정규·비symlink·0700·이 프로세스
+ * 소유·사용자 홈 아님·**비어 있지 않음**"이다 — 비어 있으면 로그인이 없다는 뜻이므로
+ * `claude_config_not_logged_in`이다. 실제 자격증명을 넣지 않는 이유: 계약은 **내용을 열지 않는다**.
+ */
+function fakeClaudeHome(): { path: string } {
+  const dir = realpathSync(makeDir("m11-claude-home-"));
+  chmodSync(dir, 0o700);
+  writeFileSync(join(dir, ".credentials.json"), "{}\n", { mode: 0o600 });
+  return { path: dir };
+}
+
 function fakeWorkerBin(body: string): { path: string; sha256: string } {
   // macOS의 `/var/folders/...`는 symlink 뒤에 있다 — 승인 경계는 **정규 경로**를 요구한다(M9 실측).
   const dir = realpathSync(makeDir("m10-worker-bin-"));
@@ -1766,7 +1811,7 @@ test("[M10-T3] live backend는 승인된 실행 파일만 돌리고 그 계획�
   const good = fakeWorkerBin(
     PLAN_EMITTER('설명을 먼저 적는다.\n{"operations": [], "result": {"summary": "live worker가 낸 계획", "outputs": [{"path": "docs/out.md", "role": "output"}]}}'),
   );
-  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: good, node: EXECUTION_AUTHORITY.node } });
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: good, claudeHome: fakeClaudeHome(), node: EXECUTION_AUTHORITY.node } });
   writeOutput(f.ws, "docs/out.md", "# 산출물\n");
 
   // 계획 파일이 **없어도** 돈다 — live backend에서는 계획을 모델이 만든다.
@@ -1807,7 +1852,7 @@ test("[M10-T3] 승인에 worker 실행 파일이 없으면 live backend는 시�
 
 test("[M10-T3] 승인된 실행 파일이 승인 뒤에 바뀌면 spawn하지 않는다 (digest 재검증)", async () => {
   const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
-  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin } });
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin, claudeHome: fakeClaudeHome() } });
   // 승인 뒤 **같은 경로의 내용**을 바꾼다(제자리 덮어쓰기).
   writeFileSync(bin.path, PLAN_EMITTER('{"operations": [], "result": {"summary": "바뀐 프로그램", "outputs": []}}'), { mode: 0o700 });
   const report = await runAutopilot({
@@ -1829,7 +1874,7 @@ test("[M10-T3] 계획 계약 밖 출력은 산출물로 승격되지 않는다 (
     ["승인 밖 operation", '{"operations": [{"operationId": "op-x", "kind": "write_file", "authorityId": "not-approved", "path": "/etc/hosts", "content": "x", "expectedBeforeSha256": null}], "result": {"summary": "몰래 쓴다", "outputs": []}}'],
   ] as const) {
     const bin = fakeWorkerBin(PLAN_EMITTER(out));
-    const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin } });
+    const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin, claudeHome: fakeClaudeHome() } });
     const report = await runAutopilot({
       workspaceRoot: f.ws,
       runId: RUN_ID,
@@ -1851,7 +1896,7 @@ test("[M10-T3] live worker 세션이 상한을 넘기면 죽이고 turn을 완�
   // 절대 끝나지 않는 프로그램. 세션 상한은 **승인된** `maxAttemptElapsedMs`에서 나온다(호출자가 못 고른다).
   const hang = fakeWorkerBin(`#!${process.execPath}\nimport { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nsetInterval(() => {}, 1000);\n`);
   const f = boot({
-    executionAuthority: { ...EXECUTION_AUTHORITY, claude: hang },
+    executionAuthority: { ...EXECUTION_AUTHORITY, claude: hang, claudeHome: fakeClaudeHome() },
     autopilotPolicy: { ...POLICY, maxAttemptElapsedMs: 1_000 },
   });
   const startedAt = process.hrtime.bigint();
@@ -1890,7 +1935,7 @@ test("[M10-T7] 승인 축 거부는 `plan_invalid`로 위장하지 않는다 —
   const claudeBin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
   const codexBin = fakeWorkerBin("#!/bin/sh\nexit 0\n");
   const f = boot(
-    { executionAuthority: { ...EXECUTION_AUTHORITY, claude: claudeBin, codex: codexBin, codexHome: { path: home } } },
+    { executionAuthority: { ...EXECUTION_AUTHORITY, claude: claudeBin, claudeHome: fakeClaudeHome(), codex: codexBin, codexHome: { path: home } } },
     ["review-code"],
     1000,
     // 리뷰어 family → codex 갈래(`backendForRole`).
@@ -1918,4 +1963,126 @@ test("[M10-T7] 승인 축 거부는 `plan_invalid`로 위장하지 않는다 —
   assert.equal(paused?.detail, "codex_home_not_empty", JSON.stringify(events));
   // 홈이 거부됐으므로 codex는 뜨지 않았고 결과도 발행되지 않았다(조용한 claude fallback이 없다).
   assert.equal(reopen(f.ws).getState().messages.filter((m) => m.type === "result").length, 0);
+});
+
+// ── ⑧ V3 M11 — 결정 4건 (C-86 자격증명 신원 · C-98 리뷰 왕복 강제) ───────────────
+
+test("[M11/C-86] 실행 파일만 승인하고 신원을 비우면 live worker는 시작조차 하지 않는다", async () => {
+  // **짝 강제**가 이 항목의 전부다: `claude`만 있고 `claudeHome`이 없는 조합 = "누구의 구독으로 도는지
+  // 승인 문서가 말하지 않는다"이고 그것이 곧 `C-86`이었다. 이제 그 조합은 표현 불가다.
+  const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin } }); // claudeHome 없음
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    workerBackend: "claude-plan",
+  });
+  assert.equal(report.blocked, "run_unavailable");
+  assert.equal(report.stoppedBecause, "worker_backend_unapproved", report.stoppedBecause);
+  assert.equal(report.tasks.length, 0, "신원 없는 승인이 task를 건드렸다");
+});
+
+test("[M11/C-86] 승인된 신원 디렉터리의 계약 위반은 전부 spawn 0이다(조용한 ambient fallback 없음)", async () => {
+  const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const cases: [string, () => { path: string }, string][] = [
+    [
+      "비어 있다(= 로그인이 없다)",
+      () => ({ path: (() => { const d = realpathSync(makeDir("m11-empty-")); chmodSync(d, 0o700); return d; })() }),
+      "claude_config_not_logged_in",
+    ],
+    [
+      "0700이 아니다",
+      () => {
+        const d = realpathSync(makeDir("m11-perm-"));
+        writeFileSync(join(d, ".credentials.json"), "{}\n", { mode: 0o600 });
+        chmodSync(d, 0o755);
+        return { path: d };
+      },
+      "claude_config_permissive",
+    ],
+    [
+      "symlink다",
+      () => {
+        const real = realpathSync(makeDir("m11-real-"));
+        chmodSync(real, 0o700);
+        writeFileSync(join(real, ".credentials.json"), "{}\n", { mode: 0o600 });
+        const link = join(realpathSync(makeDir("m11-link-")), "home");
+        symlinkSync(real, link);
+        return { path: link };
+      },
+      "claude_config_invalid",
+    ],
+    ["존재하지 않는다", () => ({ path: join(realpathSync(makeDir("m11-gone-")), "nope") }), "claude_config_invalid"],
+  ];
+  for (const [label, mk, expected] of cases) {
+    const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin, claudeHome: mk() } });
+    const report = await runAutopilot({
+      workspaceRoot: f.ws,
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      planDir: f.planDir,
+      clock: f.clock,
+      workerBackend: "claude-plan",
+    });
+    assert.equal(report.stoppedBecause, expected, `${label}: ${report.stoppedBecause}`);
+    // **결과가 발행되지 않았다** = 프로세스가 뜨지 않았다는 소비면 증거다.
+    assert.equal(reopen(f.ws).getState().messages.filter((m) => m.type === "result").length, 0, label);
+  }
+});
+
+test("[M11/C-98] 승인이 리뷰 왕복을 요구하면 verify는 계약을 통과해야만 완료된다", async () => {
+  // 저자·수정자는 claude, 리뷰 3종 + verify는 codex여야 한다는 것이 왕복 계약이다.
+  // **대조군을 같은 테스트에서 돌린다**: 리뷰어 하나를 저자와 같은 엔진으로 바꾸면 완주하지 못해야 한다.
+  const ids = ["impl", "rev-code", "rev-sec", "rev-test", "revise", "verify"];
+  const roundtrip = {
+    author: "impl",
+    reviews: { code: "rev-code", security: "rev-sec", test: "rev-test" },
+    revision: "revise",
+    verify: "verify",
+  };
+  for (const [label, reviewRole, expectVerify] of [
+    ["정상 왕복", `${CODEX_REVIEWER_ROLE_FAMILY}.code`, "completed"],
+    ["대조군: 리뷰어가 저자와 같은 엔진", "dev-lead", "paused"],
+  ] as const) {
+    const f = bootRoundtrip(ids, roundtrip, reviewRole);
+    const events: AutopilotEvent[] = [];
+    const report = await runAutopilot({
+      onEvent: (e) => events.push(e),
+      workspaceRoot: f.ws,
+      runId: RUN_ID,
+      milestoneId: MILESTONE,
+      planDir: f.planDir,
+      clock: f.clock,
+      maxIterations: 8,
+    });
+    const k = reopen(f.ws);
+    const why = events.filter((e) => e.kind === "task_paused" && e.taskId === "verify").map((e) => e.detail);
+    assert.equal(k.getTask("verify")?.state, expectVerify, `${label}: ${JSON.stringify(report.tasks)} why=${JSON.stringify(why)}`);
+    if (expectVerify === "paused") {
+      assert.equal(
+        report.tasks.find((t) => t.taskId === "verify")?.marker,
+        "review_invalid",
+        `${label}: ${JSON.stringify(report.tasks)}`,
+      );
+      // 게이트가 막은 turn은 **결과를 발행하지 않는다**.
+      assert.equal(k.getState().messages.filter((m) => m.type === "result" && m.taskId === "verify").length, 0, label);
+    }
+  }
+});
+
+test("[M11/C-98] 승인이 왕복을 요구하지 않으면 게이트는 돌지 않는다(있지도 않은 계약을 강요하지 않는다)", async () => {
+  // 공허하지 않다는 반대 방향 증거: 같은 DAG·같은 role인데 `reviewRoundtrip`이 없으면 완주한다.
+  const f = bootRoundtrip(["impl", "rev-code", "rev-sec", "rev-test", "revise", "verify"], null, "dev-lead");
+  await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    maxIterations: 8,
+  });
+  assert.equal(reopen(f.ws).getTask("verify")?.state, "completed");
 });

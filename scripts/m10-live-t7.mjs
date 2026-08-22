@@ -18,9 +18,12 @@
  *   D. 사람 개입 0건 · 실제 사용량이 durable 회계에 누적된다.
  *
  * ## 증명하지 않는다 (정직하게)
- *   - **왕복 계약 검사는 loop 밖이다.** 참가자 신원은 durable에서 파생하지만 `assertCodeReviewRoundtrip`
- *     호출은 이 스크립트가 한다 — kernel이 "리뷰를 안 거친 결과를 거부"하지는 않는다(그 게이트는 새 승인
- *     축이며 이 slice 범위가 아니다 → 대장 `C-98`).
+ *   - **개별 결과 발행까지 막지는 않는다**(V3 M11에서 좁혀진 `C-98` 잔여). 이제 승인이 `reviewRoundtrip`을
+ *     담으면 **loop가** 왕복 계약을 강제한다(`verify`는 통과해야만 완료된다) — 그러나 앞선 참가자의
+ *     결과는 그 시점에 이미 발행된 뒤다. 발행 자체를 kernel이 거부하려면 참가자 신원을 durable schema에
+ *     넣어야 하고 그것은 state 마이그레이션이 딸린 별도 승인 범위다.
+ *   - **freshness 축은 이 배선에서 동어반복이다**: worker가 turn마다 새 프로세스를 띄우고 resume하지
+ *     않으므로 `fresh`는 늘 참이다. 실제로 판정되는 것은 provider 분업·sandbox·세션 재사용 없음·렌즈 집합이다.
  *   - **세션 신원은 `turnId`로 표현한다**: worker가 turn마다 새 프로세스를 띄우고 resume하지 않으므로
  *     1 turn = 1 fresh 세션이다(provider 세션 UUID를 durable에 넣는 것은 schema 변경이라 하지 않았다).
  *   - 리뷰 **내용**의 품질은 판정하지 않는다. 판정하는 것은 계약이다. 표본 1회.
@@ -101,6 +104,8 @@ for (const args of [
 
 const claudeReal = realpathSync(process.env.HARNESS_CLAUDE_BIN ?? "/Users/jihun/.nvm/versions/node/v24.18.0/bin/claude");
 const claudeSha = createHash("sha256").update(readFileSync(claudeReal)).digest("hex");
+// **승인된 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · `C-86`). 사람이 1회 로그인해 둔 디렉터리다.
+const CLAUDE_HOME = process.env.HARNESS_CLAUDE_HOME ?? "/Users/jihun/harness-claude-home";
 // **wrapper가 아니라 실제 실행 파일을 승인한다**(대장 `B-27` · 감사 R6이 지목하는 바로 그 함정).
 // `~/.nvm/.../bin/codex`는 `#!/usr/bin/env node` wrapper라 digest가 실제 추론 바이너리를 고정하지 못하고,
 // 게다가 이 harness의 닫힌 env(자식에게 `CODEX_HOME` 하나)에서는 `env: node: No such file`로 **아예 뜨지
@@ -127,6 +132,10 @@ const manifest = {
   executionAuthority: {
     // **live worker 실행 파일**(V3 M10 T3). 이 키가 없으면 live backend는 표현 불가다.
     claude: DRY ? null : { path: claudeReal, sha256: claudeSha },
+    // **worker 세션의 자격증명 신원**(V3 M11 · 대장 `C-86`). 실행 파일만 승인하고 신원을 비우는 조합은
+    // 이제 표현 불가다 — `approvedWorkerExecutable()`이 짝을 강제한다. 사람이 **1회**
+    // `CLAUDE_CONFIG_DIR=<이 경로> claude`로 로그인해 둬야 하고 harness는 그 로그인을 대행하지 않는다.
+    ...(DRY ? {} : { claudeHome: { path: CLAUDE_HOME } }),
     // 이 slice는 typed operation을 쓰지 않는다(리뷰 왕복만 본다) → entrypoint는 형태만 채운다.
     controllerEntrypoint: { path: "/opt/harness/controller.js", sha256: "b".repeat(64) },
     // **리뷰어 권위**(C-97): 승인에 이 두 키가 없으면 codex backend는 표현 불가다.
@@ -151,6 +160,15 @@ const manifest = {
   maxSessions: 4,
   maxTokens: 2_000_000,
   maxElapsedMs: 3_600_000,
+  // **리뷰 왕복을 loop의 하드 게이트로 요구한다**(V3 M11 · 대장 `C-98`). 이 key가 있으면 `verify`는
+  // 계약을 통과해야만 완료된다 — 즉 아래 check C는 이제 **스크립트의 사후 검사가 아니라 loop가 이미
+  // 강제한 것의 재확인**이다(그 차이가 `C-98`이 말하던 전부였다).
+  reviewRoundtrip: {
+    author: "impl-author",
+    reviews: { code: "review-code", security: "review-security", test: "review-test" },
+    revision: "revise-impl",
+    verify: "verify-fix",
+  },
   localMergeAllowed: false,
   expiresAt: new Date(T0 + 6 * 3_600_000).toISOString(),
 };
@@ -284,6 +302,14 @@ if (DRY) {
     roundtripCode = e?.code ?? String(e);
   }
   check("C. **왕복 계약을 통과한다**(assertCodeReviewRoundtrip)", roundtripCode === "(통과)", roundtripCode);
+  // **loop가 이미 강제했다**(V3 M11 · `C-98`): 승인이 `reviewRoundtrip`을 담았으므로 `verify-fix`가
+  // completed라는 사실 자체가 게이트를 통과했다는 뜻이다. 위 C는 그 재확인이고, 이 절이 **강제 여부**를
+  // 직접 단정한다(둘을 나눠 적지 않으면 "스크립트가 검사했다"와 구별되지 않는다).
+  check(
+    "C. **loop가 강제했다** — 승인의 reviewRoundtrip 아래 verify가 완료됐다",
+    k.getManifest().reviewRoundtrip !== undefined && k.getTask("verify-fix")?.state === "completed",
+    JSON.stringify({ declared: k.getManifest().reviewRoundtrip !== undefined, verify: k.getTask("verify-fix")?.state }),
+  );
   // 공허하지 않다는 대조군: 리뷰어를 저자와 같은 엔진으로 바꾸면 계약이 거부해야 한다.
   let negative = "(통과)";
   try {
@@ -312,7 +338,7 @@ function existsSyncSafe(p) {
 }
 
 console.log("");
-console.log("증명하지 않는 것: **왕복 계약 검사는 loop 밖이다**(kernel이 리뷰 없는 결과를 거부하지는 않는다 — C-98) · 세션 신원을 turnId로 표현한다(provider UUID는 durable에 없다) · 리뷰 내용의 품질 · 표본 1회");
+console.log("증명하지 않는 것: **개별 결과 발행까지는 막지 않는다**(loop가 왕복을 강제하지만 앞선 참가자 결과는 이미 발행된 뒤다 — C-98 잔여) · 세션 신원을 turnId로 표현한다(provider UUID는 durable에 없다) · 리뷰 내용의 품질 · 표본 1회");
 console.log("===================================");
 console.log(` M10 T7 live 결과: PASS=${pass}  FAIL=${fail}`);
 console.log("===================================");

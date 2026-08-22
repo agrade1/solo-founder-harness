@@ -8,11 +8,11 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OrchestrationError } from "./orchestrationTypes.js";
-import { extractPlanJson, readReportedUsage, startLivePlanTurn } from "./livePlanWorker.js";
+import { extractPlanJson, LIVE_WORKER_ENV, readReportedUsage, startLivePlanTurn } from "./livePlanWorker.js";
 
 const dirs: string[] = [];
 process.on("exit", () => {
@@ -35,9 +35,27 @@ function bin(body: string): string {
 
 const BINDING = { runId: "run-1", taskId: "task-1", attemptId: "att-1", turnId: "turn-1" } as const;
 
+/** 부모 env 상속 여부를 재는 canary. 이 프로세스에만 두고 자식에서 보이면 계약 위반이다. */
+const CANARY = "HARNESS_M11_ENV_CANARY";
+process.env[CANARY] = "leaked";
+
+/** 승인된 격리 `CLAUDE_CONFIG_DIR` 자리(V3 M11 · `C-86`). 계약 검증은 kernel이 하고 worker는 값만 받는다. */
+function configDir(): string {
+  const d = realpathSync(mkdtempSync(join(tmpdir(), "m11-claude-cfg-")));
+  dirs.push(d);
+  return d;
+}
+
+/** 지금 그 디렉터리의 dev+ino. kernel이 turn 검증에서 확보하는 값과 같은 것이다. */
+function identityOf(dir: string): { dev: number; ino: number } {
+  const st = statSync(dir);
+  return { dev: st.dev, ino: st.ino };
+}
+
 async function drain(executable: string, timeoutMs = 30_000): Promise<string> {
   try {
-    const stream = startLivePlanTurn({ executable, prompt: "x", binding: { ...BINDING }, timeoutMs });
+    const cfg = configDir();
+    const stream = startLivePlanTurn({ executable, configDir: cfg, configDirIdentity: identityOf(cfg), prompt: "x", binding: { ...BINDING }, timeoutMs });
     let kinds = "";
     for await (const ev of stream) kinds += `${ev.kind},`;
     return kinds;
@@ -94,4 +112,75 @@ test("[M10-T3] readReportedUsage: cache 필드를 합산하고 형태 밖 값은
   assert.deepEqual(readReportedUsage({ input_tokens: -3, output_tokens: "많음" }), { inputTokens: 0, outputTokens: 0 });
   assert.deepEqual(readReportedUsage(null), { inputTokens: 0, outputTokens: 0 });
   assert.deepEqual(readReportedUsage([1, 2]), { inputTokens: 0, outputTokens: 0 });
+});
+
+test("[M11/C-86] 자식 env는 LIVE_WORKER_ENV + 승인된 CLAUDE_CONFIG_DIR 하나뿐이다", async () => {
+  // **이 축이 실제로 자식에게 도착하는지**를 못 박는다. 없으면 세션이 ambient 자격증명으로 돌고
+  // `C-86`이 조용히 재발한다 — 타입만으로는 못 잡는다(`tsconfig`가 `*.test.ts`를 제외한다).
+  const out = join(realpathSync(mkdtempSync(join(tmpdir(), "m11-env-"))), "env.json");
+  dirs.push(join(out, ".."));
+  const echo = bin(
+    `import { readFileSync, writeFileSync } from "node:fs";\nreadFileSync(0, "utf8");\n` +
+      `writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.env));\n` +
+      `process.stdout.write(JSON.stringify({ result: ${JSON.stringify('{"operations": [], "result": {"summary": "ok", "outputs": []}}')}, usage: null }));\n`,
+  );
+  const cfg = configDir();
+  const stream = startLivePlanTurn({ executable: echo, configDir: cfg, configDirIdentity: identityOf(cfg), prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+  for await (const _ of stream) { /* 소진 */ }
+  const env = JSON.parse(readFileSync(out, "utf8")) as Record<string, string>;
+  assert.equal(env.CLAUDE_CONFIG_DIR, cfg, "승인된 신원이 자식에게 도착하지 않았다");
+  for (const [k, v] of Object.entries(LIVE_WORKER_ENV)) assert.equal(env[k], v, `${k}가 계약과 다르다`);
+  // **키 집합 동등으로 단정하지 않는다**(V3 M11 실측): macOS/Node가 `__CF_USER_TEXT_ENCODING`을
+  // 스스로 넣는다 — 우리가 준 값이 아니다. 그것을 "우리 env"로 세면 거짓이고, 동등 단정으로 두면
+  // 플랫폼이 하나 더 넣는 날 무관한 red가 난다. 그래서 **우리가 정한 것 + 새어들면 안 되는 것**을
+  // 각각 못 박는다(이 방향이 이 테스트가 지키려는 성질이다).
+  const ours = new Set([...Object.keys(LIVE_WORKER_ENV), "CLAUDE_CONFIG_DIR"]);
+  const PLATFORM_INJECTED = new Set(["__CF_USER_TEXT_ENCODING"]);
+  assert.deepEqual(
+    Object.keys(env).filter((k) => !ours.has(k) && !PLATFORM_INJECTED.has(k)),
+    [],
+    `계약 밖 변수가 자식에게 도착했다: ${JSON.stringify(env)}`,
+  );
+  // 부모 env가 상속되지 않는다는 것을 **canary로** 단정한다(위 필터가 공허하지 않다는 대조군).
+  assert.equal(env[CANARY], undefined, "부모 env가 자식으로 새어 들어갔다");
+  for (const secret of ["HOME", "ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "http_proxy", "NODE_OPTIONS"]) {
+    assert.equal(env[secret], undefined, `${secret}가 자식에게 도착했다`);
+  }
+});
+
+test("[M11/C-86] configDir 없이 부르면 프로세스를 띄우지 않는다(경계의 런타임 가드)", async () => {
+  const ok = bin(EMIT('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  for (const bad of [undefined, "", "relative/path", 7]) {
+    const code = await (async () => {
+      try {
+        const stream = startLivePlanTurn({ executable: ok, configDir: bad as string, configDirIdentity: { dev: 1, ino: 1 }, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+        for await (const _ of stream) { /* 소진 */ }
+        return "(통과)";
+      } catch (e) {
+        return e instanceof OrchestrationError ? e.code : String(e);
+      }
+    })();
+    assert.equal(code, "worker_spawn_failed", `${String(bad)}가 통과했다`);
+  }
+});
+
+test("[M11/C-86] 검증과 spawn 사이에 신원이 바뀌면 프로세스를 띄우지 않는다(TOCTOU 창 좁히기)", async () => {
+  // **적대적 리뷰 B-2**: 이전 판은 kernel이 확보한 dev+ino를 버려서 `claude_config_identity_changed`가
+  // 도달 불가한 죽은 코드였고, 골격 주석의 "spawn 직전 재확인"이 claude 갈래에서 거짓이었다.
+  // 창을 0으로 만들지는 못하지만(`C-5`) **비동기 경계 중 교체**는 여기서 막힌다.
+  const ok = bin(EMIT('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const cfg = configDir();
+  const stale = { dev: identityOf(cfg).dev, ino: identityOf(cfg).ino + 1 }; // 교체된 디렉터리와 등가
+  const code = await (async () => {
+    try {
+      const stream = startLivePlanTurn({ executable: ok, configDir: cfg, configDirIdentity: stale, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+      for await (const _ of stream) { /* 소진 */ }
+      return "(통과)";
+    } catch (e) {
+      return e instanceof OrchestrationError ? e.code : String(e);
+    }
+  })();
+  assert.equal(code, "claude_config_identity_changed", code);
+  // 대조군: 같은 신원이면 지난다(검사가 무조건 거부가 아니다).
+  assert.equal(await drain(ok), "started,progress,progress,terminal,");
 });
