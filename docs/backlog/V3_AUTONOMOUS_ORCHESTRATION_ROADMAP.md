@@ -1817,7 +1817,184 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M10 진행 판정 ⑦ — T7 in-loop 리뷰 왕복 (`C-97` 닫힘 · live 8/8)** (2026-08-23 · 이 절이 M10의 현행이며 아래 ⑥보다 최신이다)
+##### **M11 진행 판정 ① — 사용자 결정 4건 구현 (`C-86`·`C-98` 닫힘 · `C-80`·`C-93` 조건 재정의)** (2026-08-23 · 이 절이 현행이며 아래 M10 ⑦보다 최신이다)
+
+> 범위: 2026-08-23에 사용자가 내린 결정 **넷**의 구현이다. M10 완료 조건 중 열려 있던 둘(`C-80`·`C-86`)과
+> M10 bullet 하나(`C-93`), 그리고 T7이 등록한 `C-98`. **live claude 2회**(C-86 실측 probe · 구독 한도 ·
+> 실결제 $0). 나머지는 전부 offline·무과금.
+
+### ⓐ 결정과 그 결과
+
+| 항목 | 사용자 결정 | 결과 |
+|---|---|---|
+| `C-80` | 완료 조건을 아키텍처에 맞게 다시 쓴다 | §10 M10 완료 조건 2번을 **"중복 발행 없음"** 으로 다시 썼다. 원문("중복 merge")은 v2 `mergeCoordinator`를 전제한 문장이라 이 구조에서는 **공허 진리**였다(병합 단계가 없다). 대체가 공허하지 않다는 근거를 acceptance **Test 23 ①**이 든다 |
+| `C-86` | 먼저 live 실측, 되면 승인 축 추가 | **실측이 통과했다** → `executionAuthority.claudeHome` 승인 축을 열었다. **closed** |
+| `C-93` | 한정을 본문에 명시하고 bullet을 v1 축으로 좁힌다 | §10 M10 도그푸딩 bullet을 **v1 문서 층 한정**으로 좁히고, v3 실행 층이 harness 레포 전용인 **이유**(양쪽 HEAD == `approvedCommit`)를 본문에 적었다. **closed** |
+| `C-98` | autopilot loop 게이트로 올린다 | 승인이 `reviewRoundtrip`을 담으면 loop가 왕복 계약을 강제한다. **closed(잔여 1건은 `C-100`)** |
+
+### ⓑ `C-86` — 실측이 먼저였다 (이것이 없었으면 공허한 축이었다)
+
+결정문이 "**되면** 승인 축 추가"였던 이유가 그대로 값을 했다. `claude.exe`에 `CLAUDE_CONFIG_DIR`
+문자열이 있다는 것만으로는 **auth를 가르는지** 알 수 없다 — macOS에서 세션 자격증명은 Keychain에 있고
+`USER`로 해석된다는 것이 M10 T3 실측이었다(그래서 `LIVE_WORKER_ENV`에 `USER`가 있다).
+
+**live 2회 실측(2026-08-23)**:
+
+| 조건 | 결과 |
+|---|---|
+| `CLAUDE_CONFIG_DIR` = **빈 디렉터리** | **exit 1** · `"Not logged in · Please run /login"` |
+| `CLAUDE_CONFIG_DIR` 없음(M10까지의 현행) | exit 0 |
+
+→ 이 env가 **auth 해석 경로를 실제로 가른다**. 그래서 축을 열었다. 반대 결과였으면 결정 옵션 2번
+(단일 계정 전제를 계약으로 명시)으로 접었을 것이고, 그 갈림길을 실측 없이 넘지 않았다.
+**probe를 레포에 남겼다**(`scripts/m11-c86-auth-probe.mjs`) — 재현할 수 없는 실측은 증거가 아니다
+(적대적 리뷰 B-1).
+
+**실측이 말하지 않는 것 — 주장 범위를 여기서 자른다**(적대적 리뷰 B-1): 위 두 줄이 증명하는 것은
+**"이 env가 로그인 상태 해석을 가른다"** 까지다. 자식 env에는 `USER`도 함께 들어가고(M10 T3 실측 —
+Keychain 계정 해석 축), **비어 있지 않은 config dir + `USER`가 공존할 때 실제 호출이 어느 계정으로
+도는지는 재지 않았다**(그것을 재려면 서로 다른 계정 둘이 필요하다). 게다가 계약은 "비어 있지 않음"까지만
+보므로 지금 고정되는 것은 엄밀히 **어떤 디렉터리인가**이지 **누구의 자격증명인가**가 아니다.
+그 간극은 **`B-35`** 에 적었고, "승인 문서가 계정을 고정한다"고 쓰면 그것은 과대주장이다.
+
+**무엇이 표현 불가가 됐나**: `claude`를 승인하고 `claudeHome`을 비우는 조합. `approvedWorkerExecutable()`이
+그 짝을 강제하므로(`worker_backend_unapproved`) **실행 파일만 digest로 고정하고 신원은 ambient**인
+상태가 더 이상 존재할 수 없다 — 그것이 `C-86`의 정의였다.
+
+**경계에 런타임 가드를 하나 더 뒀다**(타입만으로 부족한 실측 근거): `tsconfig.json`이 `src/**/*.test.ts`를
+**exclude**하므로 테스트 호출부가 `configDir`을 빠뜨려도 컴파일이 잡지 못한다. 그러면
+`CLAUDE_CONFIG_DIR: undefined`가 자식 env에서 **조용히 사라져** 세션이 다시 ambient로 돈다(= `C-86` 재발).
+`startLivePlanTurn` 진입에서 절대경로 문자열이 아니면 거부한다. 이 사실 자체는 **`C-101`** 로 대장에 올렸다.
+
+### ⓒ `C-98` — 강제 지점과 그 한계를 같은 무게로
+
+승인 문서에 **`reviewRoundtrip`**(참가자 taskId 여섯 개)을 두면, 그 `verify` task는
+`assertCodeReviewRoundtrip`을 통과해야만 완료된다. 통과하지 못하면 `review_invalid`이고 결과를 발행하지
+않는다 → **왕복이 성립하지 않으면 run이 완주하지 못한다.**
+
+**승인 문서가 참가자의 성질을 주장할 수 없게 했다**: `reviewRoundtrip`에 provider·session·sandbox 필드를
+두지 않았다. 그 값을 승인이 고를 수 있으면 "리뷰어는 codex였다"고 **적기만 하면** 게이트를 지난다 —
+공허해진다. 성질은 durable(`roleId` → provider, `turnId` → session)에서만 파생한다.
+
+**적대적 리뷰가 A급으로 잡은 구멍 하나 — 고쳤다**: 게이트는 `spec.verify`인 turn에서만 도는데,
+승인이 **존재하지 않는 task**를 verify로 지목하면 게이트가 **한 번도 돌지 않고** run이 조용히 완주했다
+(오타 하나로 강제가 통째로 사라진다 — 나머지 다섯은 부재 시 fail closed인데 verify만 fail open이었다).
+이제 `runAutopilot` 진입에서 **여섯 참가자의 실재를 요구**하고 하나라도 없으면 아무 상태도 건드리지 않고
+`roundtrip_participant_missing`으로 거부한다. acceptance Test 23 ③ + mutation red.
+
+**게이트는 `dispatchOperations` 뒤에 있다**(적대적 리뷰 C-2): 계약을 어긴 verify turn이라도 그 turn이
+승인 경계 안에서 집행한 write·`run_process` **영수증은 durable에 남는다**. 막는 것은 **완료와 결과
+발행**이지 이미 승인된 효과의 되돌림이 아니다(되돌림은 이 계층에 없다).
+
+**막지 못하는 것(잔여 → 대장 `C-100`)**: 앞선 참가자(저자·리뷰어·수정자)의 **개별 결과는 게이트 시점에
+이미 발행된 뒤**다. 발행 자체를 kernel이 거부하려면 참가자 신원이 durable schema에 있어야 하고 그것은
+state 마이그레이션(`C-9`)이 딸린 별도 승인 범위다. **"loop가 왕복을 강제한다"는 참이고 "kernel이 리뷰
+없는 결과 발행을 거부한다"는 여전히 거짓이다.**
+
+**freshness 축은 이 배선에서 동어반복이다**: worker가 turn마다 새 프로세스를 띄우고 resume하지 않으므로
+`fresh`는 늘 참이다. 실제로 판정되는 것은 provider 분업 · sandbox · 세션 재사용 없음 · 렌즈 집합이다.
+이 한정을 코드 주석·live 스크립트·이 절에 같이 적었다(한 곳에만 적으면 나머지가 과대주장이 된다).
+
+**게이트도 원인 코드를 올린다**: `review_invalid` marker 하나로는 "렌즈 집합이 틀렸다"와 "리뷰어가 저자와
+같은 엔진이다"를 구분할 수 없다 → `DesignRoundtripError.code`(닫힌 안정 slug)를 pause 이벤트 `detail`에
+싣는다. M10 T7에서 `workerMarker`에 적용한 것과 **같은 규율**이다(`C-96` 부류를 다시 만들지 않는다).
+
+### ⓓ 구조 — 두 번째 홈 계약을 만들지 않았다
+
+`codexHome`과 `claudeHome`의 **경로·권한·소유권·신원 축은 글자 그대로 같다**. 그래서
+`src/exec/isolatedConfigDir.ts` 골격 하나로 뽑고 두 provider가 각자의 **안정 코드 map**을 주입한다
+(`verifyApprovedExecutable`이 이미 쓰는 형태). `B-7ⓐ`가 "두 번째 홈 계약을 만들지 않는다"고 정한 그
+규율이고, **관측 가능한 거부 코드는 하나도 바뀌지 않았다**(codex 계약 테스트 19/19 그대로 green).
+
+provider마다 다른 것은 **디렉터리 안에 무엇이 허용되는가**뿐이다. claude 쪽은 **내용 allowlist가 없다** —
+아직 실측하지 않았기 때문이다(승인된 디렉터리에 사람이 1회 로그인해야 그 구성이 생기고 harness는 그
+로그인을 대행하지 않는다). 재보지 않은 allowlist를 지어 쓰면 codex가 0.145→0.146에서 겪은 것과 같은
+일이 난다 — **만족 불가능한 계약**이거나 **구멍**이다. 그 공백을 **`B-35`** 로 올렸다. 그 대신 행동 축은
+인자가 이미 막는다(`--setting-sources ""` · `--strict-mcp-config` · `--tools ""` · `--no-session-persistence`)
+→ 이 디렉터리가 여는 것은 **자격증명 신원**이고 설정·MCP·도구 면이 아니다.
+
+**골격 주석 하나가 거짓이었다 — 코드를 고쳐 참으로 만들었다**(적대적 리뷰 B-2): 골격은 "호출자가
+spawn 직전에 같은 신원으로 다시 확인한다"고 적었는데 **claude 갈래는 그러지 않았다**(kernel이 확보한
+dev+ino를 버렸다) → `claude_config_identity_changed`가 **도달 불가한 죽은 코드**였다. 신원을
+`LiveWorkerLaunch`로 통과시켜 `startLivePlanTurn` 진입에서 다시 본다. 이때 **계약 전체가 아니라 창에서
+바뀔 수 있는 축만**(경로·권한·소유자·신원) 본다 — "로그인이 있는가"는 승인 시점 판정이고 kernel이 이미
+했다. 두 계층이 같은 규칙을 각자 들면 한쪽만 정직해지고, 실패 코드도 원인과 달라진다(`C-96` 부류).
+
+### ⓔ 검증
+
+**전체 suite 1회(직렬 · live와 동시에 돌리지 않았다)**: `test:exec` **630/630**(+3) ·
+`test:core` **463/463**(+4) · acceptance **PASS=197 / FAIL=0**(189 → 197 · Test 23이 **8 checks**) ·
+tsc clean. 신규 acceptance **Test 23**(`scripts/m11-offline-acceptance.mjs` · 내부 **18 checks** ·
+offline·무과금).
+
+**중간에 red가 났고 그대로 적는다**: `m10-offline-acceptance.mjs`가 fake worker를 `claude`만으로
+승인하고 있어 `worker_backend_unapproved`로 7건이 red가 됐다 — **짝 강제가 의도대로 동작한 것**이다.
+그 스크립트에도 신원 fixture를 달아 닫았다(50/50).
+
+**mutation red 6종** — 각 게이트를 되돌리면 정확히 그 단정이 red다:
+
+| 변이 | red가 된 단정 |
+|---|---|
+| `C-98` 게이트를 끈다(`spec`을 `undefined`로 고정) | 대조군이 완주해버린다 → `M11/C-98` red |
+| `C-86` 짝 강제를 끈다(`claudeHome` 검사 제거) | 신원 없는 승인이 통과한다 → `M11/C-86` red |
+| 자식 env에서 `CLAUDE_CONFIG_DIR`을 뺀다 | `livePlanWorker` env 단정 red |
+| 홈 계약 판정을 되돌린다(M10 T7분) | 홈 계약 단정 red |
+| `A-1` 부트 검사를 끈다 | 오타 승인이 완주해버린다 → Test 23 ③ red |
+| `B-2` spawn 직전 재확인을 뺀다 | `livePlanWorker` TOCTOU 단정 red |
+
+**두 변이가 처음에 red가 되지 않았다 — 둘 다 그 자체가 결함이었다.** ⓐ 자식 env 변이: 자식 env에 이 값이 실제로 도착하는지
+아무도 단정하지 않아 축이 **조용히 끊길 수** 있었다. env 단정을 추가해 닫았고, 그 단정은 키 집합 동등이
+아니라 **"우리가 정한 것 + 새어들면 안 되는 것"** 으로 쓴다: macOS/Node가 `__CF_USER_TEXT_ENCODING`을
+스스로 넣기 때문이다(실측). 그것을 "우리 env"로 세면 거짓이고, 동등 단정으로 두면 플랫폼이 하나 더
+넣는 날 무관한 red가 난다. 부모 env 상속 여부는 **canary 변수**로 따로 단정한다(필터가 공허하지 않다는 대조군).
+ⓑ `B-2` 변이: spawn 직전 재확인을 빼도 green이었다 → 그 재확인을 단정하는 테스트가 없었다는 뜻이다.
+신원이 어긋난 launch가 `claude_config_identity_changed`로 거부되는지(+ 같은 신원이면 지나는지 대조군)를
+추가해 닫았다.
+
+### ⓕ M10 완료 조건 재판정 (판정 ⑦에 이 표가 없었다 — 그 공백을 여기서 메운다)
+
+| 완료 조건 | 지금 상태 |
+|---|---|
+| 기획→디자인→개발 end-to-end acceptance 전부 통과 | **증명.** T3 live(기획·디자인·개발) + T6 live(구현·테스트·최종 report) + **T7 live(in-loop 리뷰 왕복 8/8)** + acceptance Test 22. M10 ⑥이 적었던 한정(`C-97`)은 T7에서 닫혔다 |
+| 중단 후 재개 시 중복 agent/**중복 발행**/결정 유실 없음 | **증명 — 조건을 아키텍처에 맞게 다시 쓴 뒤**(`C-80` · 위 ⓐ). 근거: acceptance Test 22 ④(중복 없음) + **Test 23 ①**(병합 단계가 존재하지 않는다 · 대조군 포함) |
+| hard deny와 milestone approval 경계 우회 없음 | **증명 — 미증명 축이 0이 됐다.** `C-87`·`C-81`은 T6에서, **`C-86`(worker 자격증명 신원)은 이번에** 닫혔다 |
+
+**그래서 M10 완료 조건 3개는 전부 증명됐다.** 다만 셈을 느슨하게 하지 않는다 — 아래가 **여전히 열려 있는
+것**이고, 이것들은 완료 조건이 아니라 그 위의 강도·범위다:
+
+- **`C-100`**(신규): 리뷰 왕복은 **loop**가 강제하고 **kernel**은 아니다(개별 결과 발행은 막지 않는다).
+- **`B-34`**: codex 홈의 코드·지시 로드 면이 최상위 이름까지만 판정된다.
+- **`B-35`**(신규): claude 홈은 **내용 allowlist가 없다**(미실측).
+- **`C-86`의 live 증명은 아직 없고, 그 결과 live 경로 전체가 지금 fail closed다**: 승인이 `claude`를
+  담으면 `claudeHome`이 **필수**이므로, 승인된 홈에 **사람이 1회 로그인**하기 전까지
+  `m10-live-t3/t6/t7`·`m10-live-autopilot`은 `claude_config_not_logged_in`으로 시작조차 하지 않는다.
+  **의도된 상태다**(그것이 이 결정의 내용이다) — 그러나 **T7 live 8/8을 이 slice에서 재확인하지
+  못했다**는 뜻이기도 하다. 여는 명령은 하나다:
+  `CLAUDE_CONFIG_DIR=~/harness-claude-home claude` → `/login`. harness는 그 로그인을 대행·자동화·
+  프록시하지 않는다(`codexHome`과 같은 규율).
+- `B-18`(그룹 탈출 자손 탐지 불가) · `B-31`(worktree 잔재) — M10 이전부터 열려 있다.
+- **v3 실행 층은 여전히 harness 레포 전용이다**(`C-93` — 이제 설계로 본문에 적혔다).
+
+### ⓖ 대장 처리 — fixed 3건 · 재정의 1건 · 신규 5건
+
+| id | 무엇을 했나 |
+|---|---|
+| `C-86` | **closed** — `executionAuthority.claudeHome` 승인 축(live 실측 선행) + 짝 강제 + 경계 런타임 가드 |
+| `C-98` | **closed(잔여 `C-100`)** — 승인이 `reviewRoundtrip`을 담으면 loop가 왕복을 강제한다 |
+| `C-93` | **closed** — 한정을 §10 본문에 적고 도그푸딩 bullet을 v1 축으로 좁혔다(코드 변경 0) |
+| `C-80` | **재정의** — 완료 조건을 아키텍처에 맞게 다시 썼다. 병합 계약이 필요해지는 트리거는 그대로 남는다 |
+
+**신규 등록 5건**(셋은 이번 구현의 잔여, 둘은 적대적 리뷰 C급)
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-100` | C (P2) | **리뷰 왕복을 강제하는 것은 loop이고 kernel이 아니다.** 승인이 `reviewRoundtrip`을 담으면 `verify`는 계약을 통과해야만 완료되지만, 앞선 참가자(저자·리뷰어·수정자)의 **개별 결과는 그 시점에 이미 발행된 뒤**다. 즉 "리뷰 없는 결과가 durable에 존재할 수 없다"는 아직 거짓이고 참인 것은 "리뷰 없이는 run이 완주하지 못한다"다 | 확실(설계상) | 발행 시점의 강도(완주 게이트는 성립 — 승인 경계·쓰기는 무관) | 중 — 나중에 닫으려면 참가자 신원을 durable schema에 넣어야 하고 그때 기존 run은 마이그레이션 대상이다(`C-9`) | 중~대(state schema + 새 승인 축 + 발행 경로 게이트) | **리뷰 없는 중간 산출물이 다른 task에 소비되기 시작할 때**(지금은 verify가 마지막이라 소비면이 없다) | 사용자(범위 결정) + 그 slice 구현 세션 | `autopilot.ts` `reviewRoundtripGate` 주석 · `m11-offline-acceptance.mjs` "증명하지 않는 것" 절 | open |
+| `B-35` | **B (P2)** | **승인된 claude 격리 홈에 내용 allowlist가 없다.** 경로·권한·소유권·신원 + "비어 있지 않음"까지만 본다 — 로그인 후 구성을 **아직 실측하지 않았기 때문**이다(사람이 1회 로그인해야 생기고 harness는 대행하지 않는다). codex 홈은 `CODEX_RUNTIME_DIRS`로 관측된 이름만 허용하는데 여기는 그 대응물이 없다 → 그 디렉터리에 무엇이 들어와도 계약이 보지 않는다. **행동 축은 인자가 막지만**(`--setting-sources ""`·`--strict-mcp-config`·`--tools ""`) 그 인자들이 커버하지 않는 면이 생기면 알 수 없다. **여기에 계정 축이 하나 더 있다**(적대적 리뷰 B-1): 자식 env에는 `CLAUDE_CONFIG_DIR`과 `USER`가 **함께** 들어가는데 비어 있지 않은 dir + `USER` 공존 시 **어느 계정이 이기는지 미실측**이다(Keychain fallback 가능). 실측된 것은 "빈 dir이면 로그인 없음으로 fail closed"까지다 → 지금 고정되는 것은 **어떤 디렉터리인가**이지 **누구의 자격증명인가**가 아니다 | 중간 — CLI 버전마다 홈 구성이 바뀐다(codex 0.145→0.146 실측 전례) | 리뷰가 아닌 **저자·수정자** 세션의 설정면 | 중 — 실측 없이 allowlist를 지으면 만족 불가능한 계약이거나 구멍이다(codex에서 둘 다 겪었다) | 소~중(로그인 1회 후 최상위 이름 실측 → `CODEX_RUNTIME_DIRS`와 같은 형태로 고정 + 그 값을 테스트가 pin) | **승인된 홈에 사람이 1회 로그인한 직후 — 첫 live 실행과 같은 slice** | 미정 | `livePlanWorker.verifyClaudeConfigDir` 주석 · `codexCliProvider`의 `B-23` 전례 · `scripts/m11-c86-auth-probe.mjs`의 "판정하지 않는 것" 절 | open |
+| `C-102` | C (P3) | **claude 갈래의 `claude_config_not_approved`는 production에서 동어반복이다**(적대적 리뷰 C-1). `approvedWorkerExecutable()`이 `verifyClaudeConfigDir(auth.claudeHome.path, { path: auth.claudeHome.path })`로 **같은 값을 두 번** 넘기므로 경로 대조는 항상 참이고, `approved`가 실제로 기여하는 것은 **소유자 검사**뿐이다. codex는 `spec.codex.codexHome`(호출자가 준 값)과 manifest를 **교차** 대조하지만 claude는 spec 측 출처가 없다 — 지금 구조에서는 호출자가 홈을 고를 통로 자체가 없으므로 구멍은 아니다 | 확실(구조상) | 오류 코드 하나의 도달 가능성(보안 축 아님) | 낮음 | 소(주석으로 명시 · 또는 claude worker spec을 여는 날 교차 대조를 붙인다) | claude worker에 호출자 spec을 여는 변경이 생길 때 | 미정 | 적대적 리뷰 C-1 · `orchestrationKernel.approvedWorkerExecutable` | open |
+| `C-103` | C (P3) | **schema와 runtime의 `null` 처리가 어긋난다**: runtime은 `claudeHome`/`codexHome`의 `null`을 **부재와 같게** 통과시키는데 schema는 `$ref: approvedDirectory`라 `null`을 거부한다. `codexHome`의 기존 불일치를 `claudeHome`이 그대로 복제했다. 승인 문서를 schema로 먼저 검증하는 경로에서는 `null`이 거부되고 runtime만 지나면 통과한다 — 두 문 사이에 틈이 있다(방향은 schema가 더 엄격이라 fail closed) | 확실(정적 대조) | 승인 문서 작성 편의(안전 축 무관 — 더 엄격한 쪽이 schema다) | 낮음 | 소(schema를 `oneOf: [approvedDirectory, null]`로 — `codex` key가 이미 그 형태다) | 승인 문서를 사람이 손으로 쓰기 시작할 때 | 미정 | 적대적 리뷰 C-3 · `approvalManifest.ts` 정규화 vs `milestone_approval_manifest.schema.json` | open |
+| `C-101` | C (P3) | **`tsconfig.json`이 `src/**/*.test.ts`를 exclude한다 → 테스트는 타입 검사를 받지 않는다.** 이번 slice에서 실제로 값을 했다: `LiveWorkerLaunch.configDir`을 필수로 만들었는데 테스트 호출부의 누락을 컴파일이 **잡지 못했고**, 런타임에서는 `CLAUDE_CONFIG_DIR: undefined`가 조용히 사라져 `C-86`이 재발할 뻔했다(경계 런타임 가드로 막았다). 같은 형태의 구멍이 다른 필수 필드에도 있을 수 있다 | 확실(설정상) | 테스트 호출부의 타입 안전 — production 코드는 검사된다 | 낮음~중 | 소(test 전용 tsconfig 추가 + `npm run typecheck`에 연결) 다만 기존 테스트의 누적 타입 오류를 한 번 걷어내야 한다 | 다음 하드닝 slice 또는 필수 필드를 또 추가할 때 | 미정 | `tsconfig.json:16` exclude · 이번 slice 실측(변이 3이 처음에 red가 아니었다) | open |
+
+##### **M10 진행 판정 ⑦ — T7 in-loop 리뷰 왕복 (`C-97` 닫힘 · live 8/8)** (2026-08-23 · 아래 ⑥보다 최신이다 — 현행은 위 **M11 진행 판정 ①**이다)
 
 > 범위: `C-97` 하나다. **live 2회 + 진단 1회**(claude 왕복 4 · codex 왕복 9 — 둘 다 **구독 한도**,
 > 실결제 $0). 실행 직전 `~/.codex/auth.json`을 다시 확인했다: `auth_mode: chatgpt` ·
@@ -1947,7 +2124,7 @@ worker가 모델의 binding 주장을 **거부**한다고 단정했다. 중앙�
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `C-98` | C (P2) | **왕복 계약 검사가 loop 밖이다.** `assertCodeReviewRoundtrip`은 live 스크립트가 부르고 **kernel은 리뷰를 안 거친 결과를 거부하지 않는다** → 리뷰 task를 지우거나 저자와 같은 엔진으로 돌려도 loop 자체는 완주하고 결과를 발행한다. 지금 참인 것은 "이번 실행의 참가자 집합이 계약을 통과했다"이지 "loop가 계약을 강제한다"가 아니다 | 확실(설계상) | 무인 loop의 품질 게이트 강제력(승인 경계는 무관 — 쓰기·집행은 별도 축이 막는다) | 중 — 리뷰를 **게이트로** 쓰겠다고 결정한 뒤에 붙이면 그때까지의 run은 강제 없이 돈 것이다 | 중(참가자 신원을 durable에 묶고 결과 발행 직전에 kernel이 계약을 보는 새 승인 축) | **리뷰 왕복을 무인 loop의 하드 게이트로 쓰겠다고 결정할 때** | 사용자(범위 결정) + 그 slice 구현 세션 | M10 T7 live 스크립트 "증명하지 않는 것" 절 · `designReviewRoundtrip.ts` 호출부가 `scripts/` 하나뿐 | open |
+| `C-98` | C (P2) | **왕복 계약 검사가 loop 밖이다.** `assertCodeReviewRoundtrip`은 live 스크립트가 부르고 **kernel은 리뷰를 안 거친 결과를 거부하지 않는다** → 리뷰 task를 지우거나 저자와 같은 엔진으로 돌려도 loop 자체는 완주하고 결과를 발행한다. 지금 참인 것은 "이번 실행의 참가자 집합이 계약을 통과했다"이지 "loop가 계약을 강제한다"가 아니다 | 확실(설계상) | 무인 loop의 품질 게이트 강제력(승인 경계는 무관 — 쓰기·집행은 별도 축이 막는다) | 중 — 리뷰를 **게이트로** 쓰겠다고 결정한 뒤에 붙이면 그때까지의 run은 강제 없이 돈 것이다 | 중(참가자 신원을 durable에 묶고 결과 발행 직전에 kernel이 계약을 보는 새 승인 축) | **리뷰 왕복을 무인 loop의 하드 게이트로 쓰겠다고 결정할 때** | 사용자(범위 결정) + 그 slice 구현 세션 | M10 T7 live 스크립트 "증명하지 않는 것" 절 · `designReviewRoundtrip.ts` 호출부가 `scripts/` 하나뿐 | **fixed(2026-08-23 M11)** — 승인의 `reviewRoundtrip`(참가자 taskId 여섯 개)이 있으면 loop가 `verify` 완료 직전에 왕복 계약을 강제한다(`review_invalid` · 결과 미발행). 승인이 provider·session을 **주장할 수 없게** 필드를 두지 않았다(성질은 durable에서만 파생). acceptance Test 23 ③(대조군 포함) + mutation red. **잔여는 `C-100`**: 앞선 참가자의 개별 결과 발행은 막지 않는다 |
 | `B-34` | **B (P2)** | **codex 격리 홈의 "코드·지시 로드 면" 계약이 좁아졌다.** `plugins`·`skills`가 "비어 있어야 한다"에서 **"CLI가 만드는 이름만 통과"** 로 바뀌었다(0.146이 기동마다 스스로 채워 이전 계약이 만족 불가능했다). 그래서 ⓐ `plugins/cache/openai-curated-remote/**`(원격 curated 번들 13종 · `.mcp.json`·`hooks.json`·`agents/`·`skills/` 포함)가 **검사 없이** 승인된 홈에 존재하고, ⓑ **허용 이름 하위의 로컬 주입도 통과한다**(`skills/.system/pwn/SKILL.md` — 옛 계약은 이 형태를 막았다 · 적대적 리뷰 A-1). 판정은 **최상위 이름 하나**이며 symlink·소유자 검사는 그 이름에 건다(적대적 리뷰 B-1에서 추가). 자식 env는 여전히 `CODEX_HOME` 하나이고 `mcp_servers={}`·`--strict-config`가 걸려 있어 **MCP 축은 이중으로 막혀 있지만**, skill·prompt 축이 리뷰어에게 로드되는지 harness는 알지 못한다 | 중간 — CLI가 무엇을 받아 오는지는 harness 밖에서 정해진다 | 리뷰어 세션의 **지시면**(승인 경계·쓰기·집행은 무관 — read-only sandbox + 승인 축이 별도로 막는다) | 중 — 좁히려면 CLI feature 축을 실측해야 한다 | 소~중(`--disable remote_plugin`·`skill_search` 계열을 **실측 확인 후** `codexWorkerArgs`에 고정하고 그때 홈 계약을 다시 조인다) | **리뷰어 판정을 사람 검토 없이 신뢰하기 시작할 때 — 하드 게이트** | 미정 | M10 T7 실측(`~/harness-codex-home/plugins/cache/openai-curated-remote` 13종 · `skills/.system` 7종) · `codexCliProvider.ts` `CODEX_CODE_LOAD_DIRS` 주석 · 해당 test의 값 pin | open |
 | `C-99` | C (P3) | **리뷰 transcript가 승인된 격리 홈에 영속한다.** codex 0.146이 turn마다 `sessions/**/rollout-*.jsonl`을 쓰고 거기에 프롬프트(= 지시 본문 + context bundle)와 모델 응답 전문이 남는다. harness는 durable에 원문을 남기지 않는다는 규율을 지키지만 **CLI가 홈에 남기는 것은 그 규율 밖**이다 | 확실(관측) | 로컬 디스크의 데이터 수명(외부 유출 경로는 아니다 — 홈은 0700 · 소유자 전용) | 낮음 | 소(`codexWorkerArgs`에 `--ephemeral` 추가 — worker는 resume하지 않으므로 잃을 것이 없다. 단 기존 `sessions/`는 사람이 지워야 한다) | 홈에 민감한 지시가 실리기 시작할 때 또는 다음 하드닝 slice | 미정 | M10 T7 실측(`sessions/2026/08/22/rollout-*.jsonl` 3건) · `codex exec --ephemeral` help | open |
 
@@ -2219,7 +2396,7 @@ R1~R5는 manifest **내부의** 모순·과승인만 본다. 두 프로젝트를
 | `C-90` | C (P2) | **레포가 `controllerEntrypoint` 스크립트를 배송하지 않는다** → 실제 승인 문서를 쓰면 R5(`approved_path_missing`) high가 **반드시** 걸린다. typed `run_process`는 `node <entry> <action> <path>`로 뜨는데 그 entry가 레포에 없고, 기존 스크립트는 가짜 경로이거나 임시 파일을 자기가 만든다 | 확실(실측 — T5 감사 두 건 모두) | typed `run_process`를 실제로 쓰는 승인 전부 | 중 — 없는 채로 승인하면 감사가 매번 high를 내고 그 high가 **소음으로 학습된다** | 중(`validate-plan`·`run-tests`를 실행하는 최소 entry + digest 고정 + 회귀) | **typed `run_process`를 실제 운영 승인에서 처음 쓸 때** | 미정 | M10 T5 감사 R5 · `grep -rn "validate-plan" src scripts` | **fixed(2026-08-22 M10 T6)** — `src/exec/controllerEntrypoint.ts`(→ `dist/exec/controllerEntrypoint.js`)를 배송한다. 계약은 좁다: 통신은 **종료 코드 하나**(0/1/2) · env는 닫힌 allowlist(`npm`·shell 도달 불가) · `run-tests`는 **내장 러너**(`node --test`, 새 의존성 0) · `validate-plan`은 kernel 재검증의 **사전 점검**이고 권위가 아니다 · 경로는 cwd 안쪽으로 한 번 더 좁힌다. `npm run build`가 실행 비트를 준다(승인된 실행 파일 계약). focused 3건 + acceptance Test 22 ⑨(실제 kernel launch 경로) |
 | `C-91` | C (P3) | **checkout 부모에 있는 산출물은 승인에 담기지 않는다.** 구독컷은 git checkout이 `app/`이고 설계 산출물(`design-system/tokens.json`·`component-inventory.md`)·명세(`spec/`)가 그 부모에 있다 → `../`는 `path_parent_segment`로 표현 불가이므로 **M8 설계 계약의 입력이 승인 범위 밖**이다. 프로젝트 쪽 구조를 바꾸거나(checkout 안으로 이동) 다중 root 승인을 열어야 한다(후자는 새 승인 축) | 확실(실측) | 설계→구현 handoff를 v3로 돌리려는 외부 프로젝트 | 낮~중 | 소(프로젝트 구조 이동) ~ 중(다중 root 승인 축) | **외부 프로젝트에서 M8 설계 계약을 v3로 돌리기 전** | 미정 | M10 T5 probe 1 · `~/Desktop/구독컷` 구조 실측 | open |
 | `C-92` | C (P3) | **레포 루트 전체 테스트가 typed `run-tests`로 표현되지 않는다**(`projectPath` `"."`·`""` → `operation_data_not_approved`). **루트를 쓰기 승인해서 우회하는 길도 없다**: `writableRoots`의 `"."`/`""`는 `path_empty` · `"/"`는 `path_absolute` · `".."`는 `path_parent_segment`로 전부 거부다(실측). "레포 전체"는 승인 어휘에 **존재하지 않는 범위**이고 남은 길은 하위 디렉터리 단위 실행뿐이다 | 확실(설계상) | in-loop 테스트 실행의 범위(레포 전체 suite 불가) | 낮 | 중(읽기 전용 실행 범위를 쓰기 범위와 분리하는 축 — M7이 의도적으로 만들지 않은 `readableRoots`) | **무인 loop가 레포 전체 suite를 스스로 돌려야 할 때** | 미정 | M10 T5 probe 2 · 설계 의도는 `approvalManifest.ts:478` 주석("읽기 범위를 이미 승인된 쓰기 범위 안쪽으로 좁힌다") · 실제 거부는 **정규화 게이트**(`:513`·`:517` `operation_data_not_approved`)이고 containment 게이트가 아니다(리뷰 C-d) | open |
-| `C-93` | C (P2) | **v3 실행 경계는 controller·대상 양쪽 HEAD == `approvedCommit`을 요구하므로 다른 레포를 실행 대상으로 삼을 수 없다**(대조는 커밋 해시 동등이므로 같은 커밋을 가진 worktree·clone은 지난다 — 지나지 못하는 것은 **다른 히스토리를 가진 진짜 다른 프로젝트**다 · 리뷰 C-c). §10 M10의 "실제 서로 다른 프로젝트 2~3개 도그푸딩" bullet과 충돌한다 — v1 문서 층은 `WORKSPACE_ROOT`=CWD라 다른 레포에서 그대로 돌지만, **v3 오케스트레이션 층은 harness 레포(또는 그 worktree) 전용**이다. 의도한 설계일 수 있으나 **문서에 그 한정이 없었다** | 확실(설계상 · probe 3b 실측) | v3를 다른 프로젝트에서 쓰는 것 전부 | 중 — "다른 프로젝트 도그푸딩"을 v3 축으로 세면 과대주장이 된다 | 대(대상 레포별 승인 커밋·controller 분리 설계) 또는 소(한정을 문서에 명시) | **v3를 harness 밖 프로젝트에 적용하겠다고 결정할 때 — 그 전에 이 한정을 로드맵 본문에 적을 것** | 사용자(범위 결정) | M10 T5 probe 3b · `executionBoundary.ts:416-431` · `src/core/paths.ts:16-22` | open |
+| `C-93` | C (P2) | **v3 실행 경계는 controller·대상 양쪽 HEAD == `approvedCommit`을 요구하므로 다른 레포를 실행 대상으로 삼을 수 없다**(대조는 커밋 해시 동등이므로 같은 커밋을 가진 worktree·clone은 지난다 — 지나지 못하는 것은 **다른 히스토리를 가진 진짜 다른 프로젝트**다 · 리뷰 C-c). §10 M10의 "실제 서로 다른 프로젝트 2~3개 도그푸딩" bullet과 충돌한다 — v1 문서 층은 `WORKSPACE_ROOT`=CWD라 다른 레포에서 그대로 돌지만, **v3 오케스트레이션 층은 harness 레포(또는 그 worktree) 전용**이다. 의도한 설계일 수 있으나 **문서에 그 한정이 없었다** | 확실(설계상 · probe 3b 실측) | v3를 다른 프로젝트에서 쓰는 것 전부 | 중 — "다른 프로젝트 도그푸딩"을 v3 축으로 세면 과대주장이 된다 | 대(대상 레포별 승인 커밋·controller 분리 설계) 또는 소(한정을 문서에 명시) | **v3를 harness 밖 프로젝트에 적용하겠다고 결정할 때 — 그 전에 이 한정을 로드맵 본문에 적을 것** | 사용자(범위 결정) | M10 T5 probe 3b · `executionBoundary.ts:416-431` · `src/core/paths.ts:16-22` | **fixed(2026-08-23 M11 · 문서)** — 사용자 결정으로 **한정을 §10 본문에 명시**하고 도그푸딩 bullet을 **v1 문서 층 한정**으로 좁혔다. v3를 harness 밖 프로젝트에 적용하는 것은 별도 마일스톤이며 M10 완료 조건에 넣지 않는다(코드 변경 0 — 경계는 의도된 설계다) |
 | `C-94` | C (P3) | **자기 로드맵 파일이 typed `write_file` 상한에 다가간다.** `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`가 **약 633 KB**(이 판정을 쓰는 동안 603,564 → 632,637 B로 자랐다 — 리뷰 C-b)이고 `LIMITS.maxWriteBytes`는 **1,048,576 B**(약 60%)다. 마일스톤마다 판정·대장 행이 붙어 ~+50KB씩 자라므로 8~9 마일스톤 뒤에는 harness가 **자기 로드맵을 typed write로 갱신할 수 없다** | 확실(추세) | 문서 갱신을 typed operation으로 돌리는 경로 1개 | 낮음 — 사람이 편집하면 된다 | 소(문서 분할) | **문서 갱신을 무인 loop의 typed write로 돌리기 전** | 미정 | M10 T5 실측(`wc -c`) · `orchestrationTypes.ts:404` | open |
 
 ##### **M10 진행 판정 ④ — T4 F3 핸드오프: 이미 구현·증명됨(새 코드 0줄)** (2026-08-21 · 아래 ③ 절보다 최신이다 — M10의 현행은 위 ⑤ 절이다)
@@ -2328,7 +2505,7 @@ flag 확인 1 + 프롬프트 probe 2). **Claude Code 구독 한도만 소모 · 
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `C-86` | C (P2) | **live worker 세션의 자격증명 경로가 승인 축이 아니다.** Codex는 `executionAuthority.codexHome`으로 격리 홈을 **사람이 승인**하지만, Claude worker는 Keychain 자격증명을 `USER` 하나로 해석한다 → "어느 계정으로 도는가"가 승인 문서에 없다. 실행 **파일**은 digest로 고정되지만 **신원**은 ambient다 | 확실(현행 설계) | 그 세션이 누구의 구독으로 도는가(승인 문서가 말하지 않는다) | 중 — 나중에 닫으려면 승인 축을 하나 더 열어야 한다(`codexHome`과 같은 형태) | 중(격리 config dir을 승인 축으로 + CLI가 그것을 읽는지 실측) | 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전 | 미정 | V3 M10 T3 live 실측(`USER` 이분) · `livePlanWorker.ts` `LIVE_WORKER_ENV` 주석 · 대조: `codexHome`(`B-7ⓐ`) | open |
+| `C-86` | C (P2) | **live worker 세션의 자격증명 경로가 승인 축이 아니다.** Codex는 `executionAuthority.codexHome`으로 격리 홈을 **사람이 승인**하지만, Claude worker는 Keychain 자격증명을 `USER` 하나로 해석한다 → "어느 계정으로 도는가"가 승인 문서에 없다. 실행 **파일**은 digest로 고정되지만 **신원**은 ambient다 | 확실(현행 설계) | 그 세션이 누구의 구독으로 도는가(승인 문서가 말하지 않는다) | 중 — 나중에 닫으려면 승인 축을 하나 더 열어야 한다(`codexHome`과 같은 형태) | 중(격리 config dir을 승인 축으로 + CLI가 그것을 읽는지 실측) | 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전 | 미정 | V3 M10 T3 live 실측(`USER` 이분) · `livePlanWorker.ts` `LIVE_WORKER_ENV` 주석 · 대조: `codexHome`(`B-7ⓐ`) | **fixed(2026-08-23 M11)** — `executionAuthority.claudeHome` 승인 축을 열었다(`codexHome`과 같은 형태 · 골격은 `isolatedConfigDir` 하나). **live 실측이 선행했다**: 빈 `CLAUDE_CONFIG_DIR`이면 CLI가 `Not logged in`으로 exit 1, 없으면 exit 0 → 이 env가 auth 경로를 실제로 가른다. `approvedWorkerExecutable()`이 `claude`+`claudeHome` 짝을 강제하므로 "실행 파일만 승인하고 신원은 ambient"가 **표현 불가**다. acceptance Test 23 ② + mutation red. **한정: live 증명은 사람이 승인된 홈에 1회 로그인한 뒤다**(그 전까지 live는 fail closed) |
 | `C-87` | C (P3) | **`--tools ""`의 도구 차단이 `default` 권한 모드와 조합으로는 표본 1이다.** 근거 실측(M8 live의 가짜 tool-use)은 전부 `--permission-mode plan` 조합이었다. `default`+`--tools ""`는 M10 T3 live 표본 1 + CLI 의미론이다. 가정이 깨져도 headless에는 편집·명령을 승인할 사람이 없어 잔여 노출은 read 도구뿐이지만, **그것도 프롬프트 밖 파일을 읽는다는 뜻**이다 | 낮음 | 그 세션이 workspace 파일을 읽을 수 있는지 | 낮~중 | 소(도구 0을 실측하는 probe — 파일을 읽으라고 지시하고 거부를 확인) | CLI major 갱신 시 또는 live worker를 반복 운영하기 전 | 미정 | T3 적대적 리뷰 4번 반증 절 · 로드맵 M8 live 절 | **fixed(2026-08-22 M10 T6 live probe)** — 행이 처방한 probe를 그대로 실행했다: 유일한 토큰을 담은 파일 경로를 주고 '읽어서 토큰만 출력하라, 못 읽으면 NO_TOOLS'로 지시했고 **응답에 그 토큰이 없다**(`scripts/m10-live-t6.mjs --probe-tools` · `default` + `--tools` 빈 값 조합 · 2회 실행 모두 동일). **추론 한 단계는 적어 둔다(T6 리뷰 C5)**: 관측한 것은 '응답에 토큰이 없다'이고 '도구가 차단됐다'는 그로부터의 추론이다(읽고도 말하지 않는 경우와 표본 2로는 구분되지 않는다). 다만 안전 술어(**유출 0**)는 직접 실측이다. 남는 것은 CLI major 갱신 시 재확인이며 그것은 그 슬라이스의 일이다 |
 | `C-88` | C (P3) | **live 직후 전체 suite가 timeout 민감 테스트에서 흔들린다.** M9에서 5건, M10 T3에서 9건+1건이 같은 양상으로 흔들렸고 **직렬 재실행은 매번 clean**이었다. 원인은 부하이지만, 이 성질 때문에 "live와 suite를 같은 명령으로 묶는" CI는 만들 수 없다(거짓 red를 낸다) | 확실(재현 3회) | CI 배선 형태 | 낮음 | 중(timeout 민감 테스트에 부하 내성 · 또는 live/suite 게이트 분리 명문화) | CI를 실제로 배선하는 마일스톤 전 | 미정 | 로드맵 M9 절 · 이 절(1차 preflight 9건 · 2차 managedProcess 1건) | open |
 
@@ -2711,7 +2888,7 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-77` | C (P3) | **repo-local smudge filter는 `TRUSTED_GIT_PREFIX`가 끄지 않는다.** `worktree add`의 checkout 중 `.git/config`의 `filter.*.smudge`가 임의 명령을 실행할 수 있다(리뷰어 실측). prefix는 hook·fsmonitor·pager만 끈다. **모델 통로는 아니다** — `.git/config` 지배가 전제이고 그것을 쥔 쪽은 이미 그 저장소를 지배한다. 그래서 새 권한 상승이 아니라 **주장 범위의 문제**이고, 주석에서 "전부 끈다"를 걷어냈다 | 낮음 — 저장소 config를 이미 지배해야 한다 | checkout 중 실행되는 명령(하네스 권위 밖) | 낮음 | 소~중(`-c filter.<n>.smudge=` 무력화는 필터 이름을 알아야 해 일반해가 아니다. `GIT_CONFIG_COUNT` 계열로 덮거나 `core.filterProcess` 차단 검토) | 없음(bounded backlog) | 미정 | M9 T3③ 적대적 리뷰 C-2 부수 확인(read-only · /tmp probe) | open |
 | `C-78` | C (P3) | **리뷰 왕복 계약이 렌즈↔역할·실행 책임을 참가자에 바인딩하지 않는다.** `assertCodeReviewRoundtrip`은 신원 분리(task·세션·provider·sandbox·role 계열)만 본다 → ⓐ `security` 렌즈에 `tech-lead` role을 붙여도 통과하고 ⓑ `reviews.test` 참가자가 실제로 `run-tests` operation을 들고 있는지 보지 않으며 ⓒ 같은 물리 프로세스에 다른 `sessionId` 문자열 6개를 주면 통과한다(리뷰어 probe 실측). **의도된 경계이고 acceptance 출력이 "⑧은 계약 층만 본다"로 공개한다** — 잔여는 배선하는 쪽이 그 바인딩을 잊어도 계약이 잡아주지 않는다는 것이다 | 중 — live 배선을 사람이 아니라 코드가 만들 때 | 리뷰 3종의 의미(신원 분리는 유지된다) | 낮~중 | 중(렌즈별 요구 role 계열 표 + `test` 렌즈 참가자의 `run-tests` authority 대조. 세션↔프로세스 동일성은 provider 층 신원이 필요해 더 크다) | 없음(bounded) — 왕복 레코드를 코드가 구성하는 첫 마일스톤 전 | 미정 | M9 T4 적대적 리뷰 finding 2·probe 실측 · `designReviewRoundtrip.ts` | open |
 | `C-79` | C (P3) | **다중 위반 입력의 오류 코드 순서가 M8 대비 1건 바뀌었다.** 일반화로 리뷰어 loop가 provider·sandbox를 함께 보게 되어, "리뷰어 sandbox 위반 + 저자 provider=codex" 입력의 코드가 `worker_provider` → `reviewer_sandbox`로 바뀌었다. 리뷰어가 26 케이스 배터리로 대조해 **이 하나만** 다르고 나머지 전부 동일 코드임을 확인했다. M8 테스트·acceptance는 전부 단일 위반 입력이라 의존하지 않는다(실질 무손상) | 낮음 — 다중 위반 입력에서만 | 진단 코드 1건 | 낮음 | 소(순서를 옛 순서로 되돌리거나 코드 순서를 계약으로 고정) | 없음 — 향후 golden test가 옛 순서를 가정하지 않도록 기록만 | 미정 | M9 T4 적대적 리뷰 finding 3 · 26케이스 old/new diff 매트릭스 | open |
-| `C-80` | C (P3) | **"직렬 로컬 병합"이 M9 아키텍처에 매핑되지 않는다.** 완료 조건은 세션 브랜치를 base에 직렬 병합하는 형태(v2 `mergeCoordinator`)를 전제하지만, M9는 worker 산출물을 **kernel typed-write로 run workspace에 직접 발행**하고 격리 worktree를 `--detach`로 만들어 **브랜치를 아예 만들지 않는다**(브랜치명을 담을 필드가 없어야 원격 쓰기가 표현 불가로 남기 때문이다). 직렬 통합 지점은 단일 run workspace + `B-29` 직렬화이고 그것은 live로 실측됐다. **증명했다고 적지 않고 매핑되지 않는다고 적었다** | 해당 없음(현 구조에서는 발생하지 않는다) | 없음 — 지금은 병합 단계가 존재하지 않는다 | 중 — worker가 worktree 안에서 커밋을 남기는 형태로 바꾸면 그때 병합 계약이 필요해진다 | 중(`mergeCoordinator` 배선 + 게이트 재실행 + 충돌 처리. 다만 그 전에 worker 산출 경로 자체를 바꾸는 결정이 선행한다) | **worker가 worktree 안에서 커밋을 남기는 형태로 전환하는 마일스톤** | 미정 | M9 T5 live 판정(2026-08-19) · `gitWorktreeArgs`의 `--detach` · `taskDagMaterialize`/typed-write 발행 경로 | open |
+| `C-80` | C (P3) | **"직렬 로컬 병합"이 M9 아키텍처에 매핑되지 않는다.** 완료 조건은 세션 브랜치를 base에 직렬 병합하는 형태(v2 `mergeCoordinator`)를 전제하지만, M9는 worker 산출물을 **kernel typed-write로 run workspace에 직접 발행**하고 격리 worktree를 `--detach`로 만들어 **브랜치를 아예 만들지 않는다**(브랜치명을 담을 필드가 없어야 원격 쓰기가 표현 불가로 남기 때문이다). 직렬 통합 지점은 단일 run workspace + `B-29` 직렬화이고 그것은 live로 실측됐다. **증명했다고 적지 않고 매핑되지 않는다고 적었다** | 해당 없음(현 구조에서는 발생하지 않는다) | 없음 — 지금은 병합 단계가 존재하지 않는다 | 중 — worker가 worktree 안에서 커밋을 남기는 형태로 바꾸면 그때 병합 계약이 필요해진다 | 중(`mergeCoordinator` 배선 + 게이트 재실행 + 충돌 처리. 다만 그 전에 worker 산출 경로 자체를 바꾸는 결정이 선행한다) | **worker가 worktree 안에서 커밋을 남기는 형태로 전환하는 마일스톤** | 미정 | M9 T5 live 판정(2026-08-19) · `gitWorktreeArgs`의 `--detach` · `taskDagMaterialize`/typed-write 발행 경로 | **재정의(2026-08-23 M11)** — 사용자 결정으로 §10 M10 완료 조건 2번을 **"중복 발행 없음"** 으로 다시 썼다(원문 "중복 merge"는 v2 `mergeCoordinator` 전제라 이 구조에서 공허 진리였다). 대체가 공허하지 않다는 근거는 acceptance **Test 23 ①**(닫힌 action 집합 · 승인 문서가 branch/remote를 표현 불가 · **정상 record 통과 대조군**). **트리거는 그대로 남는다**: worker가 worktree 안에서 커밋을 남기는 형태로 산출 경로를 바꾸는 마일스톤 — 그때 이 행을 다시 연다 |
 
 ##### **M7 진행 판정 — T1~T8 완료(live 1회 포함)** (2026-08-12 · 이 절이 M7의 현행이며 아래 M6 절보다 최신이다)
 
@@ -4413,16 +4590,31 @@ M6까지의 "의도적 잔여"가 M9에서는 **전제 조건**이 된다. 개�
   > 가정 승인이고 실사용 v3 승인 manifest는 0건이다** — "실사용에서 생기는가"라는 이 게이트의 원래
   > 질문에는 아직 답하지 못했다(그 사실을 통과로 세지 않는다). 감사 5규칙이 **보지 못한** 실제
   > 차단 요인 4건은 `B-33`·`C-91`·`C-92`·`C-93`으로 대장에 있다. 상세는 `M10 진행 판정 ⑤` 절.
-- 실제 서로 다른 프로젝트 2~3개 도그푸딩.
-  > **한정(M10 T5 실측)**: v1 문서 층은 `WORKSPACE_ROOT`=CWD라 다른 레포에서 그대로 돈다. 그러나
-  > **v3 오케스트레이션 층은 harness 레포(또는 그 worktree) 전용**이다 — 실행 경계가 controller·대상
-  > 양쪽 HEAD == `approvedCommit`을 요구한다(`C-93`). 이 bullet을 v3 축으로 세면 과대주장이다.
+- 실제 서로 다른 프로젝트 2~3개 도그푸딩 — **v1 문서 층 한정**(2026-08-23 사용자 결정으로 범위를 좁혔다).
+  v1 문서 층은 `WORKSPACE_ROOT`=CWD라 다른 레포에서 그대로 돈다. 이 bullet은 그 축에서만 센다.
+
+  > **v3 실행 층은 harness 레포(또는 그 worktree) 전용이다 — 설계이고, 이제 본문에 적는다**(`C-93`).
+  > 실행 경계가 **controller checkout과 대상 checkout 양쪽 HEAD == `approvedCommit`** 을 요구하므로
+  > (`executionBoundary.ts:429·437`) 같은 커밋을 가진 worktree·clone은 지나지만 **다른 히스토리를 가진
+  > 진짜 다른 프로젝트는 대상이 될 수 없다**. 그것이 이 경계의 목적이다: 승인 문서가 이름한 커밋 하나에
+  > 실행 전체를 묶는 것. 다른 레포를 대상으로 삼으려면 controller·대상의 승인 커밋을 **다른 축으로
+  > 분리**하는 설계가 선행하며(공수 대 · 적대적 리뷰 필수) 그것은 **별도 마일스톤**이다 — M10 완료
+  > 조건에 넣지 않는다. **v3를 harness 밖에서 돌린다고 적으면 과대주장이다.**
 
 완료:
 
 - 기획→디자인→개발 end-to-end acceptance 전부 통과.
-- 중단 후 재개 시 중복 agent/중복 merge/결정 유실 없음.
-- hard deny와 milestone approval 경계 우회 없음.
+- 중단 후 재개 시 **중복 agent/중복 발행/결정 유실 없음**.
+  > **2026-08-23에 이 조건을 아키텍처에 맞게 다시 썼다**(사용자 결정 · `C-80`). 원문은 "중복 **merge**
+  > 없음"이었고 그것은 v2 `mergeCoordinator`(세션 브랜치 → base 직렬 병합)를 전제한 문장이다. M9/M10은
+  > 그 구조가 아니다 — worker 산출물을 **kernel typed-write로 단일 run workspace에 직접 발행**하고
+  > 격리 worktree는 `--detach`라 **브랜치를 만들지 않는다**. 병합 단계가 존재하지 않으므로 원문 그대로는
+  > **공허 진리**였다(없는 것을 중복시킬 수 없다). 대체 조건은 **"단일 run workspace + 소유권 직렬화
+  > (`B-29`) + attempt·turn 신원으로 중복 발행이 표현 불가"** 이고, 그 대체가 공허하지 않다는 근거는
+  > acceptance **Test 23 ①**이 든다: 닫힌 worktree/controller action 집합에 branch·merge·push가 없다 ·
+  > 승인 문서가 branch·remote 필드를 표현할 수 없다 · **정상 record는 통과한다**(대조군).
+  > 병합 계약이 다시 필요해지는 조건은 그대로 남는다: **worker가 worktree 안에서 커밋을 남기는 형태로
+  > 산출 경로를 바꾸는 마일스톤**. 그때 `C-80`을 다시 연다.
 
 ## 11. M10 이후 선택적 확장
 
