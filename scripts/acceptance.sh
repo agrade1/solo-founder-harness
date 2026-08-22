@@ -435,6 +435,26 @@ echo "$M10_OUT" | grep -q "좌초 프로세스 탐색(관측자 없음)"
 check "M10 스크립트가 자신의 범위(미증명 4건 + 문서 누락 표현 불가)를 밝힘" $?
 
 echo ""
+echo "== Test 23: M11 사용자 결정 4건 — 병합 조건 대체(C-80) · worker 신원 승인 축(C-86) · 리뷰 왕복 강제(C-98) (offline · 무과금) =="
+# 임시 디렉터리 전용 · live LLM 0회. `C-93`은 문서 한정이라 여기서 밟을 것이 없다(로드맵 본문이 산출물).
+M11_OUT="$(node scripts/m11-offline-acceptance.mjs 2>&1)"
+M11_RC=$?
+[ "$M11_RC" -eq 0 ];                              check "M11 결정 acceptance exit 0" $?
+echo "$M11_OUT" | grep -q "FAIL=0";               check "M11 내부 체크 전부 통과" $?
+echo "$M11_OUT" | grep -q "닫힌 worktree action 집합에 branch/merge/push가 없다"
+check "M11 ① 병합 단계가 존재하지 않는다는 근거 출력" $?
+echo "$M11_OUT" | grep -q "대조군: 필드 없는 정상 worktree record는 통과한다"
+check "M11 ① 검사가 공허하지 않음(대조군) 출력" $?
+echo "$M11_OUT" | grep -q "실행 파일만 승인하고 신원을 비우면 live worker는 시작조차 하지 않는다"
+check "M11 ② 실행 파일과 신원의 짝 강제 출력" $?
+echo "$M11_OUT" | grep -q "대조군: 계약을 지킨 신원은 승인 게이트를 지난다"
+check "M11 ② 무조건 거부가 아님(대조군) 출력" $?
+echo "$M11_OUT" | grep -q "대조군: 리뷰어가 저자와 같은 엔진이면 verify가 완료되지 않는다"
+check "M11 ③ 리뷰 왕복을 loop가 강제함 출력" $?
+echo "$M11_OUT" | grep -q "승인이 왕복을 요구하지 않으면 게이트는 돌지 않는다"
+check "M11 ③ 요구하지 않는 승인은 강요받지 않음 출력" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
