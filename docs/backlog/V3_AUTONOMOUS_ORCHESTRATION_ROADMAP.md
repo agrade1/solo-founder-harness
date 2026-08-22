@@ -1817,7 +1817,132 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M10 진행 판정 ⑤ — T5 릴리스 게이트(도그푸딩 승인 감사) + M10 완료 판정** (2026-08-21 · 이 절이 M10의 현행이며 아래 ④ 절보다 최신이다)
+##### **M10 진행 판정 ⑥ — T6 잔여 하드닝: 한정을 걷어낸다 (offline 부분)** (2026-08-22 · 이 절이 M10의 현행이며 아래 ⑤보다 최신이다)
+
+> 범위: 판정 ⑤가 "완료 조건 3개가 셋 다 한정부"라고 적은 그 **한정을 실제로 닫는 slice**다.
+> **offline + live 둘 다 끝났다**(ⓐⓑ offline · ⓒ live · ⓓ 완료 조건 재판정).
+>
+> **실측(live 이전 직렬 실행)**: `test:exec` **621/621**(+11) · `test:core` **458/458** · `scripts/acceptance.sh` **PASS=189 / FAIL=0**(Test 22 내부 **48건**) · `npx tsc --noEmit` clean.
+> **mutation red 확인 7종**(B-33 문자열 대조 · B-20 env key 제거 · R6 제거 · R6에 entrypoint 포함 · C-81 `drained` 성공 접기 · red 테스트 게이트 무력화 · R5 존재 검사).
+> **live**: `claude -p` **6회**(loop 4 + `C-87` probe 2) · 구독 한도만 · Codex 0회.
+>
+> **부하 민감 1건을 이 slice에서 만들고 고쳤다**(`C-88`의 같은 성질): `[M10 T6/B-18]`가 탈출 자손의
+> 마커를 **고정 900ms**로 기다려 전체 suite 부하 아래에서 흔들렸다(1회 red) → **폴링(상한 15s)**으로
+> 바꿨다. 단정은 그대로다. 같은 실행에서 acceptance가 `187/2`였고 **직렬 재실행은 `189/0`**이었다
+> — 위 수치는 직렬 재실행 값이다(`C-88` 규율).
+
+### ⓐ A급 1건 — **acceptance 두 절이 공허했다**(발견·수정)
+
+`scripts/m10-offline-acceptance.mjs`의 섹션 ①②는 "**실제 프로세스**"를 띄운다고 적고 있었지만
+**프로세스가 한 번도 뜨지 않았다.** 원인은 둘이 겹친 것이다:
+
+1. `makeDir`이 정규 경로를 돌려주지 않았다 — macOS `TMPDIR`은 `/var/folders/…`이고 `/var`는
+   `/private/var` symlink다 → `verifyApprovedExecutable`이 "정규 경로여야 한다"로 거부한다.
+2. entrypoint fixture를 **0644로** 썼다 → 실행 비트가 없어 승인된 실행 파일 계약을 통과하지 못한다.
+
+**왜 green이었나**: 게이트 거부와 "떴지만 결과 미확정"이 durable에서 **같은 marker**(`outcome_unknown`)로
+보이고 loop 정지 사유도 같은 `process_*` 계열이라, 섹션의 단정(격리되지 않음·정리 관측·재개 가능)이
+**프로세스가 0개여도 전부 참**이었다. 이 마일스톤이 A급으로 분류하는 **거짓 성공 영수증**과 같은 부류이고,
+이번에는 테스트 자신이 낸 것이다.
+
+**고친 방식(3중)**: ⓐ `makeDir`을 `realpathSync`로 정규화 ⓑ fixture entrypoint를 `0755`로 발행
+ⓒ **entrypoint가 부수 효과 파일을 남기게 하고 "자식이 실제로 떴다"를 두 섹션에서 단정** — 이것이
+재발 방지의 본체다(marker만 보는 단정은 spawn 0을 구분하지 못한다).
+
+**고친 뒤 섹션 ②가 red가 됐고, 그것이 두 번째 발견이었다**: `sleepMs: 20`(정상 종료 → `applied` 영수증)
+조합에서는 크래시 복구가 **정당하게** 정리를 확인하고 완료한다 → 그 섹션은 "관측하지 못한 정리"를
+증명할 수 없다. 실제 프로세스로 그 판정을 밟으려면 **deadline으로 끊기는** 프로세스여야 하므로
+섹션 ①과 같은 조합(`sleepMs: 5_000` · `timeoutMs: 150`)으로 바꿨다 → 이제 real spawn 위에서 green이다.
+
+### ⓑ 대장 처리 — fixed 6건 · 범위 정정 1건 · 신규 2건
+
+| id | 무엇을 했나 |
+|---|---|
+| `B-33`(P1 하드 게이트) | checkout 루트 대조를 **dev+ino**로 바꿨다 → 한글 경로 프로젝트에서 v3가 시작된다. 회귀 2건 + mutation red |
+| `B-20` | `MANAGED_PROCESS_ENV`에 `GIT_CONFIG_NOSYSTEM`·`GIT_CONFIG_GLOBAL` 추가 + **두 git 경계의 값 일치**를 테스트가 고정 |
+| `B-27` | 감사 규칙 **R6**(wrapper script 승인 탐지). 실물 근거: 이 기계의 `codex`가 `#!` wrapper이고 도그푸딩 probe 5가 잡는다 |
+| `C-81` | 실제 supervisor·실제 프로세스로 **미관측 재현**(+양성 대조군). kernel 분기까지는 유예 하한 100ms 때문에 도달 불가임을 적었다 |
+| `C-90` | `controllerEntrypoint`를 **배송**한다(`src/exec/controllerEntrypoint.ts` → dist · build가 실행 비트 부여) |
+| `C-45` | kernel은 exitCode를 산출물로 유지하고 **loop가 해석**한다: `exitCode !== 0`이면 완료하지 않는다 → red 테스트가 통과로 세이지 않는다 |
+| `B-18` | 탐지는 여전히 불가(darwin에 cgroup 없음) → **주장의 범위를 계약으로 좁혔다**(그룹 범위) + 실제 `setsid` 탈출 프로세스로 한계를 고정. **open 유지** |
+
+**신규 등록 2건**
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-95` | C (P3) | **내장 테스트 러너는 "테스트 0건"도 종료 코드 0으로 끝낸다** → `run-tests`의 종료 코드 채널로는 "테스트가 없다"와 "전부 통과"를 구분할 수 없다. 승인된 `projectPath`가 실제로 테스트를 담고 있는지는 **사람이 승인할 때** 봐야 한다 | 확실(러너 semantics) | in-loop 테스트 게이트 1건의 강도 | 낮음 | 중(자식 출력을 읽어 개수를 세는 파싱 계약을 하나 더 만든다) | in-loop 테스트를 **품질 게이트로** 쓰기 시작할 때(사람 검토 없이 통과를 신뢰할 때) | 미정 | `controllerEntrypoint.ts` `runTests` ponytail 주석 · `controllerEntrypoint.test.ts` 빈 디렉터리 단정 | open |
+| `C-96` | C (P2) | **영수증이 "spawn 자체가 게이트에서 막혔다"와 "떴지만 결과 미확정"을 구분하지 않는다** — 둘 다 `outcome_unknown` + `exitCode: null`이고 loop 정지 사유도 `process_*` 계열이다. 이번 마일스톤에서 그 성질이 **acceptance 두 절을 공허한 green으로 만들었다**(위 ⓐ). 부수 효과 단정으로 그 두 절은 닫았지만 **구분 자체는 여전히 없다** | 확실(설계상) | 진단·테스트 신뢰도(승인 경계는 무관 — 양쪽 다 fail closed다) | 중 — 다음에 또 공허한 green을 만들 수 있다 | 소~중(거부 코드를 영수증 marker taxonomy에 올리거나 pending에 "spawn 시도 0"을 표시) | 프로세스를 띄우는 acceptance를 **새로 쓸 때**(또는 진단을 사람이 읽기 시작할 때) | 미정 | M10 T6 실측(`makeDir` 정규화·실행 비트 두 원인) · `orchestrationKernel.ts` `PROCESS_EFFECT_CODES` | open |
+
+### ⓒ live 부분 — in-loop 테스트와 최종 report가 loop 안으로 들어왔다
+
+**실측**: `scripts/m10-live-t6.mjs` **PASS=9 / FAIL=0** · `claude -p` 왕복 **4회** · **33.5s** ·
+durable `tokensUsed` **23,050** · **사람 개입 0건** · **Codex 0회**. 실행 직전 `~/.codex/auth.json`을
+다시 확인했다: `auth_mode: chatgpt` · `OPENAI_API_KEY` 없음(값은 읽지 않고 key 이름·mode만).
+
+| 축 | 무엇이 증명됐나 | 상태 |
+|---|---|---|
+| in-loop 테스트 실행 | 한 번의 `runAutopilot`에서 기획→구현→**테스트**→**최종 report** 4단계가 의존 순서대로 완주했다. 테스트 단계는 **승인된 `dist/exec/controllerEntrypoint.js`**를 typed `run_process`(`run-tests`)로 띄워 `node --test`가 workspace의 실제 테스트를 돌렸고 **`exitCode 0` 영수증**으로 닫혔다 | **증명(live · 표본 1)** |
+| 최종 report | 마지막 task가 `docs/REPORT.md`를 산출물로 등록하고 완주했다(결과 메시지 4건 · 전부 다른 요약) | **증명(live)** |
+| red 테스트가 완료를 막는다 | live 왕복을 실패 경로에 태우지 않았다 — offline acceptance **Test 22 ⑨**가 실제 kernel launch 경로로 증명하고 mutation red까지 확인했다 | **증명(offline)** |
+| `C-87` 도구 차단 | probe: 유일 토큰이 든 파일을 "읽어서 출력하라"고 지시 → **응답에 토큰이 없다**(`default` + 빈 `--tools` 조합 · 2회) | **증명(live) · `C-87` 닫힘** |
+| **in-loop 리뷰 왕복** | **표현 불가다.** `assertCodeReviewRoundtrip`은 리뷰어가 **fresh Codex read-only**여야 한다고 요구하는데(`designReviewRoundtrip.ts:140-147`) autopilot의 live worker backend는 `claude-plan` 하나다 → loop 안에서 리뷰어 세션을 만들 통로가 없다. 흉내내지 않았다 → **`C-97`** | **미증명 — 표현 불가(설계상)** |
+
+**live 비용**: 이 slice 전체에서 `claude -p` **6회**(loop 4 + probe 2). Claude Code **구독 한도만** 소모 ·
+**Codex 0회**. CLI 응답의 `total_cost_usd` 필드는 0.04 수준의 값을 담지만 M8·M9·M10 실측에서 **실결제는
+$0**이었다(구독 경로) — 그 필드를 실결제로 읽지 않는다.
+
+**live를 suite와 동시에 돌리지 않았다**(`C-88`). 이 slice의 suite 수치는 live **이전** 직렬 실행 값이다.
+
+### ⓔ 적대적 read-only 리뷰(T6) — **A=2 · C=5, 전부 반영**
+
+리뷰어는 구현자와 다른 세션(fresh)이고 live 실행을 금지했다. focused 테스트·offline acceptance·
+도그푸딩 감사만 돌리게 했고 mutation은 `/tmp` 사본에서 직접 확인하게 했다.
+
+- **A1 — 과대주장 제거가 불완전했다**: 같은 파일 `managedProcess.ts` **함수 안 주석**에 "이 프로세스의
+  **모든 자손**이 이 pgid에 남는다"가 남아 있었다(머리말만 고쳤다). 정정한 머리말·`SupervisedOutcome`
+  주석·`[M10 T6/B-18]` 테스트와 정면으로 모순되는 문장이다 → 같은 범위 기술로 고쳤다.
+- **A2 — `C-45` 게이트가 spawn 갈래에서 우회됐다**: 계획은 `operations`(red 테스트)와 `spawn_child`
+  요청을 **함께** 담을 수 있고, `spawn_child` 처리는 `waiting_children`으로 **조기 반환**한다. 게이트가
+  그 뒤에 있어서 red 영수증을 남긴 채 빠져나가고, 자식이 끝난 **다음 attempt**에서 완료됐다(게이트
+  필터가 `attemptId`로 좁혀 이전 attempt의 red를 보지 못한다) → **사람 개입 0의 한 실행 안에서 red
+  테스트를 낸 task가 completed가 되는 경로**였다. 두 가지를 고쳤다: ⓐ 게이트를 **spawn 처리보다 앞**으로
+  옮기고 ⓑ 판정 범위를 attempt가 아니라 **authorityId별 최신 영수증**으로 바꿨다(red 뒤에 같은 권위로
+  다시 돌려 green을 내면 전진할 수 있으므로 막다른 골목이 아니다). **acceptance Test 22 ⑨에 우회
+  케이스를 추가**했고, 게이트를 원래 위치로 되돌리는 mutation에서 그 케이스가 red가 되는 것을 확인했다
+  (그 과정에서 `writePlan`이 `requests`를 계획에 싣지 않아 우회 테스트가 공허해질 뻔한 것도 잡았다).
+- **C 5건**: C1(entrypoint 경로 검사가 문자열 containment임을 머리말에 명시 — symlink 미해석) ·
+  C2(`B-27` 행에 잔여 명시: R6은 shebang만 잡고 **컴파일된 wrapper 바이너리**는 통과) ·
+  C3(죽은 fixture 옵션 제거) · C4(아래 ⓓ의 한정 셈을 정확히) · C5(`C-87` 행에 추론 한 단계 명시).
+
+**리뷰가 반증에 실패한 것**(주장이 버텼다): `B-33` dev+ino 대조가 문자열 대조보다 놓치는 위험 사례
+없음(하위 디렉터리·다른 저장소·교체된 디렉터리·symlink·정규 경로 게이트 전수 확인 — 오히려 **제자리
+교체된 디렉터리**는 문자열 대조가 못 잡던 경우다) · 새 acceptance 단정이 spawn 0에 눈멀지 않음
+(실행 비트·정규화 mutation 두 종을 직접 돌려 red 확인) · R6의 `#!` 판정이 execve의 interpreter-script
+판정과 같은 축이고 우회 시도는 `ENOEXEC`로 fail closed · `C-81`/`B-18` 서술에 과장 없음 ·
+live 수치와 스크립트 단정 일치(9개) · entrypoint의 종료 코드·상한·NUL·자식 그룹 소속이 문서대로다.
+
+### ⓓ M10 완료 조건 재판정 (판정 ⑤ ⓔ를 대체한다)
+
+| 완료 조건 | 지금 상태 |
+|---|---|
+| 기획→디자인→개발 end-to-end acceptance 전부 통과 | **증명 — 한정 1개만 남았다.** T3 live(기획·디자인·개발) + T6 live(기획·구현·**테스트**·**최종 report**) + acceptance Test 22. 남은 한정: **in-loop 리뷰 왕복**은 표현 불가(`C-97`)이고 그 축은 M9가 스크립트 형태로 증명했다 |
+| 중단 후 재개 시 중복 agent/중복 merge/결정 유실 없음 | **증명(중복 agent·결정 유실)** — 그리고 이제 그 근거가 **실제로 프로세스를 띄운다**(T6 ⓐ가 공허했던 두 절을 고쳤다). "중복 merge"는 로컬 병합 미배선(`C-80`)이라 여전히 **표현 불가** |
+| hard deny와 milestone approval 경계 우회 없음 | **증명 — 미증명 3축이 1축으로 줄었다.** `C-87`(도구 차단) 닫힘 · `C-81`(정리 미관측 재현) 닫힘 · **남은 것은 `C-86`**(live worker 세션의 **자격증명 신원**이 승인 축 밖 — 실행 파일은 digest로 고정되지만 "누구의 구독으로 도는가"는 ambient다) |
+
+**그래서 M10은 어디까지 왔나(정직하게)**: 완료 조건 3개 중 **2개는 증명**이고(첫째·셋째는 각각
+"표현 불가 1축"·"승인 축 1개"를 남긴 채) 둘째는 **표현 불가 항목 하나(`C-80`)를 남긴 증명**이다.
+판정 ⑤가 "셋 다 한정부"라고 적은 것에서 **완료 조건 한정 2개가 줄었다**(`C-87`·`C-81` — 셋째 조건의 미증명 3축이 1축으로) + **하드 게이트 1건**(`B-33`)과 **in-loop 테스트 축**(`C-90`/`C-45`)이 닫혔다. 셈을 느슨하게 하지 않는다(T6 리뷰 C4).
+**남은 한정은 셋이다**: `C-97`(in-loop 리뷰 왕복 표현 불가) · `C-80`(로컬 병합 미배선) ·
+`C-86`(worker 자격증명 신원). 셋 다 **새 승인 축 또는 새 backend를 여는 결정**이 선행하므로
+**릴리스 판단과 함께 사용자가 정할 일**이고, 이 절은 그 경계를 적는 것까지다.
+
+**§9.1 신규 1건**
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-97` | C (P2) | **무인 loop 안에서 리뷰 왕복이 표현 불가다.** `assertCodeReviewRoundtrip`은 리뷰어 3종 + verify가 **fresh Codex read-only**이고 저자·수정자는 claude여야 한다고 요구하지만(`designReviewRoundtrip.ts:140-147`), autopilot이 아는 live worker backend는 `claude-plan` **하나**다(`worker_backend_unapproved`) → loop가 리뷰어 세션을 만들 통로가 없다. 그래서 "리뷰 왕복"은 M9의 **스크립트 형태** 증명에 남아 있다. 흉내내는 것(claude를 리뷰어로 세우기)은 계약 위반이므로 하지 않았다 | 확실(설계상) | 무인 loop의 품질 게이트 1축(리뷰) — 승인 경계는 무관 | 중 — 리뷰를 loop 안으로 넣으려면 codex worker backend + 그 승인 축(`executionAuthority.codex` 경유 세션)이 필요하다 | 중~대(별도 승인 범위: backend 2개째 + 리뷰어 신원을 durable에 묶는 배선) | **리뷰 왕복을 무인 loop의 게이트로 쓰겠다고 결정할 때** | 사용자(범위 결정) + 그 slice 구현 세션 | M10 T6 live 스크립트 "증명하지 않는 것" 절 · `livePlanWorker.ts` `LIVE_PLAN_BACKEND` 단일 값 · M9 live 스크립트 형태 증명 | open |
+
+##### **M10 진행 판정 ⑤ — T5 릴리스 게이트(도그푸딩 승인 감사) + M10 완료 판정** (2026-08-21 · 아래 ④ 절보다 최신이다 — M10의 현행은 위 ⑥ 절이다)
 
 > 범위: T5 + M10 전체 완료 판정이다. **offline·무과금(live LLM 0회 · 네트워크 0 · 쓰기 0).**
 > 뜨는 프로세스는 **read-only `git rev-parse` 조회 여러 개**(manifest의 `approvedCommit`을 읽는 곳 2 ·
@@ -1955,9 +2080,9 @@ R1~R5는 manifest **내부의** 모순·과승인만 본다. 두 프로젝트를
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-33` | **B (P1)** | **비-ASCII 경로에서 checkout 신원 대조가 유니코드 정규형 때문에 깨진다.** `readCheckoutHead`는 `git rev-parse --show-toplevel`(**NFD**)의 `realpath`와 호출자가 준 경로(보통 **NFC**)를 **문자열로** 비교한다 → 한글 경로 프로젝트는 `boundary_not_checkout_root`로 v3 실행이 시작되지 않는다. **fail closed이므로 안전 축은 아니다**(잘못 통과시키지 않는다). 고치는 방향은 두 갈래이고 **둘 다 경로 신원 = 보안 축**을 건드리므로 별도 slice + 적대적 리뷰가 필요하다: ⓐ 같은 함수가 이미 계산하는 **dev+ino 신원**으로 대조(`revalidateSync`가 그렇게 한다) ⓑ 정규형 통일(단 "승인된 정확한 바이트" 규율과 충돌 검토 필요 — `C-40`·고립 surrogate 계약 인접) | 확실(재현 1회 · probe 3a) | 비-ASCII 경로를 쓰는 프로젝트 전부에서 v3 실행 **시작 불가** | 중 — 한글 경로가 이 사용자의 기본 환경이다(`~/Desktop/구독컷`) | 중(대조 축 변경 + 회귀: NFC/NFD 양쪽 · symlink · 다른 checkout) | **harness 레포 밖(비-ASCII 경로) 프로젝트에서 첫 v3 orchestration run 착수 전 — 하드 게이트** | 미정 | M10 T5 probe 3a(`scripts/m10-t5-dogfood-audit.mjs`) · `executionBoundary.ts:370-390` · 실측 code point `1100 116e 1103` vs `ad6c b3c5 cef7` | open |
+| `B-33` | **B (P1)** | **비-ASCII 경로에서 checkout 신원 대조가 유니코드 정규형 때문에 깨진다.** `readCheckoutHead`는 `git rev-parse --show-toplevel`(**NFD**)의 `realpath`와 호출자가 준 경로(보통 **NFC**)를 **문자열로** 비교한다 → 한글 경로 프로젝트는 `boundary_not_checkout_root`로 v3 실행이 시작되지 않는다. **fail closed이므로 안전 축은 아니다**(잘못 통과시키지 않는다). 고치는 방향은 두 갈래이고 **둘 다 경로 신원 = 보안 축**을 건드리므로 별도 slice + 적대적 리뷰가 필요하다: ⓐ 같은 함수가 이미 계산하는 **dev+ino 신원**으로 대조(`revalidateSync`가 그렇게 한다) ⓑ 정규형 통일(단 "승인된 정확한 바이트" 규율과 충돌 검토 필요 — `C-40`·고립 surrogate 계약 인접) | 확실(재현 1회 · probe 3a) | 비-ASCII 경로를 쓰는 프로젝트 전부에서 v3 실행 **시작 불가** | 중 — 한글 경로가 이 사용자의 기본 환경이다(`~/Desktop/구독컷`) | 중(대조 축 변경 + 회귀: NFC/NFD 양쪽 · symlink · 다른 checkout) | **harness 레포 밖(비-ASCII 경로) 프로젝트에서 첫 v3 orchestration run 착수 전 — 하드 게이트** | 미정 | M10 T5 probe 3a(`scripts/m10-t5-dogfood-audit.mjs`) · `executionBoundary.ts:370-390` · 실측 code point `1100 116e 1103` vs `ad6c b3c5 cef7` | **fixed(2026-08-22 M10 T6)** — `readCheckoutHead`가 checkout 루트를 **dev+ino**로 대조한다(`executionBoundary.ts:365-395` · `revalidateSync`가 쓰는 것과 **같은 기계**). 정규형 통일은 택하지 않았다(어느 형태가 정본인지는 fs마다 다르고 승인 경로 바이트 규율과 두 진실이 생긴다). 회귀 2건: NFD 디렉터리 + NFC 호출자 경로가 통과(전제 3개를 먼저 단정해 공허하지 않다) · 다른 저장소·하위 디렉터리는 여전히 거부. mutation(문자열 대조로 되돌림) red 확인 |
 | `C-89` | C (P2) | **v3 오케스트레이션 run에는 F3 핸드오프가 배선되지 않았다.** `src/core/handoff.ts`는 v1 문서 워크플로의 `run_state.json`(project 기반)만 읽고, `core/handoff`를 import하는 곳은 `src/commands/handoff.ts` 하나다 → `outputs/orchestration/<run-id>`가 `completed`가 돼도 "문서 완료 → 대화형 세션" 경로가 없다. T4에서 **의도적으로 열지 않았다**(후보 ① 결정): 새 명령 표면·새 승인 판단이 생기고 F3 설계가 그 재배선을 요구했다는 근거가 없다 | 확실(설계상) | v3 run 뒤의 사람 이어받기(수동으로 `harness handoff`를 부르면 된다 — v1 project 기준) | 낮~중 | 중(새 소스 축 + 승인 판단 + acceptance) | **v3 오케스트레이션 run을 문서 파이프라인의 정본으로 쓰기 시작할 때** | 사용자(표면 승인) + 구현 세션 | M10 T4 판정 ④ · `grep -rn "core/handoff" src` | open |
-| `C-90` | C (P2) | **레포가 `controllerEntrypoint` 스크립트를 배송하지 않는다** → 실제 승인 문서를 쓰면 R5(`approved_path_missing`) high가 **반드시** 걸린다. typed `run_process`는 `node <entry> <action> <path>`로 뜨는데 그 entry가 레포에 없고, 기존 스크립트는 가짜 경로이거나 임시 파일을 자기가 만든다 | 확실(실측 — T5 감사 두 건 모두) | typed `run_process`를 실제로 쓰는 승인 전부 | 중 — 없는 채로 승인하면 감사가 매번 high를 내고 그 high가 **소음으로 학습된다** | 중(`validate-plan`·`run-tests`를 실행하는 최소 entry + digest 고정 + 회귀) | **typed `run_process`를 실제 운영 승인에서 처음 쓸 때** | 미정 | M10 T5 감사 R5 · `grep -rn "validate-plan" src scripts` | open |
+| `C-90` | C (P2) | **레포가 `controllerEntrypoint` 스크립트를 배송하지 않는다** → 실제 승인 문서를 쓰면 R5(`approved_path_missing`) high가 **반드시** 걸린다. typed `run_process`는 `node <entry> <action> <path>`로 뜨는데 그 entry가 레포에 없고, 기존 스크립트는 가짜 경로이거나 임시 파일을 자기가 만든다 | 확실(실측 — T5 감사 두 건 모두) | typed `run_process`를 실제로 쓰는 승인 전부 | 중 — 없는 채로 승인하면 감사가 매번 high를 내고 그 high가 **소음으로 학습된다** | 중(`validate-plan`·`run-tests`를 실행하는 최소 entry + digest 고정 + 회귀) | **typed `run_process`를 실제 운영 승인에서 처음 쓸 때** | 미정 | M10 T5 감사 R5 · `grep -rn "validate-plan" src scripts` | **fixed(2026-08-22 M10 T6)** — `src/exec/controllerEntrypoint.ts`(→ `dist/exec/controllerEntrypoint.js`)를 배송한다. 계약은 좁다: 통신은 **종료 코드 하나**(0/1/2) · env는 닫힌 allowlist(`npm`·shell 도달 불가) · `run-tests`는 **내장 러너**(`node --test`, 새 의존성 0) · `validate-plan`은 kernel 재검증의 **사전 점검**이고 권위가 아니다 · 경로는 cwd 안쪽으로 한 번 더 좁힌다. `npm run build`가 실행 비트를 준다(승인된 실행 파일 계약). focused 3건 + acceptance Test 22 ⑨(실제 kernel launch 경로) |
 | `C-91` | C (P3) | **checkout 부모에 있는 산출물은 승인에 담기지 않는다.** 구독컷은 git checkout이 `app/`이고 설계 산출물(`design-system/tokens.json`·`component-inventory.md`)·명세(`spec/`)가 그 부모에 있다 → `../`는 `path_parent_segment`로 표현 불가이므로 **M8 설계 계약의 입력이 승인 범위 밖**이다. 프로젝트 쪽 구조를 바꾸거나(checkout 안으로 이동) 다중 root 승인을 열어야 한다(후자는 새 승인 축) | 확실(실측) | 설계→구현 handoff를 v3로 돌리려는 외부 프로젝트 | 낮~중 | 소(프로젝트 구조 이동) ~ 중(다중 root 승인 축) | **외부 프로젝트에서 M8 설계 계약을 v3로 돌리기 전** | 미정 | M10 T5 probe 1 · `~/Desktop/구독컷` 구조 실측 | open |
 | `C-92` | C (P3) | **레포 루트 전체 테스트가 typed `run-tests`로 표현되지 않는다**(`projectPath` `"."`·`""` → `operation_data_not_approved`). **루트를 쓰기 승인해서 우회하는 길도 없다**: `writableRoots`의 `"."`/`""`는 `path_empty` · `"/"`는 `path_absolute` · `".."`는 `path_parent_segment`로 전부 거부다(실측). "레포 전체"는 승인 어휘에 **존재하지 않는 범위**이고 남은 길은 하위 디렉터리 단위 실행뿐이다 | 확실(설계상) | in-loop 테스트 실행의 범위(레포 전체 suite 불가) | 낮 | 중(읽기 전용 실행 범위를 쓰기 범위와 분리하는 축 — M7이 의도적으로 만들지 않은 `readableRoots`) | **무인 loop가 레포 전체 suite를 스스로 돌려야 할 때** | 미정 | M10 T5 probe 2 · 설계 의도는 `approvalManifest.ts:478` 주석("읽기 범위를 이미 승인된 쓰기 범위 안쪽으로 좁힌다") · 실제 거부는 **정규화 게이트**(`:513`·`:517` `operation_data_not_approved`)이고 containment 게이트가 아니다(리뷰 C-d) | open |
 | `C-93` | C (P2) | **v3 실행 경계는 controller·대상 양쪽 HEAD == `approvedCommit`을 요구하므로 다른 레포를 실행 대상으로 삼을 수 없다**(대조는 커밋 해시 동등이므로 같은 커밋을 가진 worktree·clone은 지난다 — 지나지 못하는 것은 **다른 히스토리를 가진 진짜 다른 프로젝트**다 · 리뷰 C-c). §10 M10의 "실제 서로 다른 프로젝트 2~3개 도그푸딩" bullet과 충돌한다 — v1 문서 층은 `WORKSPACE_ROOT`=CWD라 다른 레포에서 그대로 돌지만, **v3 오케스트레이션 층은 harness 레포(또는 그 worktree) 전용**이다. 의도한 설계일 수 있으나 **문서에 그 한정이 없었다** | 확실(설계상 · probe 3b 실측) | v3를 다른 프로젝트에서 쓰는 것 전부 | 중 — "다른 프로젝트 도그푸딩"을 v3 축으로 세면 과대주장이 된다 | 대(대상 레포별 승인 커밋·controller 분리 설계) 또는 소(한정을 문서에 명시) | **v3를 harness 밖 프로젝트에 적용하겠다고 결정할 때 — 그 전에 이 한정을 로드맵 본문에 적을 것** | 사용자(범위 결정) | M10 T5 probe 3b · `executionBoundary.ts:416-431` · `src/core/paths.ts:16-22` | open |
@@ -2070,7 +2195,7 @@ flag 확인 1 + 프롬프트 probe 2). **Claude Code 구독 한도만 소모 · 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-86` | C (P2) | **live worker 세션의 자격증명 경로가 승인 축이 아니다.** Codex는 `executionAuthority.codexHome`으로 격리 홈을 **사람이 승인**하지만, Claude worker는 Keychain 자격증명을 `USER` 하나로 해석한다 → "어느 계정으로 도는가"가 승인 문서에 없다. 실행 **파일**은 digest로 고정되지만 **신원**은 ambient다 | 확실(현행 설계) | 그 세션이 누구의 구독으로 도는가(승인 문서가 말하지 않는다) | 중 — 나중에 닫으려면 승인 축을 하나 더 열어야 한다(`codexHome`과 같은 형태) | 중(격리 config dir을 승인 축으로 + CLI가 그것을 읽는지 실측) | 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전 | 미정 | V3 M10 T3 live 실측(`USER` 이분) · `livePlanWorker.ts` `LIVE_WORKER_ENV` 주석 · 대조: `codexHome`(`B-7ⓐ`) | open |
-| `C-87` | C (P3) | **`--tools ""`의 도구 차단이 `default` 권한 모드와 조합으로는 표본 1이다.** 근거 실측(M8 live의 가짜 tool-use)은 전부 `--permission-mode plan` 조합이었다. `default`+`--tools ""`는 M10 T3 live 표본 1 + CLI 의미론이다. 가정이 깨져도 headless에는 편집·명령을 승인할 사람이 없어 잔여 노출은 read 도구뿐이지만, **그것도 프롬프트 밖 파일을 읽는다는 뜻**이다 | 낮음 | 그 세션이 workspace 파일을 읽을 수 있는지 | 낮~중 | 소(도구 0을 실측하는 probe — 파일을 읽으라고 지시하고 거부를 확인) | CLI major 갱신 시 또는 live worker를 반복 운영하기 전 | 미정 | T3 적대적 리뷰 4번 반증 절 · 로드맵 M8 live 절 | open |
+| `C-87` | C (P3) | **`--tools ""`의 도구 차단이 `default` 권한 모드와 조합으로는 표본 1이다.** 근거 실측(M8 live의 가짜 tool-use)은 전부 `--permission-mode plan` 조합이었다. `default`+`--tools ""`는 M10 T3 live 표본 1 + CLI 의미론이다. 가정이 깨져도 headless에는 편집·명령을 승인할 사람이 없어 잔여 노출은 read 도구뿐이지만, **그것도 프롬프트 밖 파일을 읽는다는 뜻**이다 | 낮음 | 그 세션이 workspace 파일을 읽을 수 있는지 | 낮~중 | 소(도구 0을 실측하는 probe — 파일을 읽으라고 지시하고 거부를 확인) | CLI major 갱신 시 또는 live worker를 반복 운영하기 전 | 미정 | T3 적대적 리뷰 4번 반증 절 · 로드맵 M8 live 절 | **fixed(2026-08-22 M10 T6 live probe)** — 행이 처방한 probe를 그대로 실행했다: 유일한 토큰을 담은 파일 경로를 주고 '읽어서 토큰만 출력하라, 못 읽으면 NO_TOOLS'로 지시했고 **응답에 그 토큰이 없다**(`scripts/m10-live-t6.mjs --probe-tools` · `default` + `--tools` 빈 값 조합 · 2회 실행 모두 동일). **추론 한 단계는 적어 둔다(T6 리뷰 C5)**: 관측한 것은 '응답에 토큰이 없다'이고 '도구가 차단됐다'는 그로부터의 추론이다(읽고도 말하지 않는 경우와 표본 2로는 구분되지 않는다). 다만 안전 술어(**유출 0**)는 직접 실측이다. 남는 것은 CLI major 갱신 시 재확인이며 그것은 그 슬라이스의 일이다 |
 | `C-88` | C (P3) | **live 직후 전체 suite가 timeout 민감 테스트에서 흔들린다.** M9에서 5건, M10 T3에서 9건+1건이 같은 양상으로 흔들렸고 **직렬 재실행은 매번 clean**이었다. 원인은 부하이지만, 이 성질 때문에 "live와 suite를 같은 명령으로 묶는" CI는 만들 수 없다(거짓 red를 낸다) | 확실(재현 3회) | CI 배선 형태 | 낮음 | 중(timeout 민감 테스트에 부하 내성 · 또는 live/suite 게이트 분리 명문화) | CI를 실제로 배선하는 마일스톤 전 | 미정 | 로드맵 M9 절 · 이 절(1차 preflight 9건 · 2차 managedProcess 1건) | open |
 
 ##### **M10 진행 판정 ② — T2 통합 시나리오 완료** (2026-08-20 · 아래 ① 절보다 최신이다 — M10의 현행은 위 ③ 절이다)
@@ -2167,7 +2292,7 @@ pending ③**종료 기록이 없을 때만** 프로세스 kind `outcome_unknown
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `B-32` | **B (P1)** | **살아 있는 controller의 잔재를 크래시로 오판한다.** `recoverCrashedAttempts`는 "iteration 시작에 `running`+lease가 보이면 이전 프로세스가 죽었다"를 전제하는데, 두 번째 controller가 같은 run을 열면 **살아 있는** attempt를 `controller_lost`로 적고 settle한다. durable 중복 결과는 attempt 신원과 `stale_writer`가 막지만, live worker에서는 **같은 task의 agent가 잠시 둘** 실행된다. lease에는 pid가 없어(설계상 raw 미보관) writer lock의 `pidProvablyGone` 규율을 여기 쓸 수 없다 | 중 — 운영자가 두 번째 autopilot을 띄우는 순간 | 그 task의 agent 중복 실행(durable 무결성은 아니다) | 중 — live에서 발견하면 이미 두 세션이 돈 뒤다 | 중(controller 신원·heartbeat를 durable에 두는 설계 판단이 선행 — `TaskExecution`에 raw를 넣지 않는다는 원칙과 충돌한다) | **M10 T3에서 live provider worker를 autopilot에 배선하기 전 — 하드 게이트** | T3 구현 세션 + 사용자(설계 판단) | T1 적대적 리뷰 B2(STATIC) · `autopilot.ts` `recoverCrashedAttempts` 주석 · `orchestrationTypes.ts:639`("raw는 하나도 없다") | **fixed(V3 M10 T3)** — `runAutopilot`이 run 단위 `controller.lock`(pid 소유 · writer lock과 **같은 기계**)을 잡아 **동시 controller 자체가 표현 불가**다. 두 번째 진입은 `controller_active`로 시작조차 못 하고, 죽은 controller의 lease는 **사망 관측(ESRCH)에만** 회수된다. `autopilot.test.ts`가 동시 호출·생존 pid·사망 pid·미상 소유자 4경로를 고정하고 mutation red 2종을 확인했다 |
-| `C-81` | C (P2) | **`process_cleanup_unconfirmed` 경로를 실제로 재현하는 테스트가 없다.** `cleanupUnobservableReason` ①(정본 증거)의 판정은 durable 증거를 손으로 만들어 고정했고, 그 marker를 **실제 supervisor가 내는** 경로(자손이 유예 안에 죽지 않는 프로세스)는 만들지 않았다 → "미관측을 실제로 관측한다"는 증명이 아니라 "미관측이 durable에 적혀 있으면 확인으로 승격하지 않는다"까지다 | 낮음 — 판정 자체는 mutation으로 고정됐다 | 그 분기의 증거 강도 | 낮음 | 중(유예를 넘겨 살아남는 자손 fixture — flaky 위험이 있어 stress 게이트가 적절하다) | M10 하드닝 게이트 또는 실제 좌초 프로세스가 관측될 때 | 미정 | `scripts/m10-offline-acceptance.mjs` "증명하지 않는다" 절 · `autopilot.test.ts` "정리를 관측하지 못한 attempt…" | open |
+| `C-81` | C (P2) | **`process_cleanup_unconfirmed` 경로를 실제로 재현하는 테스트가 없다.** `cleanupUnobservableReason` ①(정본 증거)의 판정은 durable 증거를 손으로 만들어 고정했고, 그 marker를 **실제 supervisor가 내는** 경로(자손이 유예 안에 죽지 않는 프로세스)는 만들지 않았다 → "미관측을 실제로 관측한다"는 증명이 아니라 "미관측이 durable에 적혀 있으면 확인으로 승격하지 않는다"까지다 | 낮음 — 판정 자체는 mutation으로 고정됐다 | 그 분기의 증거 강도 | 낮음 | 중(유예를 넘겨 살아남는 자손 fixture — flaky 위험이 있어 stress 게이트가 적절하다) | M10 하드닝 게이트 또는 실제 좌초 프로세스가 관측될 때 | 미정 | `scripts/m10-offline-acceptance.mjs` "증명하지 않는다" 절 · `autopilot.test.ts` "정리를 관측하지 못한 attempt…" | **fixed(2026-08-22 M10 T6) — 범위를 적어 둔다** — 실제 supervisor가 **실제 프로세스**로 미관측을 보고하는 재현이 생겼다(`managedProcess.test.ts` `[M10 T6/C-81]`: 유예 0 + 살아 있는 자손 → `cleanupConfirmed: false` · **양성 대조군**(자손 없음 → true)까지). mutation(`drained`의 실패를 true로 접음) red 확인. **kernel 경로(`process_cleanup_unconfirmed`)까지 잇지 않았다**: 승인 계약의 유예 하한이 100ms(`approvalManifest.ts:390-391`)이고 SIGKILL을 100ms 넘게 견디는 정상 프로세스는 만들 수 없어 그 분기는 **EPERM·비중단 I/O 같은 병리적 조건에서만** 도달한다 — 합성하지 않았고 합성한 척도 하지 않는다 |
 | `C-82` | C (P3) | **`PAUSE_REASONS`의 `interrupted`가 producer 0이다.** 주석이 "프로세스가 살아 있는 중에 controller가 사라졌다(재시작 복구 경로)"라고 적고 있는데, M10 T1은 그 경로를 `settleCleanedAttempt`(→`retry_wait`)로 착지시키기로 했다(자동 재개가 완료 조건이므로). `pauseReasonFor`의 `cancelled → interrupted` 분기도 도달 불가다(marker `cancelled`는 그 앞에서 착지한다) | 확실(정적) | 닫힌 enum 1항목의 의미 표류(오독 유발) | 낮음 | 소(주석 정정 또는 값 제거 — 값 제거는 schema 동치 테스트까지 함께 본다) | 닫힌 enum 정리 slice 또는 pause 경로가 늘 때 | 미정 | T1 리뷰 C1 · `orchestrationTypes.ts` `PAUSE_REASONS` · `autopilot.ts` `pauseReasonFor` | open |
 | `C-83` | C (P3) | **미시작 run에는 문서 superset도 이어받기를 통과한다.** `assertResumableRun`은 "기존 task ⊆ 문서"만 요구하므로, 아무것도 시작되지 않은 run에 **node가 더 많은** 문서를 얹으면 통과한다(의미상 신선 물질화와 등가라 지금은 무해하다). 주석은 "같은 문서로 이어받는다"라고 더 좁게 말한다 — 코드와 서술의 범위가 다르다 | 확실(정적) | 없음(현재) — 서술 정확성 | 낮음 | 소(문서 집합 등호를 요구하거나 주석을 코드에 맞추기) | DAG 문서를 사람이 수정하며 재물질화하는 운영이 생길 때 | 미정 | T1 리뷰 C3 · `taskDagMaterialize.ts` `assertResumableRun` | open |
 | `C-84` | C (P2) | **`executeTrustedGitQuery`는 durable 흔적 없이 프로세스를 띄운다.** `cleanupUnobservableReason`의 전제("집행 경계에 들어간 적이 없다는 것이 durable에 남아 있다")는 프로세스를 여는 경로가 **전부** pending/영수증을 남길 때만 참이다. trusted git 질의는 pending을 만들지 않으므로, turn 안에서 그것을 부르는 소비자가 생기면 그 창의 크래시는 판정에서 **보이지 않는다**. 현재 turn 안 production 호출부는 **0건**임을 확인했다 | 낮음(현재 0 호출부) → 확실(소비자 생기면) | 그 창에서 정리 판정이 거짓 confirm | 중 — live 병렬에서 좌초 git 프로세스가 다음 batch 판정을 흐린다 | 중(질의도 pending을 남기거나, 정리 판정에 별도 축을 추가) | **turn 안에서 `executeTrustedGitQuery`를 부르는 첫 소비자를 배선하기 전** | 미정 | T1 리뷰 B3(STATIC) · `orchestrationKernel.ts:1497-1560` · `autopilot.ts` `cleanupUnobservableReason` 주석 | open |
@@ -2608,7 +2733,7 @@ LLM은 Claude Code 구독 경로(`claude -p`) 3회 왕복 × 2런 · 보고된 u
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-27` | B (P1) | **승인 문서 작성자가 wrapper 경로를 승인하면 실행 권위가 무력화된다.** `which codex`가 가리키는 것은 Node wrapper이고 실제 추론 바이너리는 런타임 해석된다 → wrapper digest는 아무것도 고정하지 않는다. 지금은 **사람이 올바른 경로를 넣어야만** 성립하는 규율이고 런타임 가드가 없다(harness는 승인된 경로를 그대로 믿는다 — 그것이 설계다). 최소한 승인 문서 생성 절차·문서에 못박아야 하고, 가능하면 "승인된 실행 파일이 다른 실행 파일을 spawn하는 wrapper인지"를 사람 검토 항목으로 남겨야 한다 | 중 — 다른 사람이 manifest를 쓰면 | live 실행 전부의 trust root | 높음 — 무력화된 채로 돌면 승인 계약이 서류상으로만 존재한다 | 소(문서·절차) ~ 중(런타임 휴리스틱) | **다음 live manifest를 사람이 작성하기 전** | live 운영 slice | 2026-08-11 live probe 준비 중 실측 · `@openai/codex/bin/codex.js` `findCodexExecutable`/`spawn`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: 런타임 가드도 감사 규칙도 없다(`manifestAudit.ts`의 R1~R5에 wrapper 판정이 없고 `verifyApprovedExecutable`은 wrapper 간접 실행을 구분하지 못한다). 규율은 스크립트 주석의 `realpathSync`뿐이고 그것은 **symlink만** 해소한다. **트리거("다음 live manifest를 사람이 작성하기 전")는 M8·M9·M10에서 여러 번 발화했다** | open |
+| `B-27` | B (P1) | **승인 문서 작성자가 wrapper 경로를 승인하면 실행 권위가 무력화된다.** `which codex`가 가리키는 것은 Node wrapper이고 실제 추론 바이너리는 런타임 해석된다 → wrapper digest는 아무것도 고정하지 않는다. 지금은 **사람이 올바른 경로를 넣어야만** 성립하는 규율이고 런타임 가드가 없다(harness는 승인된 경로를 그대로 믿는다 — 그것이 설계다). 최소한 승인 문서 생성 절차·문서에 못박아야 하고, 가능하면 "승인된 실행 파일이 다른 실행 파일을 spawn하는 wrapper인지"를 사람 검토 항목으로 남겨야 한다 | 중 — 다른 사람이 manifest를 쓰면 | live 실행 전부의 trust root | 높음 — 무력화된 채로 돌면 승인 계약이 서류상으로만 존재한다 | 소(문서·절차) ~ 중(런타임 휴리스틱) | **다음 live manifest를 사람이 작성하기 전** | live 운영 slice | 2026-08-11 live probe 준비 중 실측 · `@openai/codex/bin/codex.js` `findCodexExecutable`/`spawn`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: 런타임 가드도 감사 규칙도 없다(`manifestAudit.ts`의 R1~R5에 wrapper 판정이 없고 `verifyApprovedExecutable`은 wrapper 간접 실행을 구분하지 못한다). 규율은 스크립트 주석의 `realpathSync`뿐이고 그것은 **symlink만** 해소한다. **트리거("다음 live manifest를 사람이 작성하기 전")는 M8·M9·M10에서 여러 번 발화했다** | **fixed(2026-08-22 M10 T6)** — 감사 규칙 **R6**(`approved_executable_is_script`)이 생겼다: 직접 exec되는 승인 실행 파일(claude·codex·git·node·processObserver)의 첫 2바이트가 `#!`면 high로 보고한다(`manifestAudit.ts` R6 · 2바이트만 읽는 seam). `controllerEntrypoint`는 대상이 아니다(node의 인자다). **실물 근거**: `~/.nvm/.../bin/codex`가 `#!` wrapper이고 도그푸딩 probe 5가 그것을 잡는다. focused 3건 + mutation 2종 red. **런타임 차단은 여전히 아니다**(감사는 보고만 한다 — 그것이 이 모듈의 계약이다). **잔여(T6 리뷰 C2)**: R6은 **shebang script만** 잡는다 — 다른 프로그램을 exec하는 **컴파일된 wrapper 바이너리**는 통과한다. 그 축은 정적으로 판정할 방법이 없어 열어 두고 적는다 |
 | `C-66` | C (P3) | **승인된 codex 바이너리가 267MB라 spawn 직전 digest 재검증 비용이 크다.** 계약상 매 spawn 직전 전체 내용 해싱이 필요하다(같은 inode 제자리 덮어쓰기까지 잡기 위한 설계). 측정은 하지 않았으나 수백 MB 해싱은 무시할 수 없다 — live 반복 실행 전에 실측하고, 필요하면 캐시가 아니라 **계약을 유지하는 방식**으로 개선안을 찾아야 한다(캐시는 그 자체가 우회로다) | 확실 | 매 spawn 지연 | 낮음 | 중 | live 반복 실행 착수 전 | live 운영 slice | 2026-08-11 live probe · 바이너리 267,867,408 bytes | open |
 | `C-67` | C (P3) | **승인 설정 자체를 정적 감사하는 수단이 없다.** kernel은 *실행 시점*에 승인 manifest를 집행하지만, **manifest·`writableRoots`·`operationAuthorityByTask`·`executionAuthority`가 서로 모순되거나 지나치게 넓은지**를 실행 전에 읽어 보고하는 경로가 없다(예: `writableRoots`가 repo 루트를 통째로 덮음 · 어떤 task도 쓰지 않는 권능이 승인돼 있음 · 만료가 과도하게 김 · digest가 가리키는 파일이 이미 부재). 외부 도구(ECC AgentShield류)는 `.claude` 설정을 감사하지 그 대상이 **우리 승인 manifest가 아니다** — 그대로 붙일 수 없고, 붙인다 해도 kernel 계약을 모른다. 그래서 **가져올 것은 도구가 아니라 발상**이다: read-only 정적 감사 + 심각도 있는 보고 | 낮음(지금은 승인 문서가 손으로 쓰여 작다) | 과도하게 넓은 승인이 조용히 통과 | 낮음~중 — 승인 범위가 커진 뒤 발견하면 되짚기 어렵다 | 중(순수 판정 함수 + 보고 · 새 의존성 0) | **MCP/커넥터나 외부 provider 권능을 승인 manifest에 추가하는 마일스톤 착수 전**(현재 M7 예상) | 미정 | 2026-08-12 외부 하네스 팩(ECC/gstack/oh-my-claudecode) 조사 — 셋 다 durable 승인 계층이 없어 그대로 도입 불가로 판정, 감사 발상만 채택 | **fixed** (2026-08-12 M7 T1 — `src/exec/manifestAudit.ts` 5규칙 · mutation 5건 red · acceptance Test 19 ④) |
 | `C-68` | C (P3) | **attempt 신원 재사용 차단이 “직전 attempt” 한 칸까지다(M6 T5).** `commitPreflightBatch`는 새 `prepared` attempt가 **직전 attempt와 같은 `attemptId`**를 쓰면 `attempt_id_reused`로 막지만, **두 attempt 이전의 값**을 다시 쓰는 것은 막지 못한다 — durable state가 과거 attemptId를 보관하지 않고 event log는 state 밖 파일이라 `#mutate` 안에서 볼 수 없다. **효과 경로는 이미 닫혀 있다**: 같은 turn은 durable `chargedTurnIds`가 두 번 과금하지 않고, 과금되지 않은 turn은 효과 게이트에서 `budget_turn_unaccounted`로 막힌다. 그래서 잔여는 **감사 기록에서 두 attempt가 구분되지 않는 것**이다 | 낮음(호출자가 id를 재사용해야 하고 autopilot은 매번 난수로 만든다) | 감사 추적성 | 낮음 | 소~중(kernel이 `attemptNo`에서 attemptId를 **파생**하면 구조적으로 종결 — 다만 `PreflightDecision` 계약과 모든 호출부가 바뀐다) | 없음(bounded backlog) — attempt 신원이 감사 증거로 쓰이는 마일스톤 전 | 미정 | M6 T5 구현 시 실측 · `orchestrationKernel.ts` `commitPreflightBatch` prepared 갈래 | open |
@@ -2963,7 +3088,7 @@ self-hosting은 결국 로컬 commit/worktree 쓰기가 필요하므로 **이 ta
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-20` | B (P2) | **system/repo gitconfig를 여전히 읽는다.** `GIT_CONFIG_NOSYSTEM`/`XDG_CONFIG_HOME` 미설정이라 `/etc/gitconfig`와 `.git/config`가 파싱된다. **오늘 도달 가능한 코드 실행 경로는 없다** — 코드를 실행하는 키(fsmonitor · hooks · external diff · textconv · pager)는 전부 최고 우선순위 `-c`/플래그로 강제 무력화되고, `HOME` 부재가 `~/.gitconfig`와 그 안의 `include.path`를 죽이며, 네트워크 subcommand가 0이라 `credential.helper`/`uploadpack`/`core.sshCommand`는 도달 불가다. 리뷰어가 적대적 config를 실제로 심어 **실행 0**을 확인했다. 남는 것은 *미래 git 버전이 추가할 키*의 가설적 위험이며 gitconfig 파일 쓰기 권한이 선행 조건이다 | 낮음 | read-only 쿼리 프로세스 1개 | 낮음 | **소 — env 한 줄**(`GIT_CONFIG_NOSYSTEM=1`, 선택적으로 `GIT_CONFIG_GLOBAL=/dev/null`) | **`managedProcess.ts` env를 다음에 건드리는 task**(`B-18`/`B-13`/`C-18` live-runner slice)에서 함께 닫는다 | M5c live-runner 세션 | Task 3D 독립 리뷰 F1(STATIC+EXECUTED) · `orchestrationKernel.ts` `TRUSTED_GIT_PREFIX`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: `MANAGED_PROCESS_ENV`에 `GIT_CONFIG_NOSYSTEM`이 여전히 없고(`managedProcess.ts:31-48`에는 M9 T3③이 더한 `GIT_NO_LAZY_FETCH`만 있다) `TRUSTED_GIT_PREFIX`도 무변경이다. **트리거("`managedProcess.ts` env를 다음에 건드리는 task")는 M9 T3③에서 발화했는데 이 행은 함께 닫히지 않았다** | open |
+| `B-20` | B (P2) | **system/repo gitconfig를 여전히 읽는다.** `GIT_CONFIG_NOSYSTEM`/`XDG_CONFIG_HOME` 미설정이라 `/etc/gitconfig`와 `.git/config`가 파싱된다. **오늘 도달 가능한 코드 실행 경로는 없다** — 코드를 실행하는 키(fsmonitor · hooks · external diff · textconv · pager)는 전부 최고 우선순위 `-c`/플래그로 강제 무력화되고, `HOME` 부재가 `~/.gitconfig`와 그 안의 `include.path`를 죽이며, 네트워크 subcommand가 0이라 `credential.helper`/`uploadpack`/`core.sshCommand`는 도달 불가다. 리뷰어가 적대적 config를 실제로 심어 **실행 0**을 확인했다. 남는 것은 *미래 git 버전이 추가할 키*의 가설적 위험이며 gitconfig 파일 쓰기 권한이 선행 조건이다 | 낮음 | read-only 쿼리 프로세스 1개 | 낮음 | **소 — env 한 줄**(`GIT_CONFIG_NOSYSTEM=1`, 선택적으로 `GIT_CONFIG_GLOBAL=/dev/null`) | **`managedProcess.ts` env를 다음에 건드리는 task**(`B-18`/`B-13`/`C-18` live-runner slice)에서 함께 닫는다 | M5c live-runner 세션 | Task 3D 독립 리뷰 F1(STATIC+EXECUTED) · `orchestrationKernel.ts` `TRUSTED_GIT_PREFIX`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: `MANAGED_PROCESS_ENV`에 `GIT_CONFIG_NOSYSTEM`이 여전히 없고(`managedProcess.ts:31-48`에는 M9 T3③이 더한 `GIT_NO_LAZY_FETCH`만 있다) `TRUSTED_GIT_PREFIX`도 무변경이다. **트리거("`managedProcess.ts` env를 다음에 건드리는 task")는 M9 T3③에서 발화했는데 이 행은 함께 닫히지 않았다** | **fixed(2026-08-22 M10 T6)** — `MANAGED_PROCESS_ENV`에 `GIT_CONFIG_NOSYSTEM=1`·`GIT_CONFIG_GLOBAL=/dev/null`을 더했다(`managedProcess.ts:31-64`). 값은 `executionBoundary.GIT_SANITIZED_ENV`와 **동일**하게 두고 테스트가 두 경계의 값 일치를 고정한다(갈라지면 한쪽만 안전해진다). mutation(키 제거) red 확인 |
 | `C-47` | C (P3) | **`.git`이 regular file(worktree 포인터)이어도 통과한다.** workspace 루트에 `gitdir:` 파일을 심으면 세 쿼리가 **다른 로컬 저장소**에 대해 답한다(그 gitdir의 config도 읽는다 — `B-20`과 같은 잔여). workspace 루트 쓰기 권한이 필요하고 결과는 **잘못된 boolean 판정 1건**이다 — 변경 0 · remote 0 | 낮음 | 판정 1건 | 낮음 | 소(포인터 대상 검증) | worktree가 의미를 갖는 시점 | 다음 kernel slice | Task 3D 독립 리뷰 F2(STATIC) | open |
 | `C-48` | C (P3) | **repo 신원 검사와 spawn 사이 TOCTOU.** 검사와 `cwd` 해석 사이 마이크로초에 경로 구성요소를 symlink로 바꿔치기할 수 있다. 결과는 역시 **다른 로컬 경로에 대한 read-only 쿼리**뿐이다 | 매우 낮음 | 판정 1건 | 낮음 | 중(fd 기반 고정) | 없음(bounded) | — | Task 3D 독립 리뷰 F3(STATIC) | open |
 | `C-49` | C (P2) | **exit-code-only 표면이 self-hosting에 얇다.** `superviseProcess`가 `stdio:"ignore"`라 무엇이 dirty인지·현재 브랜치·HEAD sha를 관측할 수 없다. 게이트 술어("시도 전후 worktree가 깨끗한가")로는 충분하나, **commit 자동화를 원하는 다음 task는 stdout 캡처와 durable pending을 둘 다** 가져와야 한다. 발견이 아니라 계획으로 다루라는 취지 | 확실(다음 task) | 다음 task 범위 | 중(뒤늦게 발견하면 재설계) | 중 | `autopilot` CLI / commit 자동화 착수 전 | 다음 slice | Task 3D 독립 리뷰 F4(STATIC/EXECUTED) | open |
@@ -3008,10 +3133,10 @@ mutation으로 red 확인. depth는 **허용 측만** 고정됐다 — 아래 `C
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-18` | B (P1) | **`cleanupConfirmed`는 `setsid()`/`setpgid()`로 프로세스 그룹을 탈출한 자손을 보지 못한다.** 그룹 기반 reap은 pgid에 **남아 있는** 자손만 덮는다. 탈출한 자손이 있으면 `kill(-pgid,0)`이 ESRCH를 돌려주고 kernel이 성공 영수증을 발행하는데 고아는 살아 있다 → `cleanupConfirmed: true` + 살아 있는 고아. `managedProcess.ts` 헤더 주석의 "모든 자손"은 **과장이며 정정 대상**이다 | 지금 낮음(digest 승인된 node+entrypoint만 실행 · fixture 통제) — **daemonize하는 entrypoint를 승인하면 확실** | 승인 밖 프로세스 1개 이상이 무기한 생존. durable 무결성은 무관 | 중 — live runner에서 좌초 프로세스가 다음 batch 자원을 먹고, "정리됐다"는 기록만 남아 추적 불가 | 중(그룹 밖 자손 탐지 또는 daemonize 금지 집행) | **daemonize 가능한 실제 controller entrypoint 승인 전 / live runner 배선 전** — `B-13`·`C-18`과 같은 발화점 | live-runner slice | Task 3C 독립 리뷰 F2(STATIC) · `managedProcess.ts:13-16, 103-109`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: 코드는 그대로다(`managedProcess.ts:87-121`은 `kill(-pgid,0)` ESRCH 관측만이고 그룹 탈출 자손 탐지가 없다). **트리거("live runner 배선 전")는 M10 T3에서 이미 발화했다** — live worker loop가 돌았으므로 이 행은 지금 기한을 넘긴 상태다 | open |
+| `B-18` | B (P1) | **`cleanupConfirmed`는 `setsid()`/`setpgid()`로 프로세스 그룹을 탈출한 자손을 보지 못한다.** 그룹 기반 reap은 pgid에 **남아 있는** 자손만 덮는다. 탈출한 자손이 있으면 `kill(-pgid,0)`이 ESRCH를 돌려주고 kernel이 성공 영수증을 발행하는데 고아는 살아 있다 → `cleanupConfirmed: true` + 살아 있는 고아. `managedProcess.ts` 헤더 주석의 "모든 자손"은 **과장이며 정정 대상**이다 | 지금 낮음(digest 승인된 node+entrypoint만 실행 · fixture 통제) — **daemonize하는 entrypoint를 승인하면 확실** | 승인 밖 프로세스 1개 이상이 무기한 생존. durable 무결성은 무관 | 중 — live runner에서 좌초 프로세스가 다음 batch 자원을 먹고, "정리됐다"는 기록만 남아 추적 불가 | 중(그룹 밖 자손 탐지 또는 daemonize 금지 집행) | **daemonize 가능한 실제 controller entrypoint 승인 전 / live runner 배선 전** — `B-13`·`C-18`과 같은 발화점 | live-runner slice | Task 3C 독립 리뷰 F2(STATIC) · `managedProcess.ts:13-16, 103-109`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: 코드는 그대로다(`managedProcess.ts:87-121`은 `kill(-pgid,0)` ESRCH 관측만이고 그룹 탈출 자손 탐지가 없다). **트리거("live runner 배선 전")는 M10 T3에서 이미 발화했다** — live worker loop가 돌았으므로 이 행은 지금 기한을 넘긴 상태다. **M10 T6 처리**: 탐지는 여전히 불가능하다(darwin에 cgroup·jail이 없어 그룹 밖을 묶을 커널 개념이 없다) → **주장의 범위를 계약으로 좁혔다**: 머리말의 "자손 전부"를 지우고 `cleanupConfirmed`/`survivors 0`을 **"승인된 프로세스 그룹이 비었다"**로 다시 적었다(`managedProcess.ts:1-40`·`SupervisedOutcome` · `commands/autopilot.ts` `cleanupUnobservableReason`). 실제 `setsid` 탈출 프로세스로 그 한계를 고정하는 테스트가 생겼다(`managedProcess.test.ts` `[M10 T6/B-18]`). **남은 것은 탐지 자체**이며 그것은 sandbox·cgroup을 도입하는 별도 승인 범위다 | open |
 | `B-19` | B (P2) | **run 전역 프로세스 상한이 `LIMITS.maxTasksPerRun`(=32) 상수를 빌려 쓴다(스펙 혼동).** 로드맵의 32는 **run당 task** 수인데, `assertSpawnLimits`의 도달 가능한 검사는 `runTotal = Σ(run_process 영수증 + pending) > 32`로 **run당 프로세스** 수를 센다. 현재 두 값이 우연히 같아 동작은 방어 가능하나, task fan-out 때문에 `maxTasksPerRun`을 조정하면 **프로세스 상한이 조용히 따라 움직인다** | 낮음(상수를 건드릴 때만) | run 전역 spawn 상한이 의도 없이 변경 | 낮음~중 — 나중에 발견하면 어느 상한이 의도였는지 재판정해야 한다 | 소(전용 상수 분리 + 로드맵 문구 정정) | **`LIMITS.maxTasksPerRun` 값을 바꾸기 전, 늦어도 M6 spawn 계층 착수 전** | M6 T1 | Task 3C 독립 리뷰 F3 · 후속 worker 코드 재독 확인 · `orchestrationKernel.ts` `assertSpawnLimits` | **fixed(M6 T1)** — `LIMITS.maxProcessesPerRun` 전용 상수 분리, `assertSpawnLimits`의 run 전역 검사가 이 상수를 쓴다. 두 상수를 **각각** 32→64로 바꾸는 mutation에 **각자의** 테스트만 red(프로세스: `managedProcess.test.ts` run 전역 경계 / task: `orchestrationKernel.test.ts` task 32개 상한), 교차 오염 없음을 실측. 로드맵 §5 문구도 정정 |
 | `C-44` | C (P3) | **`assertSpawnLimits`의 `task.depth > LIMITS.maxDepth` 분기는 도달 불가능한 backstop이다.** depth 4 task는 애초에 durable에 존재할 수 없다 — `requestSpawn`이 유일한 생성 경로이고 거기서 `depth_limit_exceeded`로 막으며, `addTask`는 private, `open()`이 `depth.maximum` schema로 재검증한다. 그래서 이 분기는 **production 변경이나 hash chain 위조 없이는 red로 만들 수 없다**(후속 worker가 시도 후 정직하게 보고). 허용 측(depth 3 실제 실행)과 거부 측(`requestSpawn` depth 4 거부)은 둘 다 고정됐고 `requestSpawn` 게이트 제거 mutation으로 red 확인했다 | 낮음 | 없음(방어 심층화) | 없음 | 소(주석으로 unreachable 명시) 또는 state 위조 harness 도입(중) | 없음(bounded backlog) — 늦어도 M6 spawn 계층 착수 전 판단 | M6 T1 | Task 3C 독립 리뷰 F3 · 후속 worker mutation 실측(depth 검사 제거해도 green) | **fixed(M6 T1) — 주석 명시로 종결.** `assertSpawnLimits` doc comment에 depth 분기와 `maxTasksPerRun` 분기가 **도달 불가능한 최후 방어선**임을, 집행되는 경계는 task당 child·run당 프로세스 둘임을 적었다. state 위조 harness는 **도입하지 않는다**(과잉) — 즉 이 두 분기는 여전히 테스트로 red를 만들 수 없고 그 사실을 문서화한 것이 이 항목의 종결이다 |
-| `C-45` | C (P3) | **exit code가 0이 아니어도 marker가 `applied`다.** `exit 7`이 `applied` + `exitCode: 7` 영수증을 만든다(테스트가 의도적으로 고정). exit code는 durable에 남아 **정보 손실은 없으나**, 모든 후속 소비자가 `applied ≠ "명령이 성공했다"`를 기억해야 한다 | 중(소비자가 생길 때) | 영수증 해석 1건 | 낮음 | 소(영수증 소비 경계에 문서화) | 첫 영수증 소비자 배선 전 | 다음 slice | Task 3C 독립 리뷰 F5(EXECUTED) · `orchestrationKernel.ts:919-926` | open |
+| `C-45` | C (P3) | **exit code가 0이 아니어도 marker가 `applied`다.** `exit 7`이 `applied` + `exitCode: 7` 영수증을 만든다(테스트가 의도적으로 고정). exit code는 durable에 남아 **정보 손실은 없으나**, 모든 후속 소비자가 `applied ≠ "명령이 성공했다"`를 기억해야 한다 | 중(소비자가 생길 때) | 영수증 해석 1건 | 낮음 | 소(영수증 소비 경계에 문서화) | 첫 영수증 소비자 배선 전 | 다음 slice | Task 3C 독립 리뷰 F5(EXECUTED) · `orchestrationKernel.ts:919-926` | **fixed(소비면 · 2026-08-22 M10 T6)** — kernel은 `run_process`의 exitCode를 **산출물**로 남기는 계약을 유지한다(0이 아니어도 marker는 `applied`). 대신 **loop가 해석한다**: 이 attempt의 영수증에 `run_process` + `exitCode !== 0`이 있으면 완료하지 않고 pause한다(`commands/autopilot.ts` — 닫힌 action 집합 `validate-plan`·`run-tests`가 둘 다 **술어**이므로 0이 아니면 실패다). 그래서 **무인 loop에서 red 테스트가 통과로 세이지 않는다**. acceptance Test 22 ⑨ + mutation(게이트 무력화) red 확인 |
 | `C-46` | C (P3) | win32는 spawn을 거부해 **fail closed**이나 Windows에서 검증되지 않았다. 이 저장소는 darwin/linux 대상이라 현 상태로 수용 가능하다 | 낮음 | Windows 사용자 | 낮음 | 소 | 없음 — Windows 지원을 선언할 때 | — | Task 3C 독립 리뷰 F6(STATIC) · `managedProcess.ts:121-123` | open |
 
 > **`B-13` 재확인(승격하지 않는다)**: 독립 리뷰가 코드를 읽고 확인 — 결함은 `StableController.runTask`의
