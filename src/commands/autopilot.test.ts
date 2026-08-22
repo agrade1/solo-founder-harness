@@ -19,7 +19,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LIMITS, OrchestrationError } from "../exec/orchestrationTypes.js";
@@ -28,7 +28,7 @@ import { __setPublicationSeamsForTest, createOrchestrationRun, openOrchestration
 import { runPaths } from "../exec/orchestrationStore.js";
 import type { OrchestrationKernel, TaskSeed } from "../exec/orchestrationKernel.js";
 import { REQUIRED_BODY_HEADINGS } from "../exec/orchestrationTypes.js";
-import { AutopilotEvent, runAutopilot } from "./autopilot.js";
+import { AutopilotEvent, CODEX_REVIEWER_ROLE_FAMILY, runAutopilot } from "./autopilot.js";
 
 const RUN_ID = "m5c-run";
 const MILESTONE = "m5c";
@@ -102,10 +102,10 @@ function body(type: "task_assignment"): string {
   return REQUIRED_BODY_HEADINGS[type].map((h) => `## ${h}\n\n본문 한 줄.\n`).join("\n");
 }
 
-function seed(taskId: string): TaskSeed {
+function seed(taskId: string, roleId = "tech-lead"): TaskSeed {
   return {
     taskId,
-    roleId: "tech-lead",
+    roleId,
     title: `${taskId} 제목`,
     scope: `${taskId} bounded scope`,
     ownership: ["docs", "src"],
@@ -121,7 +121,7 @@ interface Fixture {
 }
 
 /** run + root task + 빈 plan 디렉터리. 계획 파일은 각 테스트가 필요한 것만 넣는다. */
-function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1000): Fixture {
+function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1000, roleId = "tech-lead"): Fixture {
   const ws = makeDir("m5c-autopilot-ws-");
   const planDir = makeDir("m5c-autopilot-plans-");
   const k = createOrchestrationRun({
@@ -131,7 +131,7 @@ function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1
     manifest: manifestFor(taskIds, over),
     clock: clockFrom(T0),
   });
-  for (const id of taskIds) k.createRootTask(seed(id));
+  for (const id of taskIds) k.createRootTask(seed(id, roleId));
   return { ws, planDir, clock: clockFrom(T0 + 60_000, stepMs) };
 }
 
@@ -1873,4 +1873,49 @@ test("[M10-T3] live worker 세션이 상한을 넘기면 죽이고 turn을 완�
   assert.equal(report.tasks[0]?.marker, "wall_deadline_exceeded", JSON.stringify(report.tasks));
   assert.equal(reopen(f.ws).getState().messages.filter((m) => m.type === "result").length, 0);
   assert.ok(elapsedMs < 30_000, `끝없는 세션이 bounded 시간에 끝나지 않았다(경과 ${elapsedMs}ms)`);
+});
+
+// ── ⑦ V3 M10 T7 — 승인 축 거부가 계획 무효로 위장하지 않는다 (`C-96` 부류) ──────
+//
+// T7 live에서 codex 리뷰어 3턴이 전부 `plan_invalid`로 pause했다. 실제 원인은 모델 출력이 아니라
+// **승인된 격리 홈의 계약 거부**(`codex_home_not_empty`)였고, `workerMarker`가 `worker_` 접두사가 아닌
+// 모든 코드를 `plan_invalid`로 접으면서 원인이 durable 감사 로그에서 사라졌다. 이 절은 그 위장을 막는다.
+test("[M10-T7] 승인 축 거부는 `plan_invalid`로 위장하지 않는다 — 원인 코드가 그대로 올라온다", async () => {
+  // 승인된 격리 홈에 **CLI가 만들지 않는** 항목을 하나 둔다 → `verifyCodexHome`이 거부한다.
+  const home = realpathSync(makeDir("m10-t7-codex-home-"));
+  chmodSync(home, 0o700);
+  writeFileSync(join(home, "auth.json"), "{}\n", { mode: 0o600 });
+  writeFileSync(join(home, "config.toml"), "model = \"x\"\n", { mode: 0o600 });
+
+  const claudeBin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const codexBin = fakeWorkerBin("#!/bin/sh\nexit 0\n");
+  const f = boot(
+    { executionAuthority: { ...EXECUTION_AUTHORITY, claude: claudeBin, codex: codexBin, codexHome: { path: home } } },
+    ["review-code"],
+    1000,
+    // 리뷰어 family → codex 갈래(`backendForRole`).
+    `${CODEX_REVIEWER_ROLE_FAMILY}.code`,
+  );
+
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
+  });
+
+  assert.equal(report.tasks[0]?.state, "paused", JSON.stringify(report.tasks));
+  // **핵심**: 계획을 받지도 못한 turn을 "계획이 무효다"로 적지 않는다.
+  assert.notEqual(report.tasks[0]?.marker, "plan_invalid", "승인 축 거부가 계획 무효로 위장했다");
+  assert.equal(report.tasks[0]?.marker, "worker_failed", JSON.stringify(report.tasks));
+  // 그리고 **원인 코드가 실제로 보인다** — marker 집합이 담지 못하는 것을 detail이 싣는다.
+  const paused = events.find((e) => e.kind === "task_paused" && e.taskId === "review-code");
+  assert.equal(paused?.detail, "codex_home_not_empty", JSON.stringify(events));
+  // 홈이 거부됐으므로 codex는 뜨지 않았고 결과도 발행되지 않았다(조용한 claude fallback이 없다).
+  assert.equal(reopen(f.ws).getState().messages.filter((m) => m.type === "result").length, 0);
 });

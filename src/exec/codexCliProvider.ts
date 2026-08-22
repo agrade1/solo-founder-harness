@@ -233,8 +233,12 @@ export const CODEX_CREDENTIAL_FILES = ["auth.json"] as const;
  *   최상위에서 여전히 거부된다 — 그것이 이 게이트의 존재 이유이고 실측으로도 그 이름들은 생기지 않았다.
  * - 실측에서 두 디렉터리는 **0755**였다. 홈 자체가 0700이라 다른 uid는 홈을 통과하지 못하므로 여기서
  *   0700을 강제하지 않는다(강제하면 정상 codex 사용이 매번 거부될 뿐 얻는 것이 없다).
+ * - `sessions/`는 **V3 M10 T7 실측**으로 더했다: 0.146은 turn마다 `sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl`을
+ *   쓴다. 이름이 없어 **kernel의 turn별 홈 재검증이 두 번째 turn부터 `codex_home_not_empty`로 거부**했고,
+ *   그것이 T7 live에서 리뷰어 turn이 worker 본문에 도달하지 못한 원인이었다. codex 소유 산출물이므로
+ *   다른 런타임 디렉터리와 같은 취급이다(열지도 해싱하지도 않는다).
  */
-export const CODEX_RUNTIME_DIRS = ["log", "tmp", "cache", "shell_snapshots"] as const;
+export const CODEX_RUNTIME_DIRS = ["log", "tmp", "cache", "shell_snapshots", "sessions"] as const;
 
 /**
  * **CLI가 홈에 만드는 런타임 파일**(V3 M10 T7 실측 · codex-cli **0.146.0-alpha.3**). 2026-08-11 실측
@@ -248,12 +252,35 @@ export const CODEX_RUNTIME_FILES = ["installation_id", "models_cache.json", ".sa
 export const CODEX_RUNTIME_SQLITE_RE = /^[a-z0-9_]+\.sqlite(-shm|-wal)?$/;
 
 /**
- * **코드·지시를 로드할 수 있는 디렉터리**다. 이름은 허용하되 **비어 있을 때만** 통과시킨다 —
- * 여기에 파일이 있으면 리뷰어 세션의 행동·실행이 승인 문서 밖에서 정해질 수 있다(그것이 격리 홈의
- * 존재 이유다). CLI는 `--ignore-user-config --ignore-rules`로도 이 디렉터리들을 만들 수 있으므로
- * 존재 자체는 거부하지 않는다.
+ * **코드·지시를 로드할 수 있는 디렉터리**와, 그 안에서 허용되는 **닫힌 최상위 이름 집합**.
+ *
+ * 이전 판(T7 첫 배선)은 "이름은 허용하되 **비어 있어야** 한다"였다. **그 계약은 codex 0.146에서
+ * 만족 불가능하다**(V3 M10 T7 실측): CLI가 기동할 때마다 `--ignore-user-config --ignore-rules
+ * --strict-config`를 줘도 스스로 `skills/.system/`(vendor 동봉 시스템 skill 7종 + marker)과
+ * `plugins/cache/openai-curated-remote/`(원격 curated 번들 13종) · `plugins/.remote-plugin-install-staging/`
+ * 를 만든다. 그래서 첫 turn 이후 모든 turn이 `codex_home_not_empty`로 거부됐다.
+ *
+ * **그래서 계약의 모양을 바꾼다 — 없애지 않는다.** 여기 적힌 이름은 통과하고 **그 밖의 이름은 여전히
+ * 거부**한다.
+ *
+ * **판정 범위는 최상위 이름 하나뿐이다 — 이 한계를 정확히 적는다(대장 `B-34` · T7 적대적 리뷰 A-1).**
+ * 허용한 이름 **아래**는 보지 않는다. 즉 `skills/pwn/SKILL.md`는 거부하지만
+ * **`skills/.system/pwn/SKILL.md`는 통과한다**. "사람이 넣은 지시·코드를 여전히 막는다"고 말하면
+ * 그것은 과대주장이다 — 막는 것은 **새 최상위 이름**을 만드는 형태뿐이다.
+ *
+ * **더 이상 주장하지 않는 것(정직하게 · 대장 `B-34`)**: 리뷰어의 지시면이 승인 문서로 한정된다는 주장은
+ * 이제 하지 않는다. ⓐ `plugins/cache/**`는 CLI가 **원격에서 받아 온** 내용이고(그 안에 `.mcp.json`·
+ * `hooks.json`·`agents/`·`skills/`가 있다) ⓑ 허용 이름 하위에 **사람이 직접 넣은** 것도 통과한다.
+ * 내용을 재귀 검사하지 않는 이유는 다른 런타임 디렉터리와 같다 — 열면 그 순간 harness가 그 내용의
+ * 의미를 아는 척하게 되고, 이름 집합은 CLI 버전마다 움직인다. 좁히는 길은 CLI 쪽 feature 차단
+ * (`--disable remote_plugin` 계열)이며 실측 전에는 쓰지 않는다.
  */
-export const CODEX_EMPTY_ONLY_DIRS = ["plugins", "skills"] as const;
+export const CODEX_CODE_LOAD_DIRS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  /** CLI가 만드는 원격 plugin 캐시·설치 staging. 그 밖의 이름 = 사람이 넣은 plugin이다. */
+  plugins: Object.freeze(["cache", ".remote-plugin-install-staging"]),
+  /** CLI가 동봉 시스템 skill을 푸는 자리. 그 밖의 이름 = 사람이 넣은 skill이다. */
+  skills: Object.freeze([".system"]),
+});
 
 /** `verifyCodexHome`에 넘기는 기대치. 세 축이 **독립**이다: 신원 일치 / 비어 있음 / 승인된 홈. */
 export interface CodexHomeExpectation {
@@ -357,25 +384,31 @@ export function verifyCodexHome(path: unknown, expect: CodexHomeExpectation = {}
   // 승인이 홈을 고정하지 않았다 = live 인증 미승인 → **완전히 비어 있어야** 한다(기존 계약 그대로).
   // 승인된 홈이면 자격증명 + codex 런타임 디렉터리(`B-23` 실측)만 허용한다.
   const allowed: readonly string[] = approved
-    ? [...CODEX_CREDENTIAL_FILES, ...CODEX_RUNTIME_DIRS, ...CODEX_RUNTIME_FILES, ...CODEX_EMPTY_ONLY_DIRS]
+    ? [...CODEX_CREDENTIAL_FILES, ...CODEX_RUNTIME_DIRS, ...CODEX_RUNTIME_FILES, ...Object.keys(CODEX_CODE_LOAD_DIRS)]
     : [];
   const extra = entries.filter((e) => !allowed.includes(e) && !CODEX_RUNTIME_SQLITE_RE.test(e)).length;
   if (extra > 0) {
     // 개수만 알린다 — 파일 이름은 오류 문자열에 싣지 않는다.
     fail("codex_home_not_empty", `codexHome에 승인되지 않은 설정/자격증명 항목이 있다(${extra}건)`);
   }
-  // **코드·지시 로드 면은 비어 있어야 한다**(V3 M10 T7). 이름을 허용한 것은 CLI가 디렉터리를 만들기
-  // 때문이고, 그 안에 무엇이 들어오면 리뷰어의 행동이 승인 밖에서 정해진다.
+  // **코드·지시 로드 면은 CLI가 만드는 최상위 이름만 통과한다**(V3 M10 T7 실측 —
+  // `CODEX_CODE_LOAD_DIRS` 주석이 정본이고 그 한계도 거기 적혀 있다).
   if (approved) {
-    for (const name of CODEX_EMPTY_ONLY_DIRS) {
+    for (const [name, allowedInner] of Object.entries(CODEX_CODE_LOAD_DIRS)) {
+      // **런타임 디렉터리와 같은 검사를 먼저 건다**(T7 적대적 리뷰 B-1): `readdirSync`는 symlink를
+      // 따라가므로 이것이 없으면 `plugins`를 ambient 캐시로의 symlink로 바꿔 이름 집합만 맞추면
+      // 통과한다. 옛 "비어 있어야 한다" 계약은 그 형태를 우연히 막고 있었다 — 되돌려 놓는다.
+      verifyRuntimeDir(join(p, name));
       let inner: string[];
       try {
         inner = readdirSync(join(p, name));
       } catch {
         continue; // 없으면 통과(첫 실행 전에는 존재하지 않는다)
       }
-      if (inner.length > 0) {
-        fail("codex_home_not_empty", `codexHome의 '${name}'은 비어 있어야 한다(${inner.length}건) — 코드·지시 로드 면이다`);
+      const foreign = inner.filter((e) => !allowedInner.includes(e)).length;
+      if (foreign > 0) {
+        // 개수만 알린다 — 이름은 오류 문자열에 싣지 않는다(홈 최상위 규율 그대로).
+        fail("codex_home_not_empty", `codexHome의 '${name}'에 CLI가 만들지 않은 항목이 있다(${foreign}건) — 코드·지시 로드 면이다`);
       }
     }
   }

@@ -38,7 +38,7 @@ import {
   resolveCodexOptions,
   verifyCodexHome,
   CODEX_CREDENTIAL_FILES,
-  CODEX_EMPTY_ONLY_DIRS,
+  CODEX_CODE_LOAD_DIRS,
   CODEX_RUNTIME_DIRS,
   CODEX_RUNTIME_FILES,
   type SpawnFn,
@@ -2589,9 +2589,9 @@ test("[M5 B-23] 넓힌 것은 이름 2개뿐이다 — 동작을 바꾸는 항�
     }
     // **넓힌 집합은 실측으로 고정한다**(V3 M10 T7 · codex-cli 0.146 실측 — 0.145에서는 log/tmp뿐이었고
     // 그대로 두면 두 번째 invocation부터 홈이 거부되어 codex가 아예 뜨지 않았다). 조용히 자라면 여기서 걸린다.
-    assert.deepEqual([...CODEX_RUNTIME_DIRS], ["log", "tmp", "cache", "shell_snapshots"]);
+    assert.deepEqual([...CODEX_RUNTIME_DIRS], ["log", "tmp", "cache", "shell_snapshots", "sessions"]);
     assert.deepEqual([...CODEX_RUNTIME_FILES], ["installation_id", "models_cache.json", ".sandbox_migration"]);
-    assert.deepEqual([...CODEX_EMPTY_ONLY_DIRS], ["plugins", "skills"]);
+    assert.deepEqual(CODEX_CODE_LOAD_DIRS, { plugins: ["cache", ".remote-plugin-install-staging"], skills: [".system"] });
     assert.deepEqual([...CODEX_CREDENTIAL_FILES], ["auth.json"]);
 
     // 버전 접미사가 붙는 sqlite 상태는 **패턴**으로 받는다(`state_5.sqlite` → 다음 버전도 같은 형태).
@@ -2609,16 +2609,47 @@ test("[M5 B-23] 넓힌 것은 이름 2개뿐이다 — 동작을 바꾸는 항�
       rmSync(path, { force: true });
     }
 
-    // **코드·지시 로드 면은 비어 있을 때만 통과한다**: 이름은 허용하되 내용이 있으면 거부다.
+    // **코드·지시 로드 면은 CLI가 만드는 최상위 이름만 통과한다**(V3 M10 T7 — codex 0.146은 기동할
+    // 때마다 스스로 이 디렉터리들을 채우므로 "비어 있어야 한다"는 만족 불가능한 계약이었다).
+    // 막는 것은 **새 최상위 이름**뿐이다 — 허용 이름 하위는 보지 않는다(아래에서 그 한계도 pin한다).
     mkdirSync(join(home, "plugins"));
     assert.equal(verifyCodexHome(home, { approved }).path, home, "빈 plugins가 거부됐다");
+    for (const name of ["cache", ".remote-plugin-install-staging"]) mkdirSync(join(home, "plugins", name));
+    assert.equal(verifyCodexHome(home, { approved }).path, home, "CLI가 만드는 plugins 내용이 거부됐다");
     writeFileSync(join(home, "plugins", "evil.js"), "x\n");
-    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", "내용 있는 plugins가 통과했다");
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", "사람이 넣은 plugin이 통과했다");
     rmSync(join(home, "plugins"), { recursive: true, force: true });
+
     mkdirSync(join(home, "skills"));
     mkdirSync(join(home, "skills", ".system"));
-    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", "내용 있는 skills가 통과했다");
+    assert.equal(verifyCodexHome(home, { approved }).path, home, "CLI 동봉 skills/.system이 거부됐다");
+    mkdirSync(join(home, "skills", "pwn"));
+    writeFileSync(join(home, "skills", "pwn", "SKILL.md"), "x\n");
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_not_empty", "사람이 넣은 skill이 통과했다");
     rmSync(join(home, "skills"), { recursive: true, force: true });
+
+    // **계약의 한계를 그대로 pin한다**(T7 적대적 리뷰 A-1): 허용 이름 **하위**는 판정하지 않으므로
+    // 사람이 `skills/.system/` 안에 넣은 지시도 통과한다. 문서가 "사람이 넣은 것을 막는다"고 말하면
+    // 과대주장이 되는 지점이 바로 여기다 — 계약이 조용히 강해졌다고 착각하지 않도록 값으로 고정한다.
+    mkdirSync(join(home, "skills", ".system", "pwn"), { recursive: true });
+    writeFileSync(join(home, "skills", ".system", "pwn", "SKILL.md"), "x\n");
+    assert.equal(verifyCodexHome(home, { approved }).path, home, "허용 이름 하위까지 판정한다고 계약이 바뀌었다면 이 단정을 고쳐라");
+    rmSync(join(home, "skills"), { recursive: true, force: true });
+
+    // **허용 이름 자리의 symlink는 거부한다**(T7 적대적 리뷰 B-1): `readdirSync`는 symlink를 따라가므로
+    // 이 검사가 없으면 이름 집합만 맞춘 ambient 디렉터리로 격리가 뚫린다.
+    const outsidePlugins = realpathSync(mkdtempSync(join(tmpdir(), "m10-outside-plugins-")));
+    mkdirSync(join(outsidePlugins, "cache"));
+    symlinkSync(outsidePlugins, join(home, "plugins"));
+    assert.equal(await codeOfCall(() => verifyCodexHome(home, { approved })), "codex_home_invalid", "plugins symlink가 통과했다");
+    rmSync(join(home, "plugins"), { force: true });
+    rmSync(outsidePlugins, { recursive: true, force: true });
+
+    // `sessions/`는 CLI가 turn마다 쓰는 rollout 자리다 — 없어도 되고 있어도 된다(런타임 디렉터리).
+    mkdirSync(join(home, "sessions", "2026", "08", "22"), { recursive: true });
+    writeFileSync(join(home, "sessions", "2026", "08", "22", "rollout-x.jsonl"), "{}\n");
+    assert.equal(verifyCodexHome(home, { approved }).path, home, "sessions/가 거부됐다 — T7 live를 막았던 바로 그 거부다");
+    rmSync(join(home, "sessions"), { recursive: true, force: true });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

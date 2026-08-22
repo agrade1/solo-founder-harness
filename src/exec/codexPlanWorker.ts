@@ -30,7 +30,7 @@
  *   v3 workspace는 어차피 승인된 checkout이다(`executionBoundary`가 그것을 요구한다).
  */
 import { spawn } from "node:child_process";
-import { OrchestrationError } from "./orchestrationTypes.js";
+import { OrchestrationError, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
 import type { WorkerEvent, WorkerStream } from "./autopilotTypes.js";
 import { validateTypedExecutionPlan } from "./typedPlan.js";
 import { extractPlanJson, MAX_WORKER_STDOUT_BYTES } from "./livePlanWorker.js";
@@ -173,13 +173,24 @@ export function startCodexPlanTurn(launch: CodexWorkerLaunch): WorkerStream {
     } catch {
       throw workerError("worker_plan_missing", "계획 JSON을 파싱할 수 없다");
     }
-    // **여기서는 fail-fast로만 검증하고 terminal에는 원본 JSON을 싣는다**(V3 M10 T7 실측).
-    // 검증기가 돌려주는 값은 **정규화·동결된 계획**이라 그것을 다시 실으면 호출자(autopilot)의 재검증이
-    // 닫힌 key 집합에서 걸린다 — live 리뷰어 3턴이 전부 `plan_invalid`로 pause한 원인이 이것이었다.
-    // 계약의 정본은 여전히 검증기 하나이고, autopilot이 자기 binding으로 다시 본다.
-    validateTypedExecutionPlan(parsed, launch.binding);
+    // **계약이 소유한 필드는 중앙이 채운다** — `livePlanWorker`와 **완전히 같은 한 줄**이다(V3 M10 T7
+    // 실측으로 확정). 프롬프트가 모델에게 `schemaVersion`·binding을 적지 말라고 하는데
+    // (`planContractPrompt`) 검증기는 그 다섯 필드를 **요구**하므로, 채우지 않으면 모델이 계약을
+    // 완벽히 지켜도 항상 `plan_invalid`다. live 리뷰어 turn이 전부 그렇게 죽었다(실측: codex가 낸
+    // `{"operations":[],"result":{…}}`는 규격대로였는데 거부됐다).
+    //
+    // 이전 판의 주석("정규화·동결 계획을 실으면 autopilot 재검증이 닫힌 key 집합에서 걸린다")은
+    // **틀렸다** — claude 갈래가 바로 그 정규화 계획을 실어 통과한다. 원인은 재검증이 아니라
+    // 여기서 중앙 필드를 채우지 않은 것이었다.
+    //
+    // 모델이 무엇을 적었든 durable 값이 **덮는다** → 계획이 다른 run·task·attempt·turn을 주장할 통로가
+    // 없다(거부가 아니라 **표현 불가**이므로 claude 갈래와 같은 세기다).
+    const plan = validateTypedExecutionPlan(
+      { ...(parsed as Record<string, unknown>), ...launch.binding, schemaVersion: TYPED_EXECUTION_PLAN_SCHEMA_VERSION },
+      launch.binding,
+    );
     events.push({ kind: "progress", seq: 2, step: "codex-review" });
-    events.push({ kind: "terminal", seq: 3, plan: parsed, usage });
+    events.push({ kind: "terminal", seq: 3, plan, usage });
   };
 
   return {

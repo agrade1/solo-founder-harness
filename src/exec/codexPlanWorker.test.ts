@@ -8,7 +8,9 @@ import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CODEX_PLAN_BACKEND, codexWorkerArgs, startCodexPlanTurn } from "./codexPlanWorker.js";
-import { OrchestrationError } from "./orchestrationTypes.js";
+import { OrchestrationError, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
+import { validateTypedExecutionPlan } from "./typedPlan.js";
+import type { WorkerEvent, WorkerStream } from "./autopilotTypes.js";
 
 const dirs: string[] = [];
 function makeDir(prefix: string): string {
@@ -63,6 +65,13 @@ async function collect(stream: AsyncIterable<{ kind: string }>): Promise<string[
   const kinds: string[] = [];
   for await (const e of stream) kinds.push(e.kind);
   return kinds;
+}
+
+/** 이벤트 **본문**이 필요한 단정용(`collect`는 kind만 본다). */
+async function collectEvents(stream: WorkerStream): Promise<WorkerEvent[]> {
+  const out: WorkerEvent[] = [];
+  for await (const e of stream) out.push(e);
+  return out;
 }
 
 async function codeOf(fn: () => Promise<unknown>): Promise<string> {
@@ -171,21 +180,50 @@ test("[M10 T7/C-97] 계획이 없거나 출력이 없으면 성공이 아니다(
   );
 });
 
-test("[M10 T7/C-97] 계획이 다른 task/turn에 묶여 있으면 거부한다(binding은 kernel이 준 값이다)", async () => {
+test("[M10 T7/C-97] 계획은 자기 binding·schemaVersion을 주장할 수 없다 — 중앙 값이 덮는다", async () => {
+  // **거부가 아니라 표현 불가다**(`livePlanWorker`와 같은 세기): 모델이 다른 task를 주장하고
+  // 계약 버전을 바꿔 적어도 durable 값이 덮으므로 그 주장이 살아남는 통로가 없다.
   const wrong = jsonlBin(
-    JSON.stringify({ schemaVersion: "1", ...BINDING, taskId: "other-task", operations: [], result: { summary: "s", outputs: [] } }),
+    JSON.stringify({ schemaVersion: "99", ...BINDING, taskId: "other-task", operations: [], result: { summary: "s", outputs: [] } }),
   );
-  const code = await codeOf(() =>
-    collect(
-      startCodexPlanTurn({
-        executable: wrong,
-        codexHome: makeDir("m10-codexhome-"),
-        cwd: makeDir("m10-codexws-"),
-        prompt: "x",
-        binding: BINDING,
-        timeoutMs: 30_000,
-      }),
-    ),
+  const events = await collectEvents(
+    startCodexPlanTurn({
+      executable: wrong,
+      codexHome: makeDir("m10-codexhome-"),
+      cwd: makeDir("m10-codexws-"),
+      prompt: "x",
+      binding: BINDING,
+      timeoutMs: 30_000,
+    }),
   );
-  assert.equal(code, "plan_invalid");
+  const terminal = events.find((e) => e.kind === "terminal");
+  assert.ok(terminal && terminal.kind === "terminal", JSON.stringify(events));
+  const plan = terminal.plan as Record<string, unknown>;
+  assert.equal(plan.taskId, BINDING.taskId, "모델이 주장한 taskId가 살아남았다");
+  assert.equal(plan.runId, BINDING.runId);
+  assert.equal(plan.attemptId, BINDING.attemptId);
+  assert.equal(plan.turnId, BINDING.turnId);
+  assert.equal(plan.schemaVersion, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, "모델이 적은 계약 버전이 살아남았다");
+});
+
+test("[M10 T7/C-97] 중앙 필드를 적지 않은 계획을 그대로 받는다(프롬프트가 적지 말라고 하는 필드다)", async () => {
+  // 이것이 T7 live 리뷰어 3턴을 전부 죽인 결함이다: `planContractPrompt`는 `schemaVersion`·binding을
+  // **적지 말라**고 하는데 worker가 채우지 않아, 규격을 완벽히 지킨 codex 출력이 항상 `plan_invalid`였다.
+  const bin = jsonlBin(JSON.stringify({ operations: [], result: { summary: "리뷰 완료", outputs: [{ path: "docs/REVIEW.md", role: "output" }] } }));
+  const events = await collectEvents(
+    startCodexPlanTurn({
+      executable: bin,
+      codexHome: makeDir("m10-codexhome-"),
+      cwd: makeDir("m10-codexws-"),
+      prompt: "x",
+      binding: BINDING,
+      timeoutMs: 30_000,
+    }),
+  );
+  const terminal = events.find((e) => e.kind === "terminal");
+  assert.ok(terminal && terminal.kind === "terminal", JSON.stringify(events));
+  // **호출자(autopilot)가 자기 binding으로 다시 검증해도 통과해야 한다** — 그 재검증이 실제 소비면이다.
+  const revalidated = validateTypedExecutionPlan(terminal.plan, BINDING);
+  assert.equal(revalidated.result.summary, "리뷰 완료");
+  assert.deepEqual([...revalidated.result.outputs], [{ path: "docs/REVIEW.md", role: "output" }]);
 });
