@@ -116,6 +116,7 @@ import { approvedOperationFor, assertRegistryRoleId, pathWithin, validateApprova
 import { MAX_PROGRESS_STEP_CHARS, MAX_WORKER_EVENTS, type TypedExecutionPlan, type TypedOperation } from "./autopilotTypes.js";
 import { validateTypedExecutionPlan } from "./typedPlan.js";
 import { verifyApprovedExecutable } from "./executionBoundary.js";
+import { verifyCodexExecutable, verifyCodexHome } from "./codexCliProvider.js";
 import { superviseProcess } from "./managedProcess.js";
 import {
   OPERATION_RECEIPT_MARKERS,
@@ -2673,6 +2674,26 @@ export class OrchestrationKernel {
       digest: "worker_digest_mismatch",
     });
     return { path: approved.path, sha256: approved.sha256 };
+  }
+
+  /**
+   * **승인된 codex 리뷰어 실행 파일 + 격리 홈**(V3 M10 T7 · 대장 `C-97`).
+   *
+   * `approvedWorkerExecutable()`(claude)과 **같은 규율**이다: 승인에 키가 없으면 backend 선택 자체가
+   * 거부되고(조용한 fallback도, PATH 조회도 없다) 있으면 turn마다 digest·홈 계약을 다시 본다.
+   * 홈 계약은 `codexCliProvider.verifyCodexHome` 하나를 쓴다(두 번째 홈 계약을 만들지 않는다 — `B-7ⓐ`).
+   */
+  approvedCodexWorker(): { path: string; sha256: string; codexHome: string } {
+    const auth = this.#state.manifest.executionAuthority;
+    if (auth.codex === null || auth.codex === undefined || auth.codexHome === undefined) {
+      throw new OrchestrationError(
+        "worker_backend_unapproved",
+        "이 승인에는 codex 리뷰어 권위(executionAuthority.codex + codexHome)가 없다",
+      );
+    }
+    verifyCodexExecutable(auth.codex);
+    const home = verifyCodexHome(auth.codexHome.path, { approved: { path: auth.codexHome.path } });
+    return { path: auth.codex.path, sha256: auth.codex.sha256, codexHome: home.path };
   }
 
   getManifest(): MilestoneApprovalManifest {

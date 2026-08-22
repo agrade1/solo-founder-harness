@@ -1,5 +1,27 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-22 — **V3 M10 T7 착수: codex 리뷰어 backend 배선 · in-loop 왕복은 아직 미증명**)
+
+- **닫힌 것**: autopilot이 이제 **codex 리뷰어 세션을 직접 띄운다**(`src/exec/codexPlanWorker.ts` ·
+  role family `qa-security.*` → `codex-plan`). 승인 축은 기존 `executionAuthority.codex` + `codexHome`이고
+  홈 계약은 `verifyCodexHome` 하나를 재사용한다. focused 5건 + provider 69건 green.
+- **격리 홈 계약을 실측에 맞춰 넓혔다**(codex-cli **0.146** 실측): 0.145 기준 allowlist(`auth.json`·`log`·
+  `tmp`)로는 **두 번째 invocation부터 홈이 거부돼 codex가 아예 뜨지 않았다**. 관측된 이름만 더했고
+  (`cache`·`shell_snapshots`·`installation_id`·`models_cache.json`·`.sandbox_migration`·sqlite 패턴)
+  **`plugins`·`skills`는 비어 있을 때만 통과**시킨다(코드·지시 로드 면). 기존 내용은
+  `~/harness-codex-home-backup-20260822`로 옮겨 뒀다(되돌릴 수 있다).
+- **B-27/R6이 실전에서 값을 했다**: `~/.nvm/.../bin/codex`는 `#!/usr/bin/env node` wrapper라 digest가
+  실제 추론 바이너리를 고정하지 못하고, 이 harness의 닫힌 env에서는 `env: node: No such file`로
+  **아예 뜨지 않는다**(fail closed). 승인 대상은 vendor 플랫폼 바이너리다.
+- **미증명(정직하게)**: `scripts/m10-live-t7.mjs` live 1회에서 저자(claude)는 완주했지만 **리뷰어 3턴이
+  전부 `plan_invalid`**로 pause했다(모델이 계약 JSON을 규격대로 내지 않았다 — 배선이 아니라 프롬프트·모델
+  출력 축의 문제로 보인다). 그래서 **"in-loop 리뷰 왕복이 돈다"는 아직 증명되지 않았다**(`C-97` 유지).
+  worker 자체는 실제 codex로 end-to-end 동작을 확인했다(직접 호출 → `terminal` 이벤트 · 계획 유효).
+- **다음 한 걸음**: 리뷰어 프롬프트가 codex에서 계약 JSON을 내게 만드는 것(claude용 프롬프트를 그대로 썼다)
+  → 실패한 응답 본문을 한 번 캡처해 원인을 보고 고친다.
+
+---
+
 최종 갱신: 2026-08-22 (M10 T1~T6 완료 · 남은 한정 3개: C-97 · C-80 · C-86)
 
 ## 최신 (2026-08-22 — **V3 M10 T6(잔여 하드닝) 완료. 남은 한정 3개는 사용자 결정 대상** · 이 블록이 가장 최신이다)

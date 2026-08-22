@@ -234,7 +234,26 @@ export const CODEX_CREDENTIAL_FILES = ["auth.json"] as const;
  * - 실측에서 두 디렉터리는 **0755**였다. 홈 자체가 0700이라 다른 uid는 홈을 통과하지 못하므로 여기서
  *   0700을 강제하지 않는다(강제하면 정상 codex 사용이 매번 거부될 뿐 얻는 것이 없다).
  */
-export const CODEX_RUNTIME_DIRS = ["log", "tmp"] as const;
+export const CODEX_RUNTIME_DIRS = ["log", "tmp", "cache", "shell_snapshots"] as const;
+
+/**
+ * **CLI가 홈에 만드는 런타임 파일**(V3 M10 T7 실측 · codex-cli **0.146.0-alpha.3**). 2026-08-11 실측
+ * (0.145)에서는 `auth.json` + `log`/`tmp`뿐이었는데 0.146은 아래를 더 만든다 → 계약을 그대로 두면
+ * **두 번째 invocation부터 홈이 거부되어 codex가 아예 뜨지 않는다**(실측). `B-23`의 규율 그대로
+ * **관측된 이름만** 더한다.
+ */
+export const CODEX_RUNTIME_FILES = ["installation_id", "models_cache.json", ".sandbox_migration"] as const;
+
+/** CLI가 만드는 sqlite 상태(`state_5.sqlite`처럼 **버전 접미사가 붙는다**) + WAL/SHM 짝. */
+export const CODEX_RUNTIME_SQLITE_RE = /^[a-z0-9_]+\.sqlite(-shm|-wal)?$/;
+
+/**
+ * **코드·지시를 로드할 수 있는 디렉터리**다. 이름은 허용하되 **비어 있을 때만** 통과시킨다 —
+ * 여기에 파일이 있으면 리뷰어 세션의 행동·실행이 승인 문서 밖에서 정해질 수 있다(그것이 격리 홈의
+ * 존재 이유다). CLI는 `--ignore-user-config --ignore-rules`로도 이 디렉터리들을 만들 수 있으므로
+ * 존재 자체는 거부하지 않는다.
+ */
+export const CODEX_EMPTY_ONLY_DIRS = ["plugins", "skills"] as const;
 
 /** `verifyCodexHome`에 넘기는 기대치. 세 축이 **독립**이다: 신원 일치 / 비어 있음 / 승인된 홈. */
 export interface CodexHomeExpectation {
@@ -337,11 +356,28 @@ export function verifyCodexHome(path: unknown, expect: CodexHomeExpectation = {}
   }
   // 승인이 홈을 고정하지 않았다 = live 인증 미승인 → **완전히 비어 있어야** 한다(기존 계약 그대로).
   // 승인된 홈이면 자격증명 + codex 런타임 디렉터리(`B-23` 실측)만 허용한다.
-  const allowed: readonly string[] = approved ? [...CODEX_CREDENTIAL_FILES, ...CODEX_RUNTIME_DIRS] : [];
-  const extra = entries.filter((e) => !allowed.includes(e)).length;
+  const allowed: readonly string[] = approved
+    ? [...CODEX_CREDENTIAL_FILES, ...CODEX_RUNTIME_DIRS, ...CODEX_RUNTIME_FILES, ...CODEX_EMPTY_ONLY_DIRS]
+    : [];
+  const extra = entries.filter((e) => !allowed.includes(e) && !CODEX_RUNTIME_SQLITE_RE.test(e)).length;
   if (extra > 0) {
     // 개수만 알린다 — 파일 이름은 오류 문자열에 싣지 않는다.
     fail("codex_home_not_empty", `codexHome에 승인되지 않은 설정/자격증명 항목이 있다(${extra}건)`);
+  }
+  // **코드·지시 로드 면은 비어 있어야 한다**(V3 M10 T7). 이름을 허용한 것은 CLI가 디렉터리를 만들기
+  // 때문이고, 그 안에 무엇이 들어오면 리뷰어의 행동이 승인 밖에서 정해진다.
+  if (approved) {
+    for (const name of CODEX_EMPTY_ONLY_DIRS) {
+      let inner: string[];
+      try {
+        inner = readdirSync(join(p, name));
+      } catch {
+        continue; // 없으면 통과(첫 실행 전에는 존재하지 않는다)
+      }
+      if (inner.length > 0) {
+        fail("codex_home_not_empty", `codexHome의 '${name}'은 비어 있어야 한다(${inner.length}건) — 코드·지시 로드 면이다`);
+      }
+    }
   }
   // 승인된 홈은 **자격증명이 실제로 있어야** 한다: 없으면 인증 없이 프로세스를 띄우지 않는다(fail closed).
   // 런타임 디렉터리는 **있어도 되고 없어도 된다**(첫 로그인 전에는 없다) — 있으면 타입만 본다.
