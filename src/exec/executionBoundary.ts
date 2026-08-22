@@ -366,23 +366,35 @@ function headSync(gate: GitGate, root: string, what: string): string {
  * checkout 루트 신원 + HEAD를 읽는다.
  * `--show-toplevel`을 대조해 ⓐ 하위 디렉터리를 루트로 넘긴 경우 ⓑ 다른 저장소를 가리킨 경우를 거부한다
  * (검사 대상과 실행 대상이 같은 디렉터리여야 한다).
+ *
+ * **대조는 경로 문자열이 아니라 디렉터리 신원(dev+ino)이다**(대장 `B-33` · V3 M10 T6).
+ * 이전 판은 `realpathSync(toplevel) !== root`를 문자열로 봤는데, macOS에서 git은 `--show-toplevel`을
+ * **NFD**(Hangul Jamo 분해)로 내놓고 `realpath`는 받은 형태를 보존한다 → 한글 경로를 NFC로 넘기면
+ * **같은 디렉터리인데도** `boundary_not_checkout_root`가 됐다(비-ASCII 경로 프로젝트에서 v3가 시작조차
+ * 못 했다 — M10 T5 도그푸딩 실측). 정규형을 통일하는 방향은 **택하지 않았다**: 어느 정규형이 "정본"인지
+ * 는 파일 시스템마다 다르고(APFS는 정규형 무관, 다른 fs는 바이트 보존) 그 판단을 여기서 하면 승인된
+ * 경로의 바이트 규율(`C-40`·고립 surrogate 계약)과 두 개의 진실이 생긴다. **dev+ino는 커널이 답하는
+ * 하나의 진실**이고, `revalidateSync()`가 이미 같은 기계로 재검증한다(두 번째 방식을 만들지 않는다).
+ *
+ * 보안 성질은 그대로다: 하위 디렉터리·다른 저장소·다른 실체로 바뀐 디렉터리는 ino가 다르므로 여전히
+ * 거부되고, `identityOf`가 최종 엔트리 symlink·비디렉터리를 함께 거부한다.
  */
-async function readCheckoutHead(gate: GitGate, root: string, what: string): Promise<string> {
-  const toplevel = await git(gate, root, ["rev-parse", "--show-toplevel"], what);
+async function readCheckoutHead(gate: GitGate, root: { path: string; id: DirIdentity }, what: string): Promise<string> {
+  const toplevel = await git(gate, root.path, ["rev-parse", "--show-toplevel"], what);
   let topReal: string;
   try {
     topReal = realpathSync(toplevel);
   } catch {
     throw new OrchestrationError("boundary_path_unresolvable", `${what}의 checkout 루트를 확인할 수 없다`);
   }
-  if (topReal !== root) {
+  if (!sameIdentity(identityOf(topReal, `${what}의 checkout 루트`), root.id)) {
     throw new OrchestrationError(
       "boundary_not_checkout_root",
-      `${what}는 checkout 루트 자신이어야 한다(주어진 경로: ${root}, 실제 루트: ${topReal})`,
+      `${what}는 checkout 루트 자신이어야 한다(주어진 경로: ${root.path}, 실제 루트: ${topReal} — 디렉터리 신원 불일치)`,
     );
   }
   // 두 번째 프로세스도 **자기** 게이트를 지난다: 위 `await` 동안 승인 파일이 제자리에서 바뀔 수 있다.
-  const head = await git(gate, root, ["rev-parse", "HEAD"], what);
+  const head = await git(gate, root.path, ["rev-parse", "HEAD"], what);
   if (!COMMIT_RE.test(head)) {
     throw new OrchestrationError("boundary_head_unreadable", `${what}의 HEAD가 40자 커밋이 아니다`);
   }
@@ -413,7 +425,7 @@ export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Pr
   const target = resolveCanonicalDir(input.targetWorktree, "targetWorktree");
   const sameCheckout = controller.path === target.path;
 
-  const controllerHead = await readCheckoutHead(gitGate, controller.path, "controller checkout");
+  const controllerHead = await readCheckoutHead(gitGate, controller, "controller checkout");
   if (controllerHead !== manifest.approvedCommit) {
     throw new OrchestrationError(
       "approved_commit_mismatch",
@@ -421,7 +433,7 @@ export async function verifyExecutionBoundary(input: ExecutionBoundaryInput): Pr
     );
   }
   if (!sameCheckout) {
-    const targetHead = await readCheckoutHead(gitGate, target.path, "실행 checkout");
+    const targetHead = await readCheckoutHead(gitGate, target, "실행 checkout");
     if (targetHead !== manifest.approvedCommit) {
       throw new OrchestrationError(
         "approved_commit_mismatch",

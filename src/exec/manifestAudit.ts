@@ -9,8 +9,10 @@
  * 건드리지 않는 **정적 판정 함수**다.
  *
  * 진단만 낸다 — 아무것도 던지지 않고 아무것도 차단하지 않는다. 차단은 kernel의 몫이다.
+ *
+ * **V3 M10 T6**: 규칙 R6(`approved_executable_is_script` — 대장 `B-27`)이 더해졌다. R1~R5는 M7 그대로다.
  */
-import { existsSync } from "node:fs";
+import { closeSync, existsSync, openSync, readSync } from "node:fs";
 import type { MilestoneApprovalManifest } from "./orchestrationTypes.js";
 import { pathWithin } from "./approvalManifest.js";
 
@@ -31,6 +33,32 @@ export interface AuditManifestOpts {
   now: string;
   /** 파일 존재 확인 seam. 기본은 실제 파일 시스템(read-only). */
   exists?: (path: string) => boolean;
+  /**
+   * 첫 2바이트 읽기 seam(R6). 기본은 실제 파일 시스템(read-only · 2바이트만). 읽을 수 없으면 `""`이고
+   * 그 경우 R6은 아무것도 보고하지 않는다(부재·권한은 R5의 몫이다 — 같은 사실을 두 번 세지 않는다).
+   */
+  readMagic?: (path: string) => string;
+}
+
+/** R6 기본 seam — 승인된 경로의 **첫 2바이트만** 읽는다(내용을 메모리에 올리지 않는다). */
+function defaultReadMagic(path: string): string {
+  let fd: number | undefined;
+  try {
+    fd = openSync(path, "r");
+    const buf = Buffer.alloc(2);
+    const n = readSync(fd, buf, 0, 2, 0);
+    return buf.subarray(0, Math.max(0, n)).toString("latin1");
+  } catch {
+    return "";
+  } finally {
+    if (fd !== undefined) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* 닫기 실패는 판정에 영향이 없다 */
+      }
+    }
+  }
 }
 
 /**
@@ -110,6 +138,35 @@ export function auditApprovalManifest(manifest: MilestoneApprovalManifest, opts:
         message: `${field}가 가리키는 경로가 없다: ${path}`,
       });
     }
+  }
+
+  // R6 — **직접 exec되는 승인 실행 파일이 interpreter script(wrapper)다**(대장 `B-27` · V3 M10 T6).
+  //
+  // digest는 그 script의 바이트를 고정하지만 script가 런타임에 **찾아서 exec할 실제 프로그램**은 고정하지
+  // 않는다(`@openai/codex/bin/codex.js`의 `findCodexExecutable`이 그 실례이고, `which codex`가 가리키는
+  // 것이 바로 그 wrapper다 — 2026-08-11 실측). 승인 문서 작성자가 wrapper 경로를 넣으면 실행 권위가
+  // 서류상으로만 존재한다. 지금까지 이 규율은 **사람 규율**이었고 런타임 가드도 감사 규칙도 없었다.
+  //
+  // `controllerEntrypoint`는 대상이 아니다: 그것은 `node <entry>`의 **인자**이지 exec 대상이 아니므로
+  // shebang이 아무 역할을 하지 않는다(둘을 같은 규칙으로 묶으면 정상 승인이 매번 high를 내고 그 high가
+  // 소음으로 학습된다). `codexHome`도 대상이 아니다(디렉터리다).
+  const readMagic = opts.readMagic ?? defaultReadMagic;
+  const execTargets: [string, string][] = [
+    ...(a.claude ? ([["executionAuthority.claude", a.claude.path]] as [string, string][]) : []),
+    ...(a.codex ? ([["executionAuthority.codex", a.codex.path]] as [string, string][]) : []),
+    ["executionAuthority.git", a.git.path],
+    ["executionAuthority.node", a.node.path],
+    ["executionAuthority.processObserver", a.processObserver.path],
+  ];
+  for (const [field, path] of execTargets) {
+    if (!exists(path)) continue; // 부재는 R5가 이미 보고했다
+    if (readMagic(path) !== "#!") continue;
+    out.push({
+      rule: "approved_executable_is_script",
+      severity: "high",
+      subject: field,
+      message: `${field}가 interpreter script다(${path}) — digest는 이 script만 고정하고 그것이 exec할 실제 프로그램은 고정하지 않는다(wrapper 함정). 실제 실행 파일 경로를 승인하라`,
+    });
   }
 
   return out.sort((x, y) => (x.rule + x.subject < y.rule + y.subject ? -1 : x.rule + x.subject > y.rule + y.subject ? 1 : 0));
