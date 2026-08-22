@@ -623,6 +623,8 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   let dispatchCharged = false;
   let dispatchChargeFailed: string | null = null;
   let marker: AutopilotMarker = "worker_failed";
+  /** turn 예외의 **원본 안정 코드**. marker가 담지 못하는 원인을 pause 이벤트로 올린다(위 `workerMarker`). */
+  let workerFailureCode: string | null = null;
   let usage = { inputTokens: 0, outputTokens: 0 };
   try {
     const binding = { runId: kernel.getState().runId, taskId, attemptId, turnId };
@@ -709,6 +711,8 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
       }
     }
   } catch (err) {
+    // marker는 닫힌 집합이라 원인을 다 담지 못한다 → **원본 코드를 따로 들고** pause 이벤트에 싣는다.
+    workerFailureCode = codeOf(err);
     marker = workerMarker(err);
     plan = null;
   }
@@ -771,7 +775,8 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   if (marker !== "turn_completed" || plan === null) {
     const reason = pauseReasonFor(marker);
     kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: reason });
-    emit({ kind: "task_paused", taskId, marker, detail: reason });
+    // `pauseReason`은 durable task 상태에 이미 있다 → 이벤트 `detail`은 **원인 코드**에 쓴다(있을 때).
+    emit({ kind: "task_paused", taskId, marker, detail: workerFailureCode ?? reason });
     return { taskId, state: "paused", marker };
   }
 
@@ -1212,9 +1217,25 @@ function boundedUsage(raw: { inputTokens: number; outputTokens: number }): { inp
 }
 
 /** worker·계획 검증 오류를 닫힌 marker로 접는다(호출자·데이터가 marker를 고르지 못한다). */
+/**
+ * turn 예외 → **닫힌 durable marker**(V3 M10 T7 · `C-96` 부류 수정).
+ *
+ * 이전 판은 `worker_` 접두사가 **아닌 모든 코드**를 `plan_invalid`로 접었다. 그래서 승인 축의 거부
+ * (`codex_home_not_empty`·`codex_home_not_owned`·`codex_home_permissive`·`codex_home_identity_changed`
+ * 처럼 접두사가 다른 코드들)가 durable 감사 로그에 **"모델이 잘못된 계획을 냈다"** 로 남았다 —
+ * 일어나지 않은 일이다. T7 live에서 리뷰어 3턴이 전부 그 거짓 marker 뒤에 숨었고(실제 원인은
+ * `codex_home_not_empty`) 원인을 좁히는 데 세션 하나가 들었다.
+ *
+ * 이제 **계획 계약 위반만** `plan_invalid`다: `validateTypedExecutionPlan`은 모든 위반(미상 key·타입·
+ * 상한·binding·accessor/proxy)을 그 코드 **하나로** 접으므로(`TYPED_EXECUTION_CODES`) 이 대조 하나면
+ * 충분하다. 그 밖은 전부 `worker_failed`이고, **원본 코드는 pause 이벤트의 `detail`로 올린다**
+ * (marker 집합은 durable schema라 여기서 넓히지 않는다).
+ *
+ * 기각한 대안: 코드 이름이 우연히 marker 집합에 있으면 그대로 쓰는 것(`stream_invalid` 등). 이름
+ * 일치를 계약으로 삼으면 무관한 코드가 조용히 marker가 된다 — 지금 고치는 것과 같은 종류의 거짓이다.
+ */
 function workerMarker(err: unknown): AutopilotMarker {
-  const code = codeOf(err);
-  return code.startsWith("worker_") ? "worker_failed" : "plan_invalid";
+  return codeOf(err) === "plan_invalid" ? "plan_invalid" : "worker_failed";
 }
 
 function codeOf(err: unknown): string {

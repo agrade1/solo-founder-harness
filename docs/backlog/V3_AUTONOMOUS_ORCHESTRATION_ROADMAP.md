@@ -1817,7 +1817,141 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M10 진행 판정 ⑥ — T6 잔여 하드닝: 한정을 걷어낸다 (offline 부분)** (2026-08-22 · 이 절이 M10의 현행이며 아래 ⑤보다 최신이다)
+##### **M10 진행 판정 ⑦ — T7 in-loop 리뷰 왕복 (`C-97` 닫힘 · live 8/8)** (2026-08-23 · 이 절이 M10의 현행이며 아래 ⑥보다 최신이다)
+
+> 범위: `C-97` 하나다. **live 2회 + 진단 1회**(claude 왕복 4 · codex 왕복 9 — 둘 다 **구독 한도**,
+> 실결제 $0). 실행 직전 `~/.codex/auth.json`을 다시 확인했다: `auth_mode: chatgpt` ·
+> `OPENAI_API_KEY` 없음(값은 읽지 않고 key 이름·mode만). suite와 동시에 돌리지 않았다(`C-88`).
+
+### ⓐ 증명된 것 — 무인 loop 한 번이 리뷰 왕복을 완주한다
+
+**실측**: `scripts/m10-live-t7.mjs` **PASS=8 / FAIL=0** · 모델 왕복 **6회**(claude 2 + codex 4) ·
+**62.7s** · durable `tokensUsed` **80,296** · **사람 개입 0건**(pause 0).
+
+한 번의 `runAutopilot`이 `impl-author`(claude) → `review-code`·`review-security`·`review-test`(codex)
+→ `revise-impl`(claude) → `verify-fix`(codex)를 **전부 `turn_completed`로** 완주했고, durable에서 파생한
+참가자 집합이 `assertCodeReviewRoundtrip`을 통과했다. 그 검사가 공허하지 않다는 대조군도 같은 실행에서
+확인했다(리뷰어 하나를 claude로 바꾸면 계약이 거부한다).
+
+**M9와 무엇이 다른가**: M9의 리뷰 왕복은 **스크립트가 단계를 순서대로 부른** 형태였다. 지금은
+**role이 backend를 고르고**(`qa-security.*` → `codex-plan`) loop가 리뷰어 세션을 직접 띄운다.
+
+### ⓑ 원인 셋 — 전부 배선 결함이었다(모델 출력이 아니었다)
+
+T6 인계 문서는 "모델이 계약 JSON을 규격대로 내지 않았다"고 적었다. **틀렸다.** 진단 1회에서 codex가
+낸 마지막 메시지는 `{"operations":[],"result":{"summary":"…","outputs":[{"path":"docs/REVIEW.md",
+"role":"output"}]}}` — 계약 그대로였다. 실제 원인은 셋이고 전부 harness 쪽이다.
+
+| # | 원인 | 왜 안 보였나 | 수정 |
+|---|---|---|---|
+| 1 | **`kernel.approvedCodexWorker()`가 홈을 거부했다.** codex 0.146은 turn마다 `sessions/<yyyy>/<mm>/<dd>/rollout-*.jsonl`을 쓰는데 그 이름이 allowlist에 없어 **두 번째 turn부터** `codex_home_not_empty`였다 | marker 매핑이 삼켰다(원인 2) | `CODEX_RUNTIME_DIRS`에 `sessions` 추가 — `B-23`의 "관측된 이름만" 규율 그대로 |
+| 2 | **`workerMarker`가 원인과 다른 marker를 냈다**(`C-96` 부류). `worker_` 접두사가 **아닌 모든 코드**를 `plan_invalid`로 접어, 승인 축 거부가 durable 감사 로그에 **"모델이 잘못된 계획을 냈다"** 로 남았다 | 그 자체가 증거를 지웠다 — 이전 세션이 원인을 좁히는 데 세션 하나를 썼다 | 계획 계약 위반(`plan_invalid` 코드)만 `plan_invalid`, 나머지는 `worker_failed`. **원본 코드는 pause 이벤트 `detail`로 올린다**(marker 집합은 durable schema라 넓히지 않았다) |
+| 3 | **`codexPlanWorker`가 중앙 소유 필드를 채우지 않았다.** `planContractPrompt`는 모델에게 `schemaVersion`·binding을 **적지 말라**고 하는데 검증기는 그 다섯 필드를 **요구**한다 → 규격을 완벽히 지킨 출력이 항상 `plan_invalid` | 원인 1이 앞에서 막아 여기까지 오지 못했다 | `livePlanWorker`와 **완전히 같은 한 줄**로 채운다. 두 갈래가 같은 seam에서 다른 모양이었던 것이 결함이었다 |
+
+**이전 세션의 수정 하나를 되돌렸다**: "정규화·동결 계획을 terminal에 실으면 autopilot 재검증이 닫힌
+key 집합에서 걸린다"는 주석은 **틀렸다** — claude 갈래가 바로 그 정규화 계획을 실어 통과한다. 원인은
+재검증이 아니라 위 3번이었다. 주석과 함께 고쳤다.
+
+### ⓒ 계약 하나를 **좁히지 않고 모양을 바꿨다** — 정직하게 적는다
+
+codex 격리 홈의 `plugins`·`skills`는 **"비어 있을 때만 통과"** 였는데 **그 계약은 0.146에서 만족
+불가능하다**: CLI가 `--ignore-user-config --ignore-rules --strict-config`를 줘도 기동할 때마다 스스로
+`skills/.system/`(vendor 동봉 skill 7종)과 `plugins/cache/openai-curated-remote/`(원격 curated 번들
+13종) · `plugins/.remote-plugin-install-staging/`을 만든다.
+
+그래서 **"CLI가 만드는 최상위 이름만 통과"** 로 바꿨다(`CODEX_CODE_LOAD_DIRS`).
+
+**판정 범위를 정확히 적는다**(적대적 리뷰 A-1이 잡은 과대주장 — 이 절의 첫 판은 "사람이 넣은 것은 여전히
+거부한다"고 적었고 그것은 틀렸다): 대조하는 것은 **최상위 이름 하나뿐**이고 허용한 이름 **아래는 보지
+않는다**. `skills/pwn/SKILL.md`는 거부하지만 **`skills/.system/pwn/SKILL.md`는 통과한다**. 즉 옛 계약이
+막던 로컬 주입 중 **한 겹 아래로 들어간 형태는 이제 통과한다** — 이것도 `B-34`다.
+
+**더 이상 주장하지 않는 것**: 리뷰어의 지시면이 승인 문서로 한정된다는 주장. ⓐ `plugins/cache/**`는 CLI가
+원격에서 받아 온 내용이고(`.mcp.json`·`hooks.json`·`agents/`·`skills/`가 들어 있다) ⓑ 허용 이름 하위의
+로컬 주입도 통과한다. harness는 그것이 세션에 로드되는지 알지 못한다 → **대장 `B-34`**.
+
+**되돌려 놓은 것 하나**(적대적 리뷰 B-1): `readdirSync`는 symlink를 따라가므로, 옛 "비어 있어야 한다"
+계약이 우연히 막고 있던 **`plugins`·`skills` 자리의 symlink**가 새 계약에서는 이름 집합만 맞추면 통과할
+뻔했다. 런타임 디렉터리와 **같은 검사**(`verifyRuntimeDir` — symlink 아님 · 이 프로세스 소유)를 두 이름에도
+건다. 조용히 넓히지 않았다는 증거로 `codexCliProvider.test.ts`가 허용 집합을 **값으로 pin**하고, 새 최상위
+이름의 거부 · **허용 이름 하위의 통과**(= 위 한계) · symlink 거부를 **셋 다** 단정한다(mutation red 확인).
+
+### ⓓ 적대적 리뷰가 잡은 것 (fresh Fable 5 · read-only · live 0회)
+
+**A급 2건 — 둘 다 코드가 아니라 주장이었다. 즉시 고쳤다.**
+- **A-1 과대주장**: 위 ⓒ가 "사람이 넣은 skill/plugin은 여전히 거부"라고 적었는데 판정은 **최상위 이름
+  에서만** 참이다. 세 곳(코드 주석·판정 절·`CONTEXT_SUMMARY`)을 실상에 맞추고, 계약의 그 한계를
+  테스트가 **값으로 pin**하게 했다(`skills/.system/pwn/SKILL.md`가 통과함을 명시 단정).
+- **A-2 거짓 성공 영수증**: `scripts/m10-live-t7.mjs`가 `과금: … Codex 0회`를 인쇄했다 — T6에서 복사된
+  줄인데 이 run은 codex를 **4회** 띄운다. 이제 durable role에서 **실제로 뜬 세션 수를 세어** 인쇄한다.
+
+**B급 1건 — 고쳤다(유예하지 않았다)**: `plugins`·`skills`에 symlink·소유자 검사가 없었다(위 ⓒ 참조).
+
+**C급 4건**: ⓐ 승인 축 거부가 durable에는 여전히 `worker_failed`로 남는다 → marker 정의에 그 범위를
+명시했다(`orchestrationTypes.ts`) ⓑ 아래 검증 절의 테스트 수 오기 → 고쳤다 ⓒ live check B가
+동어반복이다(아래 ⓔ에 적었다) ⓓ "거부보다 강하다"는 판단 진술 → "claude 갈래와 같은 세기"로 고쳤다.
+
+**반증에 실패한 것**(공격했으나 주장이 버텼다): `workerMarker` 변경으로 **진짜 계획 결함이 새는 경로는
+없다**(`plan_invalid` 코드의 생성 지점은 `typedPlan.ts` 하나 — try 블록의 던지는 출처를 전수 확인) ·
+`detail`에 실리는 `OrchestrationError.code`는 전부 리터럴 slug라 **secret·경로 유출이 없다** ·
+`codexPlanWorker`의 중앙 채움이 `livePlanWorker`와 **글자 그대로 같다** · 다시 쓴 테스트는 완화가 아니다
+(binding 불일치 거부는 `typedExecution.test.ts`가 여전히 직접 커버한다) · codex 권위 없으면
+`worker_backend_unapproved`로 fail closed(claude fallback 없음) · prototype pollution·TOCTOU 무증가.
+
+### ⓔ 검증
+
+**전체 suite 1회(직렬 · live와 동시에 돌리지 않았다)**: `test:exec` **627/627**(+6) ·
+`test:core` **459/459**(+1) · acceptance **PASS=189 / FAIL=0** · tsc clean.
+
+**mutation red 3종**: `workerMarker` 되돌림 → 신규 autopilot 회귀 red / 홈 판정 되돌림 → 홈 계약
+단정 red / 중앙 필드 채우기 제거 → codexPlanWorker 회귀 2건 red.
+focused: codexPlanWorker **6/6**(신규 1 · 기존 1건은 **같은 세기의 다른 계약으로 다시 씀**) ·
+codexCliProvider **69/69** · autopilot(신규 1 포함) · managedProcess **27/27**.
+
+**PR #61은 이 세션 전까지 suite가 red였다** — T7 첫 커밋(`edf2f6d`)이 kernel에
+`approvedCodexWorker`를 더하면서 API 표면 pin(`[M4a] kernel 공개 API는 좁은 목록뿐`)을 갱신하지 않았고,
+그 상태로 3커밋이 올라가 있었다. pin에 그 이름을 **근거 주석과 함께** 더해 닫았다(pin의 목적은
+"조용히 자라지 않는다"이고 이 증가는 의도된 것이므로 완화가 아니다).
+
+**한 번은 red였다가 idle에서 green이 된 것 2건**: `managedProcess`의 프로세스 그룹 테스트 2건이
+적대적 리뷰 세션과 **동시에** 돌렸을 때 장벽(손자 spawn)에서 실패했다. 단독 실행에서는 변경 전후 모두
+27/27이다 → **부하 민감**으로 판정하고 그대로 적는다(이 변경이 건드리는 파일이 아니다).
+
+**다시 쓴 테스트 1건에 대해**(완화가 아니다): `계획이 다른 task/turn에 묶여 있으면 거부한다`는
+worker가 모델의 binding 주장을 **거부**한다고 단정했다. 중앙이 덮는 계약에서는 그 주장이 **살아남을 수
+없다**(표현 불가 — `livePlanWorker`와 **같은 세기**다). 그래서 "덮인 값이 kernel의 것인지"를 단정하도록
+바꿨고 `schemaVersion` 위조까지 함께 본다. 검증기 자신의 binding 불일치 거부는
+`typedExecution.test.ts`가 여전히 직접 커버하므로 잃은 커버리지가 없다.
+
+### ⓕ 여전히 증명되지 않은 것
+
+- **왕복 계약 검사는 loop 밖이다.** 참가자 신원은 durable에서 파생하지만 `assertCodeReviewRoundtrip`
+  호출은 **스크립트**가 한다 — kernel이 리뷰를 안 거친 결과를 거부하지는 않는다 → **대장 `C-98`**.
+- **세션 신원을 `turnId`로 표현한다**(provider 세션 UUID는 durable schema에 없다). worker가 turn마다
+  새 프로세스를 띄우고 resume하지 않으므로 1 turn = 1 fresh 세션이라는 **구조적** 근거는 있다.
+- 리뷰 **내용**의 품질은 판정하지 않는다. 판정하는 것은 계약이다. **표본 1회.**
+- 리뷰 transcript가 승인된 홈에 영속한다(`sessions/`) → **대장 `C-99`**.
+- **live check B("리뷰어가 codex로 돌았다")는 독립 증거가 아니다**(적대적 리뷰 C-3): `provider`를
+  durable `roleId`에 **loop가 쓰는 것과 같은 매핑 상수**를 다시 적용해 만든다 → 메아리다. 실제 근거는
+  ⓐ 그 turn들이 완주했다는 것과 ⓑ codex 갈래가 `executionAuthority.codex` + 격리 홈을 **요구**한다는
+  전이적 사실이다(승인에 그 권위가 없으면 시작하지 못한다). 세션 UUID를 durable에 넣기 전까지
+  이 축은 이 세기 이상으로 올라가지 않는다(`C-86` 인접).
+
+### ⓖ 대장 처리 — fixed 1건 · 신규 3건
+
+| id | 무엇을 했나 |
+|---|---|
+| `C-97` | **closed** — 무인 loop가 리뷰어 codex 세션을 직접 띄우고 왕복이 live 8/8로 완주한다 |
+
+**신규 등록 3건**
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-98` | C (P2) | **왕복 계약 검사가 loop 밖이다.** `assertCodeReviewRoundtrip`은 live 스크립트가 부르고 **kernel은 리뷰를 안 거친 결과를 거부하지 않는다** → 리뷰 task를 지우거나 저자와 같은 엔진으로 돌려도 loop 자체는 완주하고 결과를 발행한다. 지금 참인 것은 "이번 실행의 참가자 집합이 계약을 통과했다"이지 "loop가 계약을 강제한다"가 아니다 | 확실(설계상) | 무인 loop의 품질 게이트 강제력(승인 경계는 무관 — 쓰기·집행은 별도 축이 막는다) | 중 — 리뷰를 **게이트로** 쓰겠다고 결정한 뒤에 붙이면 그때까지의 run은 강제 없이 돈 것이다 | 중(참가자 신원을 durable에 묶고 결과 발행 직전에 kernel이 계약을 보는 새 승인 축) | **리뷰 왕복을 무인 loop의 하드 게이트로 쓰겠다고 결정할 때** | 사용자(범위 결정) + 그 slice 구현 세션 | M10 T7 live 스크립트 "증명하지 않는 것" 절 · `designReviewRoundtrip.ts` 호출부가 `scripts/` 하나뿐 | open |
+| `B-34` | **B (P2)** | **codex 격리 홈의 "코드·지시 로드 면" 계약이 좁아졌다.** `plugins`·`skills`가 "비어 있어야 한다"에서 **"CLI가 만드는 이름만 통과"** 로 바뀌었다(0.146이 기동마다 스스로 채워 이전 계약이 만족 불가능했다). 그래서 ⓐ `plugins/cache/openai-curated-remote/**`(원격 curated 번들 13종 · `.mcp.json`·`hooks.json`·`agents/`·`skills/` 포함)가 **검사 없이** 승인된 홈에 존재하고, ⓑ **허용 이름 하위의 로컬 주입도 통과한다**(`skills/.system/pwn/SKILL.md` — 옛 계약은 이 형태를 막았다 · 적대적 리뷰 A-1). 판정은 **최상위 이름 하나**이며 symlink·소유자 검사는 그 이름에 건다(적대적 리뷰 B-1에서 추가). 자식 env는 여전히 `CODEX_HOME` 하나이고 `mcp_servers={}`·`--strict-config`가 걸려 있어 **MCP 축은 이중으로 막혀 있지만**, skill·prompt 축이 리뷰어에게 로드되는지 harness는 알지 못한다 | 중간 — CLI가 무엇을 받아 오는지는 harness 밖에서 정해진다 | 리뷰어 세션의 **지시면**(승인 경계·쓰기·집행은 무관 — read-only sandbox + 승인 축이 별도로 막는다) | 중 — 좁히려면 CLI feature 축을 실측해야 한다 | 소~중(`--disable remote_plugin`·`skill_search` 계열을 **실측 확인 후** `codexWorkerArgs`에 고정하고 그때 홈 계약을 다시 조인다) | **리뷰어 판정을 사람 검토 없이 신뢰하기 시작할 때 — 하드 게이트** | 미정 | M10 T7 실측(`~/harness-codex-home/plugins/cache/openai-curated-remote` 13종 · `skills/.system` 7종) · `codexCliProvider.ts` `CODEX_CODE_LOAD_DIRS` 주석 · 해당 test의 값 pin | open |
+| `C-99` | C (P3) | **리뷰 transcript가 승인된 격리 홈에 영속한다.** codex 0.146이 turn마다 `sessions/**/rollout-*.jsonl`을 쓰고 거기에 프롬프트(= 지시 본문 + context bundle)와 모델 응답 전문이 남는다. harness는 durable에 원문을 남기지 않는다는 규율을 지키지만 **CLI가 홈에 남기는 것은 그 규율 밖**이다 | 확실(관측) | 로컬 디스크의 데이터 수명(외부 유출 경로는 아니다 — 홈은 0700 · 소유자 전용) | 낮음 | 소(`codexWorkerArgs`에 `--ephemeral` 추가 — worker는 resume하지 않으므로 잃을 것이 없다. 단 기존 `sessions/`는 사람이 지워야 한다) | 홈에 민감한 지시가 실리기 시작할 때 또는 다음 하드닝 slice | 미정 | M10 T7 실측(`sessions/2026/08/22/rollout-*.jsonl` 3건) · `codex exec --ephemeral` help | open |
+
+##### **M10 진행 판정 ⑥ — T6 잔여 하드닝: 한정을 걷어낸다 (offline 부분)** (2026-08-22 · 아래 ⑤보다 최신이다 — M10의 현행은 위 ⑦ 절이다)
 
 > 범위: 판정 ⑤가 "완료 조건 3개가 셋 다 한정부"라고 적은 그 **한정을 실제로 닫는 slice**다.
 > **offline + live 둘 다 끝났다**(ⓐⓑ offline · ⓒ live · ⓓ 완료 조건 재판정).
@@ -1940,7 +2074,7 @@ live 수치와 스크립트 단정 일치(9개) · entrypoint의 종료 코드·
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `C-97` | C (P2) | **무인 loop 안에서 리뷰 왕복이 표현 불가다.** `assertCodeReviewRoundtrip`은 리뷰어 3종 + verify가 **fresh Codex read-only**이고 저자·수정자는 claude여야 한다고 요구하지만(`designReviewRoundtrip.ts:140-147`), autopilot이 아는 live worker backend는 `claude-plan` **하나**다(`worker_backend_unapproved`) → loop가 리뷰어 세션을 만들 통로가 없다. 그래서 "리뷰 왕복"은 M9의 **스크립트 형태** 증명에 남아 있다. 흉내내는 것(claude를 리뷰어로 세우기)은 계약 위반이므로 하지 않았다 | 확실(설계상) | 무인 loop의 품질 게이트 1축(리뷰) — 승인 경계는 무관 | 중 — 리뷰를 loop 안으로 넣으려면 codex worker backend + 그 승인 축(`executionAuthority.codex` 경유 세션)이 필요하다 | 중~대(별도 승인 범위: backend 2개째 + 리뷰어 신원을 durable에 묶는 배선) | **리뷰 왕복을 무인 loop의 게이트로 쓰겠다고 결정할 때** | 사용자(범위 결정) + 그 slice 구현 세션 | M10 T6 live 스크립트 "증명하지 않는 것" 절 · `livePlanWorker.ts` `LIVE_PLAN_BACKEND` 단일 값 · M9 live 스크립트 형태 증명 | open |
+| `C-97` | C (P2) | **무인 loop 안에서 리뷰 왕복이 표현 불가다.** `assertCodeReviewRoundtrip`은 리뷰어 3종 + verify가 **fresh Codex read-only**이고 저자·수정자는 claude여야 한다고 요구하지만(`designReviewRoundtrip.ts:140-147`), autopilot이 아는 live worker backend는 `claude-plan` **하나**다(`worker_backend_unapproved`) → loop가 리뷰어 세션을 만들 통로가 없다. 그래서 "리뷰 왕복"은 M9의 **스크립트 형태** 증명에 남아 있다. 흉내내는 것(claude를 리뷰어로 세우기)은 계약 위반이므로 하지 않았다 | 확실(설계상) | 무인 loop의 품질 게이트 1축(리뷰) — 승인 경계는 무관 | 중 — 리뷰를 loop 안으로 넣으려면 codex worker backend + 그 승인 축(`executionAuthority.codex` 경유 세션)이 필요하다 | 중~대(별도 승인 범위: backend 2개째 + 리뷰어 신원을 durable에 묶는 배선) | **리뷰 왕복을 무인 loop의 게이트로 쓰겠다고 결정할 때** | 사용자(범위 결정) + 그 slice 구현 세션 | M10 T6 live 스크립트 "증명하지 않는 것" 절 · `livePlanWorker.ts` `LIVE_PLAN_BACKEND` 단일 값 · M9 live 스크립트 형태 증명 | **fixed(2026-08-23 M10 T7)** — role family(`qa-security.*`)가 backend를 고르고 loop가 codex 리뷰어 세션을 직접 띄운다(`codexPlanWorker.ts` · 승인 축 `executionAuthority.codex` + `codexHome`). `scripts/m10-live-t7.mjs` **8/8**(왕복 6회 · 62.7s · 사람 개입 0). 조용한 claude fallback은 만들지 않았다 — 승인에 codex 권위가 없으면 `worker_backend_unapproved`다. **남은 한정은 `C-98`**(계약 검사가 loop 밖이다) |
 
 ##### **M10 진행 판정 ⑤ — T5 릴리스 게이트(도그푸딩 승인 감사) + M10 완료 판정** (2026-08-21 · 아래 ④ 절보다 최신이다 — M10의 현행은 위 ⑥ 절이다)
 

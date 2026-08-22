@@ -1,6 +1,47 @@
 # CONTEXT_SUMMARY.md
 
-## 최신 (2026-08-22 — **V3 M10 T7 착수: codex 리뷰어 backend 배선 · in-loop 왕복은 아직 미증명**)
+## 최신 (2026-08-23 — **V3 M10 T7 완료: `C-97` 닫힘 · in-loop 리뷰 왕복 live 8/8**)
+
+- **닫힌 것 — `C-97`**: 무인 loop **한 번**이 저자(claude) → 리뷰 3종(codex) → 수정(claude) →
+  verify(codex)를 전부 `turn_completed`로 완주한다. `scripts/m10-live-t7.mjs` **PASS=8 / FAIL=0** ·
+  왕복 **6회** · **62.7s** · durable 토큰 **80,296** · **사람 개입 0**. role family(`qa-security.*`)가
+  backend를 고르고(`codex-plan`) 참가자 신원을 durable에서 파생해 `assertCodeReviewRoundtrip`을 통과한다
+  (리뷰어를 claude로 바꾸는 대조군은 거부 — 검사가 공허하지 않다). 판정 정본은 로드맵 **`M10 진행 판정 ⑦`**.
+- **인계 문서의 진단은 틀렸었다**: "모델이 계약 JSON을 규격대로 내지 않았다"가 아니었다. codex 출력은
+  계약 그대로였고(진단 1회로 확인) 원인은 **전부 harness 배선**이었다. 셋 다 고쳤다.
+  1. `sessions/`가 홈 allowlist에 없어 **두 번째 turn부터** `codex_home_not_empty`(codex 0.146은 turn마다
+     rollout을 쓴다) → `CODEX_RUNTIME_DIRS`에 추가.
+  2. **`workerMarker`가 원인과 다른 marker를 냈다**(`C-96` 부류): `worker_` 접두사가 아닌 **모든** 코드를
+     `plan_invalid`로 접었다 → 승인 축 거부가 "모델이 잘못된 계획을 냈다"로 기록됐고 그 자체가 증거를
+     지웠다. 이제 계획 계약 위반만 `plan_invalid`, 나머지는 `worker_failed` + **원본 코드를 pause 이벤트
+     `detail`에** 싣는다.
+  3. **`codexPlanWorker`가 중앙 소유 필드(`schemaVersion`·binding)를 채우지 않았다** — 프롬프트는 모델에게
+     적지 말라고 하는데 검증기는 요구한다 → 완벽한 출력도 항상 `plan_invalid`. `livePlanWorker`와 **같은
+     한 줄**로 통일했다. (이전 세션이 넣은 "정규화 계획이 원인" 주석은 틀렸다 — 함께 정정.)
+- **계약 하나의 모양을 바꿨다(좁아졌다 · `B-34`)**: codex 홈의 `plugins`·`skills` "비어 있어야 한다"는
+  0.146에서 **만족 불가능**하다(CLI가 기동마다 `skills/.system` 7종 + `plugins/cache/openai-curated-remote`
+  13종을 스스로 만든다). **"CLI가 만드는 최상위 이름만 통과"** 로 바꿨다. **판정 범위는 최상위 이름
+  하나뿐이다** — `skills/pwn/`은 거부하지만 **`skills/.system/pwn/`은 통과한다**(테스트가 그 한계를 값으로
+  pin한다). **더 이상 주장하지 않는 것**: 리뷰어 지시면이 승인 문서로 한정된다는 주장.
+- **적대적 리뷰(fresh Fable 5 · read-only)가 A급 2건을 잡았고 둘 다 즉시 고쳤다**: ⓐ 위 계약을 "사람이
+  넣은 것은 여전히 거부"라고 적은 **과대주장** ⓑ live 스크립트가 `Codex 0회`를 인쇄한 **거짓 영수증**
+  (T6에서 복사된 줄 — 실제로는 codex 4회). B급 1건(`plugins`·`skills` 자리 symlink 미검사)도 유예하지
+  않고 고쳤다. 상세는 판정 ⑦ ⓓ.
+- **미증명(정직하게)**: **왕복 계약 검사가 loop 밖이다** — kernel은 리뷰를 안 거친 결과를 거부하지 않는다
+  (`C-98`) · 세션 신원을 `turnId`로 표현한다(provider UUID는 durable schema에 없다) · 리뷰 **내용**의 품질은
+  판정하지 않는다 · **표본 1회** · 리뷰 transcript가 홈에 영속한다(`C-99`).
+- **실측(직렬 · live와 동시 실행 금지)**: `test:exec` **627/627**(+6) · `test:core` **459/459**(+1) ·
+  acceptance **PASS=189 / FAIL=0** · tsc clean · **mutation red 3종**.
+  **PR #61은 이 세션 전까지 red였다** — T7 첫 커밋이 `approvedCodexWorker`를 더하고 kernel API 표면 pin을
+  갱신하지 않았다(3커밋 동안 아무도 전체 suite를 돌리지 않았다는 뜻이다). 근거 주석과 함께 pin에 더했다.
+  `managedProcess` 프로세스 그룹 2건은 리뷰 세션과 **동시 실행 시** 장벽에서 red → 단독에서는 변경 전후
+  모두 27/27이라 **부하 민감**으로 판정했다.
+- **남은 한정 3개**: `C-98`(왕복 계약이 loop 밖) · `C-80`(로컬 병합 미배선) · `C-86`(worker 자격증명 신원).
+  `B-34`는 새 B(P2) 하드 게이트다.
+
+---
+
+## (2026-08-22 — V3 M10 T7 착수 · **원인 진단이 틀렸다 — 위 블록이 정정한다**)
 
 - **닫힌 것**: autopilot이 이제 **codex 리뷰어 세션을 직접 띄운다**(`src/exec/codexPlanWorker.ts` ·
   role family `qa-security.*` → `codex-plan`). 승인 축은 기존 `executionAuthority.codex` + `codexHome`이고

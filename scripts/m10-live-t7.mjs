@@ -296,7 +296,10 @@ if (DRY) {
   check("D. 사람 개입 0건(pause 없음)", !events.some((e) => e.kind === "task_paused"), JSON.stringify(events.filter((e) => e.kind === "task_paused").map((e) => `${e.taskId}:${e.marker}`)));
   console.log("");
   console.log(`  경과: ${elapsedSec}s · 모델 왕복: ${events.filter((e) => e.kind === "task_started").length}회 · durable 토큰: ${k.getAccounting().tokensUsed}`);
-  console.log(`  과금: Claude Code **구독 한도**만 소모(M8·M9 실측 실결제 $0) · Codex 0회`);
+  // **영수증은 실제로 뜬 세션을 센다**(T7 적대적 리뷰 A-2): 이 절은 T6에서 복사돼 "Codex 0회"라고
+  // 적혀 있었는데 이 run은 codex 리뷰어를 실제로 띄운다. 세는 값은 durable role에서 파생한다.
+  const codexTurns = order.filter((id) => participant(id).provider === "codex").length;
+  console.log(`  과금: Claude Code 구독 ${order.length - codexTurns}회 + **Codex 구독 ${codexTurns}회**(M8·M9 실측 실결제 $0)`);
 }
 
 function existsSyncSafe(p) {
