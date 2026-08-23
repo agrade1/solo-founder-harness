@@ -5,11 +5,25 @@
 
 ## 0. 30초 요약
 
-`main` = **`ae85418`**. **열린 A급 0건 · B급 4건 · C급 67건.** 강제로 해야 하는 다음 작업은 **없다** —
-남은 B 넷은 트리거가 전부 "지금이 아님"이다. 그러니 **첫 할 일은 구현이 아니라 §5의 결정 메뉴를
+> **정정 (M11③ · 2026-08-23).** 이 절의 수치 셋이 전부 틀렸다. 아래 표가 현행이다.
+>
+> | | 이 문서가 적었던 값 | 실측 |
+> |---|---|---|
+> | `main` | `ae85418` | **`4e59122`** (이 문서를 담은 PR #71이 그 뒤 머지됐다) |
+> | 열린 id | 71 | **78** (재판정 시점 78 · `C-104` closed −1 · `C-105` 신규 +1) |
+> | 등급 B 열림 | 4 | **6** — `B-10`·`B-13`이 빠져 있었다 |
+>
+> `grep -E '\| open \|'`은 **세는 데 쓸 수 없다**(날짜별 스냅샷 표의 append-only 체인이라 행 79 · 고유 id 76).
+> 정본은 로드맵 §9.1 **`현행 열린 항목 — 정본`** 절과 그 절의 자기 검증 명령이다.
+
+`main` = **`4e59122`**. **열린 A급 0건 · 등급 B 6건 · 등급 C 72건**(id 78). 강제로 해야 하는 다음 작업은 **없다** —
+남은 B는 트리거가 전부 "지금이 아님"이다. 그러니 **첫 할 일은 구현이 아니라 §5의 결정 메뉴를
 사용자에게 올리는 것**이다. 지어내지 마라.
 
-판정 정본은 로드맵 **`M11 진행 판정 ②`** 절(1820행). 그 위로 판정 ① → M10 ⑦ 순으로 최신이다.
+판정 정본은 로드맵 **`M11 진행 판정 ③`** 절. 그 아래로 판정 ② → ① → M10 ⑦ 순이다.
+**행 번호로 가리키지 마라** — 이 문서가 처음에 그렇게 했다가 바로 다음 커밋의 삽입에 밀려
+동결 스냅샷을 가리켰다(M11③ 적대적 리뷰 B2). 앵커로 찾아라:
+`grep -n '^##### \*\*M11 진행 판정' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | head -1`
 
 ## 1. 지금 서 있는 지반 (실측)
 
@@ -81,7 +95,7 @@ docs 갱신(판정 절 + 대장) → 커밋 분리 → PR 스택 → 머지
 HEAD·refs를 지웠다. **처방을 기각하고 원인만 고쳤다.** 대장은 그때의 이해이지 판결이 아니다.
 
 **2. 문서보다 grep이 정본이다.**
-`grep -n '| open |' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`.
+`grep -nE '\| open \|' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`.
 이 마일스톤에서 판정 절이 stale이었던 사례가 여러 번 나왔다(판정 ⑦은 완료 조건 재판정 표를 아예
 빠뜨렸고, 그래서 "다 됐냐"의 정본이 한동안 옛 절이었다).
 
@@ -110,6 +124,8 @@ spawn 직전 재확인을 빼도 green(죽은 코드였다). **둘 다 테스트
 
 | id | 무엇 | 선행 조건 / 왜 지금이 아닌가 |
 |---|---|---|
+| `B-10` | edit 가능 실행의 타입 있는 집행 — **계약면만 닫혔다** | Claude/edit 가능 provider **활성화 전**. 이 문서 초판이 빠뜨렸다 |
+| `B-13` | durable 완료 전 provider 정리 확인 — **프로덕션 경로는 닫혔다** | live 프로세스를 띄우는 **두 번째 provider 배선 전**. 이 문서 초판이 빠뜨렸다 |
 | `B-35` | claude 격리 홈의 **내용 allowlist가 없다**(미실측) + `CLAUDE_CONFIG_DIR`과 `USER` 공존 시 **어느 계정이 이기는지 미실측** | **사람이 1회 로그인해야 잴 수 있다**(`CLAUDE_CONFIG_DIR=~/harness-claude-home claude` → `/login`). 계정 우선순위는 **서로 다른 계정 둘**이 필요하다 |
 | `B-34` | codex 홈의 코드·지시 로드 면이 **최상위 이름까지만** 판정된다(`skills/.system/pwn/SKILL.md`는 통과 · 원격 curated 번들 13종이 검사 없이 존재) | 좁히려면 CLI feature 차단(`--disable remote_plugin`·`skill_search` 계열)을 **codex live로 실측**해야 한다 |
 | `B-36` | `setsid` 탈출 자손을 **탐지할 커널 능력이 없다** | **linux(cgroup)** 또는 sandbox/컨테이너. 이 기계는 darwin이라 **검증할 수 없는 코드를 싣게 된다** |
@@ -117,8 +133,8 @@ spawn 직전 재확인을 빼도 green(죽은 코드였다). **둘 다 테스트
 
 그 밖에 사용자가 고를 수 있는 것:
 
-- **`C-104`**(소): `npm run typecheck`를 `test:inner` **앞**에 배선(지금은 수동 명령이라 사람이 잊으면
-  `C-101`이 되돌아간다).
+- ~~**`C-104`**(소)~~ → **M11③에서 closed.** 배선 자리는 `test:inner`가 **아니라** `test`였다
+  (`suite-lock`이 lock을 잡은 **뒤에** spawn한다 — 대장 처방이 든 근거를 처방 자신이 위반했다).
 - **`C-100`**(중~대): 리뷰 왕복을 **kernel** 게이트로. 지금은 loop만 강제하고 앞선 참가자의 개별 결과는
   이미 발행된 뒤다. 참가자 신원을 durable schema에 넣어야 하고 **state 마이그레이션(`C-9`)이 딸린다**.
 - **`C-93` 후속**(대): v3를 **harness 레포 밖** 프로젝트에. 실행 경계가 controller·대상 양쪽
@@ -130,10 +146,18 @@ spawn 직전 재확인을 빼도 green(죽은 코드였다). **둘 다 테스트
 ## 6. 첫 명령
 
 ```bash
-git -C /Users/jihun/Developer/solo-founder-harness-m5c log --oneline -1        # ae85418이어야 한다
-grep -n '| open |' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | wc -l # 71
-sed -n '1,40p' docs/CONTEXT_SUMMARY.md                                          # 최신 블록 = M11②
-sed -n '1820,1835p' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md         # 판정 ② 머리
+git -C /Users/jihun/Developer/solo-founder-harness-m5c log --oneline -1        # 4e59122 이후여야 한다
+# ↓ 이 명령은 **세는 용도로 쓰지 마라**(행 79 · 고유 id 76 · 날짜별 스냅샷 중복). id 이력 추적용이다.
+grep -nE '\| open \|' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | wc -l # 79 — **행 수이지 id 수가 아니다**(id는 76)
+# ↓ 열린 항목의 정본은 이것이다 (§9.1 `현행 열린 항목 — 정본` 절이 자기 자신을 센다)
+awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목 \(2026-07-26/' \
+    docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
+  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l # 78
+sed -n '1,40p' docs/CONTEXT_SUMMARY.md   # 최신 블록 = M11③
+# 판정 머리는 **행 번호가 아니라 앵커로** 찾아라(행은 커밋마다 밀린다)
+sed -n "$(grep -n '^##### \*\*M11 진행 판정' \
+  docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | head -1 | cut -d: -f1),+14p" \
+  docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md
 ```
 
 그 다음 **§5 메뉴를 올려라.** 답이 오면 §2 방식으로 자르고 돌린다.
