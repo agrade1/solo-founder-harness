@@ -212,12 +212,12 @@ export interface LiveWorkerLaunch {
    * **승인·계약 검증을 이미 통과한 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · 대장 `C-86`). kernel이 turn마다
    * 다시 본다 — 이 값이 곧 "이 세션이 어느 자격증명으로 도는가"이고 승인 문서가 고정한다.
    */
-  configDir: string;
+  configDir: string | null;
   /**
    * kernel이 turn 검증에서 확보한 그 디렉터리의 **dev+ino**. spawn 직전에 다시 대조한다
    * (적대적 리뷰 B-2 — 이것이 없으면 검증과 spawn 사이 창이 열린 채로 남는다).
    */
-  configDirIdentity: IsolatedDirIdentity;
+  configDirIdentity: IsolatedDirIdentity | null;
   /** durable에서만 나오는 실행 신원 — 계획이 자기 binding을 주장하지 못하게 한다. */
   binding: { runId: string; taskId: string; attemptId: string; turnId: string };
   timeoutMs: number;
@@ -291,8 +291,12 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
   // 호출부에서 `configDir`을 빠뜨려도 컴파일이 잡지 못하고, 그러면 `CLAUDE_CONFIG_DIR: undefined`가
   // 자식 env에서 **조용히 사라져** 세션이 다시 ambient 자격증명으로 돈다(= `C-86` 재발). 그래서
   // 경계에서 런타임으로 못 박는다 — 이 함수가 신원 없이 프로세스를 띄우는 경로는 없다.
-  if (typeof launch.configDir !== "string" || !launch.configDir.startsWith("/")) {
-    throw workerError("worker_spawn_failed", "승인된 격리 CLAUDE_CONFIG_DIR 없이 live worker를 띄우지 않는다");
+  // **`null`은 "승인이 신원을 고정하지 않았다"는 뜻이고 그 자체는 정당하다**(사용자 결정 2026-08-23).
+  // 그러나 **문자열인데 계약 밖인 것**은 여전히 거부한다 — `tsconfig`가 `*.test.ts`를 exclude하므로
+  // 호출부의 형태 오류를 컴파일이 잡지 못하고(대장 `C-101`은 그 구멍을 닫았지만 경계 가드는 남긴다),
+  // 잘못된 값이 그대로 env에 실리면 세션이 **의도하지 않은 디렉터리**로 돈다.
+  if (launch.configDir !== null && (typeof launch.configDir !== "string" || !launch.configDir.startsWith("/"))) {
+    throw workerError("worker_spawn_failed", "CLAUDE_CONFIG_DIR은 null이거나 절대경로여야 한다");
   }
   // **spawn 직전 동기 게이트**(적대적 리뷰 B-2 · codex 갈래와 같은 규율): kernel이 검증한 그 디렉터리가
   // **지금도 같은 inode·같은 권한·같은 소유자인지** 다시 본다. TOCTOU 창을 0으로 만들지는 못하지만
@@ -302,13 +306,15 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
   // **승인 시점의 판정**이고 kernel이 이미 했다. 여기서 다시 요구하면 두 계층이 같은 규칙을 각자 들게
   // 되고(한쪽만 정직해진다), 무엇보다 이 함수의 실패 코드가 "신원이 바뀌었다"가 아니라 "로그인이
   // 없다"로 나와 **원인과 다른 코드**가 된다(`C-96` 부류).
-  verifyIsolatedDir(launch.configDir, {
-    what: "claudeHome",
-    codes: CLAUDE_CONFIG_CODES,
-    ambientDirName: ".claude",
-    approved: { path: launch.configDir },
-    identity: launch.configDirIdentity,
-  });
+  if (launch.configDir !== null && launch.configDirIdentity !== null) {
+    verifyIsolatedDir(launch.configDir, {
+      what: "claudeHome",
+      codes: CLAUDE_CONFIG_CODES,
+      ambientDirName: ".claude",
+      approved: { path: launch.configDir },
+      identity: launch.configDirIdentity,
+    });
+  }
   const events: WorkerEvent[] = [];
   const run = async (): Promise<void> => {
     let child;
@@ -317,7 +323,11 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
         // **`CLAUDE_CONFIG_DIR`이 자격증명 신원이다**(`C-86`): 승인 문서가 고정한 그 디렉터리 하나이고
         // 호출자가 고를 통로가 없다(kernel이 검증해 준 값만 여기 온다). 실측: 이 값이 auth 해석 경로를
         // 실제로 가른다 — 빈 디렉터리면 CLI가 `Not logged in`으로 fail closed다.
-        env: { ...LIVE_WORKER_ENV, CLAUDE_CONFIG_DIR: launch.configDir },
+        //
+        // **`null`이면 이 key를 아예 넣지 않는다** — `undefined`를 넣으면 Node가 조용히 떨어뜨려 결과는
+        // 같지만, "넣었는데 사라졌다"와 "안 넣기로 했다"가 코드에서 구분되지 않는다. 그 구분이 이
+        // 축의 전부다(사용자 결정 2026-08-23: 없으면 ambient, 단 영수증이 그것을 말한다).
+        env: launch.configDir === null ? { ...LIVE_WORKER_ENV } : { ...LIVE_WORKER_ENV, CLAUDE_CONFIG_DIR: launch.configDir },
         stdio: ["pipe", "pipe", "pipe"],
         shell: false,
       });

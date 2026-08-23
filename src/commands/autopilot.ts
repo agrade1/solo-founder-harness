@@ -105,6 +105,13 @@ export interface AutopilotEvent {
     | "task_spawned"
     /** turn 중간 kernel throw(`C-55`) — **paused가 아니다**: lease를 쥔 크래시 등가 상태다. */
     | "task_aborted"
+    /**
+     * **worker 세션이 어느 자격증명으로 도는가**(V3 M11 · 대장 `C-86`). live backend에서 시작 직후 한 번
+     * 나온다. `marker`는 `approved`(승인 문서가 `claudeHome`으로 고정) 또는 `ambient`(고정하지 않았다 —
+     * 이 기계에 로그인된 계정으로 돈다)다. **없으면 조용히 ambient로 도는 것이 이 레포가 금지하는
+     * "조용한 fallback"이므로, 값이 무엇이든 이 이벤트가 나온다.**
+     */
+    | "worker_identity"
     | "task_completed"
     | "task_cancelled"
     | "run_finished";
@@ -142,6 +149,15 @@ export interface AutopilotReport {
   tasks: AutopilotTaskOutcome[];
   /** loop가 멈춘 안정 사유. */
   stoppedBecause: string;
+  /**
+   * **worker 세션의 자격증명 신원이 승인 문서 안에 있었는가**(V3 M11 · 대장 `C-86`).
+   * `approved` = `executionAuthority.claudeHome`이 고정했다 · `ambient` = 고정하지 않았고 이 기계에
+   * 로그인된 계정으로 돌았다. live backend가 아니면 key 자체가 없다(물어볼 것이 없다).
+   *
+   * **이 필드가 `C-86`을 "조용한 fallback"과 가른다**: 신원을 고정하지 않는 선택은 정당하지만
+   * **그 사실이 영수증에 남는다** — 나중에 "이 run이 누구 구독으로 돌았나"를 물으면 답이 있다.
+   */
+  workerIdentity?: "approved" | "ambient";
 }
 
 /**
@@ -273,12 +289,16 @@ async function runAutopilotUnderLease(
     return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: "worker_backend_unsupported" };
   }
   // live backend는 **시작 전에** 승인을 본다(첫 turn에서 알게 되면 그때까지 상태를 바꿨을 수 있다).
+  let workerIdentity: "approved" | "ambient" | undefined;
   if (backend === LIVE_PLAN_BACKEND) {
     try {
-      kernel.approvedWorkerExecutable();
+      workerIdentity = kernel.approvedWorkerExecutable().configDir === null ? "ambient" : "approved";
     } catch (err) {
       return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
     }
+    // **무엇으로 도는지를 말하고 시작한다**(`C-86`). `ambient`도 정당한 선택이지만 조용해서는 안 된다 —
+    // 그 침묵이 곧 이 레포가 금지하는 "조용한 fallback"이다.
+    emit({ kind: "worker_identity", marker: workerIdentity });
   }
   // **리뷰 왕복을 요구한 승인은 그 참가자가 실재할 때만 시작한다**(V3 M11 적대적 리뷰 A-1).
   //
@@ -448,7 +468,8 @@ async function runAutopilotUnderLease(
   }
 
   emit({ kind: "run_finished", marker: stoppedBecause });
-  return { blocked: null, iterations, tasks, stoppedBecause };
+  // `C-86`: live run의 영수증에는 **무엇으로 돌았는지**가 함께 남는다(offline이면 key 자체가 없다).
+  return { blocked: null, iterations, tasks, stoppedBecause, ...(workerIdentity === undefined ? {} : { workerIdentity }) };
 }
 
 // ── 크래시 잔재 정착 (V3 M10 T1) ────────────────────────────────────────────

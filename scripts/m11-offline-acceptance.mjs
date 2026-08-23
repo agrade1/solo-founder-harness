@@ -177,7 +177,7 @@ for (const [label, record, expected] of [
 }
 
 // ── ② `C-86` — worker 세션의 자격증명 신원이 승인 축이다 ──────────────────────
-console.log("\n[② C-86] 실행 파일과 신원은 짝이다");
+console.log("\n[② C-86] 신원은 **선택 축**이다 — 없으면 ambient, 단 영수증이 말한다");
 
 const workerBin = (() => {
   const d = makeDir("m11-bin-");
@@ -226,12 +226,18 @@ async function liveStoppedBecause(authorityOver) {
 }
 
 {
+  // **신원을 고정하지 않는 것은 정당하다 — 침묵이 아닐 때만**(사용자 결정 2026-08-23).
+  // `claudeHome`을 필수로 두면 이 harness를 쓰는 모든 사람이 로그인을 한 번 더 해야 하는데,
+  // 그 마찰이 사는 질문("누구의 구독인가")은 계정이 여럿이거나 CI일 때만 답이 하나가 아니다.
+  // 그래서 선택으로 두되 **영수증이 무엇으로 돌았는지 말한다**.
   const { report } = await liveStoppedBecause({ claude: binRecord }); // claudeHome 없음
-  check(
-    "실행 파일만 승인하고 신원을 비우면 live worker는 시작조차 하지 않는다",
-    report.blocked === "run_unavailable" && report.stoppedBecause === "worker_backend_unapproved",
-    `${report.blocked}/${report.stoppedBecause}`,
-  );
+  check("신원을 승인하지 않아도 run은 시작한다(ambient)", report.blocked !== "run_unavailable", `${report.blocked}/${report.stoppedBecause}`);
+  check("그리고 영수증이 ambient라고 말한다(조용한 fallback이 아니다)", report.workerIdentity === "ambient", String(report.workerIdentity));
+}
+{
+  // 대조군: 신원을 승인하면 같은 자리가 `approved`다(위 단정이 상수가 아니다).
+  const { report } = await liveStoppedBecause({ claude: binRecord, claudeHome: loggedInHome("m11-id-home-") });
+  check("신원을 승인하면 영수증이 approved라고 말한다", report.workerIdentity === "approved", String(report.workerIdentity));
 }
 {
   const empty = makeDir("m11-empty-home-");

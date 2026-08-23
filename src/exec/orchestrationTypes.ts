@@ -855,6 +855,18 @@ export type ApprovedOperation =
  *   얻는 것이 0이고 여는 것이 데이터 손실 축이라 닫힌 집합을 늘리지 않았다.
  */
 export const GIT_WORKTREE_ACTIONS = ["add", "remove"] as const;
+/**
+ * **M11 적대적 리뷰가 더한 한정 — 크래시 산(産) `locked` 변종은 위 판정 밖이다.**
+ *
+ * 위 `prune` 기각은 **supervisor의 deadline kill**이 남기는 모양을 잰 것이고, 그 축에서는 TERM-first가
+ * 전 경로에서 성립한다(`managedProcess.stop()` — TERM · 유예 · KILL). 그러나 **호스트 수준 사건**
+ * (전원 손실 · OOM killer · 머신 크래시 · 그룹 전체 `kill -9`)은 git을 TERM 없이 끊을 수 있고, 그때는
+ * 등록이 **`locked`** 로 남을 수 있다. 그 변종은 `add`도 `remove --force`도 `prune`도 되돌리지 못하고
+ * `remove -f -f`(force 두 번)만 가능한데 **그 argv는 닫힌 집합에 없다** → 사람이 손으로 치운다.
+ *
+ * 이것은 `prune` 기각을 **강화한다**(prune은 이 모양도 못 고친다). 여기 적는 이유는 크래시 복구 때
+ * 사람이 "닫힌 action으로 정리된다"고 잘못 읽지 않게 하려는 것이다. 대장 `B-37`.
+ */
 export type GitWorktreeAction = (typeof GIT_WORKTREE_ACTIONS)[number];
 
 /**

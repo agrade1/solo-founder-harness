@@ -445,10 +445,12 @@ echo "$M11_OUT" | grep -q "닫힌 worktree action 집합에 branch/merge/push가
 check "M11 ① 병합 단계가 존재하지 않는다는 근거 출력" $?
 echo "$M11_OUT" | grep -q "대조군: 필드 없는 정상 worktree record는 통과한다"
 check "M11 ① 검사가 공허하지 않음(대조군) 출력" $?
-echo "$M11_OUT" | grep -q "실행 파일만 승인하고 신원을 비우면 live worker는 시작조차 하지 않는다"
-check "M11 ② 실행 파일과 신원의 짝 강제 출력" $?
+echo "$M11_OUT" | grep -q "그리고 영수증이 ambient라고 말한다(조용한 fallback이 아니다)"
+check "M11 ② 신원 미승인 run이 조용하지 않음(영수증에 ambient) 출력" $?
+echo "$M11_OUT" | grep -q "신원을 승인하면 영수증이 approved라고 말한다"
+check "M11 ② 위 단정이 상수가 아님(approved 대조군) 출력" $?
 echo "$M11_OUT" | grep -q "대조군: 계약을 지킨 신원은 승인 게이트를 지난다"
-check "M11 ② 무조건 거부가 아님(대조군) 출력" $?
+check "M11 ② 계약 위반만 거부(무조건 거부가 아님) 출력" $?
 echo "$M11_OUT" | grep -q "대조군: 리뷰어가 저자와 같은 엔진이면 verify가 완료되지 않는다"
 check "M11 ③ 리뷰 왕복을 loop가 강제함 출력" $?
 echo "$M11_OUT" | grep -q "승인이 왕복을 요구하지 않으면 게이트는 돌지 않는다"

@@ -2686,7 +2686,7 @@ export class OrchestrationKernel {
    * 계약이고(그래서 영수증도 없다), 그 프로세스의 산출물은 계획 하나뿐이며 그 계획은 다시
    * `validateTypedExecutionPlan` → 승인 레코드 대조를 지나야 아무 효과도 낼 수 있다.
    */
-  approvedWorkerExecutable(): { path: string; sha256: string; configDir: string; configDirIdentity: { dev: number; ino: number } } {
+  approvedWorkerExecutable(): { path: string; sha256: string; configDir: string | null; configDirIdentity: { dev: number; ino: number } | null } {
     const auth = this.#state.manifest.executionAuthority;
     const approved = auth.claude;
     if (approved === undefined || approved === null) {
@@ -2695,21 +2695,27 @@ export class OrchestrationKernel {
         "이 승인에는 live worker 실행 파일(executionAuthority.claude)이 없다 — offline backend만 가능하다",
       );
     }
-    // **실행 파일과 신원은 짝이다**(V3 M11 · 대장 `C-86`). 파일만 승인하고 자격증명은 ambient로 두는
-    // 조합이 곧 그 항목이었으므로 여기서 **표현 불가**로 만든다 — codex 갈래(`approvedCodexWorker`)가
-    // `codex` + `codexHome`을 함께 요구하는 것과 같은 규율이고, 조용한 ambient fallback은 없다.
-    if (auth.claudeHome === undefined) {
-      throw new OrchestrationError(
-        "worker_backend_unapproved",
-        "이 승인에는 live worker 자격증명 신원(executionAuthority.claudeHome)이 없다 — 실행 파일만으로는 live worker를 띄우지 않는다",
-      );
-    }
+    // **신원은 선택 축이다**(V3 M11 · 사용자 결정 2026-08-23 · 대장 `C-86`).
+    //
+    // 처음 배선할 때는 `codexHome`을 따라 **필수**로 만들었는데, 그러면 이 harness를 쓰는 **모든** 사람이
+    // 승인된 홈에 로그인을 한 번 더 해야 한다. 그 마찰이 사는 것은 "**누구의** 구독으로 도는가"를 승인
+    // 문서가 말하게 하는 것이고, 그 질문은 계정이 여럿이거나 CI일 때만 답이 하나가 아니다 — `C-86`이
+    // 스스로 적어 둔 트리거도 정확히 **"여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전"** 이었다.
+    // 필수로 만든 것은 그 트리거보다 이른 조임이었다.
+    //
+    // 그래서 **있으면 구속하고 없으면 ambient**다. 다만 **조용히 넘어가지 않는다**: 없을 때
+    // `configDir === null`이 호출자까지 올라가고 `runAutopilot`이 그것을 report·이벤트로 **명시**한다.
+    // 이 레포가 금지하는 "조용한 fallback"과 갈리는 지점이 그 명시다 — 값이 조용히 기본값으로
+    // 대체되는 것이 아니라, **무엇으로 돌고 있는지가 영수증에 적힌다.**
     verifyApprovedExecutable(approved, "executionAuthority.claude", {
       path: "worker_executable_untrusted",
       invalid: "worker_executable_untrusted",
       identity: "worker_executable_untrusted",
       digest: "worker_digest_mismatch",
     });
+    if (auth.claudeHome === undefined) {
+      return { path: approved.path, sha256: approved.sha256, configDir: null, configDirIdentity: null };
+    }
     const home = verifyClaudeConfigDir(auth.claudeHome.path, { path: auth.claudeHome.path });
     return { path: approved.path, sha256: approved.sha256, configDir: home.path, configDirIdentity: home.id };
   }

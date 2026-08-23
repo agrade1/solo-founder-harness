@@ -1972,11 +1972,16 @@ test("[M10-T7] 승인 축 거부는 `plan_invalid`로 위장하지 않는다 —
 
 // ── ⑧ V3 M11 — 결정 4건 (C-86 자격증명 신원 · C-98 리뷰 왕복 강제) ───────────────
 
-test("[M11/C-86] 실행 파일만 승인하고 신원을 비우면 live worker는 시작조차 하지 않는다", async () => {
-  // **짝 강제**가 이 항목의 전부다: `claude`만 있고 `claudeHome`이 없는 조합 = "누구의 구독으로 도는지
-  // 승인 문서가 말하지 않는다"이고 그것이 곧 `C-86`이었다. 이제 그 조합은 표현 불가다.
-  const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
-  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin } }); // claudeHome 없음
+test("[M11/C-86] 신원을 승인하지 않은 run은 **ambient로 돌되 조용하지 않다**", async () => {
+  // **사용자 결정(2026-08-23)**: `claudeHome`은 선택이다 — 없으면 이 기계에 로그인된 계정으로 돈다.
+  // 그 선택 자체는 정당하지만 **침묵은 아니다**: 침묵이 곧 이 레포가 금지하는 "조용한 fallback"이다.
+  // 그래서 이 테스트가 고정하는 것은 "돈다"가 아니라 **"돌면서 무엇으로 도는지 말한다"** 이다.
+  const good = fakeWorkerBin(
+    PLAN_EMITTER('{"operations": [], "result": {"summary": "ambient로 돌았다", "outputs": []}}'),
+  );
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: good } }); // claudeHome 없음
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const events: AutopilotEvent[] = [];
   const report = await runAutopilot({
     workspaceRoot: f.ws,
     runId: RUN_ID,
@@ -1984,14 +1989,54 @@ test("[M11/C-86] 실행 파일만 승인하고 신원을 비우면 live worker�
     planDir: f.planDir,
     clock: f.clock,
     workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
   });
-  assert.equal(report.blocked, "run_unavailable");
-  assert.equal(report.stoppedBecause, "worker_backend_unapproved", report.stoppedBecause);
-  assert.equal(report.tasks.length, 0, "신원 없는 승인이 task를 건드렸다");
+
+  assert.equal(report.blocked, null, JSON.stringify(report));
+  assert.equal(report.tasks[0]?.state, "completed", JSON.stringify(report.tasks));
+  // **영수증이 말한다** — 나중에 "이 run이 누구 구독으로 돌았나"를 물으면 답이 있다.
+  assert.equal(report.workerIdentity, "ambient", JSON.stringify(report));
+  assert.deepEqual(
+    events.filter((e) => e.kind === "worker_identity").map((e) => e.marker),
+    ["ambient"],
+    JSON.stringify(events.map((e) => e.kind)),
+  );
 });
 
-test("[M11/C-86] 승인된 신원 디렉터리의 계약 위반은 전부 spawn 0이다(조용한 ambient fallback 없음)", async () => {
+test("[M11/C-86] 신원을 승인하면 그 사실도 영수증에 남는다(위 단정이 상수가 아니다)", async () => {
+  // 대조군: 같은 자리가 `approved`로 바뀌어야 위 `ambient` 단정이 공허하지 않다.
+  const good = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: good, claudeHome: fakeClaudeHome() } });
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
+  });
+  assert.equal(report.workerIdentity, "approved", JSON.stringify(report));
+  assert.deepEqual(
+    events.filter((e) => e.kind === "worker_identity").map((e) => e.marker),
+    ["approved"],
+  );
+});
+
+test("[M11/C-86] offline run은 이 축을 주장하지 않는다(물어볼 것이 없다)", async () => {
+  const f = boot();
+  writePlan(f.planDir, "root", {});
+  const report = await pilot(f);
+  assert.equal(report.workerIdentity, undefined, JSON.stringify(report));
+});
+
+test("[M11/C-86] 신원을 승인했는데 그 계약이 깨지면 전부 spawn 0이다(그때는 ambient로 물러서지 않는다)", async () => {
   const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  // **신원을 고정하지 않는 것과 고정했는데 깨진 것은 다르다**: 전자는 ambient로 돌고(위 테스트),
+  // 후자는 **거부**다 — 승인이 말한 디렉터리가 계약 밖이면 ambient로 물러서는 것이 곧 조용한 fallback이다.
   const cases: [string, () => { path: string }, string][] = [
     [
       "비어 있다(= 로그인이 없다)",

@@ -87,7 +87,12 @@ test("[B-31] 등록만 남은 잔재: 재시도 add를 막지만 이미 있는 r
     const head = (await runProcess("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
     assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 0);
 
-    // kill 잔재 모양 ⓐ: 작업 디렉터리는 사라졌고 `.git/worktrees/<name>` 등록만 남았다.
+    // **out-of-band 삭제 잔재**: 작업 디렉터리는 사라졌고 `.git/worktrees/<name>` 등록만 남았다.
+    // **이 모양은 kill이 만들지 않는다**(M11 적대적 리뷰 — 이전 라벨 "kill 잔재 모양 ⓐ"는 틀렸다):
+    // supervisor는 TERM 먼저·유예 뒤 KILL이고 git 자신의 junk 핸들러가 **등록을 먼저** 지우므로
+    // unlocked 등록만 남는 경로가 없다. 사람이나 다른 도구가 디렉터리를 지웠을 때 생긴다.
+    // 그래도 여기 두는 이유: `prune`이 유일하게 쓸모 있어 보이는 모양이 바로 이것이고,
+    // **그 자리마저 `remove --force`가 이미 덮는다**는 것이 기각 근거의 절반이다.
     rmSync(wt, { recursive: true, force: true });
     // B-31이 말한 그 exit 128 — 등록이 남아 있으면 같은 경로의 재시도 add가 막힌다.
     assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 128, "등록 잔재가 재시도를 막지 않는다");
@@ -108,7 +113,7 @@ test("[B-31] 파일이 남은 잔재: prune으로도 remove로도 되돌아가�
     const head = (await runProcess("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
     assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 0);
 
-    // kill 잔재 모양 ⓑ — **실제 SIGTERM/SIGKILL이 남기는 모양이다**: git 자신의 junk 핸들러가 metadata를
+    // **supervisor의 deadline kill이 실제로 남기는 모양이다**: git 자신의 junk 핸들러가 metadata를
     // 먼저 지우고 작업 트리를 지우다 끊기므로 "파일이 든 디렉터리 + 등록 없음"이 남는다. 여기서는 그
     // 상태를 결정적으로 만든다(등록 포인터 제거 → prune이 등록을 회수).
     rmSync(join(wt, ".git"));
