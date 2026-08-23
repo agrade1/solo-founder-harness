@@ -1817,7 +1817,137 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ① — 사용자 결정 4건 구현 (`C-86`·`C-98` 닫힘 · `C-80`·`C-93` 조건 재정의)** (2026-08-23 · 이 절이 현행이며 아래 M10 ⑦보다 최신이다)
+##### **M11 진행 판정 ② — 하드닝 slice(`B-31`·`B-18`·`C-101`) + `C-86` 재판정** (2026-08-23 · 이 절이 현행이며 아래 ①보다 최신이다)
+
+> 범위: 사용자가 고른 하드닝 항목 둘(`B-31`·`C-101`)과 `B-18` 처분, 그리고 **판정 ①에서 내가 잘못
+> 조인 축 하나(`C-86` 필수화)의 되돌림**이다. 구현은 **격리 worktree의 병렬 fresh 세션 둘**이 맡고
+> 이 절의 세션이 오케스트레이터로서 취합·문서·통합을 했다(파일 소유권 분리: 코드는 세션들, `docs/**`는
+> 오케스트레이터).
+
+### ⓐ `C-86` 재판정 — 내가 트리거보다 이르게 조였다
+
+**판정 ①은 `claudeHome`을 필수로 만들었다.** 그것은 사용자 결정("승인 축 추가")의 내용이 아니라
+**내 판단**이었고, 판정 ① 본문에 "의도된 상태 — 이 결정의 내용이다"라고 적은 것은 **과했다**.
+사용자가 그 차이를 지적해 되돌렸다(2026-08-23).
+
+무엇이 문제였나: `C-86` 자신이 달아 둔 트리거는 **"여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전"**
+이다. 지금은 단일 계정·단일 기계다. 필수화가 사는 값("누구의 구독인가"를 승인 문서가 말한다)은 그 상황에서
+답이 하나뿐이라 없고, 대가는 **이 harness를 쓰는 모든 사람이 로그인을 한 번 더 하는 것**이었다. 더 나쁜
+부작용도 있었다 — live 경로 전체가 fail closed가 되어 **T7 live 8/8을 재확인할 수 없었다**.
+
+**지금 계약**: `claudeHome`은 **선택**이다. 있으면 구속하고(경로·권한·소유자·신원 + spawn 직전 재확인)
+없으면 ambient로 돈다. **다만 조용하지 않다** — 이 레포가 금지하는 "조용한 fallback"과 갈리는 지점이
+바로 여기다:
+
+- `report.workerIdentity`가 `"approved" | "ambient"`로 남는다(offline이면 key 자체가 없다 — 물어볼 것이 없다).
+- 시작 직후 `worker_identity` 이벤트가 그 값으로 나온다.
+- `configDir === null`일 때 자식 env에 그 key를 **아예 넣지 않는다**(`undefined`를 넣으면 Node가 조용히
+  떨어뜨려 결과는 같지만, "넣었는데 사라졌다"와 "안 넣기로 했다"가 코드에서 구분되지 않는다).
+
+**그래서 `C-86`은 closed가 아니라 `범위 축소`다.** 원래 트리거를 복원한다 — 여러 계정·CI로 가는 첫
+마일스톤에서 `claudeHome`을 **그 승인에 한해** 요구하면 된다(축은 이미 서 있다).
+
+**신원을 고정하지 않는 것과 고정했는데 깨진 것은 다르다**: 전자는 ambient로 돌고, 후자는 **거부**다.
+승인이 말한 디렉터리가 계약 밖인데 ambient로 물러서는 것이야말로 조용한 fallback이기 때문이다.
+acceptance Test 23 ②가 그 둘을 나눠 단정한다.
+
+### ⓑ `B-31` — 대장의 처방이 틀렸다(구현 세션의 실측)
+
+대장은 "`worktree prune`을 닫힌 action에 추가 + timeout을 승인 축으로"라고 적어 뒀는데, 구현 세션이
+git 2.50.1로 재보고 **`prune`을 기각**했다:
+
+| 잔재 모양 | `prune`이 되돌리나 |
+|---|---|
+| 등록만 남음(재시도 차단) | **이미 있는 `remove --force`가 되돌린다** — 얻는 것이 0 |
+| supervisor kill이 실제로 남기는 것(파일 든 디렉터리 + 등록 없음) | **못 한다.** `prune`은 작업 파일을 지우지 않는다 → 여전히 `exit 128` |
+| `prune`만 지우는 것(반쯤 쓰인 등록) | 애초에 진행을 막지 않는다(git이 `<name>1`을 쓴다) |
+
+게다가 `prune`은 **경로 인자를 받지 않아** argv로 좁힐 수 없고, 실측상 **일시적으로 안 보이는 다른
+worktree의 HEAD·refs까지 지운다**(그 worktree에만 있던 커밋이 unreachable이 됐다). 얻는 것 0, 여는 것은
+데이터 손실 축 → **닫힌 집합을 늘리지 않았다.**
+
+**고친 것은 원인 쪽이다**: 변경 계열 git이 **읽기 질의용 30초 상수**(`TRUSTED_GIT_TIMEOUT_MS`)를
+재사용하던 것을 `autopilotPolicy.maxAttemptElapsedMs`로 올렸다 — 승인 문서가 `run_process.timeoutMs`에
+**이미 강제하는 상한**이므로 **새 승인 필드가 0개**다. 기각한 대안 둘도 코드 주석에 있다(권위 record에
+`timeoutMs` 필드 추가 · repo 크기 비례 상한).
+덤으로 `TRUSTED_GIT_TIMEOUT_MS`의 근거 주석이 **거짓**이었던 것도 정정했다("질의는 상수 작업량이다" —
+`diff --quiet`는 worktree 크기에 선형이다. 그 상수가 질의에 성립하는 진짜 이유는 **쓰기가 0이라 kill이
+아무것도 남기지 않는다**는 것이고, 변경 계열에는 그 성질이 없다).
+
+**구현 세션이 남긴 미증명을 오케스트레이터가 닫았다**: "타임아웃 값 자체를 관측하는 테스트가 없다"
+(그 테스트 파일이 그 세션의 소유 밖이었다 — 정직하게 넘겼다). 승인 상한을 1.5초로 낮추고 git 자리에
+30초 자는 스크립트를 두면 **1.6초**에 `process_deadline_exceeded`가 던져진다. 옛 상수로 되돌리면 **30.1초**.
+
+### ⓒ `B-18` — 범위를 계약으로 확정하고 닫았다
+
+계약 확정은 **M10 T6에 이미 들어가 있었다**(머리말의 "자손 전부"를 지우고 `cleanupConfirmed`를
+"승인된 프로세스 그룹이 비었다"로 다시 적었고, 실제 `setsid` 탈출 프로세스로 한계를 고정하는 테스트가
+있다). 즉 **거짓 주장은 이미 없었고** 남은 것은 darwin에서 만들 수 없는 보장뿐이다.
+**영원히 닫을 수 없는 항목을 P1로 두면 대장의 신호가 망가지므로** 닫고, 능력이 생기는 경로를
+**`B-36`** 으로 분리했다(트리거: linux에서 돌리기 시작할 때 · daemonize 가능한 entrypoint를 여는 때).
+
+### ⓓ `C-101` — 테스트가 처음으로 타입 검사를 받는다
+
+`tsconfig.test.json`(production을 extends · `exclude` 비움 · `noEmit`) + `npm run typecheck`.
+누적 오류 **24건(5개 파일)** 을 **단정 완화·삭제 없이** 걷어냈고 `as any`/`@ts-ignore`는 **0개**다.
+공허하지 않다는 확인: M11 사고를 재현(`configDir` 삭제)하면 `exit 2` + TS2345로 red.
+
+**부수 발견 2건 — 둘 다 잠들어 있던 결함이다**:
+- `stableController.test.ts`가 `codexBin`을 **선언 없이 참조**했다(그 경로에 잠든 `ReferenceError`).
+- `codexCliProvider.test.ts` 두 자리가 `CodexCliProviderOpts`에 **없는 필드**를 넘기고 있었다
+  (6차 리뷰 A1 이후 남은 죽은 줄 — 런타임 효과 0이지만 "테스트가 실행 파일을 고정한다"고 오독시킨다).
+
+**남은 한정**: `npm run typecheck`는 아직 `test:inner`·CI에 배선되지 않았다(수동 명령) → `C-104`.
+
+### ⓔ 적대적 리뷰(fresh Fable 5 · read-only · live 0회)
+
+**B급 1건 — 고쳤다.** 리뷰어가 `git worktree`에 TERM 없는 KILL이 닿는 경로를 **전수 조사**해
+"supervisor 축에서는 TERM-first가 전 경로에서 성립한다"를 확인했고(그래서 A→B로 스스로 내렸다),
+남은 오류는 **서술**이었다: ⓐ 테스트 라벨이 "kill 잔재 모양 ⓐ"라고 적었는데 그 구성은 실제로
+**out-of-band 삭제** 잔재다(어떤 kill도 unlocked 등록을 남기지 않는다) ⓑ 크래시 산(産) **`locked` 변종**
+(호스트 전원 손실·OOM·그룹 `kill -9`)이 서술에서 빠졌다 — 그 모양은 `add`·`remove --force`·`prune`이
+전부 실패하고 `remove -f -f`만 가능한데 그 argv는 닫힌 집합에 없다. 라벨을 정정하고 한정을
+`GIT_WORKTREE_ACTIONS` 주석에 병기했다(**`prune` 기각을 강화하는 방향**이다 — prune은 이 모양도 못 고친다).
+잔여는 **`B-37`**.
+
+**부수 관찰(기록용)**: `executionBoundary.ts`의 `runProcess` KILL 직행은 지금 읽기 질의뿐이라 무해하지만,
+그 무해함은 "이 모듈의 git argv가 읽기 전용으로 남는다"에 기대고 있다 → `B-37` 행에 함께 적었다.
+
+### ⓕ live — 필수화를 되돌리자 T7이 다시 돌았고, 이번엔 `C-98`이 live로 증명됐다
+
+판정 ①이 남긴 "T7 live 8/8을 재확인하지 못했다"가 여기서 닫힌다. `claudeHome`이 선택이 되면서 live가
+다시 열렸고, 이번 실행은 **승인에 `reviewRoundtrip`이 들어간 상태**로 돌았다:
+
+**실측**: `scripts/m10-live-t7.mjs` **PASS=9 / FAIL=0**(체크가 하나 늘었다 — "loop가 강제했다") ·
+모델 왕복 **6회**(claude 2 + codex 4) · **44.1s** · durable `tokensUsed` **80,708** · **사람 개입 0**.
+`report.workerIdentity`는 `ambient`이고 그 사실이 영수증에 남는다.
+
+**그래서 `C-98`은 offline acceptance뿐 아니라 live로도 증명됐다**: 승인이 왕복을 요구한 상태에서
+`verify-fix`가 completed로 착지했다는 사실 자체가 게이트를 통과했다는 뜻이다(통과 못 하면
+`review_invalid`로 pause한다). 판정 ①은 이 축을 offline까지만 증명했다.
+
+**M10 T7의 거짓 영수증 수정도 여기서 확인됐다**: 이전 판이 `Codex 0회`라고 인쇄하던 자리가 이제
+**`Claude Code 구독 2회 + Codex 구독 4회`** 로 찍힌다(durable role에서 실제로 뜬 세션을 센다).
+
+### ⓖ 검증
+
+**전체 suite 1회(직렬 · live와 동시에 돌리지 않았다)**: `test:exec` **633/633**(+3) ·
+`test:core` **465/465**(+2) · acceptance **PASS=198 / FAIL=0**(197 → 198) · `npm run typecheck` clean(신규).
+Test 23은 내부 **20 checks**로 늘었다(신원 축 재판정 반영).
+
+**mutation red 5종**: 옛 30초 상수 복귀 → `[M11/B-31]` red(30.1초) · `worker_identity` 이벤트 제거 →
+`[M11/C-86]` red · `report.workerIdentity` 제거 → 같은 절 red · `[B-31]` 두 테스트의 전제 변조 → 각각 red.
+
+### ⓗ 대장 처리 — closed 2건 · 재판정 1건 · 신규 3건
+
+| id | 무엇을 했나 |
+|---|---|
+| `B-18` | **closed** — 범위 확정은 M10 T6에 이미 있었다. 능력 축은 `B-36`으로 분리 |
+| `C-101` | **closed** — 테스트 타입 검사 배선 + 누적 24건 정리(완화 0). CI 배선은 `C-104` |
+| `C-86` | **재판정 — closed 취소, `범위 축소`로 되돌린다.** 축은 서 있고 선택이다. 원래 트리거 복원 |
+| `B-31` | **부분 fixed** — timeout은 승인 축으로 올렸다(원인 제거). `prune`은 실측 기각. 남는 구멍은 `B-37` |
+
+##### **M11 진행 판정 ① — 사용자 결정 4건 구현 (`C-86`·`C-98` 닫힘 · `C-80`·`C-93` 조건 재정의)** (2026-08-23 · 아래 M10 ⑦보다 최신이다 — 현행은 위 **M11 진행 판정 ②**이다)
 
 > 범위: 2026-08-23에 사용자가 내린 결정 **넷**의 구현이다. M10 완료 조건 중 열려 있던 둘(`C-80`·`C-86`)과
 > M10 bullet 하나(`C-93`), 그리고 T7이 등록한 `C-98`. **live claude 2회**(C-86 실측 probe · 구독 한도 ·
@@ -1990,9 +2120,12 @@ offline·무과금).
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-100` | C (P2) | **리뷰 왕복을 강제하는 것은 loop이고 kernel이 아니다.** 승인이 `reviewRoundtrip`을 담으면 `verify`는 계약을 통과해야만 완료되지만, 앞선 참가자(저자·리뷰어·수정자)의 **개별 결과는 그 시점에 이미 발행된 뒤**다. 즉 "리뷰 없는 결과가 durable에 존재할 수 없다"는 아직 거짓이고 참인 것은 "리뷰 없이는 run이 완주하지 못한다"다 | 확실(설계상) | 발행 시점의 강도(완주 게이트는 성립 — 승인 경계·쓰기는 무관) | 중 — 나중에 닫으려면 참가자 신원을 durable schema에 넣어야 하고 그때 기존 run은 마이그레이션 대상이다(`C-9`) | 중~대(state schema + 새 승인 축 + 발행 경로 게이트) | **리뷰 없는 중간 산출물이 다른 task에 소비되기 시작할 때**(지금은 verify가 마지막이라 소비면이 없다) | 사용자(범위 결정) + 그 slice 구현 세션 | `autopilot.ts` `reviewRoundtripGate` 주석 · `m11-offline-acceptance.mjs` "증명하지 않는 것" 절 | open |
 | `B-35` | **B (P2)** | **승인된 claude 격리 홈에 내용 allowlist가 없다.** 경로·권한·소유권·신원 + "비어 있지 않음"까지만 본다 — 로그인 후 구성을 **아직 실측하지 않았기 때문**이다(사람이 1회 로그인해야 생기고 harness는 대행하지 않는다). codex 홈은 `CODEX_RUNTIME_DIRS`로 관측된 이름만 허용하는데 여기는 그 대응물이 없다 → 그 디렉터리에 무엇이 들어와도 계약이 보지 않는다. **행동 축은 인자가 막지만**(`--setting-sources ""`·`--strict-mcp-config`·`--tools ""`) 그 인자들이 커버하지 않는 면이 생기면 알 수 없다. **여기에 계정 축이 하나 더 있다**(적대적 리뷰 B-1): 자식 env에는 `CLAUDE_CONFIG_DIR`과 `USER`가 **함께** 들어가는데 비어 있지 않은 dir + `USER` 공존 시 **어느 계정이 이기는지 미실측**이다(Keychain fallback 가능). 실측된 것은 "빈 dir이면 로그인 없음으로 fail closed"까지다 → 지금 고정되는 것은 **어떤 디렉터리인가**이지 **누구의 자격증명인가**가 아니다 | 중간 — CLI 버전마다 홈 구성이 바뀐다(codex 0.145→0.146 실측 전례) | 리뷰가 아닌 **저자·수정자** 세션의 설정면 | 중 — 실측 없이 allowlist를 지으면 만족 불가능한 계약이거나 구멍이다(codex에서 둘 다 겪었다) | 소~중(로그인 1회 후 최상위 이름 실측 → `CODEX_RUNTIME_DIRS`와 같은 형태로 고정 + 그 값을 테스트가 pin) | **승인된 홈에 사람이 1회 로그인한 직후 — 첫 live 실행과 같은 slice** | 미정 | `livePlanWorker.verifyClaudeConfigDir` 주석 · `codexCliProvider`의 `B-23` 전례 · `scripts/m11-c86-auth-probe.mjs`의 "판정하지 않는 것" 절 | open |
+| `B-37` | **B (P2)** | **닫힌 action 집합으로 회복할 수 없는 worktree 잔재가 남는다**(`B-31`에서 분리 · 2026-08-23). 두 모양이다: ⓐ supervisor의 deadline kill이 남기는 **"파일 든 디렉터리 + 등록 없음"** — `add`는 exit 128, `remove --force`는 "worktree가 아니다"로 실패, `prune`은 작업 파일을 안 지운다 ⓑ **호스트 수준 사건**(전원 손실·OOM killer·그룹 `kill -9`)이 남기는 **`locked` 등록** — `remove -f -f`(force 두 번)만 가능한데 그 argv는 닫힌 집합에 없다. 둘 다 그 task의 worktree 경로가 **영구히 exit 128**이 된다(사람이 `rm -rf` 한 번). **`prune` 추가로는 어느 쪽도 못 고친다**(그래서 `B-31`의 prune 기각이 이 항목으로 약해지지 않는다) | 낮음 — ⓐ는 checkout 중 kill + SIGKILL escalation이 겹쳐야 하고 `B-31`의 timeout 수정이 발생률을 깎았다 · ⓑ는 호스트 사건이다 | worktree 1개 경로(데이터 무결성·승인 경계는 무관 · run은 pause한다) | 낮음 — 사람이 `rm -rf` 하나 | **대**(닫힌 집합에 파일 삭제 갈래가 없다. `rm -rf`든 `git clean -x <path>`든 **삭제 축을 여는 일**이고 그것이 고치는 실패보다 훨씬 넓다) | **현장에서 실제로 관측될 때만** 다시 본다(지금 여는 것은 비용이 이익을 넘는다) | 미정 | `worktree.test.ts` `[B-31]` 2건 · `orchestrationTypes.GIT_WORKTREE_ACTIONS` locked 변종 주석 · M11② 적대적 리뷰(TERM-first 전수 조사) | open |
+| `C-104` | C (P3) | **`npm run typecheck`가 CI·`test:inner`에 배선되지 않았다**(수동 명령). `C-101`이 만든 검사가 **사람이 기억해야만** 도는 상태다 — 잊으면 테스트 타입 오류가 다시 누적되고 그것이 `C-101`이 이름한 사고 형태를 되돌린다. 넣는다면 `test:inner` **앞**이 맞다(배타 lock을 잡기 전에 컴파일이 먼저 깨지는 편이 싸다) | 중간 — 사람이 잊는다 | 테스트 타입 안전의 지속성(1회성 정리는 이미 됐다) | 낮음~중 — 다시 누적되면 그때 또 한 번 걷어내야 한다 | 소(script 한 줄) — 다만 `test:inner`의 동작을 바꾸는 것이라 그 계약에 의존하는 자리를 먼저 확인해야 한다 | 다음 하드닝 slice 또는 CI를 세울 때 | 미정 | `package.json` `typecheck` script · `C-101` closed 판정 | open |
+| `B-36` | **B (P2)** | **그룹을 탈출한 자손을 탐지할 커널 능력이 없다**(`B-18`에서 분리 · 2026-08-23). `setsid()`한 자손은 `kill(-pgid, 0)`의 관측 범위 밖이므로 `cleanupConfirmed: true`와 **살아 있는 고아**가 공존할 수 있다. 계약은 그 범위를 정직하게 적고 있으나(`B-18` closed) **보장 자체가 없는 것은 그대로다**. 닫으려면 프로세스를 묶는 커널 단위가 필요하다: linux cgroup v2 · macOS sandbox profile · 컨테이너 중 하나 | 낮음~중 — daemonize하는 승인된 entrypoint가 생기면 발화한다(지금 닫힌 action 집합은 `validate-plan`·`run-tests`뿐이고 둘 다 daemonize하지 않는다) | 승인 밖 프로세스 1개 이상이 무기한 생존(durable 무결성은 무관) | 중 — 나중에 닫으려면 프로세스 실행 계층에 플랫폼 분기가 들어간다 | 중~대(플랫폼별 경로 + 그것을 검증할 수 있는 환경. **이 기계는 darwin이라 linux 경로를 돌려볼 수 없다** — 검증 못 하는 코드를 싣는 것은 이 레포 규율 위반이다) | **linux에서 harness를 돌리기 시작할 때 · 또는 daemonize 가능한 entrypoint를 닫힌 action에 추가할 때 — 하드 게이트** | 미정 | `managedProcess.ts:13-25` 범위 주석 · `managedProcess.test.ts` `[M10 T6/B-18]`(한계를 고정하는 테스트) · `B-18` closed 판정 | open |
 | `C-102` | C (P3) | **claude 갈래의 `claude_config_not_approved`는 production에서 동어반복이다**(적대적 리뷰 C-1). `approvedWorkerExecutable()`이 `verifyClaudeConfigDir(auth.claudeHome.path, { path: auth.claudeHome.path })`로 **같은 값을 두 번** 넘기므로 경로 대조는 항상 참이고, `approved`가 실제로 기여하는 것은 **소유자 검사**뿐이다. codex는 `spec.codex.codexHome`(호출자가 준 값)과 manifest를 **교차** 대조하지만 claude는 spec 측 출처가 없다 — 지금 구조에서는 호출자가 홈을 고를 통로 자체가 없으므로 구멍은 아니다 | 확실(구조상) | 오류 코드 하나의 도달 가능성(보안 축 아님) | 낮음 | 소(주석으로 명시 · 또는 claude worker spec을 여는 날 교차 대조를 붙인다) | claude worker에 호출자 spec을 여는 변경이 생길 때 | 미정 | 적대적 리뷰 C-1 · `orchestrationKernel.approvedWorkerExecutable` | open |
 | `C-103` | C (P3) | **schema와 runtime의 `null` 처리가 어긋난다**: runtime은 `claudeHome`/`codexHome`의 `null`을 **부재와 같게** 통과시키는데 schema는 `$ref: approvedDirectory`라 `null`을 거부한다. `codexHome`의 기존 불일치를 `claudeHome`이 그대로 복제했다. 승인 문서를 schema로 먼저 검증하는 경로에서는 `null`이 거부되고 runtime만 지나면 통과한다 — 두 문 사이에 틈이 있다(방향은 schema가 더 엄격이라 fail closed) | 확실(정적 대조) | 승인 문서 작성 편의(안전 축 무관 — 더 엄격한 쪽이 schema다) | 낮음 | 소(schema를 `oneOf: [approvedDirectory, null]`로 — `codex` key가 이미 그 형태다) | 승인 문서를 사람이 손으로 쓰기 시작할 때 | 미정 | 적대적 리뷰 C-3 · `approvalManifest.ts` 정규화 vs `milestone_approval_manifest.schema.json` | open |
-| `C-101` | C (P3) | **`tsconfig.json`이 `src/**/*.test.ts`를 exclude한다 → 테스트는 타입 검사를 받지 않는다.** 이번 slice에서 실제로 값을 했다: `LiveWorkerLaunch.configDir`을 필수로 만들었는데 테스트 호출부의 누락을 컴파일이 **잡지 못했고**, 런타임에서는 `CLAUDE_CONFIG_DIR: undefined`가 조용히 사라져 `C-86`이 재발할 뻔했다(경계 런타임 가드로 막았다). 같은 형태의 구멍이 다른 필수 필드에도 있을 수 있다 | 확실(설정상) | 테스트 호출부의 타입 안전 — production 코드는 검사된다 | 낮음~중 | 소(test 전용 tsconfig 추가 + `npm run typecheck`에 연결) 다만 기존 테스트의 누적 타입 오류를 한 번 걷어내야 한다 | 다음 하드닝 slice 또는 필수 필드를 또 추가할 때 | 미정 | `tsconfig.json:16` exclude · 이번 slice 실측(변이 3이 처음에 red가 아니었다) | open |
+| `C-101` | C (P3) | **`tsconfig.json`이 `src/**/*.test.ts`를 exclude한다 → 테스트는 타입 검사를 받지 않는다.** 이번 slice에서 실제로 값을 했다: `LiveWorkerLaunch.configDir`을 필수로 만들었는데 테스트 호출부의 누락을 컴파일이 **잡지 못했고**, 런타임에서는 `CLAUDE_CONFIG_DIR: undefined`가 조용히 사라져 `C-86`이 재발할 뻔했다(경계 런타임 가드로 막았다). 같은 형태의 구멍이 다른 필수 필드에도 있을 수 있다 | 확실(설정상) | 테스트 호출부의 타입 안전 — production 코드는 검사된다 | 낮음~중 | 소(test 전용 tsconfig 추가 + `npm run typecheck`에 연결) 다만 기존 테스트의 누적 타입 오류를 한 번 걷어내야 한다 | 다음 하드닝 slice 또는 필수 필드를 또 추가할 때 | 미정 | `tsconfig.json:16` exclude · 이번 slice 실측(변이 3이 처음에 red가 아니었다) | **closed(2026-08-23 M11②)** — `tsconfig.test.json`(production extends · `exclude` 비움 · `noEmit`) + `npm run typecheck`(production tsc → test tsc). 테스트가 **처음으로** 타입 검사를 받는다. 누적 오류 **24건(5개 파일)** 을 **단정 완화·삭제 0 · `as any`/`@ts-ignore` 0개**로 걷어냈다. 공허하지 않다는 확인: 이 항목이 이름한 M11 사고(`configDir` 누락)를 재현하면 exit 2 + TS2345로 red. **부수로 잠든 결함 2건**을 잡았다 — `stableController.test.ts`의 미선언 `codexBin` 참조(잠든 `ReferenceError`) · `codexCliProvider.test.ts`의 존재하지 않는 옵션 필드 2곳(죽은 줄 · 오독 유발). **잔여: CI·`test:inner` 배선은 안 했다 → `C-104`** |
 
 ##### **M10 진행 판정 ⑦ — T7 in-loop 리뷰 왕복 (`C-97` 닫힘 · live 8/8)** (2026-08-23 · 아래 ⑥보다 최신이다 — 현행은 위 **M11 진행 판정 ①**이다)
 
@@ -2505,7 +2638,7 @@ flag 확인 1 + 프롬프트 probe 2). **Claude Code 구독 한도만 소모 · 
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `C-86` | C (P2) | **live worker 세션의 자격증명 경로가 승인 축이 아니다.** Codex는 `executionAuthority.codexHome`으로 격리 홈을 **사람이 승인**하지만, Claude worker는 Keychain 자격증명을 `USER` 하나로 해석한다 → "어느 계정으로 도는가"가 승인 문서에 없다. 실행 **파일**은 digest로 고정되지만 **신원**은 ambient다 | 확실(현행 설계) | 그 세션이 누구의 구독으로 도는가(승인 문서가 말하지 않는다) | 중 — 나중에 닫으려면 승인 축을 하나 더 열어야 한다(`codexHome`과 같은 형태) | 중(격리 config dir을 승인 축으로 + CLI가 그것을 읽는지 실측) | 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전 | 미정 | V3 M10 T3 live 실측(`USER` 이분) · `livePlanWorker.ts` `LIVE_WORKER_ENV` 주석 · 대조: `codexHome`(`B-7ⓐ`) | **fixed(2026-08-23 M11)** — `executionAuthority.claudeHome` 승인 축을 열었다(`codexHome`과 같은 형태 · 골격은 `isolatedConfigDir` 하나). **live 실측이 선행했다**: 빈 `CLAUDE_CONFIG_DIR`이면 CLI가 `Not logged in`으로 exit 1, 없으면 exit 0 → 이 env가 auth 경로를 실제로 가른다. `approvedWorkerExecutable()`이 `claude`+`claudeHome` 짝을 강제하므로 "실행 파일만 승인하고 신원은 ambient"가 **표현 불가**다. acceptance Test 23 ② + mutation red. **한정: live 증명은 사람이 승인된 홈에 1회 로그인한 뒤다**(그 전까지 live는 fail closed) |
+| `C-86` | C (P2) | **live worker 세션의 자격증명 경로가 승인 축이 아니다.** Codex는 `executionAuthority.codexHome`으로 격리 홈을 **사람이 승인**하지만, Claude worker는 Keychain 자격증명을 `USER` 하나로 해석한다 → "어느 계정으로 도는가"가 승인 문서에 없다. 실행 **파일**은 digest로 고정되지만 **신원**은 ambient다 | 확실(현행 설계) | 그 세션이 누구의 구독으로 도는가(승인 문서가 말하지 않는다) | 중 — 나중에 닫으려면 승인 축을 하나 더 열어야 한다(`codexHome`과 같은 형태) | 중(격리 config dir을 승인 축으로 + CLI가 그것을 읽는지 실측) | 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전 | 미정 | V3 M10 T3 live 실측(`USER` 이분) · `livePlanWorker.ts` `LIVE_WORKER_ENV` 주석 · 대조: `codexHome`(`B-7ⓐ`) | **범위 축소(2026-08-23 M11② · 판정 ①의 closed를 취소한다)** — 축(`executionAuthority.claudeHome`)은 서 있고 **선택**이다. 판정 ①이 이것을 **필수**로 만든 것은 사용자 결정("승인 축 추가")의 내용이 아니라 구현 세션의 판단이었고, 이 행 자신의 트리거(**여러 계정·CI**)보다 이른 조임이었다 — 대가는 이 harness를 쓰는 **모든 사람의 추가 로그인**이었고 부작용으로 live 전체가 fail closed가 됐다. 지금은 **있으면 구속하고 없으면 ambient**이며, ambient는 **조용하지 않다**: `report.workerIdentity`(`approved`/`ambient`) + `worker_identity` 이벤트 + `configDir === null`일 때 env key를 아예 넣지 않음. **신원 미고정(ambient)과 고정했는데 계약 위반(거부)은 다르게 처리된다.** acceptance Test 23 ② + mutation red 2종. **트리거 복원: 여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전** |
 | `C-87` | C (P3) | **`--tools ""`의 도구 차단이 `default` 권한 모드와 조합으로는 표본 1이다.** 근거 실측(M8 live의 가짜 tool-use)은 전부 `--permission-mode plan` 조합이었다. `default`+`--tools ""`는 M10 T3 live 표본 1 + CLI 의미론이다. 가정이 깨져도 headless에는 편집·명령을 승인할 사람이 없어 잔여 노출은 read 도구뿐이지만, **그것도 프롬프트 밖 파일을 읽는다는 뜻**이다 | 낮음 | 그 세션이 workspace 파일을 읽을 수 있는지 | 낮~중 | 소(도구 0을 실측하는 probe — 파일을 읽으라고 지시하고 거부를 확인) | CLI major 갱신 시 또는 live worker를 반복 운영하기 전 | 미정 | T3 적대적 리뷰 4번 반증 절 · 로드맵 M8 live 절 | **fixed(2026-08-22 M10 T6 live probe)** — 행이 처방한 probe를 그대로 실행했다: 유일한 토큰을 담은 파일 경로를 주고 '읽어서 토큰만 출력하라, 못 읽으면 NO_TOOLS'로 지시했고 **응답에 그 토큰이 없다**(`scripts/m10-live-t6.mjs --probe-tools` · `default` + `--tools` 빈 값 조합 · 2회 실행 모두 동일). **추론 한 단계는 적어 둔다(T6 리뷰 C5)**: 관측한 것은 '응답에 토큰이 없다'이고 '도구가 차단됐다'는 그로부터의 추론이다(읽고도 말하지 않는 경우와 표본 2로는 구분되지 않는다). 다만 안전 술어(**유출 0**)는 직접 실측이다. 남는 것은 CLI major 갱신 시 재확인이며 그것은 그 슬라이스의 일이다 |
 | `C-88` | C (P3) | **live 직후 전체 suite가 timeout 민감 테스트에서 흔들린다.** M9에서 5건, M10 T3에서 9건+1건이 같은 양상으로 흔들렸고 **직렬 재실행은 매번 clean**이었다. 원인은 부하이지만, 이 성질 때문에 "live와 suite를 같은 명령으로 묶는" CI는 만들 수 없다(거짓 red를 낸다) | 확실(재현 3회) | CI 배선 형태 | 낮음 | 중(timeout 민감 테스트에 부하 내성 · 또는 live/suite 게이트 분리 명문화) | CI를 실제로 배선하는 마일스톤 전 | 미정 | 로드맵 M9 절 · 이 절(1차 preflight 9건 · 2차 managedProcess 1건) | open |
 
@@ -2884,7 +3017,7 @@ fresh Codex 리뷰는 기존 `codexCliProvider` + manifest `executionAuthority.c
 | `C-74` | C (P3) | **소유권 경합을 scheduler에서 직렬화하지 않는다(거부로만 닫혀 있다).** `B-29`는 동시 **쓰기**를 막지만 동시 **실행**은 허용한다 → 겹치는 소유권을 가진 두 task가 함께 running이 되어 한쪽이 `operation_ownership_contended`로 pause되고 그 attempt를 태운다(자원 낭비 + 사람이 볼 pause). 구조적 종결은 `selectSchedulable`에서 ownership을 암묵 배타 자원으로 취급하는 것인데, 그러려면 **기존 fixture 다수가 형제 task에 같은 경로를 편의상 선언하는 것을 전수 정정**해야 한다(실측: 그 판으로 `test:exec` 20건 이상 red) | 확실 — 겹치는 소유권 DAG를 실제로 돌릴 때마다 | 낭비된 attempt·pause 소음(**`write_file` 채널의** 데이터 무결성은 `B-29`가 지킨다 — `run_process` 부수 효과는 `C-75` 참조) | 낮음 — 거부가 이미 손실을 막고 있어 나중에 얹으면 된다 | 중(scheduler 5줄 + fixture 소유권 분리 sweep) | 없음(bounded) — 병렬 worker의 attempt 낭비가 실측으로 문제될 때(`C-10` starvation과 함께 본다) | 미정 | M9 T3 구현 시 실측(scheduler 판 시도 후 기각) · `selectSchedulable` · `heldResourceClasses` | open |
 | `C-75` | C (P3) | **`run_process`의 부수 효과 쓰기는 소유권 게이트 밖이다.** `B-29`가 덮는 것은 typed `write_file` 채널뿐이다. `run-tests` action은 승인된 `projectPath`에서 고정 controller entrypoint를 spawn하는데, **테스트 러너가 만드는 캐시·스냅샷·빌드 산출물 쓰기는 어떤 소유권 판정도 지나지 않는다**(`executeRunProcessOperation`에 `resolveWriteAuthority` 호출이 없다 — 설계상 그렇다). 시나리오: 겹치는 소유권 없이도 두 running task가 같은 `projectPath`로 `run-tests`를 동시에 승인받아 실행하면 러너가 같은 캐시/스냅샷을 동시에 갱신해 한쪽 산출이 조용히 덮인다 | 낮음~중 — 같은 `projectPath`를 두 task에 승인해야 하고, 그것은 사람의 승인 문서 판단이다 | 러너 캐시·스냅샷(하네스 산출물은 `write_file` 채널을 지나므로 무관) | 낮음 | 중(러너 산출 경로를 승인 축으로 올리거나, `projectPath`를 배타 자원으로 취급) | 없음(bounded backlog) — 같은 `projectPath`를 병렬로 승인하는 첫 DAG 전 | 미정 | M9 T3① 적대적 리뷰 C-1(read-only · `controllerActionArgs` · `superviseProcess` 호출부 · `executeRunProcessOperation`에 소유권 판정 부재 확인) | open |
 | `C-76` | C (P2) | **DAG 물질화의 mid-loop kernel 거부는 여전히 부분 물질화를 남기고 run을 벽돌로 만든다.** T3② 리뷰 A 수정으로 알려진 원인 4종은 생성 **전에** 걸러지지만, 사전 검증이 kernel 거부 사유를 **전부 열거한 것은 아니다**. 남은 사유로 루프 도중 거부되면 앞선 task가 durable에 남고(task 생성이 task마다 별도 커밋) 재시도는 `dag_materialize_run_not_empty`로 막혀 **사람이 손대야 한다** | 낮음 — 알려진 4종이 닫혔고 나머지는 문서 검증이 이미 걸러낸다 | 그 run 하나(데이터 손실 아님 — 만들어진 task는 유효하다) | 낮~중 — 나중에 닫으려면 물질화를 한 커밋으로 만드는 kernel API가 필요하다 | 중(전 task를 **한 `#mutate`**로 만드는 `createTaskGraph` 계열 API, 또는 실패 시 정리 경로) | 없음(bounded) — 물질화가 사람 개입 없이 반복되는 마일스톤 전(M10 resume/crash recovery와 함께 본다) | 미정 | M9 T3② 적대적 리뷰 A(read-only · probe 4종 실측) · `taskDagMaterialize.ts` 생성 루프 · `dag_materialize_run_not_empty` | **fixed(V3 M10 T1)** — `materializeTaskDag`가 **같은 문서로 이어받는다**: 기존 task 전부가 문서 node와 일치하고(필드 등호 + assignment 본문 digest — state 축 밖 `provides`/`consumes`까지) 문서 밖 task가 없고 `attemptNo === 0`일 때만이며, 그 밖에는 그대로 `dag_materialize_run_not_empty`다. 원자 `createTaskGraph`를 고르지 않은 이유는 `MAX_JOURNAL_BODIES`(8)·`MAX_JOURNAL_EVENTS`(64)가 8 task 초과 DAG를 한 커밋으로 표현하지 못하기 때문이다(그 확장은 crash-recovery journal 계약을 넓히는 별도 slice다). acceptance Test 22 ⑤ + focused 2건 · mutation red 4건 |
-| `B-31` | **B (P1)** | **격리 worktree의 deadline kill이 승인 루트 밖에 잔재를 남기고 정리할 수단이 없다.** `git_worktree`는 trusted git 질의의 30초 상수(`TRUSTED_GIT_TIMEOUT_MS`)를 재사용하는데 **`worktree add`는 tree 전체 checkout이라 작업량이 repo 크기에 비례한다**(승인 문서 주석의 "작업량이 상수"는 질의에만 참이다). 대형 repo에서 deadline kill이 나면 ⓐ 부분 worktree 디렉터리와 ⓑ **main clone의 `.git/worktrees/<name>` metadata**가 남고, 그 뒤 재시도한 `add`는 `exit 128`이 된다. `git worktree prune`은 닫힌 action 집합에 **없다** → 사람이 손으로 정리해야 한다. 실패가 성공으로 덮이는 것은 T3③ 리뷰 A급 수정(`process_result_unknown`)이 닫았지만, **잔재 자체는 남는다** | 중 — 큰 repo이거나 디스크가 느릴 때 | worktree 1건의 재시도 가능성(승인 루트 밖 metadata 잔류). 데이터 무결성은 아니다 | 중 — 나중에 닫으려면 `prune` action을 여는 별도 승인이 필요하다 | 중(`worktree prune`을 닫힌 action에 추가 + timeout을 승인 축으로 올리거나 크기 비례 상한) | **병렬 worker를 큰 repo에서 실제로 돌리는 첫 마일스톤 전** | 미정 | M9 T3③ 적대적 리뷰 B-3(read-only · probe로 exit 128 재현) · `orchestrationKernel.ts` `TRUSTED_GIT_TIMEOUT_MS` 재사용 · `approvalManifest.ts` "작업량이 상수" 주석 | open |
+| `B-31` | **B (P1)** | **격리 worktree의 deadline kill이 승인 루트 밖에 잔재를 남기고 정리할 수단이 없다.** `git_worktree`는 trusted git 질의의 30초 상수(`TRUSTED_GIT_TIMEOUT_MS`)를 재사용하는데 **`worktree add`는 tree 전체 checkout이라 작업량이 repo 크기에 비례한다**(승인 문서 주석의 "작업량이 상수"는 질의에만 참이다). 대형 repo에서 deadline kill이 나면 ⓐ 부분 worktree 디렉터리와 ⓑ **main clone의 `.git/worktrees/<name>` metadata**가 남고, 그 뒤 재시도한 `add`는 `exit 128`이 된다. `git worktree prune`은 닫힌 action 집합에 **없다** → 사람이 손으로 정리해야 한다. 실패가 성공으로 덮이는 것은 T3③ 리뷰 A급 수정(`process_result_unknown`)이 닫았지만, **잔재 자체는 남는다** | 중 — 큰 repo이거나 디스크가 느릴 때 | worktree 1건의 재시도 가능성(승인 루트 밖 metadata 잔류). 데이터 무결성은 아니다 | 중 — 나중에 닫으려면 `prune` action을 여는 별도 승인이 필요하다 | 중(`worktree prune`을 닫힌 action에 추가 + timeout을 승인 축으로 올리거나 크기 비례 상한) | **병렬 worker를 큰 repo에서 실제로 돌리는 첫 마일스톤 전** | 미정 | M9 T3③ 적대적 리뷰 B-3(read-only · probe로 exit 128 재현) · `orchestrationKernel.ts` `TRUSTED_GIT_TIMEOUT_MS` 재사용 · `approvalManifest.ts` "작업량이 상수" 주석 | **부분 fixed(2026-08-23 M11②)** — **원인은 제거했다**: 변경 계열 git이 읽기 질의용 30초 상수를 재사용하던 것을 `autopilotPolicy.maxAttemptElapsedMs`(승인 문서가 `run_process.timeoutMs`에 이미 강제하는 상한)로 올렸다 — **새 승인 필드 0개**. mutation red: 옛 상수 복귀 시 30.1초(정상 1.6초). **대장이 함께 처방한 `worktree prune` 추가는 실측 후 기각했다**(git 2.50.1): `remove --force`가 못 하는 것을 못 하고, supervisor kill이 실제로 남기는 모양을 되돌리지 못하며, 경로 인자가 없어 argv로 좁힐 수 없고, 다른 worktree의 HEAD·refs를 지운다(그 worktree에만 있던 커밋이 unreachable — 실측). 근거는 `worktree.test.ts` `[B-31]` 2건이 붙잡는다. **남는 구멍(닫힌 집합으로 회복 불가한 잔재)은 `B-37`** |
 | `C-77` | C (P3) | **repo-local smudge filter는 `TRUSTED_GIT_PREFIX`가 끄지 않는다.** `worktree add`의 checkout 중 `.git/config`의 `filter.*.smudge`가 임의 명령을 실행할 수 있다(리뷰어 실측). prefix는 hook·fsmonitor·pager만 끈다. **모델 통로는 아니다** — `.git/config` 지배가 전제이고 그것을 쥔 쪽은 이미 그 저장소를 지배한다. 그래서 새 권한 상승이 아니라 **주장 범위의 문제**이고, 주석에서 "전부 끈다"를 걷어냈다 | 낮음 — 저장소 config를 이미 지배해야 한다 | checkout 중 실행되는 명령(하네스 권위 밖) | 낮음 | 소~중(`-c filter.<n>.smudge=` 무력화는 필터 이름을 알아야 해 일반해가 아니다. `GIT_CONFIG_COUNT` 계열로 덮거나 `core.filterProcess` 차단 검토) | 없음(bounded backlog) | 미정 | M9 T3③ 적대적 리뷰 C-2 부수 확인(read-only · /tmp probe) | open |
 | `C-78` | C (P3) | **리뷰 왕복 계약이 렌즈↔역할·실행 책임을 참가자에 바인딩하지 않는다.** `assertCodeReviewRoundtrip`은 신원 분리(task·세션·provider·sandbox·role 계열)만 본다 → ⓐ `security` 렌즈에 `tech-lead` role을 붙여도 통과하고 ⓑ `reviews.test` 참가자가 실제로 `run-tests` operation을 들고 있는지 보지 않으며 ⓒ 같은 물리 프로세스에 다른 `sessionId` 문자열 6개를 주면 통과한다(리뷰어 probe 실측). **의도된 경계이고 acceptance 출력이 "⑧은 계약 층만 본다"로 공개한다** — 잔여는 배선하는 쪽이 그 바인딩을 잊어도 계약이 잡아주지 않는다는 것이다 | 중 — live 배선을 사람이 아니라 코드가 만들 때 | 리뷰 3종의 의미(신원 분리는 유지된다) | 낮~중 | 중(렌즈별 요구 role 계열 표 + `test` 렌즈 참가자의 `run-tests` authority 대조. 세션↔프로세스 동일성은 provider 층 신원이 필요해 더 크다) | 없음(bounded) — 왕복 레코드를 코드가 구성하는 첫 마일스톤 전 | 미정 | M9 T4 적대적 리뷰 finding 2·probe 실측 · `designReviewRoundtrip.ts` | open |
 | `C-79` | C (P3) | **다중 위반 입력의 오류 코드 순서가 M8 대비 1건 바뀌었다.** 일반화로 리뷰어 loop가 provider·sandbox를 함께 보게 되어, "리뷰어 sandbox 위반 + 저자 provider=codex" 입력의 코드가 `worker_provider` → `reviewer_sandbox`로 바뀌었다. 리뷰어가 26 케이스 배터리로 대조해 **이 하나만** 다르고 나머지 전부 동일 코드임을 확인했다. M8 테스트·acceptance는 전부 단일 위반 입력이라 의존하지 않는다(실질 무손상) | 낮음 — 다중 위반 입력에서만 | 진단 코드 1건 | 낮음 | 소(순서를 옛 순서로 되돌리거나 코드 순서를 계약으로 고정) | 없음 — 향후 golden test가 옛 순서를 가정하지 않도록 기록만 | 미정 | M9 T4 적대적 리뷰 finding 3 · 26케이스 old/new diff 매트릭스 | open |
@@ -3444,7 +3577,7 @@ mutation으로 red 확인. depth는 **허용 측만** 고정됐다 — 아래 `C
 
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `B-18` | B (P1) | **`cleanupConfirmed`는 `setsid()`/`setpgid()`로 프로세스 그룹을 탈출한 자손을 보지 못한다.** 그룹 기반 reap은 pgid에 **남아 있는** 자손만 덮는다. 탈출한 자손이 있으면 `kill(-pgid,0)`이 ESRCH를 돌려주고 kernel이 성공 영수증을 발행하는데 고아는 살아 있다 → `cleanupConfirmed: true` + 살아 있는 고아. `managedProcess.ts` 헤더 주석의 "모든 자손"은 **과장이며 정정 대상**이다 | 지금 낮음(digest 승인된 node+entrypoint만 실행 · fixture 통제) — **daemonize하는 entrypoint를 승인하면 확실** | 승인 밖 프로세스 1개 이상이 무기한 생존. durable 무결성은 무관 | 중 — live runner에서 좌초 프로세스가 다음 batch 자원을 먹고, "정리됐다"는 기록만 남아 추적 불가 | 중(그룹 밖 자손 탐지 또는 daemonize 금지 집행) | **daemonize 가능한 실제 controller entrypoint 승인 전 / live runner 배선 전** — `B-13`·`C-18`과 같은 발화점 | live-runner slice | Task 3C 독립 리뷰 F2(STATIC) · `managedProcess.ts:13-16, 103-109`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: 코드는 그대로다(`managedProcess.ts:87-121`은 `kill(-pgid,0)` ESRCH 관측만이고 그룹 탈출 자손 탐지가 없다). **트리거("live runner 배선 전")는 M10 T3에서 이미 발화했다** — live worker loop가 돌았으므로 이 행은 지금 기한을 넘긴 상태다. **M10 T6 처리**: 탐지는 여전히 불가능하다(darwin에 cgroup·jail이 없어 그룹 밖을 묶을 커널 개념이 없다) → **주장의 범위를 계약으로 좁혔다**: 머리말의 "자손 전부"를 지우고 `cleanupConfirmed`/`survivors 0`을 **"승인된 프로세스 그룹이 비었다"**로 다시 적었다(`managedProcess.ts:1-40`·`SupervisedOutcome` · `commands/autopilot.ts` `cleanupUnobservableReason`). 실제 `setsid` 탈출 프로세스로 그 한계를 고정하는 테스트가 생겼다(`managedProcess.test.ts` `[M10 T6/B-18]`). **남은 것은 탐지 자체**이며 그것은 sandbox·cgroup을 도입하는 별도 승인 범위다 | open |
+| `B-18` | B (P1) | **`cleanupConfirmed`는 `setsid()`/`setpgid()`로 프로세스 그룹을 탈출한 자손을 보지 못한다.** 그룹 기반 reap은 pgid에 **남아 있는** 자손만 덮는다. 탈출한 자손이 있으면 `kill(-pgid,0)`이 ESRCH를 돌려주고 kernel이 성공 영수증을 발행하는데 고아는 살아 있다 → `cleanupConfirmed: true` + 살아 있는 고아. `managedProcess.ts` 헤더 주석의 "모든 자손"은 **과장이며 정정 대상**이다 | 지금 낮음(digest 승인된 node+entrypoint만 실행 · fixture 통제) — **daemonize하는 entrypoint를 승인하면 확실** | 승인 밖 프로세스 1개 이상이 무기한 생존. durable 무결성은 무관 | 중 — live runner에서 좌초 프로세스가 다음 batch 자원을 먹고, "정리됐다"는 기록만 남아 추적 불가 | 중(그룹 밖 자손 탐지 또는 daemonize 금지 집행) | **daemonize 가능한 실제 controller entrypoint 승인 전 / live runner 배선 전** — `B-13`·`C-18`과 같은 발화점 | live-runner slice | Task 3C 독립 리뷰 F2(STATIC) · `managedProcess.ts:13-16, 103-109`  · **M10 T5 재검증(2026-08-21) · 기한 경과**: 코드는 그대로다(`managedProcess.ts:87-121`은 `kill(-pgid,0)` ESRCH 관측만이고 그룹 탈출 자손 탐지가 없다). **트리거("live runner 배선 전")는 M10 T3에서 이미 발화했다** — live worker loop가 돌았으므로 이 행은 지금 기한을 넘긴 상태다. **M10 T6 처리**: 탐지는 여전히 불가능하다(darwin에 cgroup·jail이 없어 그룹 밖을 묶을 커널 개념이 없다) → **주장의 범위를 계약으로 좁혔다**: 머리말의 "자손 전부"를 지우고 `cleanupConfirmed`/`survivors 0`을 **"승인된 프로세스 그룹이 비었다"**로 다시 적었다(`managedProcess.ts:1-40`·`SupervisedOutcome` · `commands/autopilot.ts` `cleanupUnobservableReason`). 실제 `setsid` 탈출 프로세스로 그 한계를 고정하는 테스트가 생겼다(`managedProcess.test.ts` `[M10 T6/B-18]`). **남은 것은 탐지 자체**이며 그것은 sandbox·cgroup을 도입하는 별도 승인 범위다 | **closed(2026-08-23 · 사용자 결정)** — **범위를 계약으로 확정하고 닫는다.** 이 항목이 요구한 "그룹 밖 자손 탐지"는 **darwin에서 만들 수 없다**(cgroup·jail 같은 커널 개념이 없어 그룹 밖을 묶을 단위 자체가 없다). M10 T6이 이미 **주장을 실상에 맞췄다**: 머리말의 "자손 전부"를 지우고 `cleanupConfirmed`/`survivors 0`을 **"승인된 프로세스 그룹이 비었다"** 로 다시 적었으며(`managedProcess.ts:18-22`·`SupervisedOutcome`·`autopilot.cleanupUnobservableReason`), 실제 `setsid` 탈출 프로세스로 그 한계를 **고정하는 테스트**가 있다(`managedProcess.test.ts` `[M10 T6/B-18]`). 즉 **거짓 주장은 이미 없다** — 남은 것은 없는 보장을 만드는 일이고 그것은 이 플랫폼에서 불가능하다. **영원히 닫을 수 없는 항목을 P1로 두면 대장의 신호가 망가진다**(그 자리를 실제로 닫을 수 있는 P1이 써야 한다) → 닫고, 능력이 생기는 경로는 **`B-36`** 으로 분리한다. 이 판정이 뒤집히는 조건도 그 행에 있다 |
 | `B-19` | B (P2) | **run 전역 프로세스 상한이 `LIMITS.maxTasksPerRun`(=32) 상수를 빌려 쓴다(스펙 혼동).** 로드맵의 32는 **run당 task** 수인데, `assertSpawnLimits`의 도달 가능한 검사는 `runTotal = Σ(run_process 영수증 + pending) > 32`로 **run당 프로세스** 수를 센다. 현재 두 값이 우연히 같아 동작은 방어 가능하나, task fan-out 때문에 `maxTasksPerRun`을 조정하면 **프로세스 상한이 조용히 따라 움직인다** | 낮음(상수를 건드릴 때만) | run 전역 spawn 상한이 의도 없이 변경 | 낮음~중 — 나중에 발견하면 어느 상한이 의도였는지 재판정해야 한다 | 소(전용 상수 분리 + 로드맵 문구 정정) | **`LIMITS.maxTasksPerRun` 값을 바꾸기 전, 늦어도 M6 spawn 계층 착수 전** | M6 T1 | Task 3C 독립 리뷰 F3 · 후속 worker 코드 재독 확인 · `orchestrationKernel.ts` `assertSpawnLimits` | **fixed(M6 T1)** — `LIMITS.maxProcessesPerRun` 전용 상수 분리, `assertSpawnLimits`의 run 전역 검사가 이 상수를 쓴다. 두 상수를 **각각** 32→64로 바꾸는 mutation에 **각자의** 테스트만 red(프로세스: `managedProcess.test.ts` run 전역 경계 / task: `orchestrationKernel.test.ts` task 32개 상한), 교차 오염 없음을 실측. 로드맵 §5 문구도 정정 |
 | `C-44` | C (P3) | **`assertSpawnLimits`의 `task.depth > LIMITS.maxDepth` 분기는 도달 불가능한 backstop이다.** depth 4 task는 애초에 durable에 존재할 수 없다 — `requestSpawn`이 유일한 생성 경로이고 거기서 `depth_limit_exceeded`로 막으며, `addTask`는 private, `open()`이 `depth.maximum` schema로 재검증한다. 그래서 이 분기는 **production 변경이나 hash chain 위조 없이는 red로 만들 수 없다**(후속 worker가 시도 후 정직하게 보고). 허용 측(depth 3 실제 실행)과 거부 측(`requestSpawn` depth 4 거부)은 둘 다 고정됐고 `requestSpawn` 게이트 제거 mutation으로 red 확인했다 | 낮음 | 없음(방어 심층화) | 없음 | 소(주석으로 unreachable 명시) 또는 state 위조 harness 도입(중) | 없음(bounded backlog) — 늦어도 M6 spawn 계층 착수 전 판단 | M6 T1 | Task 3C 독립 리뷰 F3 · 후속 worker mutation 실측(depth 검사 제거해도 green) | **fixed(M6 T1) — 주석 명시로 종결.** `assertSpawnLimits` doc comment에 depth 분기와 `maxTasksPerRun` 분기가 **도달 불가능한 최후 방어선**임을, 집행되는 경계는 task당 child·run당 프로세스 둘임을 적었다. state 위조 harness는 **도입하지 않는다**(과잉) — 즉 이 두 분기는 여전히 테스트로 red를 만들 수 없고 그 사실을 문서화한 것이 이 항목의 종결이다 |
 | `C-45` | C (P3) | **exit code가 0이 아니어도 marker가 `applied`다.** `exit 7`이 `applied` + `exitCode: 7` 영수증을 만든다(테스트가 의도적으로 고정). exit code는 durable에 남아 **정보 손실은 없으나**, 모든 후속 소비자가 `applied ≠ "명령이 성공했다"`를 기억해야 한다 | 중(소비자가 생길 때) | 영수증 해석 1건 | 낮음 | 소(영수증 소비 경계에 문서화) | 첫 영수증 소비자 배선 전 | 다음 slice | Task 3C 독립 리뷰 F5(EXECUTED) · `orchestrationKernel.ts:919-926` | **fixed(소비면 · 2026-08-22 M10 T6)** — kernel은 `run_process`의 exitCode를 **산출물**로 남기는 계약을 유지한다(0이 아니어도 marker는 `applied`). 대신 **loop가 해석한다**: 이 attempt의 영수증에 `run_process` + `exitCode !== 0`이 있으면 완료하지 않고 pause한다(`commands/autopilot.ts` — 닫힌 action 집합 `validate-plan`·`run-tests`가 둘 다 **술어**이므로 0이 아니면 실패다). 그래서 **무인 loop에서 red 테스트가 통과로 세이지 않는다**. acceptance Test 22 ⑨ + mutation(게이트 무력화) red 확인 |
