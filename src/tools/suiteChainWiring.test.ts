@@ -26,8 +26,13 @@ const scripts: Record<string, string> = pkg.scripts ?? {};
 
 /**
  * `&&`로 이어진 순차 단계로 쪼갠다. **`&&`만** 단계 구분자로 인정한다 — `;`나 `||`는 앞 단계의
- * 실패를 삼키므로 게이트가 아니고, 그런 형태로 바뀌면 단계 하나로 뭉쳐 보여 순서 단정이 깨진다
- * (= red). 그게 의도다.
+ * 실패를 삼키므로 게이트가 아니다.
+ *
+ * **`;`는 이 split만으로 잡히지만 `||`는 잡히지 않는다**(M11③ 적대적 리뷰 C2가 직접 재현했다:
+ * `"npm run typecheck || true && node scripts/suite-lock.mjs run test:inner"`가 **green이었다** —
+ * `&&` split 뒤 `|| true`가 단계 **안**에 남아 게이트만 조용히 죽는다). 그래서 아래 테스트가
+ * typecheck 단계에 실패 삼킴 연산자가 **없다는 것**을 따로 단정한다. 주석이 증명보다 강했던
+ * 자리이므로 주석도 함께 정정한다.
  */
 function steps(script: string): string[] {
   return script
@@ -49,6 +54,15 @@ test("[C-104] npm test는 배타 lock을 잡기 전에 typecheck를 통과해야
     typecheckAt < lockAt,
     "typecheck는 suite-lock wrapper보다 **앞** 단계여야 한다 — wrapper는 lock을 획득한 뒤 suite를 " +
       `spawn하므로, 뒤로 가면 컴파일 실패가 배타 lock을 잡은 채 난다. 실제: ${scripts.test}`,
+  );
+
+  // 게이트가 **존재하고 앞에 있어도** 그 단계 안에서 실패가 삼켜지면 배선은 공허하다.
+  // (`|| true`·`; true` — 리뷰 C2가 재현한 우회)
+  assert.doesNotMatch(
+    chain[typecheckAt] ?? "",
+    /\|\||;/,
+    "typecheck 단계가 실패를 삼키는 연산자(`||`·`;`)를 품고 있다 — 게이트가 조용히 죽는다: " +
+      `${scripts.test}`,
   );
 
   // 앞에 있기만 하고 정작 뒤에서 도는 것이 진짜 suite가 아니면 배선이 공허해진다.
