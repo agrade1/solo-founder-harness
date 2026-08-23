@@ -555,6 +555,18 @@ export function emptyTaskExecution() {
  *   (`--filter=blob:none`)에서 checkout은 argv에 `fetch`가 없어도 lazy fetch를 일으킬 수 있어
  *   집행기가 `GIT_NO_LAZY_FETCH=1`로 따로 끈다(T3③ 적대적 리뷰 B-1 실측).
  * - 승인은 task별이다(`operationAuthorityByTask`) → 아무 task나 worktree를 만들 수 없다.
+ * - **`prune`은 검토하고 기각했다**(대장 `B-31` · 2026-08-23 git 2.50.1 실측 — 증거는
+ *   `worktree.test.ts`의 `[B-31]` 테스트 둘). deadline kill 잔재를 되돌릴 지렛대로 제안됐지만 재보면
+ *   그 일을 하지 못한다: ⓐ "등록만 남고 디렉터리는 사라진" 모양은 **이미 있는 `remove --force`가
+ *   되돌린다**(그 뒤 재시도 `add`가 성공한다) ⓑ 실제 kill이 남기는 모양은 "파일이 든 디렉터리 + 등록
+ *   없음"인데(git 자신의 TERM 핸들러가 metadata를 먼저 지운다) `prune`은 **작업 파일을 절대 지우지
+ *   않으므로** 재시도 `add`는 그대로 `exit 128`이다. ⓒ 등록이 반쯤 쓰인 모양(`gitdir` 파일 부재)은
+ *   애초에 재시도를 **막지 않는다** — git이 `<name>1`로 새 등록을 잡는다. 남는 것은 회수되지 않는
+ *   metadata 항목뿐이고 진행은 계속된다(즉 `prune`만이 지울 수 있는 잔재는 **막는 잔재가 아니다**).
+ *   게다가 `prune`은 **경로 인자를 받지 않아**
+ *   argv 수준에서 이 run의 worktree로 좁힐 방법이 없고, 디렉터리가 일시적으로 안 보이는 **다른**
+ *   worktree의 HEAD·refs까지 지운다(그 worktree에만 있던 커밋이 unreachable이 된다 — 실측).
+ *   얻는 것이 0이고 여는 것이 데이터 손실 축이라 닫힌 집합을 늘리지 않았다.
  */
 export const GIT_WORKTREE_ACTIONS = ["add", "remove"];
 /**

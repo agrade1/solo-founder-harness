@@ -165,13 +165,17 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
         return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: "worker_backend_unsupported" };
     }
     // live backend는 **시작 전에** 승인을 본다(첫 turn에서 알게 되면 그때까지 상태를 바꿨을 수 있다).
+    let workerIdentity;
     if (backend === LIVE_PLAN_BACKEND) {
         try {
-            kernel.approvedWorkerExecutable();
+            workerIdentity = kernel.approvedWorkerExecutable().configDir === null ? "ambient" : "approved";
         }
         catch (err) {
             return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
         }
+        // **무엇으로 도는지를 말하고 시작한다**(`C-86`). `ambient`도 정당한 선택이지만 조용해서는 안 된다 —
+        // 그 침묵이 곧 이 레포가 금지하는 "조용한 fallback"이다.
+        emit({ kind: "worker_identity", marker: workerIdentity });
     }
     // **리뷰 왕복을 요구한 승인은 그 참가자가 실재할 때만 시작한다**(V3 M11 적대적 리뷰 A-1).
     //
@@ -337,7 +341,8 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
             break;
     }
     emit({ kind: "run_finished", marker: stoppedBecause });
-    return { blocked: null, iterations, tasks, stoppedBecause };
+    // `C-86`: live run의 영수증에는 **무엇으로 돌았는지**가 함께 남는다(offline이면 key 자체가 없다).
+    return { blocked: null, iterations, tasks, stoppedBecause, ...(workerIdentity === undefined ? {} : { workerIdentity }) };
 }
 // ── 크래시 잔재 정착 (V3 M10 T1) ────────────────────────────────────────────
 /**
