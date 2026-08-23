@@ -2136,3 +2136,83 @@ test("[M11/C-98] 승인이 왕복을 요구하지 않으면 게이트는 돌지 
   });
   assert.equal(reopen(f.ws).getTask("verify")?.state, "completed");
 });
+
+// ── ⑬ V3 M11 모델 축 — 승인된 모델 · argv · 영수증 ────────────────────────────
+//
+// **LLM 0회.** 승인 manifest가 못 박는 실행 파일 자리에 argv를 파일로 적는 스크립트를 둔다. 그래서 이
+// 절이 증명하는 것은 "승인 문서의 모델이 **실제 자식 argv까지** 배선됐고 영수증이 그것을 정직하게
+// 적는다"이며, **그 모델로 실제 추론이 돌았는지는 아니다**(그것은 live 축이고 여기서 증명되지 않는다).
+
+/** argv를 파일로 적고 고정 계획을 CLI 봉투 형식으로 낸다. */
+const ARGV_EMITTER = (out: string, plan: string): string =>
+  `#!${process.execPath}\nimport { readFileSync, writeFileSync } from "node:fs";\nreadFileSync(0, "utf8");\n` +
+  `writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));\n` +
+  `process.stdout.write(JSON.stringify({ result: ${JSON.stringify(plan)}, usage: null }));\n`;
+
+const OK_PLAN = '{"operations": [], "result": {"summary": "ok", "outputs": []}}';
+
+/** live run 1 iteration을 돌리고 자식이 받은 argv와 영수증을 함께 돌려준다. */
+async function liveRun(
+  over: Record<string, unknown>,
+): Promise<{ report: Awaited<ReturnType<typeof runAutopilot>>; events: AutopilotEvent[]; argv: string[] }> {
+  const out = join(realpathSync(makeDir("m11-model-argv-")), "argv.json");
+  const bin = fakeWorkerBin(ARGV_EMITTER(out, OK_PLAN));
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin, ...over } });
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
+  });
+  return { report, events, argv: JSON.parse(readFileSync(out, "utf8")) as string[] };
+}
+
+test("[M11/모델축] 승인이 모델을 말하면 argv에 --model이 실리고 영수증이 그 값을 적는다", async () => {
+  const { report, events, argv } = await liveRun({ claudeHome: fakeClaudeHome(), claudeModel: "claude-opus-5[1m]" });
+  assert.equal(report.blocked, null, JSON.stringify(report));
+  assert.equal(report.tasks[0]?.state, "completed", JSON.stringify(report.tasks));
+  // ⓐ **승인 → argv**: 이 단정이 red면 승인 문서가 모델을 말해도 세션은 CLI 기본 모델로 돈다.
+  assert.deepEqual(argv.slice(-2), ["--model", "claude-opus-5[1m]"], JSON.stringify(argv));
+  // ⓒ **영수증**: 승인된 모델은 `approved` + 그 문자열이다.
+  assert.deepEqual(report.workerModel, { marker: "approved", model: "claude-opus-5[1m]" }, JSON.stringify(report));
+  assert.deepEqual(
+    events.filter((e) => e.kind === "worker_model").map((e) => [e.marker, e.detail]),
+    [["approved", "claude-opus-5[1m]"]],
+    JSON.stringify(events),
+  );
+});
+
+test("[M11/모델축] 승인이 모델을 말하지 않으면 --model이 실리지 않고 영수증이 cli_default라고 적는다", async () => {
+  const { report, events, argv } = await liveRun({ claudeHome: fakeClaudeHome() }); // claudeModel 없음
+  assert.equal(report.tasks[0]?.state, "completed", JSON.stringify(report.tasks));
+  // ⓑ **조용한 기본값 주입 금지**: 승인이 말하지 않았으면 argv에 그 flag가 없다.
+  assert.equal(argv.includes("--model"), false, `승인 밖 모델이 argv에 실렸다: ${JSON.stringify(argv)}`);
+  // ⓒ **모르는 것을 안다고 적지 않는다**: `model`은 `null`이다(CLI 기본값이 무엇인지 harness는 모른다).
+  assert.deepEqual(report.workerModel, { marker: "cli_default", model: null }, JSON.stringify(report));
+  const ev = events.find((e) => e.kind === "worker_model");
+  assert.equal(ev?.marker, "cli_default", JSON.stringify(events));
+  assert.equal(ev?.detail, undefined, "모르는 모델 이름이 이벤트에 적혔다");
+  // **두 경우가 같은 값으로 적히지 않는다**: 위 테스트의 `approved`와 형태부터 다르다.
+  assert.notDeepEqual(report.workerModel, { marker: "approved", model: "claude-opus-5[1m]" });
+});
+
+test("[M11/모델축] 모델 축은 자격증명 축과 독립이다(claudeHome 없이도 모델만 고정할 수 있다)", async () => {
+  // 두 축을 한 값으로 묶지 않는다 — `claudeHome`은 사용자 결정으로 선택이고(2026-08-23) 모델 축이
+  // 그 결정을 되돌리지 않는다. 영수증은 **둘을 따로** 적는다.
+  const { report, argv } = await liveRun({ claudeModel: "sonnet" });
+  assert.equal(report.workerIdentity, "ambient", JSON.stringify(report));
+  assert.deepEqual(report.workerModel, { marker: "approved", model: "sonnet" }, JSON.stringify(report));
+  assert.deepEqual(argv.slice(-2), ["--model", "sonnet"]);
+});
+
+test("[M11/모델축] offline run은 모델 축을 주장하지 않는다(물어볼 것이 없다)", async () => {
+  const f = boot();
+  writePlan(f.planDir, "root", {});
+  const report = await pilot(f);
+  assert.equal(report.workerModel, undefined, JSON.stringify(report));
+});

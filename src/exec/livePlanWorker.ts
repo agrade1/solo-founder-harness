@@ -12,6 +12,9 @@
  * **열지 않는다**:
  * - **실행 대상 선택** — 경로·digest는 `kernel.approvedWorkerExecutable()`이 turn마다 다시 검증해 주는
  *   값이고 이 모듈에는 그것을 바꿀 인자가 없다. 승인에 그 키가 없으면 backend 자체가 표현 불가다.
+ * - **모델 선택**(V3 M11 모델 축) — `--model`에 실리는 값은 승인 문서(`executionAuthority.claudeModel`)
+ *   에서만 오고, 승인이 말하지 않으면 **아무것도 실리지 않는다**(여기서 기본 모델을 골라 넣는 경로가
+ *   없다 — 그것이 곧 "harness가 조용히 모델을 고른다"다). 영수증은 `runAutopilot`이 적는다.
  * - **권한 확대** — 모델이 낸 것은 **계획 문서 하나**뿐이고, 그 계획은 `validateTypedExecutionPlan`
  *   (offline backend와 **같은 validator**) → kernel의 승인 레코드 대조 → 소유권·`writableRoots`·digest
  *   재검증을 전부 지나야 한다. 계획에 없는 operation·승인 밖 경로·다른 task의 소유 경로는 그대로 거부다.
@@ -34,6 +37,7 @@ import { spawn } from "node:child_process";
 import { dirname } from "node:path";
 import { ARTIFACT_ROLES, LIMITS, OrchestrationError, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
 import type { TypedExecutionPlan, WorkerEvent, WorkerStream } from "./autopilotTypes.js";
+import { isApprovedModelString } from "./approvalManifest.js";
 import { validateTypedExecutionPlan } from "./typedPlan.js";
 import { readTopLevelNames, verifyIsolatedDir, type IsolatedDirIdentity } from "./isolatedConfigDir.js";
 
@@ -218,6 +222,16 @@ export interface LiveWorkerLaunch {
    * (적대적 리뷰 B-2 — 이것이 없으면 검증과 spawn 사이 창이 열린 채로 남는다).
    */
   configDirIdentity: IsolatedDirIdentity | null;
+  /**
+   * **승인 문서가 고정한 모델**(V3 M11 모델 축 · `executionAuthority.claudeModel`). 값이 있으면
+   * `--model <값>`이 argv에 실리고, `null`이면 **실리지 않는다**(CLI 기본 모델로 돈다 — harness는 그것이
+   * 무엇인지 모른다). **선택 필드로 두지 않는다**(`?:` 아님): 호출부가 배선을 빠뜨렸을 때
+   * "승인이 모델을 말했다"는 영수증과 "argv에 `--model`이 없다"는 실제가 갈리면 그것이 곧 거짓
+   * 영수증이므로, 부재와 "승인이 말하지 않았다"를 **타입에서** 구분한다. 컴파일은 이 누락을 실제로
+   * 잡는다(`tsconfig.test.json` — 대장 `C-101`이 테스트도 타입 검사에 넣었다). 아래 런타임 가드는
+   * 형태 검증까지 겸하는 이중 방어다(타입은 문자열의 **형태**를 못 본다).
+   */
+  model: string | null;
   /** durable에서만 나오는 실행 신원 — 계획이 자기 binding을 주장하지 못하게 한다. */
   binding: { runId: string; taskId: string; attemptId: string; turnId: string };
   timeoutMs: number;
@@ -298,6 +312,14 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
   if (launch.configDir !== null && (typeof launch.configDir !== "string" || !launch.configDir.startsWith("/"))) {
     throw workerError("worker_spawn_failed", "CLAUDE_CONFIG_DIR은 null이거나 절대경로여야 한다");
   }
+  // **모델 축의 경계 가드**(V3 M11 · 바로 위 `configDir` 가드와 같은 자리). `null`은 "승인이 모델을
+  // 말하지 않았다"는 정당한 값이고, 그 밖의 것은 **형태**로 거부한다 — 타입은 문자열의 형태를 보지
+  // 못하므로 `undefined`·빈 문자열·`--`로 시작하는 값이 여기까지 올 수 있고, 그러면 argv에 계약 밖
+  // 문자열이 실린다. 술어는 manifest validator와 **같은 하나**다(`isApprovedModelString`) — 두 계층이
+  // 각자 규칙을 들면 한쪽만 정직해진다.
+  if (launch.model !== null && !isApprovedModelString(launch.model)) {
+    throw workerError("worker_spawn_failed", "--model 값은 null이거나 승인된 모델 문자열 형태여야 한다");
+  }
   // **spawn 직전 동기 게이트**(적대적 리뷰 B-2 · codex 갈래와 같은 규율): kernel이 검증한 그 디렉터리가
   // **지금도 같은 inode·같은 권한·같은 소유자인지** 다시 본다. TOCTOU 창을 0으로 만들지는 못하지만
   // (`C-5`와 같은 한계 — Node 18에 디렉터리 상대 열기가 없다) **비동기 경계 작업 중 교체**는 막힌다.
@@ -319,7 +341,11 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
   const run = async (): Promise<void> => {
     let child;
     try {
-      child = spawn(launch.executable, [...LIVE_WORKER_ARGS], {
+      // **승인이 말할 때만 `--model`이 실린다**(V3 M11 모델 축). 말하지 않으면 인자를 더하지 않아
+      // CLI 기본 모델로 돌고, 그 사실을 영수증이 `cli_default`로 적는다. 기본값을 여기서 채우면
+      // 영수증의 그 구분이 거짓이 된다(그래서 `??`로 채우는 경로를 두지 않는다).
+      const args = launch.model === null ? [...LIVE_WORKER_ARGS] : [...LIVE_WORKER_ARGS, "--model", launch.model];
+      child = spawn(launch.executable, args, {
         // **`CLAUDE_CONFIG_DIR`이 자격증명 신원이다**(`C-86`): 승인 문서가 고정한 그 디렉터리 하나이고
         // 호출자가 고를 통로가 없다(kernel이 검증해 준 값만 여기 온다). 실측: 이 값이 auth 해석 경로를
         // 실제로 가른다 — 빈 디렉터리면 CLI가 `Not logged in`으로 fail closed다.

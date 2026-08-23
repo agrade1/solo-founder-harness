@@ -129,14 +129,23 @@ export const DEPENDENCY_KEYS = ["name", "version"] as const;
  * 승인된 실행 권위 key. M5c(v2)에서 `node`·`processObserver`가 필수로 더해졌고 `codex`는 null 허용이다.
  * 더 넣거나 빼면 `invalid_manifest`이고, v1(`codex`+`git`만)은 `manifest_pre_m5c_unsupported`다.
  */
-export const EXECUTION_AUTHORITY_KEYS = ["claude", "claudeHome", "codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"] as const;
+export const EXECUTION_AUTHORITY_KEYS = ["claude", "claudeHome", "claudeModel", "codex", "codexHome", "controllerEntrypoint", "git", "node", "processObserver"] as const;
 /**
- * 위 집합 중 **필수** key(대장 `B-7ⓐ`). `codexHome`만 선택이다 — 없으면 "live 인증 미승인"이고
- * 격리 홈은 기존 계약대로 완전히 비어 있어야 한다(조용한 fallback이 아니라 인증 없는 fail closed다).
- * 필수로 만들지 않은 이유는 호환이 아니라 **의미**다: 자격증명을 넣어 둔 홈은 사람이 별도로 승인해야
- * 하는 자산이고, 그것이 없는 승인은 codex를 인증 없이 돌리라는 뜻이지 "아무 홈이나 쓰라"는 뜻이 아니다.
+ * `codexHome`을 선택으로 둔 이유(대장 `B-7ⓐ`) — 호환이 아니라 **의미**다: 자격증명을 넣어 둔 홈은
+ * 사람이 별도로 승인해야 하는 자산이고, 그것이 없는 승인은 codex를 **인증 없이** 돌리라는 뜻이지
+ * "아무 홈이나 쓰라"는 뜻이 아니다(조용한 fallback이 아니라 인증 없는 fail closed다).
+ *
+ * (2026-08-23 정정 · M11 적대적 리뷰 C-2: 이 블록은 "**`codexHome`만** 선택이다"로 시작했는데
+ * 선택 key가 넷이 된 뒤에도 남아 아래 블록과 **모순한 채 쌓여 있었다**. 모델 축 slice가 정확히 이
+ * 자리를 편집하면서 정정 대신 두 번째 주석을 더한 것이 원인이다 — 사실이 늘 때 앞 문장을 고치지 않으면
+ * 주석이 서로를 반박한다.)
  */
-export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["claude", "claudeHome", "codexHome"] as const;
+/**
+ * 현재 선택 key는 넷이다: `claude`(V3 M10 T3 · live worker 실행 파일) · `claudeHome`(`C-86` · 자격증명
+ * 신원) · `claudeModel`(V3 M11 · 모델 축) · `codexHome`(`B-7ⓐ`). 넷 다 부재와 `null`이 같은 뜻이고
+ * 부재면 정규화 결과에 키가 없으므로 **기존 승인의 canonical digest가 바이트 단위로 그대로**다.
+ */
+export const EXECUTION_AUTHORITY_OPTIONAL_KEYS = ["claude", "claudeHome", "claudeModel", "codexHome"] as const;
 export const EXECUTION_AUTHORITY_REQUIRED_KEYS = ["codex", "controllerEntrypoint", "git", "node", "processObserver"] as const;
 export const APPROVED_EXECUTABLE_KEYS = ["path", "sha256"] as const;
 /** 승인된 디렉터리 record의 key 집합. **digest는 없다** — 자격증명 내용은 해싱조차 하지 않는다. */
@@ -195,6 +204,43 @@ const DEPENDENCY_VERSION_RE = new RegExp(DEPENDENCY_VERSION_PATTERN);
 /** 소문자 도메인만. scheme·port·path·wildcard·trailing dot는 거부한다. */
 export const DOMAIN_PATTERN = "^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$";
 const DOMAIN_RE = new RegExp(DOMAIN_PATTERN);
+
+/**
+ * **승인된 claude 모델 문자열의 형태**(V3 M11 · 모델 축 · `executionAuthority.claudeModel`).
+ *
+ * ## 왜 enum이 아닌가 (기각한 대안과 그 이유)
+ *
+ * 이 레포의 반사신경은 "승인 문서가 고르는 값은 닫힌 집합"이고 **그 안을 먼저 검토했다**. 기각한
+ * 이유는 둘이다.
+ *
+ * ⓐ **모델 id는 harness 밖에서 늘어난다.** 목록을 코드에 박으면 CLI가 새 모델을 내는 날 승인 문서가
+ *    그것을 표현할 수 없다 → 계약이 **만족 불가능**해지고, 그때 사람이 하는 일은 하네스를 고치는 것이
+ *    아니라 이 축을 **끄는** 것이다(= 축이 없는 상태로 회귀).
+ * ⓑ **지금 그 집합을 실측할 수 없다**(이 slice는 live 호출 금지). 기억으로 지어 쓴 allowlist는
+ *    `verifyClaudeConfigDir` 주석이 적은 그 함정 그대로다 — codex 0.145→0.146에서 겪은 "재보지 않은
+ *    allowlist는 만족 불가능한 계약이거나 구멍"이다.
+ *
+ * ## 그래서 무엇으로 대신하는가
+ *
+ * **값의 출처를 닫고 형태를 닫는다.** 출처는 digest로 고정된 승인 manifest 하나뿐이고 호출자가 이 값을
+ * 고를 인자는 존재하지 않는다(`LIVE_WORKER_ENV` 주석의 규율 — 오버라이드 표면을 열지 않는다).
+ * 형태는 **선행 `-` 금지 · 공백·`=`·NUL 금지 · bounded**여서 이 문자열이 argv에서 **두 번째 flag로
+ * 읽힐 수 없다**(그것이 자유 문자열의 실질 위험이다). 모델 축 자체는 권능이 아니라 비용·품질 축이다 —
+ * 도구·MCP·설정은 이미 0이므로 잘못된 모델이 여는 권한은 없다.
+ *
+ * ## 알려진 천장
+ *
+ * ponytail: 소문자 charset이라 대문자·`:`·`/`가 든 식별자(예: Bedrock ARN)는 표현할 수 없다. 필요해지면
+ * charset을 넓히는 한 줄이며, **넓히기 전까지 그 조합은 `invalid_manifest`로 fail closed**다(조용히
+ * 통과하지 않는다). 유효한 모델인지는 **CLI가 판정한다** — 하네스는 그 판정을 대신하지 않는다.
+ */
+export const CLAUDE_MODEL_PATTERN = "^[a-z0-9][a-z0-9.-]{0,55}(\\[[a-z0-9]{1,7}\\])?$";
+const CLAUDE_MODEL_RE = new RegExp(CLAUDE_MODEL_PATTERN);
+
+/** 위 형태를 만족하는 문자열인가. manifest validator와 argv 경계 가드가 **같은 이것**을 쓴다. */
+export function isApprovedModelString(v: unknown): v is string {
+  return typeof v === "string" && CLAUDE_MODEL_RE.test(v);
+}
 
 /**
  * 승인된 실행 파일 경로의 **정규형**(V3 M5b 7차 독립 리뷰 C-40): NUL 없는 절대경로이며 segment가
@@ -366,6 +412,20 @@ function validateExecutionAuthority(raw: unknown): MilestoneApprovalManifest["ex
     o.claudeHome === undefined || o.claudeHome === null
       ? undefined
       : validateApprovedDirectory(o.claudeHome, "manifest.executionAuthority.claudeHome");
+  // **모델 축**(V3 M11): `claudeHome`과 같은 규율이다 — 부재와 `null`이 같은 뜻(= "승인이 모델을
+  // 말하지 않는다" → CLI 기본 모델)이고 부재면 정규화 결과에 키가 없어 **기존 승인의 canonical digest가
+  // 바이트 단위로 그대로**다. 값이 있으면 `CLAUDE_MODEL_PATTERN` 하나로만 검증한다(두 번째 정본을
+  // 만들지 않는다 — argv 경계 가드도 같은 술어를 쓴다).
+  const claudeModel = ((): string | undefined => {
+    if (o.claudeModel === undefined || o.claudeModel === null) return undefined;
+    if (!isApprovedModelString(o.claudeModel)) {
+      throw new OrchestrationError(
+        "invalid_manifest",
+        `manifest.executionAuthority.claudeModel은 ${CLAUDE_MODEL_PATTERN} 형태의 문자열이어야 한다`,
+      );
+    }
+    return o.claudeModel;
+  })();
   const codexHome =
     o.codexHome === undefined || o.codexHome === null
       ? null
@@ -385,6 +445,7 @@ function validateExecutionAuthority(raw: unknown): MilestoneApprovalManifest["ex
   return {
     ...(claude === null ? {} : { claude }),
     ...(claudeHome === undefined ? {} : { claudeHome }),
+    ...(claudeModel === undefined ? {} : { claudeModel }),
     codex: o.codex === null ? null : validateApprovedExecutable(o.codex, "manifest.executionAuthority.codex"),
     ...(codexHome === null ? {} : { codexHome }),
     // **고정 controller entrypoint**(3A 2차 리비전 B2): 모든 typed `run_process`가 실행하는 **유일한**

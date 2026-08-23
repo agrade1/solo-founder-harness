@@ -60,6 +60,7 @@ import {
 import { ARTIFACT_POINTER_KEYS, ENVELOPE_KEYS, validateEnvelope, validateMessageBody } from "./agentMessage.js";
 import {
   AUTOPILOT_POLICY_KEYS,
+  CLAUDE_MODEL_PATTERN,
   COMMAND_PATTERN,
   COMMIT_PATTERN,
   DEPENDENCY_KEYS,
@@ -4212,9 +4213,22 @@ test("[M4c] milestone_approval_manifest.schema.json의 key·enum·상한이 runt
   assert.deepEqual(
     EXECUTION_AUTHORITY_KEYS.filter((k) => !(EXECUTION_AUTHORITY_REQUIRED_KEYS as readonly string[]).includes(k)),
     // V3 M11에서 `claudeHome`이 사람 승인 아래 더해졌다(대장 `C-86` — worker 세션의 자격증명 신원).
+    // 같은 마일스톤에서 `claudeModel`이 더해졌다(모델 축 — worker 세션이 도는 모델).
     // 목록을 명시적으로 갱신했다. 여전히 **여기 없는 key는 늘 수 없다.**
-    ["claude", "claudeHome", "codexHome"],
+    ["claude", "claudeHome", "claudeModel", "codexHome"],
   );
+  // 모델 축의 **형태**도 계약 문서와 런타임 validator가 같은 정본이어야 한다(닫힌 enum이 아니라
+  // 닫힌 형태를 골랐으므로 이 항등이 그 결정의 유일한 잠금이다).
+  assert.equal(s.properties.executionAuthority.properties.claudeModel.pattern, CLAUDE_MODEL_PATTERN);
+  assert.equal(s.properties.executionAuthority.properties.claudeModel.type, "string");
+  // **형태 정본은 `pattern` 하나다**(M11 적대적 리뷰 B-3). 한때 `maxLength: 64`가 함께 있었는데
+  // pattern의 실제 상한은 **65**(`1 + 55 + "[…]" 9`)여서 **계약 문서가 런타임보다 강한 주장**을 했다.
+  // 값을 맞추는 대신 **두 번째 정본을 없앴다** — 이 단정이 그것이 다시 생기는 것을 막는다.
+  assert.deepEqual(Object.keys(s.properties.executionAuthority.properties.claudeModel).sort(), [
+    "description",
+    "pattern",
+    "type",
+  ]);
   assert.deepEqual(s.properties.executionAuthority.properties.claude.oneOf[0].$ref, "#/definitions/approvedExecutable");
   assert.equal(s.properties.executionAuthority.properties.codexHome.$ref, "#/definitions/approvedDirectory");
   assert.equal(s.properties.executionAuthority.properties.claudeHome.$ref, "#/definitions/approvedDirectory");
@@ -4592,3 +4606,42 @@ test("[M10-T1] 살아 있는 writer의 lock은 훔치지 않는다 — 회수는
   releaseRunWriterLock(paths, reclaimed);
   assert.ok(!existsSync(paths.lockFile));
 });
+
+test("[M11/모델축] claudeModel은 선택이고, 형태 밖 값은 승인 적재에서 거부된다", () => {
+  // **없으면 키 자체가 없다** — 부재와 `null`이 같은 뜻이고(= CLI 기본 모델), 그래야 기존 승인의
+  // canonical digest가 바이트 단위로 그대로다(`claudeHome`·`codexHome`과 같은 규율).
+  const withoutKey = validateApprovalManifest(manifestFor(["root"])).executionAuthority;
+  assert.equal("claudeModel" in withoutKey, false);
+  const explicitNull = validateApprovalManifest(
+    manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, claudeModel: null } }),
+  ).executionAuthority;
+  assert.equal("claudeModel" in explicitNull, false, "null이 키를 남기면 digest가 흔들린다");
+  // 있으면 그 문자열 그대로 남는다.
+  assert.equal(
+    validateApprovalManifest(
+      manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, claudeModel: "claude-opus-5[1m]" } }),
+    ).executionAuthority.claudeModel,
+    "claude-opus-5[1m]",
+  );
+  // 형태 밖 값은 `invalid_manifest`다 — argv에 실릴 자리이므로 flag처럼 읽히는 값·공백·대문자·상한 초과를
+  // 전부 거부한다(닫힌 enum을 기각한 대신 형태로 막는다).
+  // **상한 경계를 못 박는다**(M11 적대적 리뷰 B-3): bracket 형태의 최대는 65자이고 그것은 **통과해야**
+  // 한다. 이 두 단정이 없으면 pattern의 상한을 바꿔도 아무 테스트가 red가 되지 않는다.
+  assert.equal(
+    validateApprovalManifest(
+      manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, claudeModel: `${"a".repeat(56)}[1234567]` } }),
+    ).executionAuthority.claudeModel,
+    `${"a".repeat(56)}[1234567]`,
+    "65자(bracket 포함 최대)가 거부됐다 — pattern 상한이 바뀌었다",
+  );
+  for (const bad of ["", "--dangerously-skip-permissions", "-opus", "opus 5", "OPUS", "a".repeat(65), `${"a".repeat(57)}[1234567]`, 5, {}]) {
+    assert.equal(
+      codeOf(() =>
+        validateApprovalManifest(manifestFor(["root"], { executionAuthority: { ...EXECUTION_AUTHORITY, claudeModel: bad } })),
+      ),
+      "invalid_manifest",
+      `${String(bad)}가 통과했다`,
+    );
+  }
+});
+

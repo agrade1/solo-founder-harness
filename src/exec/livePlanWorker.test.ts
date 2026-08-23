@@ -12,7 +12,8 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OrchestrationError } from "./orchestrationTypes.js";
-import { extractPlanJson, LIVE_WORKER_ENV, readReportedUsage, startLivePlanTurn } from "./livePlanWorker.js";
+import { extractPlanJson, LIVE_WORKER_ARGS, LIVE_WORKER_ENV, readReportedUsage, startLivePlanTurn } from "./livePlanWorker.js";
+import { isApprovedModelString } from "./approvalManifest.js";
 
 const dirs: string[] = [];
 process.on("exit", () => {
@@ -55,7 +56,7 @@ function identityOf(dir: string): { dev: number; ino: number } {
 async function drain(executable: string, timeoutMs = 30_000): Promise<string> {
   try {
     const cfg = configDir();
-    const stream = startLivePlanTurn({ executable, configDir: cfg, configDirIdentity: identityOf(cfg), prompt: "x", binding: { ...BINDING }, timeoutMs });
+    const stream = startLivePlanTurn({ executable, configDir: cfg, configDirIdentity: identityOf(cfg), model: null, prompt: "x", binding: { ...BINDING }, timeoutMs });
     let kinds = "";
     for await (const ev of stream) kinds += `${ev.kind},`;
     return kinds;
@@ -125,7 +126,7 @@ test("[M11/C-86] 자식 env는 LIVE_WORKER_ENV + 승인된 CLAUDE_CONFIG_DIR 하
       `process.stdout.write(JSON.stringify({ result: ${JSON.stringify('{"operations": [], "result": {"summary": "ok", "outputs": []}}')}, usage: null }));\n`,
   );
   const cfg = configDir();
-  const stream = startLivePlanTurn({ executable: echo, configDir: cfg, configDirIdentity: identityOf(cfg), prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+  const stream = startLivePlanTurn({ executable: echo, configDir: cfg, configDirIdentity: identityOf(cfg), model: null, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
   for await (const _ of stream) { /* 소진 */ }
   const env = JSON.parse(readFileSync(out, "utf8")) as Record<string, string>;
   assert.equal(env.CLAUDE_CONFIG_DIR, cfg, "승인된 신원이 자식에게 도착하지 않았다");
@@ -153,7 +154,7 @@ test("[M11/C-86] configDir 없이 부르면 프로세스를 띄우지 않는다(
   for (const bad of [undefined, "", "relative/path", 7]) {
     const code = await (async () => {
       try {
-        const stream = startLivePlanTurn({ executable: ok, configDir: bad as string, configDirIdentity: { dev: 1, ino: 1 }, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+        const stream = startLivePlanTurn({ executable: ok, configDir: bad as string, configDirIdentity: { dev: 1, ino: 1 }, model: null, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
         for await (const _ of stream) { /* 소진 */ }
         return "(통과)";
       } catch (e) {
@@ -173,7 +174,7 @@ test("[M11/C-86] 검증과 spawn 사이에 신원이 바뀌면 프로세스를 �
   const stale = { dev: identityOf(cfg).dev, ino: identityOf(cfg).ino + 1 }; // 교체된 디렉터리와 등가
   const code = await (async () => {
     try {
-      const stream = startLivePlanTurn({ executable: ok, configDir: cfg, configDirIdentity: stale, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+      const stream = startLivePlanTurn({ executable: ok, configDir: cfg, configDirIdentity: stale, model: null, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
       for await (const _ of stream) { /* 소진 */ }
       return "(통과)";
     } catch (e) {
@@ -183,4 +184,86 @@ test("[M11/C-86] 검증과 spawn 사이에 신원이 바뀌면 프로세스를 �
   assert.equal(code, "claude_config_identity_changed", code);
   // 대조군: 같은 신원이면 지난다(검사가 무조건 거부가 아니다).
   assert.equal(await drain(ok), "started,progress,progress,terminal,");
+});
+
+// ── V3 M11 모델 축 — `--model`은 승인이 말할 때만 실린다 ────────────────────────
+
+/** 자식이 받은 argv를 파일로 적고 고정 계획을 낸다. **argv를 재는 것이 이 절의 전부**다. */
+function argvBin(out: string): string {
+  return bin(
+    `import { readFileSync, writeFileSync } from "node:fs";\nreadFileSync(0, "utf8");\n` +
+      `writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.argv.slice(2)));\n` +
+      `process.stdout.write(JSON.stringify({ result: ${JSON.stringify('{"operations": [], "result": {"summary": "ok", "outputs": []}}')}, usage: null }));\n`,
+  );
+}
+
+async function argvOf(model: string | null): Promise<string[]> {
+  const out = join(realpathSync(mkdtempSync(join(tmpdir(), "m11-argv-"))), "argv.json");
+  dirs.push(join(out, ".."));
+  const cfg = configDir();
+  const stream = startLivePlanTurn({
+    executable: argvBin(out),
+    configDir: cfg,
+    configDirIdentity: identityOf(cfg),
+    model,
+    prompt: "x",
+    binding: { ...BINDING },
+    timeoutMs: 30_000,
+  });
+  for await (const _ of stream) { /* 소진 */ }
+  return JSON.parse(readFileSync(out, "utf8")) as string[];
+}
+
+test("[M11/모델축] 승인이 모델을 말하면 그 값이 --model로 자식 argv에 도착한다", async () => {
+  // **argv를 직접 잰다**: 타입·주석이 아니라 자식이 받은 인자가 이 축의 유일한 증거다.
+  const argv = await argvOf("claude-opus-5[1m]");
+  assert.deepEqual(argv.slice(-2), ["--model", "claude-opus-5[1m]"], JSON.stringify(argv));
+  // 기존 인자는 **하나도 바뀌지 않는다**(각각 실측 근거가 있는 상수다 — 모델 축이 그것을 건드리지 않는다).
+  assert.deepEqual(argv.slice(0, LIVE_WORKER_ARGS.length), [...LIVE_WORKER_ARGS], JSON.stringify(argv));
+  assert.equal(argv.length, LIVE_WORKER_ARGS.length + 2);
+});
+
+test("[M11/모델축] 승인이 모델을 말하지 않으면 --model이 **아예 실리지 않는다**", async () => {
+  // 조용한 기본값 주입 금지: 여기서 하네스가 모델을 골라 넣으면 영수증의 `cli_default`가 거짓이 된다.
+  const argv = await argvOf(null);
+  assert.deepEqual(argv, [...LIVE_WORKER_ARGS], JSON.stringify(argv));
+  assert.equal(argv.includes("--model"), false, "승인이 말하지 않은 모델이 argv에 실렸다");
+});
+
+test("[M11/모델축] 형태 밖 모델 값은 프로세스를 띄우지 않는다(argv 경계 가드)", async () => {
+  const ok = bin(EMIT('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const cfg = configDir();
+  // `undefined`(배선 누락) · 빈 문자열 · flag처럼 읽히는 값 · 공백 포함 · 상한 초과 · 대문자 · 비문자열.
+  for (const bad of [undefined, "", "--dangerously-skip-permissions", "-opus", "opus 5", "a".repeat(65), "Opus-5", 7]) {
+    const code = await (async () => {
+      try {
+        const stream = startLivePlanTurn({
+          executable: ok,
+          configDir: cfg,
+          configDirIdentity: identityOf(cfg),
+          model: bad as string,
+          prompt: "x",
+          binding: { ...BINDING },
+          timeoutMs: 30_000,
+        });
+        for await (const _ of stream) { /* 소진 */ }
+        return "(통과)";
+      } catch (e) {
+        return e instanceof OrchestrationError ? e.code : String(e);
+      }
+    })();
+    assert.equal(code, "worker_spawn_failed", `${String(bad)}가 통과했다`);
+  }
+  // 대조군: 형태를 만족하는 값은 지난다(가드가 무조건 거부가 아니다).
+  assert.deepEqual((await argvOf("sonnet")).slice(-2), ["--model", "sonnet"]);
+});
+
+test("[M11/모델축] 형태 술어는 실제 모델 문자열을 받아들이고 주입 후보를 거부한다", () => {
+  // 닫힌 enum을 **기각한** 대가로 이 표가 계약이다(근거는 `CLAUDE_MODEL_PATTERN` 주석).
+  for (const good of ["opus", "sonnet", "haiku", "claude-opus-5", "claude-opus-5[1m]", "claude-sonnet-4-5-20250929", "anthropic.claude-opus-5"]) {
+    assert.equal(isApprovedModelString(good), true, good);
+  }
+  for (const bad of ["", "-opus", "--model", "opus 5", "opus\n--tools", "OPUS", "opus;rm -rf /", "a".repeat(65), "opus[1m][2m]", null, 5]) {
+    assert.equal(isApprovedModelString(bad), false, String(bad));
+  }
 });
