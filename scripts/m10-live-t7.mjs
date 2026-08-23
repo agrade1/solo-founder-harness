@@ -104,8 +104,6 @@ for (const args of [
 
 const claudeReal = realpathSync(process.env.HARNESS_CLAUDE_BIN ?? "/Users/jihun/.nvm/versions/node/v24.18.0/bin/claude");
 const claudeSha = createHash("sha256").update(readFileSync(claudeReal)).digest("hex");
-// **승인된 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · `C-86`). 사람이 1회 로그인해 둔 디렉터리다.
-const CLAUDE_HOME = process.env.HARNESS_CLAUDE_HOME ?? "/Users/jihun/harness-claude-home";
 // **wrapper가 아니라 실제 실행 파일을 승인한다**(대장 `B-27` · 감사 R6이 지목하는 바로 그 함정).
 // `~/.nvm/.../bin/codex`는 `#!/usr/bin/env node` wrapper라 digest가 실제 추론 바이너리를 고정하지 못하고,
 // 게다가 이 harness의 닫힌 env(자식에게 `CODEX_HOME` 하나)에서는 `env: node: No such file`로 **아예 뜨지
@@ -132,10 +130,11 @@ const manifest = {
   executionAuthority: {
     // **live worker 실행 파일**(V3 M10 T3). 이 키가 없으면 live backend는 표현 불가다.
     claude: DRY ? null : { path: claudeReal, sha256: claudeSha },
-    // **worker 세션의 자격증명 신원**(V3 M11 · 대장 `C-86`). 실행 파일만 승인하고 신원을 비우는 조합은
-    // 이제 표현 불가다 — `approvedWorkerExecutable()`이 짝을 강제한다. 사람이 **1회**
-    // `CLAUDE_CONFIG_DIR=<이 경로> claude`로 로그인해 둬야 하고 harness는 그 로그인을 대행하지 않는다.
-    ...(DRY ? {} : { claudeHome: { path: CLAUDE_HOME } }),
+    // **신원은 선택 축이다**(V3 M11 · 사용자 결정 2026-08-23 · 대장 `C-86`). 이 fixture는 고정하지
+    // **않는다** → 이 기계에 로그인된 계정으로 돈다(ambient). 그 사실은 조용히 넘어가지 않고
+    // `report.workerIdentity === "ambient"`와 `worker_identity` 이벤트로 남는다.
+    // 신원을 고정하려면 사람이 1회 `CLAUDE_CONFIG_DIR=<홈> claude`로 로그인한 뒤 여기에
+    // `claudeHome: { path: <홈> }`을 더한다 — harness는 그 로그인을 대행하지 않는다.
     // 이 slice는 typed operation을 쓰지 않는다(리뷰 왕복만 본다) → entrypoint는 형태만 채운다.
     controllerEntrypoint: { path: "/opt/harness/controller.js", sha256: "b".repeat(64) },
     // **리뷰어 권위**(C-97): 승인에 이 두 키가 없으면 codex backend는 표현 불가다.

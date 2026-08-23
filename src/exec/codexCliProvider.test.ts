@@ -2252,8 +2252,9 @@ test("[M5a] C-23: 시각 권위는 봉인된다 — 시계를 갈아끼워 만�
     const opts: DriftOpts & { controllerRepoRoot: string; spawn: SpawnFn } = {
       manifest: manifest(repo.head),
       controllerRepoRoot: repo.root,
-      executablePath: TRUSTED_BIN,
-      gitExecutablePath: TRUSTED_GIT,
+      // 실행 파일 권위는 **승인 manifest에만** 있다(6차 리뷰 A1) — `manifest(repo.head)`가 이미
+      // `authorityFor(TRUSTED_BIN, TRUSTED_GIT)`을 담는다. 여기 있던 `executablePath`/
+      // `gitExecutablePath`는 생성자가 읽지 않는 죽은 필드였다(C-101에서 타입 검사가 드러냈다).
       spawn: fakeSpawn(calls, (c) => c.finish(OK_STREAM, 0)),
       nowMs: sealedClock,
     };
@@ -2356,8 +2357,7 @@ test("[M5a] 시각 권위 계약: 함수 아닌 nowMs는 start에서 거부되�
     const opts: DriftOpts & { controllerRepoRoot: string; spawn: SpawnFn } = {
       manifest: manifest(repo.head),
       controllerRepoRoot: repo.root,
-      executablePath: TRUSTED_BIN,
-      gitExecutablePath: TRUSTED_GIT,
+      // 위와 같은 이유로 실행 파일 경로 필드를 두지 않는다(승인 manifest가 유일한 권위다).
       spawn: fakeSpawn(sealedCalls, (c) => c.finish(OK_STREAM, 0)),
     };
     const provider = new CodexCliProvider(opts);

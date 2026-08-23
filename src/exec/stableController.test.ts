@@ -601,7 +601,16 @@ test("[M5b] C-25: 다중 turn(전달 소비)에서 turn마다 events()를 다시
 /** producer(완료) → worker(의존) 배치: worker inbox에 중앙 경유 전달 1건이 대기한다. */
 async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
   const repo = await initRepo();
-  const deliveryManifest = manifestFor(repo.head, ["producer", "worker"], over.manifest);
+  // C-101: `codexBin`이 아래(신뢰 조건 깨기)에서 **선언 없이** 참조되고 있었다 — 테스트가 타입 검사를
+  // 받지 않아 숨어 있던 ReferenceError다. `fixture()`와 같은 규율로 맞춘다: 깨뜨릴 실행 파일은 **이
+  // fixture 전용 사본**이어야 하고(공유 FAKE_CODEX_BIN을 chmod하면 같은 프로세스의 다른 테스트가
+  // 깨진다) 승인 manifest도 같은 경로를 담아야 "승인된 실행 파일을 깼다"가 성립한다.
+  // `authorityFor(x)`의 git 기본값은 TRUSTED_GIT이라 breakExecutable이 아닐 때는 종전과 동일하다.
+  const codexBin = over.breakExecutable ? ownCodexBin() : FAKE_CODEX_BIN;
+  const deliveryManifest = manifestFor(repo.head, ["producer", "worker"], {
+    executionAuthority: authorityFor(codexBin),
+    ...over.manifest,
+  });
   const kernel = createOrchestrationRun({
     workspaceRoot: repo.root,
     runId: RUN_ID,
@@ -685,7 +694,7 @@ async function fixtureWithDelivery(over: FixtureOpts = {}): Promise<Fixture> {
   };
   const controller = new StableController(controllerOpts);
   if (over.breakExecutable) chmodSync(codexBin, 0o600); // 신원 고정 뒤에 신뢰 조건을 깬다
-  return { repo, kernel, provider, controller, handoffs, opts: controllerOpts as unknown as Record<string, unknown> };
+  return { repo, kernel, provider, controller, handoffs, codexBin, opts: controllerOpts as unknown as Record<string, unknown> };
 }
 
 // ── 3. 전달 수령 순서: provider가 안전히 받은 뒤에만 ack ──────────────────────
@@ -1419,7 +1428,9 @@ async function gateRun(authority?: { codex?: unknown; git?: unknown }): Promise<
 }
 
 /** 주어진 run에 후보 provider를 꽂아 controller를 만들고 코드(또는 `"(생성됨)"`)를 돌려준다. */
-function gateCode(run: GateRun, candidate: unknown | ProviderFactory, over: Record<string, unknown> = {}): string {
+// C-101: 이전 판은 `unknown | ProviderFactory`였다 — 유니온이 `unknown`으로 접혀 인라인 factory의
+// 인자가 implicit any가 됐다(즉 factory 쪽 오타를 컴파일이 못 잡았다). 후보는 **값(객체) 아니면 factory**다.
+function gateCode(run: GateRun, candidate: ProviderFactory | object, over: Record<string, unknown> = {}): string {
   const provider = typeof candidate === "function" ? (candidate as ProviderFactory)(run) : candidate;
   try {
     new StableController({
@@ -1436,7 +1447,7 @@ function gateCode(run: GateRun, candidate: unknown | ProviderFactory, over: Reco
   }
 }
 
-async function controllerGateCode(candidate: unknown | ProviderFactory, over: Record<string, unknown> = {}): Promise<string> {
+async function controllerGateCode(candidate: ProviderFactory | object, over: Record<string, unknown> = {}): Promise<string> {
   return gateCode(await gateRun(), candidate, over);
 }
 

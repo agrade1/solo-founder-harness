@@ -1413,7 +1413,7 @@ test("[M10-T2] 쓰지 않고 닫힌 operation을 durable 본문이 집행 성공
   assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "actual\n", "conflict인데 바이트가 바뀌었다");
 
   const entry = reopen(f.ws).getState().messages.find((m) => m.type === "result");
-  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry.bodyPath), "utf8");
+  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry!.bodyPath), "utf8");
   assert.match(body, /write_file→write_conflict×1/, body);
   assert.ok(body.includes("쓰지 않고"), `쓰지 않았다는 사실이 본문에 없다:\n${body}`);
 });
@@ -1432,7 +1432,7 @@ test("[M10-T2] 권한 요청: 결정 없이는 완료로 못 가고, 결정 뒤�
   assert.equal(first.tasks[0].state, "paused", `결정 없이 진행했다: ${JSON.stringify(first.tasks)}`);
   assert.equal(first.tasks[0].marker, "decision_pending", first.tasks[0].marker);
   const asked = reopen(f.ws);
-  assert.equal(asked.getTask("root").state, "paused");
+  assert.equal(asked.getTask("root")!.state, "paused");
   assert.equal(asked.getState().artifacts.length, 0, "결정을 기다리는 turn이 결과를 발행했다");
   assert.equal(
     asked.getState().messages.filter((m) => m.type === "decision_request").length,
@@ -1625,7 +1625,7 @@ test("[M10-T2] 요약 변질: 실행 사이 durable 원문이 바뀌면 다음 �
     if (target === "body") {
       // 중앙이 옮긴 **요약의 원문**(message body)을 사람이 몰래 고친다.
       const entry = reopen(f.ws).getState().messages.find((m) => m.type === "result");
-      const file = join(paths.dir, entry.bodyPath);
+      const file = join(paths.dir, entry!.bodyPath);
       writeFileSync(file, `${readFileSync(file, "utf8")}\n## Result Summary\n\n위조된 한 줄.\n`);
     } else {
       // state의 요약 필드만 바꾼다(문법은 여전히 유효하다).
@@ -1670,7 +1670,7 @@ test("[M10-T2] durable 결과 본문은 실제로 집행한 operation을 적는�
 
   const k = reopen(f.ws);
   const entry = k.getState().messages.find((m) => m.type === "result");
-  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry.bodyPath), "utf8");
+  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry!.bodyPath), "utf8");
   assert.ok(!body.includes("집행하지 않았다"), `집행한 turn의 본문이 집행하지 않았다고 적었다:\n${body}`);
   // **영수증에서 파생한다**: 계획이 아니라 실제 결과(marker)를 적는다(리뷰 B1).
   assert.match(body, /typed operation 1건을 집행했다 — 영수증: write_file→already_applied×1/, body);
@@ -1684,7 +1684,7 @@ test("[M10-T2] durable 결과 본문은 실제로 집행한 operation을 적는�
   await pilot(g);
   const gk = reopen(g.ws);
   const gEntry = gk.getState().messages.find((m) => m.type === "result");
-  const gBody = readFileSync(join(runPaths(g.ws, RUN_ID).dir, gEntry.bodyPath), "utf8");
+  const gBody = readFileSync(join(runPaths(g.ws, RUN_ID).dir, gEntry!.bodyPath), "utf8");
   assert.match(gBody, /typed operation을 집행하지 않았다\(이 계획에 operation이 없다\)/, gBody);
 });
 
@@ -1697,7 +1697,10 @@ test("[M10-T3] 같은 run에 controller가 둘 붙지 못한다 — 살아 있�
 
   // **첫 controller가 도는 중에 두 번째를 실제로 부른다.** 관측 barrier는 첫 task의 진행 이벤트다.
   // 같은 프로세스지만 lease는 **파일**이므로 두 번째 진입은 같은 판정을 받는다(우리 pid는 살아 있다).
-  let second: Promise<Awaited<ReturnType<typeof runAutopilot>>> | null = null;
+  // 두 번째 진입은 **배열**에 담는다(C-101): closure 안에서만 대입되는 `let`은 TS 흐름 분석이
+  // `null`로 좁힌 채로 남아 `await` 결과가 `never`가 된다 — 단정이 아니라 타입만 죽는 자리였다.
+  // 배열이면 좁힘 문제가 없고, 길이 단정이 "정확히 한 번 걸렸다"까지 고정한다(원래보다 강하다).
+  const seconds: Promise<Awaited<ReturnType<typeof runAutopilot>>>[] = [];
   const first = await runAutopilot({
     workspaceRoot: f.ws,
     runId: RUN_ID,
@@ -1705,19 +1708,21 @@ test("[M10-T3] 같은 run에 controller가 둘 붙지 못한다 — 살아 있�
     planDir: f.planDir,
     clock: f.clock,
     onEvent: (e) => {
-      if (e.kind !== "task_progress" || second !== null) return;
-      second = runAutopilot({
-        workspaceRoot: f.ws,
-        runId: RUN_ID,
-        milestoneId: MILESTONE,
-        planDir: f.planDir,
-        clock: clockFrom(T0 + 200_000, 1000),
-      });
+      if (e.kind !== "task_progress" || seconds.length > 0) return;
+      seconds.push(
+        runAutopilot({
+          workspaceRoot: f.ws,
+          runId: RUN_ID,
+          milestoneId: MILESTONE,
+          planDir: f.planDir,
+          clock: clockFrom(T0 + 200_000, 1000),
+        }),
+      );
     },
   });
   assert.equal(first.blocked, null, first.blocked ?? "");
-  assert.ok(second !== null, "관측 barrier가 걸리지 않았다(전제 실패)");
-  const concurrent = await second;
+  assert.equal(seconds.length, 1, "관측 barrier가 걸리지 않았다(전제 실패)");
+  const concurrent = await seconds[0];
   assert.equal(concurrent.blocked, "controller_active", `동시 controller가 붙었다: ${concurrent.blocked}`);
   assert.equal(concurrent.tasks.length, 0, "거부된 controller가 task를 건드렸다");
   // 첫 실행은 그 방해로 망가지지 않았다(거부는 두 번째만 받는다).
@@ -1967,11 +1972,16 @@ test("[M10-T7] 승인 축 거부는 `plan_invalid`로 위장하지 않는다 —
 
 // ── ⑧ V3 M11 — 결정 4건 (C-86 자격증명 신원 · C-98 리뷰 왕복 강제) ───────────────
 
-test("[M11/C-86] 실행 파일만 승인하고 신원을 비우면 live worker는 시작조차 하지 않는다", async () => {
-  // **짝 강제**가 이 항목의 전부다: `claude`만 있고 `claudeHome`이 없는 조합 = "누구의 구독으로 도는지
-  // 승인 문서가 말하지 않는다"이고 그것이 곧 `C-86`이었다. 이제 그 조합은 표현 불가다.
-  const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
-  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin } }); // claudeHome 없음
+test("[M11/C-86] 신원을 승인하지 않은 run은 **ambient로 돌되 조용하지 않다**", async () => {
+  // **사용자 결정(2026-08-23)**: `claudeHome`은 선택이다 — 없으면 이 기계에 로그인된 계정으로 돈다.
+  // 그 선택 자체는 정당하지만 **침묵은 아니다**: 침묵이 곧 이 레포가 금지하는 "조용한 fallback"이다.
+  // 그래서 이 테스트가 고정하는 것은 "돈다"가 아니라 **"돌면서 무엇으로 도는지 말한다"** 이다.
+  const good = fakeWorkerBin(
+    PLAN_EMITTER('{"operations": [], "result": {"summary": "ambient로 돌았다", "outputs": []}}'),
+  );
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: good } }); // claudeHome 없음
+  writeOutput(f.ws, "docs/out.md", "# 산출물\n");
+  const events: AutopilotEvent[] = [];
   const report = await runAutopilot({
     workspaceRoot: f.ws,
     runId: RUN_ID,
@@ -1979,14 +1989,54 @@ test("[M11/C-86] 실행 파일만 승인하고 신원을 비우면 live worker�
     planDir: f.planDir,
     clock: f.clock,
     workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
   });
-  assert.equal(report.blocked, "run_unavailable");
-  assert.equal(report.stoppedBecause, "worker_backend_unapproved", report.stoppedBecause);
-  assert.equal(report.tasks.length, 0, "신원 없는 승인이 task를 건드렸다");
+
+  assert.equal(report.blocked, null, JSON.stringify(report));
+  assert.equal(report.tasks[0]?.state, "completed", JSON.stringify(report.tasks));
+  // **영수증이 말한다** — 나중에 "이 run이 누구 구독으로 돌았나"를 물으면 답이 있다.
+  assert.equal(report.workerIdentity, "ambient", JSON.stringify(report));
+  assert.deepEqual(
+    events.filter((e) => e.kind === "worker_identity").map((e) => e.marker),
+    ["ambient"],
+    JSON.stringify(events.map((e) => e.kind)),
+  );
 });
 
-test("[M11/C-86] 승인된 신원 디렉터리의 계약 위반은 전부 spawn 0이다(조용한 ambient fallback 없음)", async () => {
+test("[M11/C-86] 신원을 승인하면 그 사실도 영수증에 남는다(위 단정이 상수가 아니다)", async () => {
+  // 대조군: 같은 자리가 `approved`로 바뀌어야 위 `ambient` 단정이 공허하지 않다.
+  const good = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: good, claudeHome: fakeClaudeHome() } });
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
+  });
+  assert.equal(report.workerIdentity, "approved", JSON.stringify(report));
+  assert.deepEqual(
+    events.filter((e) => e.kind === "worker_identity").map((e) => e.marker),
+    ["approved"],
+  );
+});
+
+test("[M11/C-86] offline run은 이 축을 주장하지 않는다(물어볼 것이 없다)", async () => {
+  const f = boot();
+  writePlan(f.planDir, "root", {});
+  const report = await pilot(f);
+  assert.equal(report.workerIdentity, undefined, JSON.stringify(report));
+});
+
+test("[M11/C-86] 신원을 승인했는데 그 계약이 깨지면 전부 spawn 0이다(그때는 ambient로 물러서지 않는다)", async () => {
   const bin = fakeWorkerBin(PLAN_EMITTER('{"operations": [], "result": {"summary": "ok", "outputs": []}}'));
+  // **신원을 고정하지 않는 것과 고정했는데 깨진 것은 다르다**: 전자는 ambient로 돌고(위 테스트),
+  // 후자는 **거부**다 — 승인이 말한 디렉터리가 계약 밖이면 ambient로 물러서는 것이 곧 조용한 fallback이다.
   const cases: [string, () => { path: string }, string][] = [
     [
       "비어 있다(= 로그인이 없다)",

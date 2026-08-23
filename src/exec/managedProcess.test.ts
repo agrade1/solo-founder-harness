@@ -50,7 +50,7 @@ import {
   type ProcessLaunchCapability,
   type TaskSeed,
 } from "./orchestrationKernel.js";
-import type { TypedRunProcessOperation } from "./typedPlan.js";
+import type { TypedGitWorktreeOperation, TypedRunProcessOperation } from "./typedPlan.js";
 import { superviseProcess } from "./managedProcess.js";
 
 const RUN_ID = "run-1";
@@ -441,7 +441,7 @@ test("[M9] 선결 1: run-tests도 실패 exit code를 성공으로 덮지 않는
  * worktree fixture: **진짜 git 저장소** 하나 + 승인 manifest가 그 HEAD를 `approvedCommit`으로 가리킨다.
  * `gitBody`를 주면 그 shell 스크립트가 git 자리에 들어간다(인자 기록용).
  */
-function worktreeFixture(opts: { gitBody?: string } = {}): Fixture & { gitPath: string; commit: string } {
+function worktreeFixture(opts: { gitBody?: string; policy?: Record<string, number> } = {}): Fixture & { gitPath: string; commit: string } {
   const ws = makeDir("m9-wt-ws-");
   mkdirSync(join(ws, "docs"));
   const bin = makeDir("m9-wt-bin-");
@@ -483,6 +483,7 @@ function worktreeFixture(opts: { gitBody?: string } = {}): Fixture & { gitPath: 
       maxAttemptElapsedMs: 3_000_000,
       cleanupTermGraceMs: 2_000,
       cleanupKillGraceMs: 2_000,
+      ...(opts.policy ?? {}),
     },
     operationAuthorityByTask: {
       root: [
@@ -606,8 +607,8 @@ test("[M9] T3③ 리뷰 A: 실패한 worktree 명령은 성공 영수증이 되�
     "실패한 worktree add가 성공으로 접혔다",
   );
   // **성공 영수증이 없다** — pending은 attempted로 남아 정합화로만 닫힌다(부분 상태가 있을 수 있다).
-  const pend = f.kernel.getTask("root").execution.pendingOperations;
-  assert.equal(f.kernel.getTask("root").execution.operationReceipts.length, 0, "실패가 영수증으로 남았다");
+  const pend = f.kernel.getTask("root")!.execution.pendingOperations;
+  assert.equal(f.kernel.getTask("root")!.execution.operationReceipts.length, 0, "실패가 영수증으로 남았다");
   assert.equal(pend.length, 1);
   assert.notEqual(pend[0].attemptedAt, null, "집행 경계 진입이 durable하지 않다");
   // 경쟁자 파일은 그대로다(우리가 지우지 않았다).
@@ -620,7 +621,7 @@ test("[M9] T3③ 리뷰 A: 실패한 worktree 명령은 성공 영수증이 되�
     await codeOfAsync(() => executeWorktreeOperation(rm.grant, rm.op, rm.cap)),
     "process_result_unknown",
   );
-  assert.equal(g.kernel.getTask("root").execution.operationReceipts.length, 0);
+  assert.equal(g.kernel.getTask("root")!.execution.operationReceipts.length, 0);
 });
 
 test("[M9] T3③ 리뷰 B-2: linked worktree 루트에서는 worktree를 만들지 않는다(변경이 승인 루트 밖에 남는다)", async () => {
@@ -1098,4 +1099,34 @@ test("[M10 T6/B-18] setsid로 그룹을 탈출한 자손은 그룹 관측의 범
   const deadline = Date.now() + 15_000;
   while (!existsSync(marker) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 50));
   assert.equal(existsSync(marker), true, "탈출 자손이 죽었다 — pgid reap이 그룹 밖까지 덮었다는 뜻이므로 계약 기술이 낡았다");
+});
+
+/**
+ * [V3 M11 · 대장 `B-31`] **변경 계열 git의 deadline은 승인된 attempt 상한에서 온다 — 질의용 30초 상수가
+ * 아니다.**
+ *
+ * B-31 slice가 `executeWorktreeOperation`의 `timeoutMs`를 `TRUSTED_GIT_TIMEOUT_MS`(30초 · 읽기 질의용)
+ * 에서 `autopilotPolicy.maxAttemptElapsedMs`로 바꿨는데, **그 값을 관측하는 테스트가 없었다**(그 slice는
+ * 이 파일의 소유 밖이었다 — 그래서 자기 보고에 "미증명"으로 적었다). 여기서 닫는다.
+ *
+ * 재는 법: 승인이 허용한 상한을 **1.5초**로 낮추고 git 자리에 30초 자는 스크립트를 둔다.
+ * 옛 상수를 쓰면 30초를 기다리므로, **빨리 끊겼다는 사실 자체가** 승인 축의 값을 쓴다는 증거다.
+ */
+test("[M11/B-31] worktree 집행의 deadline은 승인된 attempt 상한이다(질의용 30초 상수가 아니다)", async () => {
+  const f = worktreeFixture({
+    gitBody: "#!/bin/sh\nsleep 30\n",
+    policy: { maxAttemptElapsedMs: 1_500, cleanupTermGraceMs: 200, cleanupKillGraceMs: 200 },
+  });
+  const add = worktreeShot(f, "wt-add", "turn-1");
+  const startedAt = process.hrtime.bigint();
+  // 변경 계열은 deadline을 **던진다**(반환 영수증이 아니다 — 끊긴 집행은 완료로 적히지 않는다).
+  const code = await executeWorktreeOperation(add.grant, add.op, add.cap).then(
+    (o) => `(통과) ${JSON.stringify(o)}`,
+    (e: unknown) => (e as OrchestrationError).code,
+  );
+  const elapsedMs = Number((process.hrtime.bigint() - startedAt) / 1_000_000n);
+
+  assert.equal(code, "process_deadline_exceeded", code);
+  // **상한이 실제로 집행됐다**: 옛 상수(30초)였다면 여기까지 오는 데 30초가 걸린다.
+  assert.ok(elapsedMs < 10_000, `승인 상한이 집행되지 않았다(경과 ${elapsedMs}ms — 옛 30초 상수로 보인다)`);
 });

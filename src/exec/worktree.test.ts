@@ -67,3 +67,64 @@ test("removeWorktree deleteBranch: 브랜치까지 삭제", async () => {
     rmSync(repo, { recursive: true, force: true });
   }
 });
+
+/**
+ * **대장 `B-31` — deadline kill 잔재를 닫힌 action 집합으로 되돌릴 수 있는가.**
+ *
+ * 아래 둘은 기능이 아니라 **결정을 붙잡는다**: `GIT_WORKTREE_ACTIONS`에 `prune`을 더하지 않기로 한 근거가
+ * git의 실제 semantics이므로(`orchestrationTypes.ts`의 그 주석), semantics가 바뀌면 여기서 red가 나고
+ * 결정을 다시 봐야 한다. kernel 경로(`executeWorktreeOperation`)가 아니라 **git 자체**를 재는 이유는
+ * 재는 대상이 git의 회복 가능성이기 때문이다 — kernel은 이 argv를 그대로 넘길 뿐이다.
+ */
+async function git(repo: string, ...args: string[]): Promise<number | null> {
+  return (await runProcess("git", ["-C", repo, ...args])).code;
+}
+
+test("[B-31] 등록만 남은 잔재: 재시도 add를 막지만 이미 있는 remove --force가 되돌린다", async () => {
+  const repo = await initRepo();
+  try {
+    const wt = join(repo, ".harness", "worktrees", "run1", "t");
+    const head = (await runProcess("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
+    assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 0);
+
+    // **out-of-band 삭제 잔재**: 작업 디렉터리는 사라졌고 `.git/worktrees/<name>` 등록만 남았다.
+    // **이 모양은 kill이 만들지 않는다**(M11 적대적 리뷰 — 이전 라벨 "kill 잔재 모양 ⓐ"는 틀렸다):
+    // supervisor는 TERM 먼저·유예 뒤 KILL이고 git 자신의 junk 핸들러가 **등록을 먼저** 지우므로
+    // unlocked 등록만 남는 경로가 없다. 사람이나 다른 도구가 디렉터리를 지웠을 때 생긴다.
+    // 그래도 여기 두는 이유: `prune`이 유일하게 쓸모 있어 보이는 모양이 바로 이것이고,
+    // **그 자리마저 `remove --force`가 이미 덮는다**는 것이 기각 근거의 절반이다.
+    rmSync(wt, { recursive: true, force: true });
+    // B-31이 말한 그 exit 128 — 등록이 남아 있으면 같은 경로의 재시도 add가 막힌다.
+    assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 128, "등록 잔재가 재시도를 막지 않는다");
+
+    // **닫힌 집합에 이미 있는** remove가 그 잔재를 되돌린다 → prune이 필요한 모양이 아니다.
+    assert.equal(await git(repo, "worktree", "remove", "--force", wt), 0, "remove가 등록 잔재를 못 지운다");
+    assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 0, "정리 뒤에도 재시도가 막힌다");
+    assert.ok(existsSync(join(wt, ".git")), "재시도 add가 linked worktree를 만들지 못했다");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("[B-31] 파일이 남은 잔재: prune으로도 remove로도 되돌아가지 않는다(닫힌 집합의 남는 구멍)", async () => {
+  const repo = await initRepo();
+  try {
+    const wt = join(repo, ".harness", "worktrees", "run1", "t");
+    const head = (await runProcess("git", ["-C", repo, "rev-parse", "HEAD"])).stdout.trim();
+    assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 0);
+
+    // **supervisor의 deadline kill이 실제로 남기는 모양이다**: git 자신의 junk 핸들러가 metadata를
+    // 먼저 지우고 작업 트리를 지우다 끊기므로 "파일이 든 디렉터리 + 등록 없음"이 남는다. 여기서는 그
+    // 상태를 결정적으로 만든다(등록 포인터 제거 → prune이 등록을 회수).
+    rmSync(join(wt, ".git"));
+    assert.equal(await git(repo, "worktree", "prune"), 0);
+
+    // prune은 **작업 파일을 절대 지우지 않는다** → 잔재 디렉터리가 그대로 남는다.
+    assert.ok(existsSync(join(wt, "README.md")), "prune이 작업 파일을 지웠다(전제가 바뀌었다)");
+    assert.equal(await git(repo, "worktree", "add", "--detach", wt, head), 128, "prune이 재시도를 되살렸다");
+    // remove도 못 한다 — 등록이 없으니 git에게 이것은 worktree가 아니다.
+    assert.equal(await git(repo, "worktree", "remove", "--force", wt), 128, "등록 없는 디렉터리를 remove가 지웠다");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
