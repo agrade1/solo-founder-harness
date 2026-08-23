@@ -112,6 +112,14 @@ export interface AutopilotEvent {
      * "조용한 fallback"이므로, 값이 무엇이든 이 이벤트가 나온다.**
      */
     | "worker_identity"
+    /**
+     * **worker 세션이 어느 모델로 도는가**(V3 M11 모델 축). live backend에서 시작 직후 한 번 나온다.
+     * `marker`가 `approved`면 승인 문서(`executionAuthority.claudeModel`)가 고정했고 **`detail`이 그
+     * 문자열**이다. `cli_default`면 승인이 모델을 말하지 않아 `--model`이 실리지 않았다는 뜻이고
+     * **`detail`이 없다** — harness는 CLI 기본 모델이 무엇인지 모르며, 모르는 값을 지어 적는 것이
+     * 곧 거짓 영수증이다.
+     */
+    | "worker_model"
     | "task_completed"
     | "task_cancelled"
     | "run_finished";
@@ -158,6 +166,21 @@ export interface AutopilotReport {
    * **그 사실이 영수증에 남는다** — 나중에 "이 run이 누구 구독으로 돌았나"를 물으면 답이 있다.
    */
   workerIdentity?: "approved" | "ambient";
+  /**
+   * **worker 세션이 어느 모델로 돌도록 요청됐는가**(V3 M11 모델 축). live backend가 아니면 key 자체가
+   * 없다(물어볼 것이 없다).
+   *
+   * - `{ marker: "approved", model: "<승인된 값>" }` — 승인 문서가 고정했고 그 문자열이 `--model`로 실렸다.
+   * - `{ marker: "cli_default", model: null }` — 승인이 모델을 말하지 않았다. `--model`은 **실리지 않았고**
+   *   세션은 CLI 기본 모델로 돌았다. `model`이 `null`인 것은 **harness가 그 기본값이 무엇인지 모른다**는
+   *   뜻이다 — 여기에 추측한 모델 이름(예: 지금 유행하는 모델)을 적으면 그 자체가 거짓 영수증이다.
+   *   그래서 두 경우는 **같은 값으로 적힐 수 없는 형태**로 갈라 둔다.
+   *
+   * **이 필드가 주장하는 범위**: harness가 관측한 것은 **argv**까지다("승인이 이 모델을 말했고 `--model`로
+   * 실었다"). CLI 응답 봉투의 모델 필드는 읽지 않는다 — 그 필드의 실재·이름을 이 slice에서 실측하지
+   * 못했다(live 금지). 따라서 "요청한 모델로 **실제로** 돌았다"는 여기서 증명되지 않는다.
+   */
+  workerModel?: { marker: "approved"; model: string } | { marker: "cli_default"; model: null };
 }
 
 /**
@@ -290,15 +313,22 @@ async function runAutopilotUnderLease(
   }
   // live backend는 **시작 전에** 승인을 본다(첫 turn에서 알게 되면 그때까지 상태를 바꿨을 수 있다).
   let workerIdentity: "approved" | "ambient" | undefined;
+  let workerModel: AutopilotReport["workerModel"];
   if (backend === LIVE_PLAN_BACKEND) {
     try {
-      workerIdentity = kernel.approvedWorkerExecutable().configDir === null ? "ambient" : "approved";
+      const approvedWorker = kernel.approvedWorkerExecutable();
+      workerIdentity = approvedWorker.configDir === null ? "ambient" : "approved";
+      // **모델 축도 같은 자리에서 읽는다**(V3 M11). 승인이 모델을 말하지 않으면 `cli_default`이고
+      // `model`은 `null`이다 — harness는 CLI 기본값이 **무엇인지 모르므로** 이름을 적지 않는다.
+      workerModel = approvedWorker.model === null ? { marker: "cli_default", model: null } : { marker: "approved", model: approvedWorker.model };
     } catch (err) {
       return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
     }
     // **무엇으로 도는지를 말하고 시작한다**(`C-86`). `ambient`도 정당한 선택이지만 조용해서는 안 된다 —
     // 그 침묵이 곧 이 레포가 금지하는 "조용한 fallback"이다.
     emit({ kind: "worker_identity", marker: workerIdentity });
+    // 모델 축도 같은 규율이다. `detail`은 **승인이 값을 말했을 때만** 실린다(모르는 값을 적지 않는다).
+    emit({ kind: "worker_model", marker: workerModel.marker, ...(workerModel.model === null ? {} : { detail: workerModel.model }) });
   }
   // **리뷰 왕복을 요구한 승인은 그 참가자가 실재할 때만 시작한다**(V3 M11 적대적 리뷰 A-1).
   //
@@ -469,7 +499,16 @@ async function runAutopilotUnderLease(
 
   emit({ kind: "run_finished", marker: stoppedBecause });
   // `C-86`: live run의 영수증에는 **무엇으로 돌았는지**가 함께 남는다(offline이면 key 자체가 없다).
-  return { blocked: null, iterations, tasks, stoppedBecause, ...(workerIdentity === undefined ? {} : { workerIdentity }) };
+  // V3 M11: 같은 자리에 **어느 모델을 요청했는지**도 남는다(`workerModel` — 승인이 말하지 않으면
+  // `cli_default` · 그때 모델 이름은 적지 않는다).
+  return {
+    blocked: null,
+    iterations,
+    tasks,
+    stoppedBecause,
+    ...(workerIdentity === undefined ? {} : { workerIdentity }),
+    ...(workerModel === undefined ? {} : { workerModel }),
+  };
 }
 
 // ── 크래시 잔재 정착 (V3 M10 T1) ────────────────────────────────────────────
@@ -683,13 +722,15 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
           })()
         : effective === LIVE_PLAN_BACKEND
         ? (() => {
-            // 실행 파일과 **자격증명 신원(`configDir`)** 둘 다 **kernel이 지금 검증해 준 값**이다
-            // (turn마다 다시 본다 — 캐시하면 그 재검증이 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
+            // 실행 파일과 **자격증명 신원(`configDir`)**, 그리고 **모델**(V3 M11) 셋 다 **kernel이 지금
+            // 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이 사라진다). autopilot에는
+            // 그것을 바꿀 인자가 없고, 모델이 `null`이면 `--model`이 실리지 않는다.
             const cw = kernel.approvedWorkerExecutable();
             return startLivePlanTurn({
             executable: cw.path,
             configDir: cw.configDir,
             configDirIdentity: cw.configDirIdentity,
+            model: cw.model,
             prompt: workerPrompt(kernel, taskId),
             binding,
             // 세션 상한은 **승인된 attempt 상한**에서 나온다(호출자가 고르는 값이 아니다).

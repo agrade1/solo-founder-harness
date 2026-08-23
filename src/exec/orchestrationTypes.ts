@@ -992,11 +992,49 @@ export interface MilestoneApprovalManifest {
      * **claude worker 세션의 격리 `CLAUDE_CONFIG_DIR`**(V3 M11 · 대장 `C-86`). `codexHome`과 같은 자리·
      * 같은 의미다: "이 세션이 **누구의 자격증명**으로 도는가"를 승인 문서가 고정한다.
      *
-     * manifest 수준에서는 **선택**이지만(offline 승인은 live worker 자체가 없다) `claude`를 승인한
-     * manifest에서는 **필수**다 — `approvedWorkerExecutable()`이 그 짝을 강제한다. 실행 파일만 승인하고
-     * 신원은 ambient로 두는 조합이 곧 `C-86`이었으므로 그 조합을 **표현 불가**로 만든다.
+     * **선택이다 — `claude`를 승인한 manifest에서도 그렇다**(V3 M11② · 사용자 결정 2026-08-23).
+     * 있으면 `approvedWorkerExecutable()`이 경로·권한·소유권·신원 + "비어 있지 않음"을 구속하고,
+     * 없으면 **ambient로 돈다**(`configDir: null`). 조용하지는 않다 — `runAutopilot`이 그것을
+     * `report.workerIdentity`(`approved`/`ambient`)와 `worker_identity` 이벤트로 **명시**한다.
+     *
+     * (2026-08-23 정정: 이 주석은 한때 "`claude`를 승인하면 **필수**이므로 실행 파일만 승인하고 신원은
+     * ambient로 두는 조합을 **표현 불가**로 만든다"라고 적었다. **M11②가 그 필수화를 되돌린 뒤에도
+     * 주석만 남아** 없는 보안 성질을 주장했다 — `orchestrationKernel.approvedWorkerExecutable()`은
+     * `claudeHome`이 없으면 `configDir: null`로 **통과시킨다**. 되돌린 이유는 그 조임이 `C-86` 자신의
+     * 트리거("여러 계정·CI에서 무인 loop를 돌리는 첫 마일스톤 전")보다 일렀고 대가가 "이 harness를 쓰는
+     * 모든 사람의 추가 로그인"이었기 때문이다. 잔여는 대장 `B-35`다.)
      */
     claudeHome?: ApprovedDirectory;
+    /**
+     * **claude worker 세션이 도는 모델**(V3 M11 · 모델 축 · 선택). `claudeHome`이 "**누구의** 자격증명으로
+     * 도는가"를 고정하는 자리라면 이 키는 "**어느 모델로** 도는가"를 고정한다.
+     *
+     * ## 왜 이 축이 필요했나
+     *
+     * M11까지 실행 **파일**은 digest로, 자격증명 **신원**은 `claudeHome`으로 고정됐지만 **모델은 승인
+     * 문서 어디에도 없었다**: `LIVE_WORKER_ARGS`에 `--model`이 없어 CLI 기본 모델로 돌았고 그 사실이
+     * 영수증에도 남지 않았다 — `C-86`("누구의 구독인가가 승인 축 밖")과 **같은 부류의 구멍**이었다.
+     *
+     * ## 선택 축이다 (`claudeHome`과 같은 규율)
+     *
+     * 없으면 CLI 기본 모델로 돈다. 다만 **조용하지 않다**: `runAutopilot` 영수증
+     * (`report.workerModel` · `worker_model` 이벤트)이 `cli_default`라고 적고, 그때 harness는 그 기본값이
+     * **무엇인지 모른다고** 적는다(모르는 것을 안다고 적으면 그 자체가 거짓 영수증이다).
+     *
+     * ## 값은 닫힌 enum이 아니라 **닫힌 형태**다
+     *
+     * 정본은 `approvalManifest.CLAUDE_MODEL_PATTERN` 하나다. 모델 id 목록을 이 레포에 박는 안을 먼저
+     * 검토하고 **기각했다** — 모델 id는 harness 밖에서 늘어나므로 enum은 곧 **만족 불가능한 계약**이
+     * 되고(codex 0.145→0.146에서 이미 겪은 부류), 지금 그 집합을 실측할 방법도 없다(live 호출 금지 →
+     * 기억으로 지어 쓴 allowlist는 재보지 않은 계약이다). 대신 **형태**를 좁혀 이 문자열이 argv에서
+     * 두 번째 flag로 읽힐 수 없게 한다(선행 `-` 금지 · 공백 금지 · bounded charset). 모델은 권능 축이
+     * 아니라 비용·품질 축이라는 점도 함께 판단했다 — 도구·MCP·설정은 이미 0이므로 잘못된 모델이 여는
+     * 권한은 없고, 무엇으로 돌았는지는 영수증이 문자열 그대로 남긴다.
+     *
+     * 승인 문서 **밖에서** 이 값을 고를 통로는 없다(호출자 인자가 없다 — `LIVE_WORKER_ENV` 주석과 같은
+     * 규율이다).
+     */
+    claudeModel?: string;
     /**
      * M5c 3A 2차 리비전 B2 — **모든 typed `run_process`가 실행하는 유일한 script**. digest는 실행 경계에서
      * 다시 확인한다. 승인 문서의 operation 레코드는 이 값을 바꾸거나 다른 경로를 고를 수 없다.

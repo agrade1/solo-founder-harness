@@ -2686,7 +2686,19 @@ export class OrchestrationKernel {
    * 계약이고(그래서 영수증도 없다), 그 프로세스의 산출물은 계획 하나뿐이며 그 계획은 다시
    * `validateTypedExecutionPlan` → 승인 레코드 대조를 지나야 아무 효과도 낼 수 있다.
    */
-  approvedWorkerExecutable(): { path: string; sha256: string; configDir: string | null; configDirIdentity: { dev: number; ino: number } | null } {
+  approvedWorkerExecutable(): {
+    path: string;
+    sha256: string;
+    configDir: string | null;
+    configDirIdentity: { dev: number; ino: number } | null;
+    /**
+     * **승인 문서가 고정한 모델**(V3 M11 모델 축). `null`은 "승인이 모델을 말하지 않았다"는 뜻이고
+     * 그때 argv에 `--model`이 실리지 않는다(호출자가 기본값을 골라 넣으면 그것이 곧 조용한 fallback이다).
+     * manifest 적재 시 형태가 이미 검증됐으므로(`CLAUDE_MODEL_PATTERN`) 여기서는 그대로 통과시킨다 —
+     * digest처럼 turn마다 다시 재는 값이 아니다(파일이 아니라 승인 문서 안의 리터럴이다).
+     */
+    model: string | null;
+  } {
     const auth = this.#state.manifest.executionAuthority;
     const approved = auth.claude;
     if (approved === undefined || approved === null) {
@@ -2713,11 +2725,15 @@ export class OrchestrationKernel {
       identity: "worker_executable_untrusted",
       digest: "worker_digest_mismatch",
     });
+    // **모델 축도 선택이다**(V3 M11 · `claudeHome`과 같은 자리·같은 규율). 없으면 `null`이 호출자까지
+    // 올라가고 `runAutopilot`이 그것을 영수증에 `cli_default`로 적는다 — 조용히 기본값으로 대체되는
+    // 것이 아니라 **무엇으로 돌고 있는지가 적힌다**.
+    const model = auth.claudeModel ?? null;
     if (auth.claudeHome === undefined) {
-      return { path: approved.path, sha256: approved.sha256, configDir: null, configDirIdentity: null };
+      return { path: approved.path, sha256: approved.sha256, configDir: null, configDirIdentity: null, model };
     }
     const home = verifyClaudeConfigDir(auth.claudeHome.path, { path: auth.claudeHome.path });
-    return { path: approved.path, sha256: approved.sha256, configDir: home.path, configDirIdentity: home.id };
+    return { path: approved.path, sha256: approved.sha256, configDir: home.path, configDirIdentity: home.id, model };
   }
 
   /**
