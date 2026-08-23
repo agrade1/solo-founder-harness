@@ -2011,11 +2011,15 @@ export class OrchestrationKernel {
             identity: "worker_executable_untrusted",
             digest: "worker_digest_mismatch",
         });
+        // **모델 축도 선택이다**(V3 M11 · `claudeHome`과 같은 자리·같은 규율). 없으면 `null`이 호출자까지
+        // 올라가고 `runAutopilot`이 그것을 영수증에 `cli_default`로 적는다 — 조용히 기본값으로 대체되는
+        // 것이 아니라 **무엇으로 돌고 있는지가 적힌다**.
+        const model = auth.claudeModel ?? null;
         if (auth.claudeHome === undefined) {
-            return { path: approved.path, sha256: approved.sha256, configDir: null, configDirIdentity: null };
+            return { path: approved.path, sha256: approved.sha256, configDir: null, configDirIdentity: null, model };
         }
         const home = verifyClaudeConfigDir(auth.claudeHome.path, { path: auth.claudeHome.path });
-        return { path: approved.path, sha256: approved.sha256, configDir: home.path, configDirIdentity: home.id };
+        return { path: approved.path, sha256: approved.sha256, configDir: home.path, configDirIdentity: home.id, model };
     }
     /**
      * **승인된 codex 리뷰어 실행 파일 + 격리 홈**(V3 M10 T7 · 대장 `C-97`).
