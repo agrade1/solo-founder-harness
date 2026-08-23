@@ -166,9 +166,14 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
     }
     // live backend는 **시작 전에** 승인을 본다(첫 turn에서 알게 되면 그때까지 상태를 바꿨을 수 있다).
     let workerIdentity;
+    let workerModel;
     if (backend === LIVE_PLAN_BACKEND) {
         try {
-            workerIdentity = kernel.approvedWorkerExecutable().configDir === null ? "ambient" : "approved";
+            const approvedWorker = kernel.approvedWorkerExecutable();
+            workerIdentity = approvedWorker.configDir === null ? "ambient" : "approved";
+            // **모델 축도 같은 자리에서 읽는다**(V3 M11). 승인이 모델을 말하지 않으면 `cli_default`이고
+            // `model`은 `null`이다 — harness는 CLI 기본값이 **무엇인지 모르므로** 이름을 적지 않는다.
+            workerModel = approvedWorker.model === null ? { marker: "cli_default", model: null } : { marker: "approved", model: approvedWorker.model };
         }
         catch (err) {
             return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: codeOf(err) };
@@ -176,6 +181,8 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
         // **무엇으로 도는지를 말하고 시작한다**(`C-86`). `ambient`도 정당한 선택이지만 조용해서는 안 된다 —
         // 그 침묵이 곧 이 레포가 금지하는 "조용한 fallback"이다.
         emit({ kind: "worker_identity", marker: workerIdentity });
+        // 모델 축도 같은 규율이다. `detail`은 **승인이 값을 말했을 때만** 실린다(모르는 값을 적지 않는다).
+        emit({ kind: "worker_model", marker: workerModel.marker, ...(workerModel.model === null ? {} : { detail: workerModel.model }) });
     }
     // **리뷰 왕복을 요구한 승인은 그 참가자가 실재할 때만 시작한다**(V3 M11 적대적 리뷰 A-1).
     //
@@ -342,7 +349,16 @@ async function runAutopilotUnderLease(opts, kernel, ctx) {
     }
     emit({ kind: "run_finished", marker: stoppedBecause });
     // `C-86`: live run의 영수증에는 **무엇으로 돌았는지**가 함께 남는다(offline이면 key 자체가 없다).
-    return { blocked: null, iterations, tasks, stoppedBecause, ...(workerIdentity === undefined ? {} : { workerIdentity }) };
+    // V3 M11: 같은 자리에 **어느 모델을 요청했는지**도 남는다(`workerModel` — 승인이 말하지 않으면
+    // `cli_default` · 그때 모델 이름은 적지 않는다).
+    return {
+        blocked: null,
+        iterations,
+        tasks,
+        stoppedBecause,
+        ...(workerIdentity === undefined ? {} : { workerIdentity }),
+        ...(workerModel === undefined ? {} : { workerModel }),
+    };
 }
 // ── 크래시 잔재 정착 (V3 M10 T1) ────────────────────────────────────────────
 /**
@@ -537,13 +553,15 @@ async function runTaskTurn(ctx) {
             })()
             : effective === LIVE_PLAN_BACKEND
                 ? (() => {
-                    // 실행 파일과 **자격증명 신원(`configDir`)** 둘 다 **kernel이 지금 검증해 준 값**이다
-                    // (turn마다 다시 본다 — 캐시하면 그 재검증이 사라진다). autopilot에는 그것을 바꿀 인자가 없다.
+                    // 실행 파일과 **자격증명 신원(`configDir`)**, 그리고 **모델**(V3 M11) 셋 다 **kernel이 지금
+                    // 검증해 준 값**이다(turn마다 다시 본다 — 캐시하면 그 재검증이 사라진다). autopilot에는
+                    // 그것을 바꿀 인자가 없고, 모델이 `null`이면 `--model`이 실리지 않는다.
                     const cw = kernel.approvedWorkerExecutable();
                     return startLivePlanTurn({
                         executable: cw.path,
                         configDir: cw.configDir,
                         configDirIdentity: cw.configDirIdentity,
+                        model: cw.model,
                         prompt: workerPrompt(kernel, taskId),
                         binding,
                         // 세션 상한은 **승인된 attempt 상한**에서 나온다(호출자가 고르는 값이 아니다).
