@@ -50,7 +50,7 @@ import {
   type ProcessLaunchCapability,
   type TaskSeed,
 } from "./orchestrationKernel.js";
-import type { TypedRunProcessOperation } from "./typedPlan.js";
+import type { TypedGitWorktreeOperation, TypedRunProcessOperation } from "./typedPlan.js";
 import { superviseProcess } from "./managedProcess.js";
 
 const RUN_ID = "run-1";
@@ -606,8 +606,8 @@ test("[M9] T3③ 리뷰 A: 실패한 worktree 명령은 성공 영수증이 되�
     "실패한 worktree add가 성공으로 접혔다",
   );
   // **성공 영수증이 없다** — pending은 attempted로 남아 정합화로만 닫힌다(부분 상태가 있을 수 있다).
-  const pend = f.kernel.getTask("root").execution.pendingOperations;
-  assert.equal(f.kernel.getTask("root").execution.operationReceipts.length, 0, "실패가 영수증으로 남았다");
+  const pend = f.kernel.getTask("root")!.execution.pendingOperations;
+  assert.equal(f.kernel.getTask("root")!.execution.operationReceipts.length, 0, "실패가 영수증으로 남았다");
   assert.equal(pend.length, 1);
   assert.notEqual(pend[0].attemptedAt, null, "집행 경계 진입이 durable하지 않다");
   // 경쟁자 파일은 그대로다(우리가 지우지 않았다).
@@ -620,7 +620,7 @@ test("[M9] T3③ 리뷰 A: 실패한 worktree 명령은 성공 영수증이 되�
     await codeOfAsync(() => executeWorktreeOperation(rm.grant, rm.op, rm.cap)),
     "process_result_unknown",
   );
-  assert.equal(g.kernel.getTask("root").execution.operationReceipts.length, 0);
+  assert.equal(g.kernel.getTask("root")!.execution.operationReceipts.length, 0);
 });
 
 test("[M9] T3③ 리뷰 B-2: linked worktree 루트에서는 worktree를 만들지 않는다(변경이 승인 루트 밖에 남는다)", async () => {

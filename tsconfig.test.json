@@ -1,0 +1,21 @@
+{
+  // C-101: tsconfig.json은 src/**/*.test.ts를 exclude한다 — 빌드 산출물(dist)에 테스트를 넣지
+  // 않으려는 정당한 이유다. 그 부작용으로 테스트는 타입 검사를 **전혀** 받지 않았고, V3 M11에서
+  // `LiveWorkerLaunch.configDir`을 필수로 만들었을 때 테스트 호출부의 누락을 컴파일이 잡지 못했다.
+  // 런타임에서 CLAUDE_CONFIG_DIR이 조용히 사라져 C-86(worker 자격증명 신원이 ambient)이 재발할
+  // 뻔했다. 이 파일은 "빌드하지 않고 타입만 본다" 전용 프로젝트다.
+  //
+  // 기각한 대안: tsconfig.json의 exclude를 지우는 것 → 테스트가 dist로 배송되고 `files` 목록에
+  // 실려 npm publish에 들어간다. 검사와 배송은 분리해야 한다.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    // target ES2022의 기본 lib에는 resizable ArrayBuffer 선언(`new ArrayBuffer(n, { maxByteLength })`)이
+    // 없다. `offlinePlanWorker.test.ts`가 그 실제 런타임 기능을 hostile 입력으로 쓴다(Node 20+).
+    // **ES2024 전체가 아니라 ArrayBuffer 조각만** 얹는다 — 다른 미지원 API까지 조용히 열지 않기 위해서다.
+    // production(tsconfig.json)은 그대로 ES2022 lib이므로 배송 코드에는 아무 영향이 없다.
+    "lib": ["ES2022", "ES2024.ArrayBuffer"]
+  },
+  "include": ["src/**/*"],
+  "exclude": []
+}

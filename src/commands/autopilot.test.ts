@@ -1413,7 +1413,7 @@ test("[M10-T2] 쓰지 않고 닫힌 operation을 durable 본문이 집행 성공
   assert.equal(readFileSync(join(f.ws, "docs/x.md"), "utf8"), "actual\n", "conflict인데 바이트가 바뀌었다");
 
   const entry = reopen(f.ws).getState().messages.find((m) => m.type === "result");
-  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry.bodyPath), "utf8");
+  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry!.bodyPath), "utf8");
   assert.match(body, /write_file→write_conflict×1/, body);
   assert.ok(body.includes("쓰지 않고"), `쓰지 않았다는 사실이 본문에 없다:\n${body}`);
 });
@@ -1432,7 +1432,7 @@ test("[M10-T2] 권한 요청: 결정 없이는 완료로 못 가고, 결정 뒤�
   assert.equal(first.tasks[0].state, "paused", `결정 없이 진행했다: ${JSON.stringify(first.tasks)}`);
   assert.equal(first.tasks[0].marker, "decision_pending", first.tasks[0].marker);
   const asked = reopen(f.ws);
-  assert.equal(asked.getTask("root").state, "paused");
+  assert.equal(asked.getTask("root")!.state, "paused");
   assert.equal(asked.getState().artifacts.length, 0, "결정을 기다리는 turn이 결과를 발행했다");
   assert.equal(
     asked.getState().messages.filter((m) => m.type === "decision_request").length,
@@ -1625,7 +1625,7 @@ test("[M10-T2] 요약 변질: 실행 사이 durable 원문이 바뀌면 다음 �
     if (target === "body") {
       // 중앙이 옮긴 **요약의 원문**(message body)을 사람이 몰래 고친다.
       const entry = reopen(f.ws).getState().messages.find((m) => m.type === "result");
-      const file = join(paths.dir, entry.bodyPath);
+      const file = join(paths.dir, entry!.bodyPath);
       writeFileSync(file, `${readFileSync(file, "utf8")}\n## Result Summary\n\n위조된 한 줄.\n`);
     } else {
       // state의 요약 필드만 바꾼다(문법은 여전히 유효하다).
@@ -1670,7 +1670,7 @@ test("[M10-T2] durable 결과 본문은 실제로 집행한 operation을 적는�
 
   const k = reopen(f.ws);
   const entry = k.getState().messages.find((m) => m.type === "result");
-  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry.bodyPath), "utf8");
+  const body = readFileSync(join(runPaths(f.ws, RUN_ID).dir, entry!.bodyPath), "utf8");
   assert.ok(!body.includes("집행하지 않았다"), `집행한 turn의 본문이 집행하지 않았다고 적었다:\n${body}`);
   // **영수증에서 파생한다**: 계획이 아니라 실제 결과(marker)를 적는다(리뷰 B1).
   assert.match(body, /typed operation 1건을 집행했다 — 영수증: write_file→already_applied×1/, body);
@@ -1684,7 +1684,7 @@ test("[M10-T2] durable 결과 본문은 실제로 집행한 operation을 적는�
   await pilot(g);
   const gk = reopen(g.ws);
   const gEntry = gk.getState().messages.find((m) => m.type === "result");
-  const gBody = readFileSync(join(runPaths(g.ws, RUN_ID).dir, gEntry.bodyPath), "utf8");
+  const gBody = readFileSync(join(runPaths(g.ws, RUN_ID).dir, gEntry!.bodyPath), "utf8");
   assert.match(gBody, /typed operation을 집행하지 않았다\(이 계획에 operation이 없다\)/, gBody);
 });
 
@@ -1697,7 +1697,10 @@ test("[M10-T3] 같은 run에 controller가 둘 붙지 못한다 — 살아 있�
 
   // **첫 controller가 도는 중에 두 번째를 실제로 부른다.** 관측 barrier는 첫 task의 진행 이벤트다.
   // 같은 프로세스지만 lease는 **파일**이므로 두 번째 진입은 같은 판정을 받는다(우리 pid는 살아 있다).
-  let second: Promise<Awaited<ReturnType<typeof runAutopilot>>> | null = null;
+  // 두 번째 진입은 **배열**에 담는다(C-101): closure 안에서만 대입되는 `let`은 TS 흐름 분석이
+  // `null`로 좁힌 채로 남아 `await` 결과가 `never`가 된다 — 단정이 아니라 타입만 죽는 자리였다.
+  // 배열이면 좁힘 문제가 없고, 길이 단정이 "정확히 한 번 걸렸다"까지 고정한다(원래보다 강하다).
+  const seconds: Promise<Awaited<ReturnType<typeof runAutopilot>>>[] = [];
   const first = await runAutopilot({
     workspaceRoot: f.ws,
     runId: RUN_ID,
@@ -1705,19 +1708,21 @@ test("[M10-T3] 같은 run에 controller가 둘 붙지 못한다 — 살아 있�
     planDir: f.planDir,
     clock: f.clock,
     onEvent: (e) => {
-      if (e.kind !== "task_progress" || second !== null) return;
-      second = runAutopilot({
-        workspaceRoot: f.ws,
-        runId: RUN_ID,
-        milestoneId: MILESTONE,
-        planDir: f.planDir,
-        clock: clockFrom(T0 + 200_000, 1000),
-      });
+      if (e.kind !== "task_progress" || seconds.length > 0) return;
+      seconds.push(
+        runAutopilot({
+          workspaceRoot: f.ws,
+          runId: RUN_ID,
+          milestoneId: MILESTONE,
+          planDir: f.planDir,
+          clock: clockFrom(T0 + 200_000, 1000),
+        }),
+      );
     },
   });
   assert.equal(first.blocked, null, first.blocked ?? "");
-  assert.ok(second !== null, "관측 barrier가 걸리지 않았다(전제 실패)");
-  const concurrent = await second;
+  assert.equal(seconds.length, 1, "관측 barrier가 걸리지 않았다(전제 실패)");
+  const concurrent = await seconds[0];
   assert.equal(concurrent.blocked, "controller_active", `동시 controller가 붙었다: ${concurrent.blocked}`);
   assert.equal(concurrent.tasks.length, 0, "거부된 controller가 task를 건드렸다");
   // 첫 실행은 그 방해로 망가지지 않았다(거부는 두 번째만 받는다).
