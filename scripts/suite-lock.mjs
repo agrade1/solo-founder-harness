@@ -2,9 +2,17 @@
 /**
  * [V3 M3d.2] 전체 suite 실행을 **공용 배타 lock** 안에서 돌리는 얇은 wrapper.
  *
- * `npm test` = `node scripts/suite-lock.mjs run test:inner` 이고, `test:inner`는
+ * `npm test` = `npm run typecheck && node scripts/suite-lock.mjs run test:inner` 이고, `test:inner`는
  * 기존과 동일하게 `test:exec → test:core → acceptance.sh` 순서를 그대로 실행한다.
  * 이 wrapper는 순서·카운트·exit code를 바꾸지 않고 lock만 추가한다.
+ *
+ * [C-104] typecheck가 `test:inner` **안**이 아니라 `test` script의 **첫 단계**에 있는 이유:
+ * 이 wrapper는 lock을 먼저 획득한 **뒤에** `npm run <script>`를 spawn한다(아래 acquire → spawn 순서).
+ * 따라서 `test:inner` 머리에 넣으면 컴파일 실패가 **배타 lock을 잡은 채** 나고, 그 동안 다른 세션의
+ * suite는 전부 막힌다. 기각한 대안: ① `test:inner` 맨 앞 — lock 보유 중 실패라 대장이 든 근거
+ * ("lock을 잡기 전에 깨지는 편이 싸다")를 만족하지 못한다. ② 양쪽 모두 — 같은 검사를 두 번 돌린다.
+ * 현재 `test:inner`를 직접 부르는 자리는 이 wrapper뿐이므로(전수 확인) 우회 경로도 없다.
+ * 회귀: src/tools/suiteChainWiring.test.ts
  *
  * ── production 모드 ─────────────────────────────────────────────────────────
  *   run <npm-script>   package.json script 하나를 lock 안에서 실행하고 exit code를 그대로 전달
