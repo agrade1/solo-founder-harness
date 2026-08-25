@@ -476,6 +476,23 @@ echo "$M11_OUT" | grep -q "승인이 왕복을 요구하지 않으면 게이트�
 check "M11 ③ 요구하지 않는 승인은 강요받지 않음 출력" $?
 
 echo ""
+echo "== Test 25: M11 지시→계획→집행→산출물→완료 — DAG operations 축 · kernel 지시-계획 bind (offline · 무과금) =="
+# `C-104`/판정 ⑥ ⓖ의 교훈대로 **만들자마자 여기 등록한다** — 사람이 기억해야만 도는 스크립트를 만들지 않는다.
+# `--import tsx`가 필요하다(`.ts` 모듈을 직접 import한다).
+M11B38_OUT="$(node --import tsx scripts/m11-b38-offline-acceptance.mjs 2>&1)"
+M11B38_RC=$?
+[ "$M11B38_RC" -eq 0 ];                           check "M11 B-38 acceptance exit 0" $?
+echo "$M11B38_OUT" | grep -q "FAIL=0";            check "M11 B-38 내부 체크 전부 통과" $?
+echo "$M11B38_OUT" | grep -q "디스크에 없던 파일을 실제로 만들었다"
+check "M11 B-38 typed write가 산출물 바이트를 만듦 출력" $?
+echo "$M11B38_OUT" | grep -q "승인에 없는 authorityId는 거부된다"
+check "M11 B-38 지시는 권위를 만들지 못함 출력" $?
+echo "$M11B38_OUT" | grep -q "영수증이 하나도 남지 않았다"
+check "M11 C-111 지시 밖 계획이 kernel bind에서 거부됨 출력" $?
+echo "$M11B38_OUT" | grep -q "B-38 이전과 바이트 동일하다"
+check "M11 B-38 기존 지시 본문 바이트 불변 출력" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="

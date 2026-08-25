@@ -4,13 +4,15 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OrchestrationKernel } from "./orchestrationKernel.js";
-import { OrchestrationError, REQUIRED_BODY_HEADINGS } from "./orchestrationTypes.js";
+import { OrchestrationError, REQUIRED_BODY_HEADINGS, TYPED_EXECUTION_PLAN_SCHEMA_VERSION } from "./orchestrationTypes.js";
 import { TASK_DAG_MATERIALIZE_CODES, assignmentBodyFor, materializeTaskDag } from "./taskDagMaterialize.js";
 import { TASK_DAG_SCHEMA_VERSION, validateTaskDag } from "./taskDag.js";
+import { validateTypedExecutionPlan } from "./typedPlan.js";
 
 const RUN_ID = "run-dag";
 const MILESTONE = "ms-dag";
@@ -379,4 +381,155 @@ test("[M10-T1] C-76: 문서와 다른 run에는 이어받지 않는다 — 문�
     decisions: batch.items.map((t) => ({ taskId: t.taskId, outcome: "prepared" as const, attemptId: `att.${t.taskId}` })),
   });
   assert.equal(codeOf(() => materializeTaskDag(started.k, started.doc)), "dag_materialize_run_not_empty");
+});
+
+// ── V3 M11 — 지시가 operation을 싣는다 (대장 `B-38` + `C-111`) ─────────────────
+
+/**
+ * `write_file` 권위 1건을 승인한 manifest override. 경로는 그 task의 승인 ownership 안이어야 한다 —
+ * 아니면 manifest 검증이 `operation_not_owned`로 먼저 죽는다(승인 층이 이미 그것을 본다).
+ */
+function withWriteAuthority(taskId = "impl-a", authorityId = "auth-a", path = "src/a/index.ts"): Record<string, unknown> {
+  return {
+    operationAuthorityByTask: {
+      [taskId]: [{ authorityId, kind: "write_file", path, maxBytes: 4096 }],
+    },
+  };
+}
+
+test("[M11/B-38] operations 없는 DAG 문서의 assignment 본문은 이전과 **바이트 동일**하다", () => {
+  // 이 세 sha256은 **이 slice 이전 코드**(`HEAD`의 `assignmentBodyFor`)를 그대로 돌려 얻은 값이다.
+  // 이어받기 판정이 `assignment.bodySha256`을 대조하므로 한 바이트만 달라져도 **기존 run이 전부 깨진다**.
+  const golden: Array<[Record<string, unknown>, string]> = [
+    [
+      { taskId: "plan-doc", roleId: "pm", title: "기획 문서", scope: "docs 안에서만", ownership: ["docs"], dependsOn: [], provides: ["docs/PLAN.md"], consumes: [], resourceClasses: [], operations: [] },
+      "55f5b87d14e06c5a27461351cc22f3ef8175b986d04ed0c3495426ca8d0602f3",
+    ],
+    [
+      { taskId: "dev-impl", roleId: "dev-lead", title: "구현", scope: "src 안에서만", ownership: ["src"], dependsOn: ["plan-doc"], provides: ["src/a.ts"], consumes: ["docs/PLAN.md"], resourceClasses: ["repo"], operations: [] },
+      "4a0218f464ff53ae6251dc2251004efe2caa2ab81be43808a593eabdb8d08864",
+    ],
+    [
+      { taskId: "empty", roleId: "qa", title: "검증", scope: "docs 안에서만", ownership: ["docs"], dependsOn: [], provides: [], consumes: [], resourceClasses: [], operations: [] },
+      "6218cda48c0dcb6769fa8338e74005a5ed5d10880ac494376041b4f0988a87b1",
+    ],
+  ];
+  for (const [n, want] of golden) {
+    const got = createHash("sha256")
+      .update(assignmentBodyFor(n as unknown as Parameters<typeof assignmentBodyFor>[0]), "utf8")
+      .digest("hex");
+    assert.equal(got, want, `${String(n.taskId)}의 본문 바이트가 B-38 이전과 달라졌다`);
+  }
+});
+
+test("[M11/B-38] 선언한 operation이 지시 본문에 **계획이 받아들이는 객체 그대로** 실린다", () => {
+  const k = kernelFor(withWriteAuthority());
+  const doc = {
+    schemaVersion: TASK_DAG_SCHEMA_VERSION,
+    tasks: [node({ provides: ["src/a/index.ts"], operations: ["auth-a"] })],
+  };
+  materializeTaskDag(k, doc);
+  const body = k.messageBody("asg-impl-a");
+
+  // ⓐ 본문에 **JSON 객체**가 들어 있다(목록 서술이 아니다).
+  const found = body.match(/^\{"operationId".*\}$/m);
+  assert.ok(found !== null, `지시 본문에 operation 객체가 없다:\n${body}`);
+
+  // ⓑ 그 객체는 **계획 검증기가 그대로 받는다** — 모델이 복사만 하면 통과한다는 뜻이다.
+  //    형태의 정본을 두 곳에 두지 않는다: 여기서 도는 것이 소비자 자신이다.
+  const binding = { runId: RUN_ID, taskId: "impl-a", attemptId: "att-1", turnId: "turn-1" };
+  const plan = validateTypedExecutionPlan(
+    {
+      schemaVersion: TYPED_EXECUTION_PLAN_SCHEMA_VERSION,
+      ...binding,
+      operations: [JSON.parse(found[0]) as unknown],
+      result: { summary: "복사한 계획", outputs: [] },
+    },
+    binding,
+  );
+  assert.equal(plan.operations[0].kind, "write_file");
+  assert.equal(plan.operations[0].authorityId, "auth-a");
+  assert.equal((plan.operations[0] as { path: string }).path, "src/a/index.ts");
+
+  // ⓒ durable task에 지시 축이 굳었다(kernel bind의 입력 — `C-111`).
+  assert.deepEqual(k.getTask("impl-a")!.assignedOperations, ["auth-a"]);
+});
+
+test("[M11/B-38] 닫힌 union 세 갈래 전부가 지시에 실린다 — run_process·git_worktree는 **완전히 그대로**다", () => {
+  // `write_file`만 되고 나머지가 계약 밖 객체를 내면 그 DAG는 물질화 시점에 죽는다(자기검증이 던진다).
+  // 두 갈래는 `{operationId, kind, authorityId}`뿐이라 모델이 채울 자리가 아예 없다.
+  const n = {
+    taskId: "impl-a",
+    roleId: "dev-lead",
+    title: "t",
+    scope: "s",
+    ownership: ["src/a"],
+    dependsOn: [],
+    provides: [],
+    consumes: [],
+    resourceClasses: [],
+    operations: [],
+  } as unknown as Parameters<typeof assignmentBodyFor>[0];
+  const body = assignmentBodyFor(n, [
+    { authorityId: "auth-tests", kind: "run_process", action: "run-tests", data: { projectPath: "src/a" }, timeoutMs: 1_000 },
+    { authorityId: "auth-wt", kind: "git_worktree", action: "add" },
+  ]);
+  const objects = [...body.matchAll(/^\{"operationId".*\}$/gm)].map((m) => JSON.parse(m[0]) as Record<string, unknown>);
+  assert.equal(objects.length, 2, body);
+  for (const o of objects) assert.deepEqual(Object.keys(o).sort(), ["authorityId", "kind", "operationId"]);
+  assert.deepEqual(
+    objects.map((o) => o.kind),
+    ["run_process", "git_worktree"],
+  );
+});
+
+test("[M11/B-38] 승인 밖 operation을 실은 DAG는 물질화에서 거부되고 durable에 아무것도 남지 않는다", () => {
+  const doc = {
+    schemaVersion: TASK_DAG_SCHEMA_VERSION,
+    tasks: [node({ provides: ["src/a/index.ts"], operations: ["auth-a"] })],
+  };
+
+  // ⓐ 그 task에 아무 권위도 승인되지 않았다.
+  const none = kernelFor();
+  assert.equal(codeOf(() => materializeTaskDag(none, doc)), "dag_materialize_seed_rejected");
+  assert.equal(none.getState().tasks.length, 0, "거부됐는데 task가 남았다");
+
+  // ⓑ **다른 task**에 승인된 권위를 빌려 쓰려 했다(권위는 task별이다).
+  const borrowed = kernelFor(withWriteAuthority("impl-b", "auth-b", "src/b/index.ts"));
+  assert.equal(
+    codeOf(() =>
+      materializeTaskDag(borrowed, {
+        schemaVersion: TASK_DAG_SCHEMA_VERSION,
+        tasks: [node({ provides: ["src/a/index.ts"], operations: ["auth-b"] })],
+      }),
+    ),
+    "dag_materialize_seed_rejected",
+  );
+  assert.equal(borrowed.getState().tasks.length, 0);
+
+  // ⓒ **정상 대조군**: 같은 문서라도 그 task에 승인된 id면 통과한다(위 거부가 공허하지 않다).
+  const ok = kernelFor(withWriteAuthority());
+  assert.deepEqual(materializeTaskDag(ok, doc).createdOrder, ["impl-a"]);
+});
+
+test("[M11/C-111] 이어받기 대조는 operations 축까지 본다 — id만 바꾼 문서는 거부된다", () => {
+  const k = kernelFor({
+    operationAuthorityByTask: {
+      "impl-a": [
+        { authorityId: "auth-a", kind: "write_file", path: "src/a/index.ts", maxBytes: 4096 },
+        { authorityId: "auth-a2", kind: "write_file", path: "src/a/other.ts", maxBytes: 4096 },
+      ],
+    },
+  });
+  const doc = {
+    schemaVersion: TASK_DAG_SCHEMA_VERSION,
+    tasks: [node({ provides: ["src/a/index.ts"], operations: ["auth-a"] })],
+  };
+  materializeTaskDag(k, doc);
+  assert.deepEqual(materializeTaskDag(k, doc).createdOrder, [], "같은 문서는 멱등이어야 한다");
+
+  // 같은 경로·같은 필드지만 **지시가 연 operation 집합이 다르다** — 본문 digest가 잡는다.
+  const swapped = JSON.parse(JSON.stringify(doc)) as { tasks: Array<Record<string, unknown>> };
+  swapped.tasks[0].operations = ["auth-a2"];
+  assert.equal(codeOf(() => materializeTaskDag(k, swapped)), "dag_materialize_run_not_empty");
 });

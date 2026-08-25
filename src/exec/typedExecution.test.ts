@@ -3819,3 +3819,67 @@ test("[M5c] 실제로 입양된 계획이 schema의 required·enum 범위 안에
   }
   for (const out of json.result.outputs) assert.ok(s.definitions.artifactRole.enum.includes(out.role));
 });
+
+// ── V3 M11 — kernel이 지시-계획 bind를 강제한다 (대장 `C-111`) ─────────────────
+
+test("[M11/C-111] 계획의 operation은 그 task의 **지시가 실은 집합 안**이어야 한다", () => {
+  const ws = makeWorkspace();
+  const kernel = OrchestrationKernel.create({
+    workspaceRoot: ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    manifest: manifestObject(),
+    clock: clockFrom(T0),
+  });
+  // 지시가 `w-doc` **하나만** 열었다. `p-node`는 승인 manifest에는 있지만 지시에는 없다 —
+  // `B-38` 이전에는 이 조합이 통과했다(대조는 manifest 권위뿐이었다).
+  kernel.createRootTask({ ...seed("root", ["docs", "src"]), assignedOperations: ["w-doc"] });
+  kernel.createRootTask({ ...seed("sibling", ["docs"]), assignedOperations: [] });
+  startNow(kernel, "root");
+  const f: Fixture = { ws, kernel };
+
+  // ⓐ 지시 밖 authority는 permit 발급에서 죽는다.
+  const rev = kernel.getState().revision;
+  assert.equal(
+    codeOf(() =>
+      kernel.issueOperationDispatchPermit({ taskId: "root", turnId: "turn-x", plan: planFor(kernel, "root", [processOp()], "turn-x") }),
+    ),
+    "dispatch_operation_unassigned",
+  );
+  // ⓑ 거부는 **커밋 밖**이다 — 무효 계획이 turn을 claim하거나 revision을 올리지 않는다.
+  assert.equal(kernel.getState().revision, rev);
+  assert.equal(kernel.getTask("root")!.execution.dispatchTurnId, null);
+
+  // ⓒ **정상 대조군**: 지시 안의 authority는 그대로 발행까지 간다(위 거부가 공허하지 않다).
+  const [op, grant] = writePermit(f);
+  assert.equal(applyWriteFile(op, grant).marker, "applied");
+
+  // ⓓ 빈 배열은 "선언했고 비었다" — 승인은 있어도 어떤 operation도 낼 수 없다.
+  startNow(kernel, "sibling");
+  assert.equal(
+    codeOf(() =>
+      kernel.issueOperationDispatchPermit({
+        taskId: "sibling",
+        turnId: "turn-sib",
+        plan: planFor(kernel, "sibling", [writeOp({ authorityId: "w-sib", path: "docs/sib.md" })], "turn-sib"),
+      }),
+    ),
+    "dispatch_operation_unassigned",
+  );
+});
+
+test("[M11/C-111] 지시 축이 없는 task(`null`)는 bind 이전과 같은 판정이다 — 게이트는 manifest 하나다", () => {
+  // `null`은 "선언한 적이 없다"이고 그 사실은 durable state에 그대로 적힌다(조용한 완화가 아니다).
+  // kernel API로 직접 만든 task·`requestSpawn` child가 여기 속한다. `materializeTaskDag`는 만들지 않는다.
+  const f = fixture();
+  assert.equal(f.kernel.getTask("root")!.assignedOperations, null);
+  const [op, grant] = writePermit(f);
+  assert.equal(applyWriteFile(op, grant).marker, "applied");
+  // 그래도 승인 밖은 여전히 거부다(bind는 manifest 게이트를 **대체하지 않는다**).
+  // 새 fixture를 쓰는 이유: 위 turn은 아직 영수증이 커밋되지 않아 claim이 정산되지 않았고,
+  // 같은 task의 다음 turn은 그 이유로 `dispatch_identity_stale`이 된다(별개 계약).
+  const g = fixture();
+  assert.equal(g.kernel.getTask("root")!.assignedOperations, null);
+  const [ghostOp, ghostGrant] = writePermit(g, { authorityId: "w-ghost" });
+  assert.equal(codeOf(() => applyWriteFile(ghostOp, ghostGrant)), "operation_denied");
+});

@@ -20,15 +20,20 @@
  *
  * 승인 manifest·typed operation과 **같은 규율**이다: key 집합이 닫혀 있고, 모델이 명령·권한·경로
  * 형식을 문자열로 고를 자리가 없다. 여기서 선언되는 것은 **무엇을 누가 소유하고 무엇에 의존하며
- * 무엇을 주고받는가**뿐이고, 실행 권한은 여전히 승인 manifest가 정한다(이 문서는 권한을 만들지
- * 않는다 — 그래서 `writableRoots`·`operationAuthority` 같은 필드가 **없다**).
+ * 무엇을 주고받는가**, 그리고 **이미 승인된 operation 중 무엇을 지시에 실을 것인가**뿐이고,
+ * 실행 권한은 여전히 승인 manifest가 정한다(이 문서는 권한을 만들지 않는다 — 그래서
+ * `writableRoots`·`operationAuthority` 같은 필드가 **없다**).
+ *
+ * **V3 M11에서 `operations` 축이 생겼다**(대장 `B-38`). 그것도 권한이 아니다: **`authorityId` 참조
+ * 목록**이며 경로·상한·명령을 표현할 타입이 없고, 물질화가 승인 manifest와 대조해 어긋나면 거부한다.
+ * 이 축이 하는 일은 승인을 **좁혀 지시에 싣는 것**이지 넓히는 것이 아니다.
  *
  * ## 이 모듈이 하지 않는 것
  *
  * kernel을 부르지 않고 파일을 읽지 않으며 상태를 만들지 않는다. **순수 검증**이다. 문서를 실제
  * task로 물질화하는 것은 별도 단계이고 거기서도 권위는 kernel이다.
  */
-import { LIMITS, OrchestrationError, assertSlug, assertText, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath } from "./orchestrationTypes.js";
+import { LIMITS, OrchestrationError, assertSlug, assertText, normalizeAssignedOperations, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath } from "./orchestrationTypes.js";
 import { assertRegistryRoleId, pathWithin } from "./approvalManifest.js";
 
 /** DAG 문서 1건이 담을 수 있는 최대 task 수 — kernel의 run당 task 상한과 같은 값을 쓴다. */
@@ -38,13 +43,13 @@ export const MAX_DAG_TASKS = LIMITS.maxTasksPerRun;
 export const MAX_DAG_CONTRACT_PATHS = LIMITS.maxArtifactRefs;
 
 /** DAG node 1건의 **닫힌 key 집합**. 여기 없는 key는 문서에 담길 수 없다. */
-export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses"] as const;
+export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses", "operations"] as const;
 
 /** 문서 최상위의 **닫힌 key 집합**. */
 export const DAG_DOCUMENT_KEYS = ["schemaVersion", "tasks"] as const;
 
 /** `DAG_NODE_KEYS` 중 부재가 허용되는 것(생략 = 빈 목록). */
-const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses"] as const;
+const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses", "operations"] as const;
 
 export const TASK_DAG_SCHEMA_VERSION = "1";
 
@@ -70,6 +75,24 @@ export interface TaskDagNode {
   consumes: string[];
   /** 배타 자원 class(kernel과 같은 축). 선언하지 않으면 빈 목록이다. */
   resourceClasses: string[];
+  /**
+   * **이 task의 지시에 실어 보낼 승인 operation의 `authorityId` 목록**(V3 M11 — 대장 `B-38`).
+   * 선언하지 않으면 빈 목록이고, 그 task는 **어떤 operation도 낼 수 없다**(`materializeTaskDag`가
+   * durable `assignedOperations: []`로 굳힌다 — 지시 축은 선언됐고 그 집합이 비었다는 뜻이다).
+   *
+   * **참조형이다 — 전문형(`ApprovedOperation` record 전체)을 기각했다.** 이유:
+   *  ⓐ 이 문서는 **권한을 만들지 않는다**는 것이 이 모듈의 계약인데(위 "닫힌 형태" 절 —
+   *    `writableRoots`·`operationAuthority` 필드가 **없는** 이유), 전문형은 문서가 `path`·`maxBytes`·
+   *    `action`을 **적을 수 있게** 만든다. 그러면 "적혔지만 무효인 값"이 생기고 그것을 지우기 위해
+   *    승인과의 완전 일치 검사를 또 둬야 한다 — **중복이 만든 문제를 중복 검사로 막는 모양**이다.
+   *    참조형은 애초에 경로를 **표현할 타입이 없다**(승인이 유일한 정본).
+   *  ⓑ 승인 record가 바뀌면(경로·상한 조정) 전문형 DAG는 조용히 stale해지고, 물질화 시점의 일치 검사가
+   *    운영자에게 "문서를 고쳐라"를 강요한다. 참조형은 승인을 따라간다.
+   *
+   * 어느 쪽이든 **물질화 시점에 승인과 대조**한다: `operationAuthorityByTask[taskId]`에 없는 id는
+   * `dag_materialize_seed_rejected`다(승인 밖 operation은 지시에 실리지 못한다).
+   */
+  operations: string[];
 }
 
 export interface TaskDagDocument {
@@ -225,6 +248,10 @@ export function validateTaskDag(raw: unknown): TaskDagDocument {
       // kernel과 **같은 함수**를 쓴다(중복 거부·사전순 고정). 이전 판은 자체 목록 검증이라 중복이
       // 문서 검증을 통과하고 물질화에서 늦게 터졌다(T2 적대적 리뷰 C-1 — fail-late).
       resourceClasses: normalizeResourceClasses(o.resourceClasses ?? [], `DAG node(${taskId}).resourceClasses`),
+      // kernel·store와 **같은 정규화 함수**를 쓴다(slug·중복 거부·사전순). 문서가 `null`을 적어
+      // bind를 벗어나는 통로는 없다: `?? []`가 부재를 빈 집합으로 굳히고, 명시 `null`은 그 함수가
+      // `null`을 돌려주므로 아래에서 `?? []`가 다시 접는다 — DAG node는 언제나 배열이다.
+      operations: normalizeAssignedOperations(o.operations ?? [], `DAG node(${taskId}).operations`) ?? [],
     };
     byId.set(taskId, node);
     nodes.push(node);

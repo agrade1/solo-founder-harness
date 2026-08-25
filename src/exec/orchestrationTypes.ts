@@ -759,6 +759,24 @@ export interface OrchestrationTask {
    * (M4b 결정 — DECISIONS 참조). 같은 class를 요구하는 두 task는 동시에 running이 될 수 없다.
    */
   resourceClasses: string[];
+  /**
+   * **지시(task_assignment)가 이 task에 실어 보낸 승인 operation의 authorityId 집합**
+   * (V3 M11 — 대장 `B-38`/`C-111`). 사전순·중복 없음.
+   *
+   * 이것은 **권위가 아니라 지시 축**이다. 권위 정본은 그대로 `manifest.operationAuthorityByTask`이고
+   * (`approvedOperationFor` deny-by-default), 이 배열은 그 위에 얹는 **두 번째 게이트**다:
+   * turn의 계획이 낸 operation은 이 집합 **안**이어야 한다(`issueOperationDispatchPermit`).
+   * 그래서 여기 없는 authorityId를 적어도 새 권능이 생기지 않는다 — 좁히기만 한다.
+   *
+   * - `[]` — **지시가 operation 축을 선언했고 그 집합이 비었다** → 이 task는 어떤 operation도 낼 수 없다.
+   * - `null` — **지시가 operation 축을 선언한 적이 없다**(kernel API로 직접 만든 task · `requestSpawn`
+   *   child). 그때는 manifest 게이트 하나만 적용된다 — `B-38` 이전과 **같은 판정**이다.
+   *
+   * 두 값을 구분하는 이유: 하나로 합치면 "선언했는데 비었다"와 "선언한 적이 없다"가 같은 바이트가 되고,
+   * 그러면 `materializeTaskDag`가 만든 task의 deny(= `[]`)를 나중에 누가 "축이 없는 것"으로 오독한다.
+   * **`materializeTaskDag`는 `null`을 만들지 않는다** — DAG로 만든 task는 전부 bind된다.
+   */
+  assignedOperations: string[] | null;
   parentTaskId: string | null;
   childTaskIds: string[];
   dependsOn: string[];
@@ -1329,6 +1347,36 @@ export function normalizeWorkspacePath(raw: unknown, what: string): string {
     throw new OrchestrationError("path_empty", `${what}가 정규화 후 비었다`);
   }
   return out.join("/");
+}
+
+/**
+ * **지시가 실은 operation authorityId 집합의 정규화**(V3 M11 — `B-38`/`C-111`).
+ * `null`(= 지시 축 없음)과 배열을 구분해 그대로 돌려주고, 배열은 slug 검증 · 중복 거부 · 사전순 고정한다.
+ *
+ * kernel(`addTask`)과 store(`validateTask`)가 **같은 함수 하나**를 쓴다 — 두 곳이 갈라지면 "만들 때
+ * 통과한 값이 다시 읽을 때 거부되는" 부류가 생긴다(`resourceClasses`가 M4b에서 정확히 그 이유로
+ * 같은 함수를 공유하게 됐다). 상한은 승인 쪽과 같은 `maxOperationAuthorities`다: 지시는 승인을
+ * **좁히기만** 하므로 승인이 담을 수 있는 수보다 많을 이유가 없다.
+ */
+export function normalizeAssignedOperations(raw: unknown, what: string): string[] | null {
+  if (raw === null) return null;
+  if (!Array.isArray(raw)) {
+    throw new OrchestrationError("invalid_assigned_operations", `${what}는 배열 또는 null이어야 한다`);
+  }
+  if (raw.length > LIMITS.maxOperationAuthorities) {
+    throw new OrchestrationError("invalid_assigned_operations", `${what}는 ${LIMITS.maxOperationAuthorities}개 이하여야 한다`);
+  }
+  const seen = new Set<string>();
+  for (const a of raw) {
+    if (!isSlug(a)) {
+      throw new OrchestrationError("invalid_assigned_operations", `${what} 항목은 slug(${SLUG_PATTERN})여야 한다`);
+    }
+    if (seen.has(a)) {
+      throw new OrchestrationError("invalid_assigned_operations", `${what}에 중복 authorityId가 있다: ${a}`);
+    }
+    seen.add(a);
+  }
+  return [...seen].sort();
 }
 
 /**

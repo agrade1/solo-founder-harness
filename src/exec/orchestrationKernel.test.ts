@@ -483,6 +483,9 @@ test("[M4a] dependency cycle 검사(반복 DFS)", () => {
     scope: "s",
     ownership: ["a"],
     resourceClasses: [],
+    // V3 M11(`C-111`) — 지시-계획 bind 축도 durable 계약이므로 손으로 만드는 fixture가 갖고 있어야 한다.
+    // `null` = 이 fixture는 지시로 operation을 선언하지 않았다(이 테스트는 의존 순환만 본다).
+    assignedOperations: null,
     parentTaskId: null,
     childTaskIds: [],
     state: "pending" as const,
@@ -2980,6 +2983,10 @@ test("[M4a] orchestration_run_state.schema.json의 key·enum·상한이 runtime 
   assert.equal(d.task.properties.artifactRefs.maxItems, LIMITS.maxArtifactRefs);
   assert.equal(d.task.properties.resourceClasses.maxItems, LIMITS.maxResourceClasses);
   assert.equal(d.task.properties.resourceClasses.items.$ref, "#/definitions/slug");
+  // V3 M11(`B-38`/`C-111`) — 지시 축은 배열이거나 `null`(축 없음)이고, 상한은 승인 쪽과 같다.
+  assert.equal(d.task.properties.assignedOperations.oneOf[0].maxItems, LIMITS.maxOperationAuthorities);
+  assert.equal(d.task.properties.assignedOperations.oneOf[0].items.$ref, "#/definitions/slug");
+  assert.equal(d.task.properties.assignedOperations.oneOf[1].type, "null");
   assert.equal(d.task.properties.resourceClasses.uniqueItems, true);
   assert.equal(d.boundedText.maxLength, LIMITS.maxTextLength);
   assert.equal(d.boundedSummary.maxLength, LIMITS.maxSummaryLength);
@@ -3320,6 +3327,21 @@ test("[M4b] M4a state(resourceClasses 없음)는 마이그레이션 없이 거�
   for (const t of pre.tasks) delete t.resourceClasses;
   writeFileSync(paths.stateFile, JSON.stringify(pre, null, 2));
   assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "state_pre_m4b_unsupported");
+
+  writeFileSync(paths.stateFile, original);
+  assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
+});
+
+test("[M11/C-111] 지시-계획 bind 이전 state(assignedOperations 없음)는 마이그레이션 없이 거부한다", () => {
+  // pre-M4b·pre-M5c와 **같은 판단**이다(대장 `C-9`). 기본값을 채우지 않는 이유: `null`로 채우면 옛 run이
+  // bind를 영영 벗어나고, `[]`로 채우면 승인된 operation을 쓰던 옛 run이 원인 불명으로 죽는다.
+  const { ws } = bootRoot();
+  const paths = runPaths(ws, RUN_ID);
+  const original = readFileSync(paths.stateFile, "utf8");
+  const pre = JSON.parse(original);
+  for (const t of pre.tasks) delete t.assignedOperations;
+  writeFileSync(paths.stateFile, JSON.stringify(pre, null, 2));
+  assert.equal(codeOf(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() })), "state_pre_b38_unsupported");
 
   writeFileSync(paths.stateFile, original);
   assert.doesNotThrow(() => openOrchestrationRun({ workspaceRoot: ws, runId: RUN_ID, clock: fixedClock() }));
