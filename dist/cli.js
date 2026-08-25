@@ -13,6 +13,7 @@ import { runMissionCommand } from "./commands/mission.js";
 import { runHandoffCommand } from "./commands/handoff.js";
 import { AUTOPILOT_WORKER_BACKENDS, runAutopilotCommand } from "./commands/autopilot.js";
 import { runAutopilotCreateCommand } from "./commands/autopilotCreate.js";
+import { PLAN_DAG_TASK_ID, runPlanDagCommand, runValidateDagCommand } from "./commands/planDag.js";
 // 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
 // import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
 const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
@@ -132,6 +133,26 @@ program
     .option("--workspace <path>", "orchestration workspace 루트 (기본: 현재 디렉터리)")
     .action((opts) => {
     runAutopilotCreateCommand(opts);
+});
+// **아이디어 → DAG 문서 초안**(L2a). `autopilot-create`가 사람이 쓴 DAG 파일을 받는 자리에서,
+// 이 명령은 그 DAG 문서 자체를 **하네스가 만들게 하는 run**을 세운다. 승인은 여전히 사람이 쓴다.
+program
+    .command("plan-dag")
+    .description(`[v3-M12] 아이디어 문서 + 승인 manifest로 "DAG 문서 초안을 쓰는" 단일 task run을 만든다 (승인을 발행하지 않는다 · 초안을 자동 실행하지 않는다 · 승인의 ownershipByTask["${PLAN_DAG_TASK_ID}"]와 write_file 권위가 필요하다)`)
+    .requiredOption("--run <runId>", "만들 orchestration run id")
+    .requiredOption("--milestone <id>", "승인 milestone (승인 파일의 milestoneId와 같아야 한다)")
+    .requiredOption("--approval <path>", "승인 manifest JSON 파일 (사람이 쓴다)")
+    .requiredOption("--idea <path>", "아이디어 문서 (내용이 지시 본문에 그대로 실린다 — 상한 초과는 fail closed, 자르지 않는다)")
+    .option("--workspace <path>", "orchestration workspace 루트 (기본: 현재 디렉터리)")
+    .action((opts) => {
+    runPlanDagCommand(opts);
+});
+program
+    .command("validate-dag")
+    .description("[v3-M12] task DAG 문서(초안 포함)가 문서 계약을 지키는지 판정한다 — 읽기 전용이며 파일을 고치거나 지우지 않는다")
+    .argument("<file>", "판정할 DAG 문서 JSON 파일")
+    .action((file) => {
+    runValidateDagCommand({ file });
 });
 program
     .command("autopilot")

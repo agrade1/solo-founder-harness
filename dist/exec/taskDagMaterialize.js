@@ -108,6 +108,25 @@ function assignmentOperationsSection(taskId, approvedOps) {
         templates.map((t) => "```json\n" + JSON.stringify(t) + "\n```").join("\n"));
 }
 /**
+ * `Inputs and Contracts`에 덧붙일 **briefing 블록**(V3 M12 L2a). 빈 briefing이면 빈 문자열이다 —
+ * 이 축이 생기기 전과 본문이 **바이트 동일**해야 하기 때문이다(`assignmentOperationsSection`과 같은 규율).
+ *
+ * **모든 줄을 `> `로 인용한다.** `validateMessageBody`의 heading 수집기(`agentMessage.collectHeadings`)는
+ * ⓐ 줄 앞의 ```` ``` ````/`~~~`를 fence **토글**로 세고 ⓑ `^##[ \t]`를 h2로 잡는다. 인용하지 않은 산문은
+ * 그래서 두 가지로 본문을 깬다: 산문 속 `## 제목`이 **가짜 h2**가 되어 `body_unknown_heading`이거나,
+ * 홀수 개의 fence 줄이 뒤따르는 **진짜 heading을 삼켜** `body_missing_heading`이다. `> ` 접두사는 두
+ * 정규식 어느 쪽에도 걸리지 않으므로 **임의의 마크다운을 안전하게 싣는다**.
+ *
+ * **기각한 대안** ⓐ fence로 감싸기: 내용 안의 fence 한 줄이 그대로 짝을 깨뜨린다(더 긴 fence를 써도
+ * 같다 — 수집기는 앞 세 글자만 본다). ⓑ 내용에서 fence·heading을 지우기: 그것은 조용한 변조이고,
+ * 잘린 아이디어로 만든 산출물은 조용히 틀린다 → 애초에 후보가 아니다. 인용은 **한 바이트도 잃지 않는다**.
+ */
+function assignmentBriefingSection(briefing) {
+    if (briefing.length === 0)
+        return "";
+    return `\n\n${briefing.split("\n").map((line) => `> ${line}`).join("\n")}`;
+}
+/**
  * `task_assignment` 본문. **필수 헤딩 전부**를 계약 순서대로 채운다(`REQUIRED_BODY_HEADINGS`가 정본).
  * 내용은 문서·승인에서만 나오고 시각·예산 실측값을 담지 않는다 → 같은 문서·같은 승인이면 같은 바이트다.
  *
@@ -123,6 +142,7 @@ export function assignmentBodyFor(node, approvedOps = []) {
             "동시에 자원을 점유 중인 다른 task가 그 경로를 소유하면 역시 거부다(`operation_ownership_contended`).\n" +
             "실행 권한·명령·예산의 정본은 **승인 manifest**이며 이 문서가 만들지 않는다.",
         "Inputs and Contracts": `이 task가 만들기로 한 것(provides):\n${list(node.provides, "- (없음)")}\n\n읽기로 한 것(consumes):\n${list(node.consumes, "- (없음)")}` +
+            assignmentBriefingSection(node.briefing) +
             assignmentOperationsSection(node.taskId, approvedOps),
         Dependencies: list(node.dependsOn, "- (없음 — 즉시 시작 가능)"),
         "Definition of Done": "provides로 선언한 산출물이 전부 발행되고 결과 요약이 수락된다.",
