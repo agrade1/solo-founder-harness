@@ -1,5 +1,68 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-24 — **V3 M11⑥: 무인 loop 운영자 진입점 · 신규 `B-38`(가장 중요) · 내 첫 진단 정정**)
+
+- **`autopilot-create` + `autopilot --worker-backend`가 생겼다.** L1은 새 계약이 아니라 **배선**이었다 —
+  `createOrchestrationRun`·`materializeTaskDag`·`runAutopilot({workerBackend})`가 **전부 이미 있고 CLI
+  호출부가 0건**이었다. 그래서 v3 live는 `scripts/m10-live-*.mjs`의 손으로 짠 fixture로만 도달했다.
+  **승인을 발행하지 않는 경계를 못 박았다**: 운영자가 승인 manifest·DAG를 authoring하고 harness는
+  검증·구속만 한다(새 오류 코드 0건). 판정 정본은 로드맵 **`M11 진행 판정 ⑥`**.
+- **오케스트레이터가 live로 밟았다**(세션은 live 금지): `autopilot-create` → `autopilot
+  --worker-backend claude-plan`이 **CLI 경로로 끝까지 돌았다**. `worker_session_started` →
+  `worker_plan_received` → `task_paused(artifact_missing)`. 영수증
+  `workerModel: {marker:"approved", model:"claude-opus-5"}` — **판정 ⑤의 미증명(모델 축이 kernel·CLI
+  경로로도 사는가)을 이 실행이 함께 닫았다.**
+- **그 pause가 구조적 결함을 드러냈다 — 이번 slice의 가장 중요한 내용이고, 내 첫 진단은 틀렸다.**
+  첫 판은 원인을 **`B-16`**(typed write가 새 파일을 못 만든다)이라고 적었다. **틀렸다** — `B-16`은
+  **M9 선결 2에서 완전 개방**됐고 `m9`/`m10-offline-acceptance`가 실제로 파일을 발행한다.
+  **나는 M9 이전(2026-07-30/31) 리비전 표의 `open` 행을 M9 판정 절보다 믿었다** — §4-2가 경고한 함정에
+  정확히 걸렸고, **판정 ③이 킥오프를 두고 지적한 것과 같은 오류를 판정 ③이 만든 절을 고치면서** 저질렀다.
+- **진짜 원인 = 신규 대장 `B-38`**: **task_assignment 본문에 operation 객체를 싣는 코드가 레포에 하나도
+  없다.** `taskDagMaterialize`의 `Inputs and Contracts`는 `provides`/`consumes` 목록뿐이고 **DAG 문서에
+  `operations` 축이 없다**(`DAG_NODE_KEYS`). live 계획 계약은 *"지시에 operation 객체가 없으면
+  `operations`는 빈 배열"*이다 → **`materializeTaskDag`로 만든 live task는 파일을 만들 수단이 구조적으로
+  없다.** 능력은 있고 **닿는 통로가 없다.** 내 승인의 `operationAuthorityByTask: {}`는 원인이 아니라
+  증상이다 — 채워도 지시에 실어 보낼 길이 없다.
+- **결론은 바뀌지 않았다**: `scripts/m10-live-t7.mjs`도 `operationAuthorityByTask: {}`이고 `ASSIGN`이
+  `contracts`를 넘기지 않으며 **artifact를 미리 만든다**(`:91-93`) → **어떤 live run도 typed write로
+  산출물을 낸 적이 없다.** M10 완료 조건이 증명한 것은 **오케스트레이션 기계**이고 **산출물 생성이
+  아니다** → 완료 조건 행에 지역 한정을 달았다(원인을 `B-38`로 적었다).
+- **정본 절을 내가 깨뜨렸다가 되돌렸다**: 첫 판이 `B-16`을 "누락"이라며 편입했는데 **정본 절은 원래
+  옳았다**(닫힌 항목이니 없어야 한다). 원상 복구하고, 정본 절 머리말의 규칙을 **"한 id의 상태는 가장
+  늦은 등재 행이 아니라 가장 늦은 판정 절이 정한다"** 로 다시 썼다 — 근거 사례가 사라진 규칙을 남기지
+  않았다. 그리고 `src/commands/autopilot.ts`의 낡은 주석("신규 파일 생성은 여전히 fail closed")도
+  정정했다 — `typedExecution.ts`가 반대로 적고 있어 **두 주석이 서로를 반박**하고 있었다.
+- **구현 세션이 A급을 잡았다**: durable 결과 본문이 `backend: offline-plan`을 하드코딩해 **live turn의
+  감사 기록이 거짓**이었다(거짓 성공 영수증). 이제 `backendForRole` 결과를 적고 acceptance가 단정한다.
+- **acceptance 배선**: 신규 `m11-cli-entrypoint-acceptance.mjs`(31건)가 `acceptance.sh`에 **없었다** —
+  다른 offline acceptance는 전부 등록돼 있으니 이것만 **사람이 기억해야** 도는 상태였다(`C-104`가 이름한
+  사고 형태). Test 24로 배선했다. 배선 중 실측 결함: `grep -q "--worker-backend …"`가 패턴을 **옵션으로
+  읽어** 실패 → `grep -q --`.
+- **실측**: `npm test` exit 0 · `test:exec` **638/638** · `test:core` **481/481**(+9) ·
+  `acceptance.sh` **PASS=204 / FAIL=0 · 3연속 clean** · CLI acceptance **31/31** · typecheck clean ·
+  mutation red 4종(세션) · **live 1회**.
+- **미증명**: ⓐ **live run이 `completed`로 완주하는 것** — **`B-38`** 때문에 **지금 구조에서 불가능**하다
+  (artifact를 선언하는 task는 반드시 pause한다) → `C-109`. ⓑ **acceptance 비결정 2건 미규명** — Test 24
+  배선 직후 첫 실행 3 FAIL → 1 FAIL(grep) → 이후 3회 clean. 첫 실행의 2건은 **이름을 남기지 않았다**
+  → `C-110`(`B-1`과 부합하나 단정하지 않는다). ⓒ `--plan-dir` live 거부가 CLI 층에만 있다 → `C-108`.
+  ⓓ 다른 레포 대상은 여전히 불가(`C-93`).
+- **다음 후보**: **`B-38`이 최우선**이다. 그것 없이는 무엇을 오케스트레이션해도 산출물이 나오지 않는다 —
+  L2(아이디어→DAG)·L3(`C-93`)·L4(`B-10`)·L5b(Fable 리뷰어)보다 앞이다.
+- **적대적 리뷰(fresh Fable 5) — A 1 · B 2 · C 3 · 전부 반영.** A-1이 핵심: `autopilotCreate` docstring이
+  "기존 run에 문서를 얹어 DAG를 키우기는 물질화가 **이미 거부**"라고 적었는데 **거짓** — 리뷰어가
+  재현했다: **시작 전 run은 승인 안의 superset 문서로 자란다**. 문서를 실제 경계로 다시 쓰고(권위 발행
+  아님 — bind된 승인 범위 안 + digest 대조 선행) 그 경계를 고정하는 테스트를 추가했다(자람을 막는
+  mutation red 3건 실측). B-2: "typed write는 바이트를 못 만든다"는 거짓 주석이 **테스트 2곳에 더**
+  살아 있었다(`B-16` 오진의 원천) — 이 세션 **다섯 번째** 같은 형태. C-2: `B-38`의 "구조적 불가"를
+  "설계된 통로 없음"으로 약화(자유 텍스트 `scope` 우회 존재 · 승인 경계 안) + **`C-111`**(닫는 slice의
+  전제 = 지시-계획 kernel bind) 등록. C-3: `--plan-dir ""` 구멍 — 닫았다(`C-112` fixed).
+- **suite 부하 민감 실측(미규명 축 갱신 · `C-110`ⓑ)**: 실패가 실행마다 옮겨 다닌다(`[M5c/3C]` 2건 ×2 →
+  `[M5a]` 1건 982초) · **격리·단독은 전부 통과** · 고정 2초 deadline 부류(`B-1`과 같은 부류 · 같은 쌍
+  단정 안 함). 결정적 회귀 아님 — 조용한 host에서 재확인이 남아 있다.
+- **열린 항목**: A **0** · 등급 B **7** · 등급 C **78** · id **85**(`C-111` 신규 · `C-112`는 즉시 fixed).
+
+---
+
 ## 최신 (2026-08-23 — **V3 M11⑤: 승인된 모델 축 `executionAuthority.claudeModel` · A급 둘 정정**)
 
 - **사용자 목표를 재보니 더 근본적인 구멍이 있었다.** 목표는 "Opus 5가 개발하고 Fable(+Codex)이 비평
