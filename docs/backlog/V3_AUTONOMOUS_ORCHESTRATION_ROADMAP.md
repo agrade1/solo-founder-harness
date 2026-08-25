@@ -711,7 +711,7 @@ id / 제목
 ```bash
 awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목 \(2026-07-26/' \
     docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
-  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 80
+  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 85
 ```
 
 이 명령이 세는 것은 **이 절의 목록**이지 대장 전체가 아니다. 즉 이것은 **"목록과 선언한 수가
@@ -723,18 +723,21 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 1. **같은 id가 여러 표에 중복 등재된다.** 고유 id 76개 / 행 79개. **마지막 등재 행이 현행이다.**
    (`C-5`·`C-19`·`C-29`가 두 표에 있다.)
-2. **id 접두사와 등급 칸이 다르다.** `B-1`·`B-2`는 **`B-` 번호인데 등급은 `C (release-readiness)`** 다.
+2. **한 id의 상태는 "가장 늦은 등재 행"이 아니라 "가장 늦은 판정 절"이 정한다.** 행 번호는 시간순이
+   아니고(새 절이 **위로** 삽입된다) 리비전 표는 **그 날짜의 스냅샷**이다. 판정 ⑥이 이것을 어겨
+   **닫힌 `B-16`을 열린 것으로 편입했다가 되돌렸다**(판정 ⑥ ⓕ).
+3. **id 접두사와 등급 칸이 다르다.** `B-1`·`B-2`는 **`B-` 번호인데 등급은 `C (release-readiness)`** 다.
    M11 킥오프의 "B급 4"는 **등급 칸으로 센 값**이고 grep은 **id로** 센다. 둘 다 틀리지 않았고
    **다른 것을 세고 있었다.**
 
 ##### 78 대 76 — 두 집합의 대조 (이것이 이 절의 근거다)
 
 > 아래 대조는 **`C-104`를 닫기 직전** 상태로 적었다(그 시점이 전수 재판정을 돌린 시점이다).
-> `C-104` closed(−1)·`C-105` 신규(+1)를 반영한 현행은 **78**이며 아래 목록이 그것이다.
+> **아래 목록이 현행이다**(수는 제목과 재현 명령이 말한다 — 여기에 숫자를 두 번 적지 않는다. 한때 "현행은 78"이라고 적었다가 목록이 늘어난 뒤 stale이 됐다 · M11 적대적 리뷰 C-1).
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 80   ← `C-104` closed(−1) · `C-105`·`C-106`·`C-107` 신규(+3) 반영
+정본(이 절)      →  id 85   ← `C-104` closed(−1) · `C-105`~`C-107` 신규(+3) · `C-108`~`C-110` 신규(+3) · **`B-38`·`C-111` 신규(+2)**
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -744,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 80건 (A 0 · **등급 B 6** · 등급 C 74)
+##### 열린 항목 — id 85건 (A 0 · **등급 B 7** · 등급 C 78)
 
-**등급 B (6) — 전부 트리거 미도래.**
+**등급 B (7).** 여섯은 트리거 미도래다 — **`B-38`은 다르다**: 트리거가 "live로 산출물을 내는 첫 slice"이고 **산출물을 내려는 순간이 곧 그 시점**이다(판정 ⑥ ⓔ).
 
 | id | 한 줄 | 기한/트리거 | 어디를 읽나 |
 |---|---|---|---|
@@ -756,6 +759,7 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-35` | claude 격리 홈에 **내용 allowlist 없음**. 계정 우선순위 축은 **범위 밖으로 축소**(2026-08-23 · 아래 판정 ④) | **격리 홈을 실제로 승인하기로 할 때.** 지금은 `claudeHome`이 optional이라 **도달하지 않는 경로**다 | §9.1 `M11① 대장 처리` 표 + `M11 진행 판정 ④` |
 | `B-36` | 그룹을 **탈출한 자손을 탐지할 커널 능력이 없다**(`B-18`에서 분리) | **linux(cgroup)** 또는 sandbox/컨테이너 채택 | §9.1 `M11① 대장 처리` 표 |
 | `B-37` | 닫힌 action 집합으로 **회복 불가한 worktree 잔재** 두 모양(`B-31`에서 분리) | **현장에서 실제로 관측될 때만** | §9.1 `M11① 대장 처리` 표 |
+| `B-38` | **task_assignment 본문에 operation 객체를 싣는 코드가 없다** → `materializeTaskDag`로 만든 live task는 **파일을 만들 수단이 구조적으로 없다**(DAG에 `operations` 축 부재 · 계약상 모델은 반드시 `operations: []`). typed write 능력 자체는 있다(`B-16` 개방 · offline에서 증명) | **live로 산출물을 내는 첫 slice** — 사용자 목표의 다음 마일스톤이 곧 그 시점이다 | `M11 진행 판정 ⑥` ⓔ + 아래 대장 표 |
 
 **`B-` 번호이지만 등급 C — nonblocking (2).**
 
@@ -764,7 +768,7 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-1` | 조용한 호스트에서 **부하(stress) acceptance 재실행** | **release 준비 시점** — 마일스톤 게이트 아님 | 707 |
 | `B-2` | **live runner 재실행**과 evidence 재생성 | **release 준비 시점** — 마일스톤 게이트 아님 | 708 |
 
-**등급 C (72).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
+**등급 C (78).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
 
 ```text
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
@@ -772,7 +776,7 @@ C-29  C-30  C-31  C-33  C-34  C-35  C-36  C-37  C-38  C-39  C-43  C-46  C-47  C-
 C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-64
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
-C-106 C-107
+C-106 C-107 C-108 C-109 C-110 C-111
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -1902,7 +1906,207 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ⑤ — 승인된 모델 축(`executionAuthority.claudeModel`)** (2026-08-23 · **이 절이 현행이며 아래 ④보다 최신이다**)
+##### **M11 진행 판정 ⑥ — 무인 loop의 운영자 진입점 + `B-38` 발견(내 첫 진단 `B-16`은 오류였다)** (2026-08-24 · **이 절이 현행이며 아래 ⑤보다 최신이다**)
+
+### ⓐ 사용자가 고른 것 / 내가 정한 것
+
+**사용자**: 앞선 두 후보(L5b Fable 리뷰어 / L1 진입점) 중 **L1**을 골랐다(2026-08-23).
+**나**: 슬라이스 경계를 "배선만"으로 잘랐다 — `src/exec/**` 계약 무수정. 그리고 **live 왕복은
+오케스트레이터가 직접 밟기로** 했다(구현 세션 live 금지).
+
+### ⓑ L1은 새 계약이 아니라 배선이었다
+
+조각이 **전부 이미 있었고 CLI에서 닿을 수 없었다**:
+
+| 조각 | CLI 호출부(전) |
+|---|---|
+| `createOrchestrationRun` | **0건** — 스크립트만 불렀다 |
+| `materializeTaskDag`(멱등·검증) | **0건** |
+| `runAutopilot({ workerBackend })` | 있는데 **노출 안 됨** |
+| `--plan-dir` | live에서 **읽히지 않는데**(`LIVE_PLACEHOLDER`) `requiredOption`이었다 |
+
+그래서 v3 live는 `scripts/m10-live-*.mjs`의 **손으로 짠 fixture**로만 도달했다.
+
+**승인을 발행하지 않는 경계를 못 박았다**: `autopilot-create`는 운영자가 authoring한 승인 manifest와
+task DAG 문서를 **검증·구속**만 한다. 필드를 채워주거나 기본값을 넣거나 대화형으로 묻는 기능을 만들지
+않았다 — 그것이 있으면 "승인 문서가 유일한 trust root"가 무너진다. **새 오류 코드 0건.**
+
+### ⓒ 구현 세션이 A급을 하나 잡았다 — durable 감사 기록이 거짓을 말했다
+
+`autopilot`의 durable 결과 본문이 `backend: offline-plan`을 **하드코딩**하고 "offline plan turn"을
+고정 문장으로 적고 있었다. M10이 live worker를 연 뒤로 **live turn의 감사 산출물이 거짓을 주장**했다
+(거짓 성공 영수증). 이제 `backendForRole` 결과를 적고 acceptance가 그것을 단정한다.
+
+### ⓓ 오케스트레이터가 live로 밟았다 (세션이 못 잰 축)
+
+**운영자 시퀀스를 실제로 실행했다**(2026-08-24 · live claude 1회):
+
+```
+harness autopilot-create --workspace <ws> --run l1-run --milestone l1-m1 \
+  --approval approval.json --dag dag.json
+→ [autopilot-create] run 생성: l1-run@l1-m1 · task 1건 · 이번에 만든 task 1건 (plan-doc)
+
+harness autopilot --workspace <ws> --run l1-run --milestone l1-m1 --worker-backend claude-plan --json
+→ {"kind":"worker_identity","marker":"ambient"}
+→ {"kind":"worker_model","marker":"approved","detail":"claude-opus-5"}
+→ {"kind":"task_progress","detail":"worker_session_started"}
+→ {"kind":"task_progress","detail":"worker_plan_received"}
+→ {"kind":"task_paused","marker":"artifact_missing","detail":"publish_rejected"}
+→ {"stoppedBecause":"no_runnable_tasks","workerIdentity":"ambient",
+   "workerModel":{"marker":"approved","model":"claude-opus-5"}}
+```
+
+**이 실행이 판정 ⑤의 미증명 하나를 함께 닫았다**: 승인 문서에 적은 `claudeModel`이 **CLI가 만든 run을
+통해 실제 live 세션까지** 갔다(`worker_model` 이벤트 + 영수증). 판정 ⑤는 그것을 probe의 직접 spawn으로만
+증명했고 **kernel·CLI 경로로는 증명하지 못했다**.
+
+### ⓔ 그 pause가 드러낸 것 — **live에는 산출물을 낼 수단이 없다** (원인 정정 포함)
+
+> **정정(같은 판정 안에서 · 2026-08-24)**: 이 절의 첫 판은 원인을 **`B-16`**(typed write가 새 파일을
+> 만들지 못한다)이라고 적었다. **틀렸다.** `B-16`은 **M9 선결 2에서 완전 개방**됐다(이 문서 §10 M9
+> 표: `O_CREAT|O_EXCL` 빈 파일 → 부모 경로 재해석 검증 → inode 도달성 검증 → fd 전용 쓰기 ·
+> mutation 4종 red). 내가 **M9 이전(2026-07-30/31) 리비전 표의 `open` 행**을 M9 판정 절보다 믿었다 —
+> **§4-2가 경고한 그 함정에 정확히 걸렸다.** 아래는 실측으로 다시 세운 원인이다.
+> **결론(산출물을 낼 수 없다 · T7 artifact는 fixture다)은 바뀌지 않았다. 원인이 바뀌었다.**
+
+`artifact_missing`을 추적한 결과:
+
+| 층 | 사실 |
+|---|---|
+| `orchestrationKernel.addArtifact` | artifact 파일이 **디스크에 실재해야** 한다(lstat·비symlink·hash). **만들지 않는다** |
+| typed `write_file` | **된다.** `B-16` 완전 개방(M9) 이후 신규 파일을 만든다 — `scripts/m9-offline-acceptance.mjs`·`m10-offline-acceptance.mjs`가 `operationAuthorityByTask`에 `write_file` 권위를 주고 실제로 발행한다 |
+| live worker 계획 계약 | `planContractPrompt()`: **"`operations[]`는 승인된 것만 가능하다. 지시(`Inputs and Contracts`)에 operation 객체가 적혀 있으면 그것을 그대로 넣고, 없으면 빈 배열이다(스스로 만들어 낸 operation은 거부된다)."** |
+| **task_assignment 본문** | **operation 객체를 싣는 코드가 레포에 하나도 없다.** `taskDagMaterialize`의 `Inputs and Contracts`는 `provides`/`consumes` 목록뿐이고, **DAG 문서에 `operations` 축이 없다**(`DAG_NODE_KEYS`) |
+
+**⇒ `materializeTaskDag`가 만든 지시에는 operation 객체가 없으므로 모델은 `operations: []`를 내고,
+`provides`를 선언한 task는 `artifact_missing`으로 pause한다.** (**한정**: 운영자가 DAG의 자유 텍스트
+`scope`에 operation 객체를 손으로 적어 넣으면 우회할 수 있다 — 설계된 통로가 없는 것이지 표현 불가가
+아니다. M11 적대적 리뷰 C-2가 이 문구를 약화시켰다.)
+**내 승인 문서의 `operationAuthorityByTask`가 `{}`였던 것은 원인이 아니라 증상이다** — 채워 넣었어도
+그 operation을 **지시에 실어 보낼 통로가 없다.**
+
+`scripts/m10-live-t7.mjs`도 같다: `operationAuthorityByTask: {}`이고 `ASSIGN`이 `contracts`를 넘기지
+않으며(`:76`의 기본값 `- (없음)`), **artifact 파일을 미리 만든다**(`:91-93`):
+
+```js
+writeFileSync(join(ws, "src/calc.mjs"), "export const add = (a, b) => a + b;\n");
+writeFileSync(join(ws, "docs/REVIEW.md"), "# 리뷰 노트\n\n- 렌즈별 소견\n");
+writeFileSync(join(ws, "docs/VERIFY.md"), "# verify 노트\n\n- 수정 확인\n");
+```
+
+**즉 어떤 live run도 typed write로 산출물을 낸 적이 없다.** live worker가 낸 것은 **계획과 요약**이고
+artifact 바이트는 **fixture**다. 내 L1 run은 fixture를 깔지 않았으므로 **정직하게 pause했다** —
+fail closed가 옳게 작동한 것이다.
+
+**이것이 무엇을 뜻하나(과장 없이)**: M10 완료 조건 "기획→디자인→개발 end-to-end"가 증명한 것은
+**오케스트레이션 기계**(의존 순서 · 게이트 · 리뷰 왕복 · 영수증 · 재개)이고 **산출물 바이트 생성이
+아니다.** 능력(typed write)은 있고 **offline 경로에서만 증명돼 있다.** 새 대장 **`B-38`**이 그 간극이다.
+
+### ⓕ 정본 절을 내가 깨뜨렸다가 되돌렸다 (기록해 둘 값이 있다)
+
+이 판정의 첫 판은 **`B-16`을 "정본 절 누락"이라며 편입했다.** 그것이 오류였다 — **정본 절은 원래
+옳았다.** `B-16`은 M9에서 닫혔고, 리터럴 패턴이 그 행을 못 잡은 것은 **결함이 아니라 정확함**이었다
+(닫힌 항목이니 열린 목록에 없어야 한다).
+
+**무엇을 잘못했나**: `B-16`의 등재 행 여러 개가 **M9 이전 리비전 표**에서 `**open — 변화 없음**`으로
+남아 있는데, 나는 그 중 하나를 보고 "열려 있다"고 판정했다. **§10 M9 표와 M9 판정 절이 `완전 개방`·
+"M9에서 닫은 항목 2건"이라고 적어 둔 것을 확인하지 않았다.** 판정 ③이 킥오프를 두고 지적한 것과
+**정확히 같은 오류를, 판정 ③이 만든 절을 고치면서** 저질렀다.
+
+**정본 절을 원상 복구했다**(등급 B 6). 그리고 정본 절 머리말에 남긴 "상태를 리터럴 패턴으로 세면
+놓친다"는 문장도 **근거가 `B-16`이 아니게** 되었으므로 그 사례를 뺐다 — **사례 없이 규칙만 남기면
+그것도 근거 없는 주장이다.**
+
+**교훈**: 한 id의 상태를 판정할 때 **가장 늦은 등재 행**이 아니라 **가장 늦은 판정 절**을 봐야 한다.
+행 번호는 시간순이 아니고(새 절이 위로 삽입된다), 리비전 표는 **그 날짜의 스냅샷**이다.
+
+### ⓖ acceptance 배선 — `C-104`가 이름한 사고 형태를 또 만들 뻔했다
+
+신규 `scripts/m11-cli-entrypoint-acceptance.mjs`(31건)가 **`scripts/acceptance.sh`에 등록되지 않았다.**
+다른 offline acceptance는 **전부** 등록돼 있다 → 이것만 **사람이 기억해야만** 도는 상태였다.
+통합에서 Test 24로 배선했다. 배선하며 실측한 결함 하나: `grep -q "--worker-backend …"`가 패턴을
+**옵션으로 읽어** 실패했다 → `grep -q --`로 끊었다.
+
+### ⓗ 실측
+
+| 항목 | 값 |
+|---|---|
+| `npm test` | **exit 0** · `test:exec` **638/638** · `test:core` **481/481**(+9) · acceptance **PASS=198 / FAIL=0**(배선 전) |
+| `scripts/acceptance.sh` (Test 24 배선 후) | **PASS=204 / FAIL=0** · **3연속 clean** |
+| 신규 CLI acceptance | **31/31**(실제 argv로 `src/cli.ts` 기동) |
+| focused | `autopilotCreate.test.ts` **9/9** |
+| `typecheck` | clean |
+| mutation red (구현 세션) | **4종** — manifest 검증 스킵 / CLI 기본값을 `claude-plan`으로 / 집합 검사 제거 / DAG 사전 검증 제거 |
+| **live** | **1회** — ⓓ 참조 |
+
+### ⓘ 증명하지 않은 것 (같은 무게로)
+
+- **live run이 `completed`로 완주하는 것은 증명하지 않았다.** **`B-38`** 때문에 지금 경로에서는 불가능하다
+  (artifact를 선언하는 task는 반드시 pause한다). 증명한 것은 "**계획을 내는 live turn이 CLI 경로로
+  끝까지 돌고 fail closed로 착지한다**"까지다.
+- **acceptance 비결정성 2건을 규명하지 못했다.** Test 24 배선 직후 첫 실행이 **3 FAIL**, 두 번째가
+  **1 FAIL**(= grep 버그 하나)이었고 그 뒤 **3회 clean**이다. 총계는 세 번 다 204였다.
+  **첫 실행의 나머지 2건은 이름을 남기지 않았다**(그때 tail만 봤다) → 원인 **미규명**이다.
+  `B-1`(부하 민감 5초 child startup deadline 2건)과 부합하나 **단정하지 않는다.**
+- **`--plan-dir` live 거부는 CLI 층에만 있다.** 프로그램 호출자(`runAutopilot`)는 여전히 무시되는
+  planDir을 넘길 수 있다(기존 `m10-live-*.mjs` 셋이 그렇게 부르므로 깨뜨리지 않았다).
+- **다른 레포를 대상으로 삼는 것은 여전히 불가**다(`C-93`).
+
+### ⓗ-2 적대적 리뷰 (fresh Fable 5 · read-only) — **A 1 · B 2 · C 3 · 전부 반영**
+
+리뷰어는 커밋 3개(`ec49d79`·`65ee989`·`7d29e42`)를 대상으로 적대 시나리오 5종을 **scratchpad에서
+직접 재현**했고, 정본 절 수치를 독립 재계산했다.
+
+| | 무엇이 틀렸나 | 처리 |
+|---|---|---|
+| **A-1** | **주석·테스트 이름이 증명보다 강했다.** `autopilotCreate` docstring이 "기존 run에 문서를 얹어 DAG를 키우기: **물질화 쪽이 이미 거부하는** 새 능력"이라 적었는데 **거짓** — 리뷰어가 재현했다: 승인 안의 superset 문서로 **시작 전 run은 자란다**(`assertResumableRun`은 "기존 ⊆ 문서 ∧ 일치 ∧ attemptNo 전부 0"만 요구). 같은 이름의 테스트("다른 DAG 문서로 다시 부르면 거부한다")가 통과한 진짜 이유는 **승인 ownership 밖 task라서**였다 | docstring을 **실제 경계**로 다시 썼다(시작된 run은 못 키운다 · 시작 전 run은 bind된 승인 범위 안에서만 자란다 — **권위 발행이 아니다**) + 테스트 이름 정정 + **그 경계를 고정하는 테스트 신규 1건**(자람을 막는 mutation이 red 3건 — 직접 실측) |
+| **B-1** | 판정 ⑥ 안에 **정정 전 `B-16` 잔재 3곳**(ⓙ 첫 줄이 ⓕ와 정면 모순 · ⓘ · `C-109` 행) — 따라 하면 정본 절이 다시 오염된다 | 세 곳 전부 `B-38`로 정정 |
+| **B-2** | **"typed write는 바이트를 못 만든다"는 거짓 고정 문장이 테스트 주석 2곳에 살아 있었다**(`typedExecution.test.ts` docstring — 같은 파일의 `[M9]` 테스트가 신규 발행을 실제로 하므로 **자기모순** · `autopilot.test.ts:788`). **`B-16` 오진의 유력한 원천이다** | 두 주석 정정(테스트 완화 0 — 주석만). 이 세션에서 **다섯 번째** 같은 형태다: 사실이 바뀔 때 앞 문장을 안 고치면 문서가 서로를 반박한다 |
+| **C-1** | 정본 절 blockquote "현행은 78"이 stale(목록·제목·명령은 84) | 숫자를 두 번 적지 않는 형태로 재작성 |
+| **C-2** | `B-38`의 "**구조적으로** 불가 · 모델은 **반드시** `operations: []`"가 과했다 — 기계 강제가 아니라 **프롬프트 계약 + deny-by-default 권위**다. 운영자가 DAG 자유 텍스트(`scope`)에 operation 객체를 적으면 우회 가능(승인 경계 안이라 안전 문제는 아님) | 문구 약화("설계된 통로가 없다") + **`C-111` 신규 등록**: `B-38`을 닫는 slice의 설계 전제 = "지시-계획 bind를 kernel이 강제" |
+| **C-3** | `--plan-dir ""`(빈 문자열)이 arity 검사를 지나 cwd로 resolve | `trim() === ""`을 부재와 같이 취급 — **fixed**(`C-112`로 기록) |
+
+**리뷰가 반증에 실패한 것**(= 이 판정이 기대는 근거 · 리뷰어가 직접 실행): 승인 발행(mint) 없음 —
+필드 누락·여분 key·타입 위반·만료 전부 기존 코드로 fail closed + run 잔재 0 · `claude` 권위를 몰래
+추가한 파일로 이어받기 → 거부 + durable 불변 · **digest 대조 실측**(승인 바꿔치기 거부 · key 순서만
+다른 같은 승인은 허용 — 양쪽 다 validator 출력이라 건전) · 부분 물질화 이어받기는 빠진 task만 만든다 ·
+backend 집합 검사 위치 주장 사실(CLI 검사가 lease 전) · A급 수정(backend 하드코딩) 완전 + acceptance가
+본문 부재를 FAIL로 처리(공허하지 않음) · `--help` 과장 없음 · 정본 절 84 독립 재계산 일치(당시 기준) ·
+"3연속 clean"과 "미규명 2건" 정직 병기.
+
+**리뷰가 재지 않은 것**: `npm test` 전체·mutation red 4종(금지 범위) — 그 축의 증거는 ⓗ와 아래 ⓗ-3이다.
+
+### ⓗ-3 통합 suite의 부하 민감 실측 (2026-08-24~25 · 미규명 축 갱신)
+
+리뷰 반영 후 전체 suite에서 **실패가 옮겨 다녔다**:
+
+| 실행 | 결과 |
+|---|---|
+| suite6 (`npm test`) | `[M5c/3C]` 프로세스 그룹 2건 fail |
+| 격리 (`managedProcess.test.ts` 단독 ×2) | **28/28 · 28/28** |
+| suite7 (`npm test` 재실행) | **같은 2건** fail |
+| `test:exec` 단독 | **638/638** |
+| `typecheck && test:exec` | **다른 1건** fail(`[M5a] stop 뒤 교체 세션` — **982초** 소요) |
+
+실패 집합이 실행마다 다르고 격리·단독에서는 전부 통과한다 → **결정적 회귀가 아니라 부하 민감**이다
+(당시 host에 IDE·앱 프로세스 다수 · 982초짜리 테스트가 그 증거). 실패 2건은 고정 **2초** deadline을
+쓴다 — `B-1`이 적어 둔 부류(고정 짧은 deadline이 외부 부하에서 넘친다)와 같고, `B-1`의 "5초 2건"과
+**같은 쌍이라고는 단정하지 않는다**. 이 관측은 `C-110`(비결정 미규명)에 보탠다.
+
+### ⓙ 대장 처리
+
+**신규 `B-38`을 정본 절에 등록한다.** (이 판정의 첫 판은 여기에 "`B-16` 편입"이라고 적었다 — **ⓕ가 되돌린 오류**다. `B-16`은 M9에서 닫혔고 정본 목록에 **없는 것이 맞다**.)
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `B-38` | **B (P1)** | **task_assignment 본문에 operation 객체를 싣는 코드가 레포에 하나도 없다.** `taskDagMaterialize`의 `Inputs and Contracts`는 `provides`/`consumes` 목록뿐이고 **DAG 문서에 `operations` 축이 없다**(`DAG_NODE_KEYS`). live 계획 계약은 "지시에 operation 객체가 없으면 `operations`는 빈 배열"이므로 → **`materializeTaskDag`로 만든 live task에는 파일을 만들 통로가 설계돼 있지 않다**. **"구조적 불가"는 아니다**(M11 적대적 리뷰 C-2): 운영자가 승인에 write 권위를 넣고 DAG node의 **자유 텍스트(`scope`)** 에 operation 객체를 적어 보내면 모델이 그것을 낼 수 있고 승인 경계 안에서 집행된다 — 즉 **설계된 통로가 없을 뿐 우회가 존재한다**. 그래서 이 항목을 닫는 slice의 설계 전제는 **"지시-계획 bind를 kernel이 강제한다"** 이다(지금 kernel은 plan operation을 assignment에 bind하지 않는다 · 대조는 manifest 권위뿐). typed write 능력 자체는 있다(`B-16` 완전 개방 · `m9`/`m10-offline-acceptance`가 실제로 발행한다) — 없는 것은 **live 경로가 그 능력에 닿는 통로**다 | **확실**(설계상) | live 산출물 생성 전체. 오케스트레이션·승인·상태 기계는 무관 | **높음** — 이것 없이는 무엇을 오케스트레이션해도 산출물이 나오지 않는다. 사용자 목표(아이디어→기획→…→개발)의 실질적 관문이다 | 중 — DAG에 operation 축 + 본문 매핑 + 승인 대조. **새 권위를 만드는 것이 아니라 이미 있는 `operationAuthorityByTask`를 지시에 실어 보내는 것**이다(그 경계를 넘지 않는 설계가 선행 조건) | **live로 산출물을 내는 첫 slice**(= 사용자 목표의 다음 마일스톤) | 미정 | `M11 진행 판정 ⑥` ⓔ · `planContractPrompt()` · `taskDagMaterialize`의 `Inputs and Contracts` · `m10-live-t7.mjs:76,91-93,158` | open |
+| `C-111` | C (P2) | **kernel이 지시-계획 bind를 강제하지 않는다.** plan의 operation은 manifest 권위(`approvedOperationFor`)로만 대조되고 **assignment 본문과 묶이지 않는다** → 운영자가 DAG 자유 텍스트(`scope`)에 operation 객체를 적어 보내면 모델이 그것을 내고 집행된다. 승인 경계 안이라 안전 문제는 아니지만, `B-38`을 닫을 때 **이 bind를 함께 세우지 않으면** 지시 축이 계약이 아니라 관행으로 남는다 | 중간 — `B-38`을 닫는 순간 결정해야 한다 | 지시-계획 계약의 강도(승인 경계는 무관) | 중 — 나중에 세우면 이미 쓰인 DAG를 고쳐야 한다 | 중 | **`B-38`을 닫는 slice의 설계 전제로 함께** | 미정 | M11 적대적 리뷰 C-2 · `orchestrationKernel.approvedOperationFor` | open |
+| `C-112` | C (P3) | **`--plan-dir ""`(빈 문자열)이 arity 검사를 지났다.** `undefined`만 봐서 `resolve("")` = cwd가 계획 자리가 됐다(전 task `plan_missing` defer로 관측 가능하므로 조용한 fallback은 아니다) | 낮음 | 운영자 오타 1건 | 낮음 | **소 — 이번에 닫았다** | — | 오케스트레이터 | M11 적대적 리뷰 C-3 · `autopilot.ts` arity 판정 | **fixed(2026-08-24)** — `trim() === ""`을 부재와 같이 취급 |
+| `C-108` | C (P3) | **`--plan-dir`+live 거부가 CLI 층에만 있다.** 프로그램 호출자는 무시되는 planDir을 넘길 수 있다(`runAutopilot`이 무해하게 무시하는 것이 계약이고 기존 live 스크립트 셋이 그렇게 부른다) | 낮음 — 스크립트 저자만 | 오해 1건(동작·안전은 무관) | 낮음 | 소 | **기존 `m10-live-*.mjs`를 손대는 slice에서 함께** | 미정 | `autopilot.ts` CLI arity 판정 · acceptance ④ | open |
+| `C-109` | C (P2) | **`autopilot-create`로 만든 run을 live로 `completed`까지 완주시킨 실측이 없다.** 지금 구조에서 artifact를 선언하는 task는 **`B-38`** 때문에 반드시 pause하므로 **`B-38`이 닫히기 전에는 증명 자체가 불가능**하다 | 확실(설계상) | 완주 경로 1건의 증거 | 낮음 — 원인이 **`B-38`**로 이미 P1에 있다 | 소(그때 live 1회) | **`B-38`이 닫히는 slice와 동시** | 미정 | 판정 ⑥ ⓓ·ⓔ | open |
+| `C-110` | C (P3) | **suite·acceptance의 부하 민감 비결정 미규명.** ⓐ acceptance: Test 24 배선 직후 첫 실행 3 FAIL → 2회차 1 FAIL(grep 버그) → 이후 3회 clean(첫 실행의 2건은 이름을 안 남겼다) ⓑ **inner suite(2026-08-24~25 · ⓗ-3)**: 실패가 실행마다 옮겨 다닌다(`[M5c/3C]` 2건 ×2회 → `[M5a]` 1건이 982초) · 격리·단독에서는 전부 통과 · 고정 2초 deadline 부류 — `B-1`과 같은 부류이나 같은 쌍이라 단정하지 않는다 | 낮음~중간 — 재현 3/5 | acceptance 신뢰도 | 낮음 — 총계는 안정(204) | 소(실패 이름을 남기는 실행 반복) | **`B-1`(부하 acceptance 재실행)과 함께** | 미정 | 판정 ⑥ ⓗ·ⓘ | open |
+
+##### **M11 진행 판정 ⑤ — 승인된 모델 축(`executionAuthority.claudeModel`)** (2026-08-23 · 아래 ④보다 최신이다 — **M11의 현행은 위 판정 ⑥이다**)
 
 ### ⓐ 왜 이 slice인가 — 사용자 목표를 재보니 더 근본적인 구멍이 있었다
 
@@ -5105,6 +5309,14 @@ M6까지의 "의도적 잔여"가 M9에서는 **전제 조건**이 된다. 개�
 완료:
 
 - 기획→디자인→개발 end-to-end acceptance 전부 통과.
+  > **한정(2026-08-24 · 판정 ⑥ ⓔ)**: 이 조건이 증명한 것은 **오케스트레이션 기계**(의존 순서 · 게이트 ·
+  > 리뷰 왕복 · 영수증 · 재개)이고 **산출물 바이트 생성이 아니다.** live 증명(T3·T6·T7)의 artifact는
+  > **fixture가 미리 만든 파일**이다(`scripts/m10-live-t7.mjs:91-93`) — live worker가 낸 것은 계획과
+  > 요약이다. 원인은 대장 **`B-38`**: **task_assignment 본문에 operation 객체를 싣는 코드가 없어**
+  > live task가 파일을 만들 **수단이 없다**(DAG에 `operations` 축 부재 · 계약상 모델은 반드시
+  > `operations: []`). typed write **능력 자체는 있다**(`B-16` 완전 개방 · offline acceptance가 실제로
+  > 발행한다) — 없는 것은 **live 경로가 그 능력에 닿는 통로**다.
+  > **"하네스가 개발 산출물을 만든다"고 적으면 과대주장이다.**
 - 중단 후 재개 시 **중복 agent/중복 발행/결정 유실 없음**.
   > **2026-08-23에 이 조건을 아키텍처에 맞게 다시 썼다**(사용자 결정 · `C-80`). 원문은 "중복 **merge**
   > 없음"이었고 그것은 v2 `mergeCoordinator`(세션 브랜치 → base 직렬 병합)를 전제한 문장이다. M9/M10은
