@@ -402,15 +402,15 @@ test("[M11/B-38] operations 없는 DAG 문서의 assignment 본문은 이전과 
   // 이어받기 판정이 `assignment.bodySha256`을 대조하므로 한 바이트만 달라져도 **기존 run이 전부 깨진다**.
   const golden: Array<[Record<string, unknown>, string]> = [
     [
-      { taskId: "plan-doc", roleId: "pm", title: "기획 문서", scope: "docs 안에서만", ownership: ["docs"], dependsOn: [], provides: ["docs/PLAN.md"], consumes: [], resourceClasses: [], operations: [] },
+      { taskId: "plan-doc", roleId: "pm", title: "기획 문서", scope: "docs 안에서만", ownership: ["docs"], dependsOn: [], provides: ["docs/PLAN.md"], consumes: [], resourceClasses: [], operations: [], briefing: "" },
       "55f5b87d14e06c5a27461351cc22f3ef8175b986d04ed0c3495426ca8d0602f3",
     ],
     [
-      { taskId: "dev-impl", roleId: "dev-lead", title: "구현", scope: "src 안에서만", ownership: ["src"], dependsOn: ["plan-doc"], provides: ["src/a.ts"], consumes: ["docs/PLAN.md"], resourceClasses: ["repo"], operations: [] },
+      { taskId: "dev-impl", roleId: "dev-lead", title: "구현", scope: "src 안에서만", ownership: ["src"], dependsOn: ["plan-doc"], provides: ["src/a.ts"], consumes: ["docs/PLAN.md"], resourceClasses: ["repo"], operations: [], briefing: "" },
       "4a0218f464ff53ae6251dc2251004efe2caa2ab81be43808a593eabdb8d08864",
     ],
     [
-      { taskId: "empty", roleId: "qa", title: "검증", scope: "docs 안에서만", ownership: ["docs"], dependsOn: [], provides: [], consumes: [], resourceClasses: [], operations: [] },
+      { taskId: "empty", roleId: "qa", title: "검증", scope: "docs 안에서만", ownership: ["docs"], dependsOn: [], provides: [], consumes: [], resourceClasses: [], operations: [], briefing: "" },
       "6218cda48c0dcb6769fa8338e74005a5ed5d10880ac494376041b4f0988a87b1",
     ],
   ];
@@ -469,6 +469,7 @@ test("[M11/B-38] 닫힌 union 세 갈래 전부가 지시에 실린다 — run_p
     consumes: [],
     resourceClasses: [],
     operations: [],
+    briefing: "",
   } as unknown as Parameters<typeof assignmentBodyFor>[0];
   const body = assignmentBodyFor(n, [
     { authorityId: "auth-tests", kind: "run_process", action: "run-tests", data: { projectPath: "src/a" }, timeoutMs: 1_000 },

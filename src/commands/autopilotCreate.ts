@@ -89,7 +89,7 @@ export interface AutopilotCreateResult {
  * 상한은 offline 계획 문서와 같은 `MAX_PLAN_JSON_BYTES`를 재사용한다: 둘 다 "사람이 authoring한
  * bounded JSON 문서"이고, 상한 없이 `readFileSync`를 부르면 파일 크기가 곧 메모리다.
  */
-function readJsonDocument(file: string, code: "invalid_manifest" | "invalid_dag_document"): unknown {
+export function readJsonDocument(file: string, code: "invalid_manifest" | "invalid_dag_document"): unknown {
   const path = resolve(file);
   let bytes: Buffer;
   try {
@@ -133,9 +133,31 @@ function openBoundRun(workspaceRoot: string, runId: string, milestoneId: string,
  * (CLI 래퍼가 아니라 이 함수가 계약이다 — 테스트·acceptance가 여기에 붙는다.)
  */
 export function createAutopilotRun(opts: AutopilotCreateCliOptions): AutopilotCreateResult {
-  const workspaceRoot = resolve(opts.workspace ?? process.cwd());
-  const rawManifest = readJsonDocument(opts.approval, "invalid_manifest");
-  const rawDag = readJsonDocument(opts.dag, "invalid_dag_document");
+  return createRunFromDocuments({
+    workspaceRoot: resolve(opts.workspace ?? process.cwd()),
+    runId: opts.run,
+    milestoneId: opts.milestone,
+    rawManifest: readJsonDocument(opts.approval, "invalid_manifest"),
+    rawDag: readJsonDocument(opts.dag, "invalid_dag_document"),
+  });
+}
+
+/**
+ * **파일이 아니라 값에서 run을 만든다** — `createAutopilotRun`(운영자 파일 두 개)과
+ * `planDag.createPlanDagRun`(하네스가 구성한 DAG 문서 1장)이 **같은 이 함수**를 지난다.
+ *
+ * 왜 나눴나: L2a의 plan-dag는 DAG 문서를 **디스크에 쓰지 않고** 메모리에서 만든다. 그때 생성·이어받기·
+ * 물질화 규칙을 복사하면 두 진입점의 trust 판정이 갈린다(승인 digest 대조·멱등·부분 물질화 이어받기가
+ * 한쪽에만 남는 모양). 읽기만 바깥으로 빼고 **판정은 하나로** 둔다.
+ */
+export function createRunFromDocuments(args: {
+  workspaceRoot: string;
+  runId: string;
+  milestoneId: string;
+  rawManifest: unknown;
+  rawDag: unknown;
+}): AutopilotCreateResult {
+  const { workspaceRoot, runId, milestoneId, rawManifest, rawDag } = args;
   // **DAG를 run 생성 *전에* 검증한다.** `materializeTaskDag`가 어차피 다시 검증하지만(그쪽은 호출자를
   // 신뢰하지 않는다) 그때는 run이 이미 durable에 있다 → 계약을 어긴 문서 하나가 **task 0개인 run**을
   // 남기고, 그 뒤 재시도는 "기존 run 이어받기"로 보인다. 거부는 아무것도 만들지 않아야 한다.
@@ -145,10 +167,10 @@ export function createAutopilotRun(opts: AutopilotCreateCliOptions): AutopilotCr
   let kernel: OrchestrationKernel;
   let created = true;
   try {
-    kernel = createOrchestrationRun({ workspaceRoot, runId: opts.run, milestoneId: opts.milestone, manifest: rawManifest });
+    kernel = createOrchestrationRun({ workspaceRoot, runId, milestoneId, manifest: rawManifest });
   } catch (err) {
     if (!(err instanceof OrchestrationError) || err.code !== "run_already_exists") throw err;
-    kernel = openBoundRun(workspaceRoot, opts.run, opts.milestone, rawManifest);
+    kernel = openBoundRun(workspaceRoot, runId, milestoneId, rawManifest);
     created = false;
   }
 

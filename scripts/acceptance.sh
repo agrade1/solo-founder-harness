@@ -493,6 +493,25 @@ echo "$M11B38_OUT" | grep -q "B-38 이전과 바이트 동일하다"
 check "M11 B-38 기존 지시 본문 바이트 불변 출력" $?
 
 echo ""
+echo "== Test 26: M12 L2a 아이디어 문서 → DAG 문서 초안 — plan-dag · validate-dag (offline · 무과금) =="
+# `C-104`/판정 ⑥ ⓖ의 교훈대로 **만들자마자 여기 등록한다** — 직전 두 slice가 두 번 빠뜨린 함정이다.
+# 스크립트가 실제 argv로 `src/cli.ts`를 띄우므로 재기동 안에서 `--import tsx`를 스스로 챙긴다.
+M12L2A_OUT="$(node scripts/m12-l2a-offline-acceptance.mjs 2>&1)"
+M12L2A_RC=$?
+[ "$M12L2A_RC" -eq 0 ];                           check "M12 L2a acceptance exit 0" $?
+echo "$M12L2A_OUT" | grep -q "FAIL=0";            check "M12 L2a 내부 체크 전부 통과" $?
+echo "$M12L2A_OUT" | grep -q "아이디어 문서의 \*\*모든 줄\*\*이 지시에 실렸다"
+check "M12 L2a 아이디어 원문이 지시 본문에 실림 출력" $?
+echo "$M12L2A_OUT" | grep -q "자르지 않는다는 것을 출력이 명시한다"
+check "M12 L2a 상한 초과가 fail closed(조용한 자르기 아님) 출력" $?
+echo "$M12L2A_OUT" | grep -q "typed write가 \*\*디스크에 없던 초안 파일을 만들었다\*\*"
+check "M12 L2a 초안이 typed write로 실제 생성됨 출력" $?
+echo "$M12L2A_OUT" | grep -q "\*\*불통과 초안이 지워지지 않았다\*\*"
+check "M12 L2a 불통과 초안이 산출물로 남음 출력" $?
+echo "$M12L2A_OUT" | grep -q "지시가 DAG node key 전부를 이름으로 싣는다"
+check "M12 L2a 문서 계약이 상수에서 파생됨 출력" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
