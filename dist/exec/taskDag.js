@@ -20,26 +20,31 @@
  *
  * 승인 manifest·typed operation과 **같은 규율**이다: key 집합이 닫혀 있고, 모델이 명령·권한·경로
  * 형식을 문자열로 고를 자리가 없다. 여기서 선언되는 것은 **무엇을 누가 소유하고 무엇에 의존하며
- * 무엇을 주고받는가**뿐이고, 실행 권한은 여전히 승인 manifest가 정한다(이 문서는 권한을 만들지
- * 않는다 — 그래서 `writableRoots`·`operationAuthority` 같은 필드가 **없다**).
+ * 무엇을 주고받는가**, 그리고 **이미 승인된 operation 중 무엇을 지시에 실을 것인가**뿐이고,
+ * 실행 권한은 여전히 승인 manifest가 정한다(이 문서는 권한을 만들지 않는다 — 그래서
+ * `writableRoots`·`operationAuthority` 같은 필드가 **없다**).
+ *
+ * **V3 M11에서 `operations` 축이 생겼다**(대장 `B-38`). 그것도 권한이 아니다: **`authorityId` 참조
+ * 목록**이며 경로·상한·명령을 표현할 타입이 없고, 물질화가 승인 manifest와 대조해 어긋나면 거부한다.
+ * 이 축이 하는 일은 승인을 **좁혀 지시에 싣는 것**이지 넓히는 것이 아니다.
  *
  * ## 이 모듈이 하지 않는 것
  *
  * kernel을 부르지 않고 파일을 읽지 않으며 상태를 만들지 않는다. **순수 검증**이다. 문서를 실제
  * task로 물질화하는 것은 별도 단계이고 거기서도 권위는 kernel이다.
  */
-import { LIMITS, OrchestrationError, assertSlug, assertText, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath } from "./orchestrationTypes.js";
+import { LIMITS, OrchestrationError, assertSlug, assertText, normalizeAssignedOperations, normalizeOwnership, normalizeResourceClasses, normalizeWorkspacePath } from "./orchestrationTypes.js";
 import { assertRegistryRoleId, pathWithin } from "./approvalManifest.js";
 /** DAG 문서 1건이 담을 수 있는 최대 task 수 — kernel의 run당 task 상한과 같은 값을 쓴다. */
 export const MAX_DAG_TASKS = LIMITS.maxTasksPerRun;
 /** node 하나가 선언할 수 있는 산출/소비 항목 수. `maxArtifactRefs`와 같은 규모로 묶는다. */
 export const MAX_DAG_CONTRACT_PATHS = LIMITS.maxArtifactRefs;
 /** DAG node 1건의 **닫힌 key 집합**. 여기 없는 key는 문서에 담길 수 없다. */
-export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses"];
+export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses", "operations"];
 /** 문서 최상위의 **닫힌 key 집합**. */
 export const DAG_DOCUMENT_KEYS = ["schemaVersion", "tasks"];
 /** `DAG_NODE_KEYS` 중 부재가 허용되는 것(생략 = 빈 목록). */
-const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses"];
+const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses", "operations"];
 export const TASK_DAG_SCHEMA_VERSION = "1";
 /**
  * **이 모듈이 고유하게 내는 안정 오류 코드**(닫힌 목록).
@@ -199,6 +204,10 @@ export function validateTaskDag(raw) {
             // kernel과 **같은 함수**를 쓴다(중복 거부·사전순 고정). 이전 판은 자체 목록 검증이라 중복이
             // 문서 검증을 통과하고 물질화에서 늦게 터졌다(T2 적대적 리뷰 C-1 — fail-late).
             resourceClasses: normalizeResourceClasses(o.resourceClasses ?? [], `DAG node(${taskId}).resourceClasses`),
+            // kernel·store와 **같은 정규화 함수**를 쓴다(slug·중복 거부·사전순). 문서가 `null`을 적어
+            // bind를 벗어나는 통로는 없다: `?? []`가 부재를 빈 집합으로 굳히고, 명시 `null`은 그 함수가
+            // `null`을 돌려주므로 아래에서 `?? []`가 다시 접는다 — DAG node는 언제나 배열이다.
+            operations: normalizeAssignedOperations(o.operations ?? [], `DAG node(${taskId}).operations`) ?? [],
         };
         byId.set(taskId, node);
         nodes.push(node);
