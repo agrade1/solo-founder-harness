@@ -26,9 +26,10 @@
  * 본문은 결정론적이다: 같은 문서면 같은 바이트가 나온다(`REQUIRED_BODY_HEADINGS` 순서 고정).
  */
 import { createHash } from "node:crypto";
-import { LIMITS, OrchestrationError, REQUIRED_BODY_HEADINGS, assertSlug } from "./orchestrationTypes.js";
+import { LIMITS, OrchestrationError, REQUIRED_BODY_HEADINGS, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, assertSlug, } from "./orchestrationTypes.js";
 import { validateMessageBody } from "./agentMessage.js";
-import { pathWithin } from "./approvalManifest.js";
+import { approvedOperationFor, pathWithin } from "./approvalManifest.js";
+import { validateTypedExecutionPlan } from "./typedPlan.js";
 import { validateTaskDag } from "./taskDag.js";
 /** 이 모듈이 고유하게 내는 안정 오류 코드(닫힌 목록 — kernel 코드는 그대로 올라온다). */
 export const TASK_DAG_MATERIALIZE_CODES = [
@@ -43,10 +44,76 @@ export const TASK_DAG_MATERIALIZE_CODES = [
     "dag_materialize_seed_rejected",
 ];
 /**
- * `task_assignment` 본문. **필수 헤딩 전부**를 계약 순서대로 채운다(`REQUIRED_BODY_HEADINGS`가 정본).
- * 내용은 문서에서만 나오고 시각·예산 실측값을 담지 않는다 → 같은 문서면 같은 바이트다.
+ * 계획에 그대로 실릴 수 있는 operation 객체 1건을 **승인 record에서** 만든다(V3 M11 — 대장 `B-38`).
+ *
+ * ## 형태의 정본은 하나다 — 계획 검증기다
+ *
+ * M8이 실측한 함정: 생산자(프롬프트·본문)와 소비자(검증기)가 갈리면 산출물이 **매번** 거부된다.
+ * 그래서 이 함수가 만든 객체는 아래 `assignmentOperationsSection`에서 **`validateTypedExecutionPlan`
+ * 자신에게** 먹여 본 뒤에야 본문에 실린다. 키 목록을 손으로 옮겨 적은 사본이 아니라 **소비자가 직접
+ * 통과시킨 값**이므로 두 축이 갈릴 수 없다.
+ *
+ * ## `content`만 모델이 채운다
+ *
+ * `write_file`의 `content`는 **산출물 그 자체**라 승인 record에 없다(승인이 정하는 것은 경로와 바이트
+ * 상한이다). 그래서 그 자리에 자기설명 placeholder를 넣는다 — 그대로 복사해도 검증기는 지나고
+ * (계약상 임의 문자열이다), 무엇을 바꿔야 하는지는 본문 산문이 한 줄로 말한다.
+ * `run_process`·`git_worktree`는 `{operationId, kind, authorityId}`뿐이라 **완전히 그대로**다.
+ *
+ * `operationId`는 `authorityId`에서 결정론적으로 파생한다(같은 문서면 같은 바이트라는 계약 때문에
+ * 난수·시각을 쓸 수 없다). **알려진 천장**: kernel은 같은 attempt 안에서 같은 `operationId`를 다시 열지
+ * 않는다(`operation_already_recorded`) → 한 attempt에서 같은 authority를 두 번 쓰려면 모델이 id를
+ * 바꿔야 하고, 계약은 그것을 지시하지 않는다. 지금 필요한 것은 "한 번 발행"이라 여기서 닫지 않는다.
  */
-export function assignmentBodyFor(node) {
+function planOperationTemplate(approved) {
+    if (approved.kind === "write_file") {
+        return {
+            operationId: approved.authorityId,
+            kind: "write_file",
+            authorityId: approved.authorityId,
+            path: approved.path,
+            content: "<여기에 파일 내용을 넣어라 — 이 필드만 네가 채운다>",
+            // 신규 파일 발행이 기본값이다. 기존 파일을 고치는 계약은 승인 record가 표현하지 않으므로
+            // (경로와 상한뿐이다) 지시도 그것을 지어내지 않는다 — 모델이 필요하면 실제 hash를 넣는다.
+            expectedBeforeSha256: null,
+        };
+    }
+    return { operationId: approved.authorityId, kind: approved.kind, authorityId: approved.authorityId };
+}
+/**
+ * `Inputs and Contracts` 절에 덧붙일 operation 블록. **선언이 없으면 빈 문자열**이다 —
+ * `operations` 없는 DAG 문서의 본문이 `B-38` 이전과 **바이트 동일**해야 하기 때문이다
+ * (이어받기 판정이 `assignment.bodySha256`을 대조한다 → 한 바이트만 달라도 기존 run이 전부 깨진다).
+ */
+function assignmentOperationsSection(taskId, approvedOps) {
+    if (approvedOps.length === 0)
+        return "";
+    const templates = approvedOps.map((op) => planOperationTemplate(op));
+    // **소비자에게 먼저 물어본다**(위 docstring). 여기서 던지면 지시가 발행되지 않는다 — 검증기를 지나지
+    // 못하는 객체를 모델에게 "그대로 넣어라"라고 말하는 상태가 durable에 남지 않는다.
+    const probe = { runId: "probe-run", taskId: "probe-task", attemptId: "probe-attempt", turnId: "probe-turn" };
+    try {
+        validateTypedExecutionPlan({
+            schemaVersion: TYPED_EXECUTION_PLAN_SCHEMA_VERSION,
+            ...probe,
+            operations: templates,
+            result: { summary: "지시가 실은 operation 형태 검사", outputs: [] },
+        }, probe);
+    }
+    catch (e) {
+        throw new OrchestrationError("dag_materialize_seed_rejected", `${taskId}의 지시에 실을 operation이 계획 계약 밖이다(${e instanceof OrchestrationError ? e.code : "unknown"})`);
+    }
+    return ("\n\n계획의 `operations[]`에 넣을 것(**아래 객체를 그대로 복사**한다 — `content`만 네 산출물로 바꾸고\n" +
+        "나머지 필드는 손대지 마라. 필요 없는 operation은 빼도 되지만 여기 없는 operation은 거부된다):\n\n" +
+        templates.map((t) => "```json\n" + JSON.stringify(t) + "\n```").join("\n"));
+}
+/**
+ * `task_assignment` 본문. **필수 헤딩 전부**를 계약 순서대로 채운다(`REQUIRED_BODY_HEADINGS`가 정본).
+ * 내용은 문서·승인에서만 나오고 시각·예산 실측값을 담지 않는다 → 같은 문서·같은 승인이면 같은 바이트다.
+ *
+ * `approvedOps`가 비면 본문은 `B-38` 이전과 **바이트 동일**하다(위 `assignmentOperationsSection`).
+ */
+export function assignmentBodyFor(node, approvedOps = []) {
     const list = (items, empty) => items.length === 0 ? empty : items.map((i) => `- \`${i}\``).join("\n");
     const sections = {
         Objective: node.title,
@@ -55,7 +122,8 @@ export function assignmentBodyFor(node) {
         "Out of Scope / Forbidden": "위 소유 경로 밖 쓰기는 kernel이 거부한다(`operation_not_owned`).\n" +
             "동시에 자원을 점유 중인 다른 task가 그 경로를 소유하면 역시 거부다(`operation_ownership_contended`).\n" +
             "실행 권한·명령·예산의 정본은 **승인 manifest**이며 이 문서가 만들지 않는다.",
-        "Inputs and Contracts": `이 task가 만들기로 한 것(provides):\n${list(node.provides, "- (없음)")}\n\n읽기로 한 것(consumes):\n${list(node.consumes, "- (없음)")}`,
+        "Inputs and Contracts": `이 task가 만들기로 한 것(provides):\n${list(node.provides, "- (없음)")}\n\n읽기로 한 것(consumes):\n${list(node.consumes, "- (없음)")}` +
+            assignmentOperationsSection(node.taskId, approvedOps),
         Dependencies: list(node.dependsOn, "- (없음 — 즉시 시작 가능)"),
         "Definition of Done": "provides로 선언한 산출물이 전부 발행되고 결과 요약이 수락된다.",
         "Budget and Permission Envelope": "승인 manifest의 `autopilotPolicy`·`operationAuthorityByTask`가 정본이다.",
@@ -154,7 +222,17 @@ export function materializeTaskDag(kernel, rawDocument) {
                 throw new OrchestrationError("dag_materialize_seed_rejected", `${node.taskId}의 ownership이 승인 범위 밖이다: ${own}`);
             }
         }
-        const assignmentBody = assignmentBodyFor(node);
+        // **승인 대조 — 승인 밖 operation은 지시에 실리지 못한다**(V3 M11 · 대장 `B-38`).
+        // DAG는 `authorityId`를 **참조**할 뿐이므로 record 정본은 언제나 승인 manifest다. 여기서 못 찾으면
+        // fail closed: 지시에 실을 수 없는 것을 실은 문서로는 **아무 task도 만들어지지 않는다**(사전 검증).
+        const approvedOps = node.operations.map((authorityId) => {
+            const approved = approvedOperationFor(manifest, node.taskId, authorityId);
+            if (approved === null) {
+                throw new OrchestrationError("dag_materialize_seed_rejected", `${node.taskId}의 operations가 승인 밖이다(operationAuthorityByTask에 없다): ${authorityId}`);
+            }
+            return approved;
+        });
+        const assignmentBody = assignmentBodyFor(node, approvedOps);
         // **kernel이 쓰는 바로 그 검증기**를 먼저 부른다(두 번째 규칙을 만들지 않는다).
         try {
             validateMessageBody("task_assignment", assignmentBody);
@@ -171,6 +249,9 @@ export function materializeTaskDag(kernel, rawDocument) {
                 scope: node.scope,
                 ownership: [...node.ownership],
                 resourceClasses: [...node.resourceClasses],
+                // **지시 축은 언제나 배열이다 — `null`(축 없음)을 만들지 않는다**(`C-111`). 선언이 비었으면
+                // `[]`가 곧 "이 task는 operation을 낼 수 없다"이고 kernel이 그것을 집행한다.
+                assignedOperations: [...node.operations],
                 assignmentMessageId,
                 assignmentBody,
             },
@@ -226,7 +307,12 @@ function nodeMatchesTask(node, task) {
         task.parentTaskId === null &&
         sameSet(task.ownership, node.ownership) &&
         sameSet(task.dependsOn, node.dependsOn) &&
-        sameSet(task.resourceClasses, node.resourceClasses));
+        sameSet(task.resourceClasses, node.resourceClasses) &&
+        // **`null`은 문서 node와 같지 않다**(V3 M11): 물질화는 언제나 배열을 만들므로, `null`인 task는
+        // 이 문서가 만든 것이 아니다. `?? []`로 접으면 kernel API로 직접 만든 task가 `operations` 없는
+        // node와 같아 보이고, 그러면 남의 task 위에 문서를 얹는 경로가 열린다.
+        task.assignedOperations !== null &&
+        sameSet(task.assignedOperations, node.operations));
 }
 /**
  * **빈 run이거나 같은 문서로 물질화하다 만 run인가**(대장 `C-76`). 아니면 `dag_materialize_run_not_empty`다.
@@ -254,7 +340,12 @@ function assertResumableRun(kernel, document) {
         // 앞선 task는 구계약, 새 task는 신계약"이 통과한다. 본문은 같은 문서면 같은 바이트이므로
         // (`assignmentBodyFor` 결정론) durable digest와 재계산 digest를 그대로 대조한다.
         const assignment = state.messages.find((m) => m.messageId === `asg-${task.taskId}`);
-        const expected = createHash("sha256").update(assignmentBodyFor(node), "utf8").digest("hex");
+        // 본문은 문서 **와 승인**에서 나온다(V3 M11: operation 객체가 실린다) → 재계산도 같은 두 입력을
+        // 쓴다. 승인 밖 id는 여기서 `null`이 되어 대조가 어긋나므로 이어받기도 fail closed다.
+        const approvedOps = node.operations
+            .map((authorityId) => approvedOperationFor(kernel.getManifest(), node.taskId, authorityId))
+            .filter((op) => op !== null);
+        const expected = createHash("sha256").update(assignmentBodyFor(node, approvedOps), "utf8").digest("hex");
         if (assignment === undefined || assignment.bodySha256 !== expected) {
             throw new OrchestrationError("dag_materialize_run_not_empty", `기존 task의 assignment 본문이 문서와 다르다(provides·consumes 등 state 축 밖 필드): ${task.taskId}`);
         }

@@ -696,6 +696,36 @@ export function normalizeWorkspacePath(raw, what) {
     return out.join("/");
 }
 /**
+ * **지시가 실은 operation authorityId 집합의 정규화**(V3 M11 — `B-38`/`C-111`).
+ * `null`(= 지시 축 없음)과 배열을 구분해 그대로 돌려주고, 배열은 slug 검증 · 중복 거부 · 사전순 고정한다.
+ *
+ * kernel(`addTask`)과 store(`validateTask`)가 **같은 함수 하나**를 쓴다 — 두 곳이 갈라지면 "만들 때
+ * 통과한 값이 다시 읽을 때 거부되는" 부류가 생긴다(`resourceClasses`가 M4b에서 정확히 그 이유로
+ * 같은 함수를 공유하게 됐다). 상한은 승인 쪽과 같은 `maxOperationAuthorities`다: 지시는 승인을
+ * **좁히기만** 하므로 승인이 담을 수 있는 수보다 많을 이유가 없다.
+ */
+export function normalizeAssignedOperations(raw, what) {
+    if (raw === null)
+        return null;
+    if (!Array.isArray(raw)) {
+        throw new OrchestrationError("invalid_assigned_operations", `${what}는 배열 또는 null이어야 한다`);
+    }
+    if (raw.length > LIMITS.maxOperationAuthorities) {
+        throw new OrchestrationError("invalid_assigned_operations", `${what}는 ${LIMITS.maxOperationAuthorities}개 이하여야 한다`);
+    }
+    const seen = new Set();
+    for (const a of raw) {
+        if (!isSlug(a)) {
+            throw new OrchestrationError("invalid_assigned_operations", `${what} 항목은 slug(${SLUG_PATTERN})여야 한다`);
+        }
+        if (seen.has(a)) {
+            throw new OrchestrationError("invalid_assigned_operations", `${what}에 중복 authorityId가 있다: ${a}`);
+        }
+        seen.add(a);
+    }
+    return [...seen].sort();
+}
+/**
  * 배타 자원 class 배열 정규화 — slug 검증 · 중복 거부 · 사전순 고정(결정성).
  * **빈 배열은 유효하다**(자원 요구 없음 = 병렬 안전). class 이름은 자유 문자열이 아니라 slug다:
  * 정규화되지 않은 이름 두 개가 같은 자원을 뜻하면 직렬화 계약이 조용히 깨지기 때문이다.
