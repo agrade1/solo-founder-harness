@@ -785,10 +785,12 @@ test("[M5c] turn 중간 kernel throw는 CLI를 죽이지 않고 loop를 멈춘�
 
 test("[M5d] 승인된 write_file operation은 집행 경계를 지나 applied 영수증으로 닫힌다 (B-10 소비)", async () => {
   const f = boot({ operationAuthorityByTask: { root: [{ authorityId: "auth-1", kind: "write_file", path: "docs/x.md", maxBytes: 64 }] } });
-  // **오늘의 write_file은 바이트를 만들지 못한다**: 신규 생성은 `write_publish_unsupported`(`B-16` — 열지
-  // 않은 게이트), 내용 교체는 `write_replace_unsupported`다. 성공 경로는 **크래시 창 멱등** 하나뿐이다 —
-  // 의도한 내용이 이미 있으면 부모 fsync를 확인하고 `already_applied`로 닫는다. 이 테스트가 고정하는 것은
-  // 그 계약이지 "쓰기가 된다"가 아니다.
+  // 이 테스트가 고정하는 것은 **집행 경계를 지나 영수증으로 닫힌다**이고 "바이트가 써진다"가 아니다 —
+  // 의도한 내용이 이미 있으면 부모 fsync를 확인하고 `already_applied`로 닫는 **크래시 창 멱등** 경로를 밟는다.
+  //
+  // **정정(V3 M11 판정 ⑥ · 2026-08-24)**: 이 주석은 한때 "**오늘의 write_file은 바이트를 만들지 못한다** —
+  // 신규 생성은 `write_publish_unsupported`(`B-16` — 열지 않은 게이트)"라고 적었고 **M9 선결 2(`B-16`
+  // 완전 개방) 이후 거짓이었다.** 실제 잔여는 대장 **`B-38`**(live task가 그 능력에 닿을 통로가 없다)이다.
   writeOutput(f.ws, "docs/x.md", "same\n");
   const same = createHash("sha256").update("same\n").digest("hex");
   writePlan(f.planDir, "root", {
