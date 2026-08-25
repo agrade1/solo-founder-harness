@@ -1,5 +1,28 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-25 — **V3 M11⑧ L2a: `plan-dag` — 하네스가 아이디어에서 12-task DAG 초안을 만들었다(live 첫 시도 통과)**)
+
+- **`harness plan-dag` + `validate-dag`**: 아이디어 문서 + 사람이 쓴 승인 → planner run 구성 →
+  live 모델이 DAG 초안을 typed write로 산출 → read-only 판정. 아이디어는 신규 DAG 축 `briefing` →
+  지시 본문에 **줄 단위 인용**(fence·h2가 본문 계약을 깨는 것을 막는 유일한 방법). 상한 초과는
+  자르지 않고 run 생성 전 fail closed. **승인 초안은 만들지 않는다**(L2b = trust root · 사용자 결정
+  대상) · 초안→실행 자동 통로 없음. 판정 정본은 **`M11 진행 판정 ⑧`**.
+- **live 실측(claude 1회)**: 구독 관리 서비스 아이디어(8절) → 모델이 **12-task DAG**를 냈고
+  `validate-dag` **첫 시도 통과**. 구조 타당: research→pm→ux→design · pm→tech-lead→privacy(중첩 role
+  `qa-security.privacy`를 registry에 맞게) · 합류→app-shell→**기능 4개 병렬**→integration-check.
+  ownership 서로소 · 삼중 hash 일치 · `completed` · 사람 개입 0.
+- **비평이 mutation 주장 하나를 기각했다**: 구현 세션의 "slice(0,2000) → RED 4건"은 fixture가
+  **236바이트**라 **성립 불가**(no-op mutation) — 독립 재현 GREEN. fixture를 8KB로 강화 후 RED 실측.
+  교훈 = **mutation red 보고는 fixture가 그 mutation을 잡을 수 있는지가 선행 조건**(신규 `C-116` —
+  다음 구현 세션 프롬프트부터 요구). 이번 세션은 커밋 3개를 남겼다(배송 함정 회피 첫 사례).
+- **실측**: `npm test` exit 0 · 646/646 · **492/492**(+10) · acceptance **217/0**(Test 26) ·
+  L2a acceptance 30/30 · typecheck clean · live 1회.
+- **미증명**: 초안 품질의 일반성(표본 1) · **12-task를 실제로 돌리는 것**(task별 승인은 사람이 쓴다 ·
+  multi-task live 0회) · 계약 산문의 규칙 문장은 파생 불가(`C-115`).
+- **열린 항목**: A **0** · 등급 B **6** · 등급 C **80** · id **86**.
+
+---
+
 ## 최신 (2026-08-25 — **V3 M11⑦: `B-38`+`C-111` fixed · live가 처음으로 실제 산출물을 만들었다(`C-109` closed)**)
 
 - **작업 방식(사용자 지시)**: 오케스트레이터 = **Fable 5**(명령·취합·비평·문서·통합·live) · 구현 =
