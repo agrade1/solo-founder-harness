@@ -35,12 +35,25 @@
  *   승인 레코드 대조·소유권·`writableRoots`·digest 재검증·spawn 상한·deadline·멱등 pending은 전부
  *   kernel 안에서 일어나고, autopilot이 고를 수 있는 것은 **계획에 이미 있는 operationId의 순서**뿐이다.
  *   승인되지 않은 operation은 여전히 `operation_denied`로 닫히고 task는 `paused`로 착지한다.
- * - **`B-16`(real typed-write 산출물 발행)** — **부분 개방**(M5d): 승인된 **기존 파일의 교체**는 이제
- *   실제로 바이트를 낸다(고정한 대상 fd에 직접 쓴다 — 발행 경로에 pathname이 없다). **신규 파일 생성은
- *   여전히 fail closed**다(`write_publish_unsupported`). artifact로 발행되는 것은 그 task가 소유한
- *   파일뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
+ * - **`B-16`(real typed-write 산출물 발행)** — **완전 개방**(M9 선결 2). 신규 파일 생성도 바이트를
+ *   낸다(`O_CREAT|O_EXCL` 빈 파일 → 부모 경로 재해석 검증 → inode 도달성 검증 → 고정한 fd 전용 쓰기).
+ *   artifact로 발행되는 것은 그 task가 소유한 파일뿐이며 kernel이 소유권·`writableRoots`·hash를 집행한다.
+ *
+ *   **정정(V3 M11 판정 ⑥ · 2026-08-24)**: 위 문단은 한때 "부분 개방(M5d) — **신규 파일 생성은 여전히
+ *   fail closed**(`write_publish_unsupported`)"라고 적었고 **M9 선결 2 이후에도 남아 거짓이었다**.
+ *   같은 코드베이스의 `typedExecution.ts`는 "`write_publish_unsupported`는 더 이상 발생하지 않는다"고
+ *   적고 있었으므로 **두 주석이 서로를 반박하고 있었다**. 실제 잔여는 다른 곳이다 — 대장 **`B-38`**:
+ *   task_assignment 본문에 operation 객체를 싣는 코드가 없어 **live task가 이 능력에 닿을 통로가 없다**.
  * - **`B-7`/`B-9`(live)** — 소비하지 않는다. 유일한 backend는 `offline-plan`이고 `claude`·`codex`는
  *   worker가 hard reject한다. 네트워크 호출 0 · 추론 0 · spawn 0.
+ *
+ *   **정정(V3 M11 — 위 문단은 M5c 시점의 기록이며 지금은 거짓이다).** M10 T3/T7이 `claude-plan`·
+ *   `codex-plan` worker를 열었고 M11에서 그 선택이 CLI(`--worker-backend`)로 노출됐다. 그래서
+ *   "유일한 backend"도 "네트워크 0 · 추론 0 · spawn 0"도 **이 모듈 전체의 성질이 아니다** —
+ *   `offline-plan` 갈래에서만 참이다. live 갈래는 승인 manifest의 `executionAuthority.claude`
+ *   (리뷰어 family는 `codex`)가 없으면 시작조차 못 하지만, 있으면 실제 프로세스를 띄우고 구독 한도를
+ *   소모한다. 이 문단을 지우지 않고 정정으로 남기는 이유: 위 게이트 목록이 "무엇을 소비했는가"의
+ *   역사 기록이고, 소비 시점을 지우면 그 근거를 되짚을 수 없다.
  *
  * ## 이 slice가 하지 않는 것
  *
@@ -214,8 +227,15 @@ export interface AutopilotOptions {
   runId: string;
   /** 운영자가 "이 승인 아래 돈다"고 명시하는 milestone. durable run과 다르면 시작하지 않는다. */
   milestoneId: string;
-  /** task별 offline 계획 JSON 디렉터리(`<planDir>/<taskId>.json`). */
-  planDir: string;
+  /**
+   * task별 offline 계획 JSON 디렉터리(`<planDir>/<taskId>.json`).
+   *
+   * **`offline-plan` backend에서만 읽힌다** — live backend는 계획을 모델이 만들므로 이 값을 한 번도
+   * 보지 않는다(아래 `LIVE_PLACEHOLDER` 갈래). 그래서 타입도 선택이다. 없는 채로 offline을 요청하면
+   * **fail closed**다(`plan_dir_required`): 빈 디렉터리로 취급하면 모든 task가 `plan_missing`으로
+   * `deferred`되어 "계획을 안 준 것"과 "계획 자리를 안 준 것"이 같은 결과로 보인다 = 조용한 fallback.
+   */
+  planDir?: string;
   maxIterations?: number;
   /** 시각 권위(테스트 주입용). */
   clock?: () => Date;
@@ -354,8 +374,18 @@ async function runAutopilotUnderLease(
    *   파일 자격을 그대로 요구하면 live backend는 영원히 `no_plans_available`이다(공허한 게이트).
    */
   const LIVE_PLACEHOLDER: PlanDocument = { operations: undefined, requests: undefined, result: undefined };
+  // **offline 갈래에서 계획 디렉터리는 필수다**(V3 M11). 이 판정을 CLI가 아니라 여기 두는 이유:
+  // `runAutopilot`을 부르는 통로가 CLI 하나가 아니다(acceptance·live 스크립트도 부른다) → CLI에만
+  // 두면 다른 호출자는 `planDir` 없이 offline을 요청해 **전 task가 `plan_missing`으로 조용히 defer**된다.
+  //
+  // `null`은 "live라서 이 축이 없다", `undefined`는 "offline인데 주지 않았다"다 — 두 뜻이 같은 값으로
+  // 표현되지 않으므로 아래 갈래에 도달 불가 분기가 남지 않는다.
+  const offlinePlanDir: string | null | undefined = backend === LIVE_PLAN_BACKEND ? null : opts.planDir;
+  if (offlinePlanDir === undefined) {
+    return { blocked: "run_unavailable", iterations: 0, tasks, stoppedBecause: "plan_dir_required" };
+  }
   const planFor = (taskId: string): PlanDocument | null =>
-    backend === LIVE_PLAN_BACKEND ? LIVE_PLACEHOLDER : readPlanDocument(opts.planDir, taskId);
+    offlinePlanDir === null ? LIVE_PLACEHOLDER : readPlanDocument(offlinePlanDir, taskId);
 
   const maxIterations = boundedIterations(opts.maxIterations);
   let iterations = 0;
@@ -695,6 +725,9 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   emit({ kind: "task_started", taskId, marker: turnId });
 
   const attemptId = started.task.execution.attemptId ?? "";
+  // **role이 backend를 고른다**(T7). turn 시작 전에 한 번 정하고 **결과 본문도 같은 값을 쓴다**
+  // (V3 M11 — 아래 `resultBody` 참조: durable 영수증이 `offline-plan`을 하드코딩하고 있었다).
+  const effectiveBackend = backendForRole(ctx.backend, started.task.roleId);
   let plan: TypedExecutionPlan | null = null;
   let dispatchCharged = false;
   let dispatchChargeFailed: string | null = null;
@@ -705,7 +738,7 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   try {
     const binding = { runId: kernel.getState().runId, taskId, attemptId, turnId };
     // **role이 backend를 고른다**(T7): 리뷰어 family는 codex 세션, 나머지는 claude 세션.
-    const effective = backendForRole(ctx.backend, started.task.roleId);
+    const effective = effectiveBackend;
     const stream =
       effective === CODEX_PLAN_BACKEND
         ? (() => {
@@ -931,7 +964,7 @@ async function runTaskTurn(ctx: TurnCtx): Promise<AutopilotTaskOutcome> {
   try {
     kernel.completeTaskWithArtifacts({
       envelope: resultEnvelope(kernel, started.task),
-      body: resultBody(taskId, plan, kernel.getTask(taskId)?.execution.operationReceipts ?? [], turnId),
+      body: resultBody(taskId, plan, kernel.getTask(taskId)?.execution.operationReceipts ?? [], turnId, effectiveBackend),
       summary: plan.result.summary,
       outputs: [...plan.result.outputs],
     });
@@ -1471,11 +1504,21 @@ function resultBody(
   plan: TypedExecutionPlan,
   receipts: readonly { kind: string; marker: string; turnId: string }[],
   turnId: string,
+  /**
+   * 이 turn이 **실제로 돈** backend(`backendForRole` 결과 — role에 따라 `codex-plan`일 수 있다).
+   *
+   * **V3 M11 — A급 거짓 영수증 수정.** 이전 판은 이 자리에 `OFFLINE_PLAN_BACKEND`를 **하드코딩**하고
+   * "offline plan turn 1회를 진행했다"를 고정 문장으로 적었다. M5c에서는 backend가 하나였으니 참이었지만
+   * M10 T3/T7이 live worker를 연 뒤로 **live turn의 durable 결과 본문이 "offline"이라고 주장**했다 —
+   * 사람이 읽는 감사 산출물의 거짓 진술이고, M11에서 `--worker-backend`가 CLI에 노출되면 그 거짓이
+   * 운영 경로의 기본 산출물이 된다. 담는 것은 닫힌 backend 식별자 하나뿐이다(원문·계측값 없음).
+   */
+  backend: AutopilotWorkerBackend | "codex-plan",
 ): string {
   const deliverables = plan.result.outputs.length === 0 ? "- (없음)" : plan.result.outputs.map((o) => `- ${o.path} (${o.role})`).join("\n");
   const filled: Record<string, string> = {
-    "Result Summary": `- task: ${taskId}\n- backend: ${OFFLINE_PLAN_BACKEND}`,
-    "Work Performed": "- autopilot이 승인 경계 안에서 offline plan turn 1회를 진행했다.",
+    "Result Summary": `- task: ${taskId}\n- backend: ${backend}`,
+    "Work Performed": `- autopilot이 승인 경계 안에서 \`${backend}\` worker turn 1회를 진행했다.`,
     // **durable 본문은 실제로 일어난 일만 적는다**(V3 M10 T2 — A급 수정). 이전 판은 이 줄을
     // `"typed operation은 집행하지 않았다(계획에 operation이 없는 turn만 발행된다)"`로 **고정**해
     // 두었다. M5c에서는 참이었지만 **M5d task 2가 typed operation 집행을 연 뒤로 거짓**이다 —
@@ -1498,7 +1541,10 @@ export interface AutopilotCliOptions {
   workspace?: string;
   run: string;
   milestone: string;
-  planDir: string;
+  /** `offline-plan`에서만 필수다(아래 arity 판정). live backend는 읽지 않는다. */
+  planDir?: string;
+  /** `AUTOPILOT_WORKER_BACKENDS` 안의 값. 미지정은 `offline-plan`이다(기본값의 유일한 자리). */
+  workerBackend?: string;
   maxIterations?: string;
   json: boolean;
 }
@@ -1506,7 +1552,53 @@ export interface AutopilotCliOptions {
 /** `harness autopilot` 명령 본체. 출력은 stdout, run 수준 거부는 exit 2다. */
 export async function runAutopilotCommand(opts: AutopilotCliOptions): Promise<void> {
   const workspaceRoot = resolve(opts.workspace ?? process.cwd());
-  const planDir = isAbsolute(opts.planDir) ? opts.planDir : resolve(opts.planDir);
+  /**
+   * **backend 기본값의 유일한 자리**(V3 M11). `claude-plan`은 구독 한도를 소모하므로 사람이 **명시**해야
+   * 한다 — 기본값을 live로 만드는 것은 승인 없이 돈을 쓰는 경로다.
+   *
+   * 닫힌 집합 검사를 여기서 하는 이유: `runAutopilot`도 같은 검사를 갖고 있지만(프로그램 호출자 방어)
+   * 그 검사는 **run을 열고 controller lease를 잡은 뒤**에 돈다 → 오타 하나로 durable 자리(lease 파일)를
+   * 건드린다. 인자 검증은 아무것도 건드리기 전에 끝나야 한다.
+   *
+   * **기각한 대안**: commander `Option.choices()`. 거부가 parse 단계로 올라가 더 이르지만, 거부 경로가
+   * commander의 exit(1)·stderr 계약에 묶여 이 함수를 직접 부르는 테스트가 그것을 밟을 수 없다.
+   * 같은 판정을 두 곳에 두지 않고 **여기 하나**로 둔다(`--help`가 집합을 그대로 적는다).
+   */
+  const backend = opts.workerBackend ?? OFFLINE_PLAN_BACKEND;
+  if (!(AUTOPILOT_WORKER_BACKENDS as readonly string[]).includes(backend)) {
+    process.stdout.write(
+      `[autopilot] 거부: --worker-backend는 ${AUTOPILOT_WORKER_BACKENDS.join(" | ")} 중 하나여야 한다(받은 값: ${backend})\n`,
+    );
+    process.exitCode = 2;
+    return;
+  }
+  /**
+   * **`--plan-dir` arity는 backend가 정한다.** 이전 판은 `requiredOption`이어서 live 실행에도 **읽히지
+   * 않는 인자**를 강제했다(`LIVE_PLACEHOLDER` 갈래는 그 값을 한 번도 보지 않는다).
+   *
+   * - offline: 여전히 **필수**다. 없으면 거부한다 — 빈 디렉터리로 취급하면 전 task가 `plan_missing`으로
+   *   defer되어 "계획이 없다"와 "계획 자리를 안 줬다"가 같은 결과로 보인다(조용한 fallback).
+   * - live: 주면 **거부**한다. 조용히 무시하면 운영자는 그 디렉터리의 계획이 쓰였다고 믿는다 — 읽지
+   *   않는 인자를 받아 주는 것이 곧 그 오해를 만드는 자리다.
+   *
+   * 이 두 판정 중 offline 쪽은 `runAutopilot`에도 있다(CLI 아닌 호출자 방어). live 쪽은 CLI에만 둔다:
+   * `runAutopilot`은 계획 디렉터리를 **무해하게 무시**하는 것이 계약이고(기존 live 스크립트들이 그렇게
+   * 부른다) 오해가 생기는 지점은 사람이 argv를 치는 자리다.
+   */
+  // **빈 문자열은 "주지 않은 것"과 같이 취급한다**(M11 적대적 리뷰 C-3). `--plan-dir ""`은 `undefined`
+  // 검사를 지나 `resolve("")` = cwd가 되어 **운영자가 의도하지 않은 디렉터리**를 계획 자리로 삼는다.
+  // 관측 가능하긴 하나(전 task `plan_missing` defer) arity 판정의 구멍이므로 여기서 닫는다.
+  if (backend === OFFLINE_PLAN_BACKEND && (opts.planDir === undefined || opts.planDir.trim() === "")) {
+    process.stdout.write(`[autopilot] 거부: --worker-backend ${OFFLINE_PLAN_BACKEND}에는 --plan-dir이 필요하다\n`);
+    process.exitCode = 2;
+    return;
+  }
+  if (backend !== OFFLINE_PLAN_BACKEND && opts.planDir !== undefined && opts.planDir.trim() !== "") {
+    process.stdout.write(`[autopilot] 거부: --worker-backend ${backend}는 --plan-dir을 읽지 않는다(계획은 모델이 만든다)\n`);
+    process.exitCode = 2;
+    return;
+  }
+  const planDir = opts.planDir === undefined ? undefined : isAbsolute(opts.planDir) ? opts.planDir : resolve(opts.planDir);
   const ac = new AbortController();
   const onSigint = (): void => ac.abort();
   process.on("SIGINT", onSigint);
@@ -1516,6 +1608,7 @@ export async function runAutopilotCommand(opts: AutopilotCliOptions): Promise<vo
       runId: opts.run,
       milestoneId: opts.milestone,
       planDir,
+      workerBackend: backend as AutopilotWorkerBackend,
       maxIterations: opts.maxIterations === undefined ? undefined : Number(opts.maxIterations),
       signal: ac.signal,
       // **V3 M9 선결 4(F2)**: 사람이 보는 경로는 v1 F2 렌더러를 재사용한다(스피너·경과시간·비-TTY

@@ -11,7 +11,8 @@ import { runTaskPrompt } from "./commands/taskPrompt.js";
 import { runExec } from "./commands/exec.js";
 import { runMissionCommand } from "./commands/mission.js";
 import { runHandoffCommand } from "./commands/handoff.js";
-import { runAutopilotCommand } from "./commands/autopilot.js";
+import { AUTOPILOT_WORKER_BACKENDS, runAutopilotCommand } from "./commands/autopilot.js";
+import { runAutopilotCreateCommand } from "./commands/autopilotCreate.js";
 
 // 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
 // import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
@@ -133,16 +134,36 @@ program
     await runMissionCommand({ goal: opts.goal, base: opts.base, yes: opts.yes, maxTasks: opts.maxTasks, reviewRounds: opts.reviewRounds, parallel: opts.parallel, concurrency: opts.concurrency });
   });
 
+// **무인 loop의 진입점 두 개.** `autopilot-create`가 승인·DAG 문서를 run으로 만들고,
+// `autopilot`이 그 run을 전진시킨다. 승인은 사람이 파일로 쓰고 harness는 검증·구속만 한다.
+program
+  .command("autopilot-create")
+  .description("[v3-M11] 사람이 authoring한 승인 manifest + task DAG 문서로 orchestration run을 만든다 (승인을 발행하지 않는다 — 계약 위반은 fail closed)")
+  .requiredOption("--run <runId>", "만들 orchestration run id")
+  .requiredOption("--milestone <id>", "승인 milestone (승인 파일의 milestoneId와 같아야 한다)")
+  .requiredOption("--approval <path>", "승인 manifest JSON 파일 (schemas/milestone_approval_manifest.schema.json)")
+  .requiredOption("--dag <path>", "task DAG 문서 JSON 파일")
+  .option("--workspace <path>", "orchestration workspace 루트 (기본: 현재 디렉터리)")
+  .action((opts: { run: string; milestone: string; approval: string; dag: string; workspace?: string }) => {
+    runAutopilotCreateCommand(opts);
+  });
+
 program
   .command("autopilot")
-  .description("[v3-M5c] 승인 manifest 하나로 gate된 durable run을 offline plan worker로 전진시킨다 (추론·네트워크·프로세스 0)")
+  .description("[v3-M5c] 승인 manifest 하나로 gate된 durable run을 worker backend로 전진시킨다")
   .requiredOption("--run <runId>", "대상 orchestration run id")
   .requiredOption("--milestone <id>", "이 실행이 근거로 삼는 승인 milestone (durable run과 다르면 시작하지 않는다)")
-  .requiredOption("--plan-dir <path>", "task별 offline 계획 JSON 디렉터리 (<planDir>/<taskId>.json)")
+  .option("--plan-dir <path>", `task별 offline 계획 JSON 디렉터리 (<planDir>/<taskId>.json). --worker-backend ${AUTOPILOT_WORKER_BACKENDS[0]}에서 필수이고 그 밖에서는 읽히지 않는다`)
+  // 문구는 증명한 것까지만 적는다: `claude-plan`이 실제 모델 세션을 돌린다는 것과, 승인이 없으면
+  // 시작하지 않는다는 것. 그 세션이 무엇을 할 수 있는지는 여기서 주장하지 않는다.
+  .option(
+    "--worker-backend <id>",
+    `worker backend (${AUTOPILOT_WORKER_BACKENDS.join(" | ")}). 기본 ${AUTOPILOT_WORKER_BACKENDS[0]}. ${AUTOPILOT_WORKER_BACKENDS[1]}은 실제 모델 세션을 돌리며(구독 한도 소모) 승인 manifest의 executionAuthority.claude가 없으면 시작하지 않는다`,
+  )
   .option("--workspace <path>", "orchestration workspace 루트 (기본: 현재 디렉터리)")
   .option("--max-iterations <n>", `loop 상한 (기본·최대 ${16})`)
   .option("--json", "진행 이벤트를 NDJSON으로 출력", false)
-  .action(async (opts: { run: string; milestone: string; planDir: string; workspace?: string; maxIterations?: string; json: boolean }) => {
+  .action(async (opts: { run: string; milestone: string; planDir?: string; workerBackend?: string; workspace?: string; maxIterations?: string; json: boolean }) => {
     await runAutopilotCommand(opts);
   });
 

@@ -453,6 +453,25 @@ echo "$M11_OUT" | grep -q "대조군: 계약을 지킨 신원은 승인 게이�
 check "M11 ② 계약 위반만 거부(무조건 거부가 아님) 출력" $?
 echo "$M11_OUT" | grep -q "대조군: 리뷰어가 저자와 같은 엔진이면 verify가 완료되지 않는다"
 check "M11 ③ 리뷰 왕복을 loop가 강제함 출력" $?
+
+echo ""
+echo "== Test 24: M11 무인 loop CLI 진입점 — autopilot-create · --worker-backend · backend별 --plan-dir (offline · 무과금) =="
+# **이 배선 자체가 `C-104`가 이름한 사고 형태를 막는다**: 다른 offline acceptance는 전부 여기 등록돼
+# 있는데 이 스크립트만 빠져 있었다(= 사람이 기억해야만 도는 31건). 통합 세션이 그것을 닫았다.
+# `--import tsx`가 필요하다 — 이 스크립트는 실제 argv로 `src/cli.ts`를 기동한다(dist가 아니라 소스).
+M11CLI_OUT="$(node --import tsx scripts/m11-cli-entrypoint-acceptance.mjs 2>&1)"
+M11CLI_RC=$?
+[ "$M11CLI_RC" -eq 0 ];                           check "M11 CLI 진입점 acceptance exit 0" $?
+echo "$M11CLI_OUT" | grep -q "FAIL=0";            check "M11 CLI 진입점 내부 체크 전부 통과" $?
+# `--`로 패턴 시작 — grep이 옵션으로 읽으므로 `--`로 끊는다(통합에서 실측한 실패다).
+echo "$M11CLI_OUT" | grep -q -- "--worker-backend 미지정은 offline-plan이다"
+check "M11 CLI 기본 backend가 offline-plan(구독을 소모하지 않는다) 출력" $?
+echo "$M11CLI_OUT" | grep -q "worker_backend_unapproved로 거부한다"
+check "M11 CLI live backend가 승인 없이는 표현 불가 출력" $?
+echo "$M11CLI_OUT" | grep -q "빈 디렉터리로 취급하지 않는다"
+check "M11 CLI --plan-dir 부재가 조용한 fallback이 아님 출력" $?
+echo "$M11CLI_OUT" | grep -q "읽지 않는 인자를 조용히 받지 않는다"
+check "M11 CLI live에 --plan-dir을 주면 거부(오해 방지) 출력" $?
 echo "$M11_OUT" | grep -q "승인이 왕복을 요구하지 않으면 게이트는 돌지 않는다"
 check "M11 ③ 요구하지 않는 승인은 강요받지 않음 출력" $?
 
