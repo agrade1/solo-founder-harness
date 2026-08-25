@@ -353,6 +353,9 @@ console.log("\n④ operations 없는 DAG는 이전과 바이트 동일하고, �
     consumes: [],
     resourceClasses: [],
     operations: [],
+    // **L2a에서 `briefing` 축이 생겼다.** 정규화된 "부재" 값은 `""`이며, 아래 골든 hash가 그대로라는
+    // 것이 곧 "briefing 없는 지시는 바이트가 움직이지 않았다"의 증거다.
+    briefing: "",
   };
   check(
     "operations 없는 지시 본문은 B-38 이전과 바이트 동일하다",

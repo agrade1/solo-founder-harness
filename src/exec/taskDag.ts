@@ -43,13 +43,13 @@ export const MAX_DAG_TASKS = LIMITS.maxTasksPerRun;
 export const MAX_DAG_CONTRACT_PATHS = LIMITS.maxArtifactRefs;
 
 /** DAG node 1건의 **닫힌 key 집합**. 여기 없는 key는 문서에 담길 수 없다. */
-export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses", "operations"] as const;
+export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses", "operations", "briefing"] as const;
 
 /** 문서 최상위의 **닫힌 key 집합**. */
 export const DAG_DOCUMENT_KEYS = ["schemaVersion", "tasks"] as const;
 
-/** `DAG_NODE_KEYS` 중 부재가 허용되는 것(생략 = 빈 목록). */
-const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses", "operations"] as const;
+/** `DAG_NODE_KEYS` 중 부재가 허용되는 것(생략 = 빈 목록/빈 문자열). */
+export const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses", "operations", "briefing"] as const;
 
 export const TASK_DAG_SCHEMA_VERSION = "1";
 
@@ -93,6 +93,22 @@ export interface TaskDagNode {
    * `dag_materialize_seed_rejected`다(승인 밖 operation은 지시에 실리지 못한다).
    */
   operations: string[];
+  /**
+   * **worker 지시에 그대로 실릴 산문**(V3 M12 L2a). 생략하면 빈 문자열이고, 그때 지시 본문은
+   * 이 축이 생기기 **전과 바이트 동일**하다(`operations`가 쓴 것과 같은 규율 — 이어받기 판정이
+   * `assignment.bodySha256`을 대조하므로 한 바이트도 달라질 수 없다).
+   *
+   * **권한이 아니다.** 여기에 담기는 것은 worker가 읽을 텍스트뿐이고, 경로·명령·상한을 표현할 타입이
+   * 없다(그것들의 정본은 여전히 승인 manifest다). 그래서 이 축이 열어 주는 능력은 "지시가 더 많은
+   * 맥락을 담는다" 하나뿐이다.
+   *
+   * **왜 `scope`로 충분하지 않았나**: `scope`는 `LIMITS.maxTextLength`(500자)라 아이디어 문서 원문이나
+   * 문서 계약 전문을 담지 못한다. 상한을 늘리는 대안은 기각했다 — `scope`는 kernel durable state에
+   * 그대로 저장되는 필드이고(`OrchestrationTask.scope`), 거기에 KB 단위 산문을 넣으면 state 파일이
+   * 서술로 부풀어 오른다. `briefing`은 **본문에만** 산다(state 축이 아니다 — `nodeMatchesTask`가
+   * 보지 않고, 대신 assignment 본문 digest가 이어받기에서 그것을 잡는다).
+   */
+  briefing: string;
 }
 
 export interface TaskDagDocument {
@@ -252,6 +268,10 @@ export function validateTaskDag(raw: unknown): TaskDagDocument {
       // bind를 벗어나는 통로는 없다: `?? []`가 부재를 빈 집합으로 굳히고, 명시 `null`은 그 함수가
       // `null`을 돌려주므로 아래에서 `?? []`가 다시 접는다 — DAG node는 언제나 배열이다.
       operations: normalizeAssignedOperations(o.operations ?? [], `DAG node(${taskId}).operations`) ?? [],
+      // 상한은 **본문 바이트 상한**과 같은 값으로 잡는다: 이보다 긴 briefing은 어차피
+      // `assignmentBodyFor`가 `maxBodyBytes`에서 거부하므로 두 번째 규칙을 만들지 않는다.
+      // 명시적 `""`는 `assertText`가 `invalid_text`로 거부한다 — "빈 briefing"을 적는 방법은 **생략**뿐이다.
+      briefing: o.briefing === undefined ? "" : assertText(o.briefing, `DAG node(${taskId}).briefing`, LIMITS.maxBodyBytes),
     };
     byId.set(taskId, node);
     nodes.push(node);
