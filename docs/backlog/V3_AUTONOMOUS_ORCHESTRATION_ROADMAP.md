@@ -711,7 +711,7 @@ id / 제목
 ```bash
 awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목 \(2026-07-26/' \
     docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
-  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 84
+  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 86
 ```
 
 이 명령이 세는 것은 **이 절의 목록**이지 대장 전체가 아니다. 즉 이것은 **"목록과 선언한 수가
@@ -737,7 +737,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 84   ← 최신 변동(판정 ⑦): `B-38`·`C-109`·`C-111` closed(−3) · `C-113`·`C-114` 신규(+2). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
+정본(이 절)      →  id 86   ← 최신 변동(판정 ⑧): `C-115`·`C-116` 신규(+2). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -747,7 +747,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 84건 (A 0 · **등급 B 6** · 등급 C 78)
+##### 열린 항목 — id 86건 (A 0 · **등급 B 6** · 등급 C 80)
 
 **등급 B (6) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed — live가 실제 산출물을 만들었다.)
 
@@ -775,7 +775,7 @@ C-29  C-30  C-31  C-33  C-34  C-35  C-36  C-37  C-38  C-39  C-43  C-46  C-47  C-
 C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-64
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
-C-106 C-107 C-108 C-110 C-113 C-114
+C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -1905,7 +1905,92 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ⑦ — `B-38`+`C-111` fixed · **live가 처음으로 산출물을 만들었다**(`C-109` closed)** (2026-08-25 · **이 절이 현행이며 아래 ⑥보다 최신이다**)
+##### **M11 진행 판정 ⑧ — L2a: `plan-dag` — 하네스가 아이디어에서 DAG 초안을 만들었다 (live 12-task · 첫 시도 통과)** (2026-08-25 · **이 절이 현행이며 아래 ⑦보다 최신이다**)
+
+### ⓐ 무엇이 생겼나
+
+**`harness plan-dag`**: 아이디어 문서 + **사람이 쓴 승인**에서 단일 planner task DAG를 하네스가
+구성해 `autopilot-create`와 **같은 함수**(`createRunFromDocuments`)로 run을 만든다. 아이디어 원문은
+**새 읽기 통로 없이**(worker는 `--tools ""`로 파일을 못 읽는다) 신규 optional DAG 축 **`briefing`** →
+지시 본문 `Inputs and Contracts`에 **줄 단위 `> ` 인용**으로 실린다. 인용인 이유: fence·h2가 든 산문은
+본문 heading 계약을 깬다(가짜 h2 · fence 홀수 토글) — fence 감싸기는 내용 속 fence가 짝을 깨서 기각.
+상한(`maxBodyBytes` 16384) 초과는 `text_too_long`으로 **run 생성 전** fail closed — **자르지 않는다**
+(잘린 아이디어로 만든 DAG는 조용히 틀린 산출물이다).
+
+**`harness validate-dag <file>`**: read-only 문서 계약 판정(통과 exit 0 / 불통과 exit 2 ·
+**불통과 초안도 지우지 않는다** — 사람이 읽고 고치는 재료다).
+
+**경계(이 slice의 헌법)**: 승인 manifest는 사람이 쓴다 — **승인 초안조차 만들지 않는다**(L2b는 trust
+root라 별도 사용자 결정). 초안을 자동으로 `autopilot-create`에 넘기는 통로는 **없다**.
+
+### ⓑ 설계 판단 (기각 대안은 코드 주석에)
+
+planner node의 `ownership`·`operations`·`provides`는 **승인에서 파생**한다(CLI 플래그 기각 — 명령이
+권위를 표현하는 모양) · taskId 고정 `dag-draft`(플래그면 승인과 갈릴 자리 +1) · `briefing`이 새 축인
+이유: `scope`는 500자 durable 필드라 KB 산문이 state로 들어가고, 문서 밖 파라미터로 넘기면
+`assertResumableRun`의 본문 digest 재계산이 조용히 깨진다 · 게이트는 별도 명령(plan-dag는 run만 만들고
+즉시 끝나 그 시점에 초안이 없다 · loop 내장은 불통과 초안을 실패로 만들 유혹).
+
+### ⓒ 오케스트레이터 비평 — 구현 세션의 mutation 주장 하나가 재현 불가였다
+
+이번 세션은 **커밋 3개를 남겼다**(직전 두 세션의 배송 함정 회피). typecheck·acceptance 30/30·골든
+불변·m10 회귀(세션의 41/9는 자기 worktree 환경 — base 대조까지 한 정직한 보고, 내 체크아웃 50/50) 전부
+내 재검에서 버텼다. **하나가 무너졌다**:
+
+> **mutation 1("아이디어를 `slice(0,2000)`으로 자른다 → RED 4건") 주장은 이 fixture로는 성립할 수 없다.**
+> fixture 아이디어가 **236바이트**라 그 mutation은 **no-op**이다. 내 독립 재현도 GREEN이었다.
+> 즉 "자르지 않는다" 단정이 **236바이트짜리 문서에서만** 증명된 상태였다.
+
+처리: fixture를 **8KB 실전 크기**로 강화(테스트 완화 아님 — 단정 불변·입력만 커짐) → 같은 mutation이
+**RED 1건** · 복원 30/30을 직접 실측. 교훈: **mutation red 보고는 "무엇이 몇 건 red였다"만으로 못 믿는다
+— fixture가 그 mutation을 잡을 수 있는 크기·모양인지가 선행 조건이다.**
+
+### ⓓ live 실측 — 하네스가 아이디어에서 계획을 뽑았다 (claude 1회 · 사람 개입 0)
+
+입력: 실전 모양의 아이디어 문서(구독 관리 서비스 — 문제·MVP 기능 4개·비기능·단계 감각, 8절).
+
+```
+harness plan-dag --idea docs/00_IDEA.md … → run 구성(LLM 0회)
+harness autopilot --worker-backend claude-plan → worker_model {approved, claude-opus-5}
+  → worker_plan_received → task_completed
+harness validate-dag docs/dag-draft.json → 통과: task 12건 (exit 0 · 첫 시도)
+```
+
+모델이 낸 초안(12,478B): `market-scan`(research) → `prd`(pm) → `ux-flows`(ux) →
+`design-direction`(design) · `prd` → `data-model`(tech-lead) → `privacy-review`(**qa-security.privacy**
+— 중첩 role을 registry에 맞게 썼다) · 합류점에서 `app-shell`(dev-lead) → **기능 4개 병렬**
+(`feat-subscription-list`·`feat-dashboard`·`feat-reminders`·`feat-cancel-helper`) →
+`integration-check`(qa-security · 전 기능 + privacy-review 의존). task별 ownership 경로 서로소.
+**삼중 hash 일치**(영수증 == 디스크 == artifact `docs/dag-draft.json@1`) · `completed`.
+
+**과장하지 않는다**: 문서 계약 통과와 구조의 그럴듯함까지가 관측이다. **이 12-task 계획이 실행에서
+좋은 계획인지는 실행해 봐야 안다**(각 task의 승인·operation은 여전히 사람이 쓴다). 표본 1회.
+
+### ⓔ 실측 총계
+
+| 항목 | 값 |
+|---|---|
+| `npm test` | **exit 0** · `test:exec` **646/646** · `test:core` **492/492**(+10) · acceptance **PASS=217 / FAIL=0**(Test 26 포함) |
+| 신규 acceptance | **30/30**(fixture 8KB 강화 후) · focused **10/10** |
+| typecheck | clean |
+| mutation red | 세션 6종 중 5종 유효 + **1종은 비평이 기각·재구성**(ⓒ) — 강화 후 red 직접 실측 |
+| live | **1회** — ⓓ |
+
+### ⓕ 증명하지 않은 것 (같은 무게로)
+
+- **초안 품질의 일반성** — 표본 1회·아이디어 1종. 문서 계약 통과 ≠ 좋은 계획.
+- **초안 → 실행의 전 과정** — 12-task를 실제로 돌리려면 task별 승인(`ownershipByTask` 12항목 +
+  operation 권위)을 사람이 써야 하고, 그 실행은 미실측이다(multi-task live는 여전히 0회).
+- **계약 산문의 규칙 문장**은 파생 불가라 손으로 썼다 — 신규 `C-115`.
+
+### ⓖ 대장 처리
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-115` | C (P3) | **DAG 계약 산문의 규칙 문장은 검증기에서 파생할 수 없다.** key 목록·schemaVersion·상한·role 목록은 상수 파생이지만 규칙 서술(한 문장짜리 설명)은 손으로 썼다 — `validateTaskDag` 규칙이 바뀌면 그 문장은 따라가지 않는다(파생 가능한 축은 mutation red로 고정돼 있다) | 낮음 | planner 지시 정밀도 1건(검증기는 어차피 fail closed) | 낮음 | 소 | **문서 규칙을 실제로 바꿀 때 함께** | 미정 | `planDag.ts` `dagContractBriefing` 주석 · 판정 ⑧ ⓒ의 mutation 2(낡은 사본이 처음에 GREEN) | open |
+| `C-116` | C (P3) | **mutation red 보고의 신뢰 조건이 문서화돼 있지 않다.** L2a에서 구현 세션의 "RED 4건" 주장이 fixture 크기(236B) 때문에 재현 불가였다 — mutation이 no-op이면 red는 나올 수 없다. 보고 계약에 "mutation이 fixture에 실제로 작용했는가"를 요구해야 한다 | 중간 — 세션마다 반복될 수 있다 | mutation 증거의 신뢰도 | 중 — 거짓 red 주장이 계약 구멍을 가린다 | 소(서브에이전트 프롬프트 뼈대에 한 줄) | **다음 구현 세션 프롬프트부터** | 오케스트레이터 | 판정 ⑧ ⓒ | open |
+
+##### **M11 진행 판정 ⑦ — `B-38`+`C-111` fixed · **live가 처음으로 산출물을 만들었다**(`C-109` closed)** (2026-08-25 · 아래 ⑥보다 최신이다 — **M11의 현행은 위 판정 ⑧이다**)
 
 ### ⓐ 작업 방식 (사용자 지시 2026-08-25)
 
