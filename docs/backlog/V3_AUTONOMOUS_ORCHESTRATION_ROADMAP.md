@@ -711,7 +711,7 @@ id / 제목
 ```bash
 awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목 \(2026-07-26/' \
     docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
-  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 85
+  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 84
 ```
 
 이 명령이 세는 것은 **이 절의 목록**이지 대장 전체가 아니다. 즉 이것은 **"목록과 선언한 수가
@@ -737,7 +737,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 85   ← `C-104` closed(−1) · `C-105`~`C-107` 신규(+3) · `C-108`~`C-110` 신규(+3) · **`B-38`·`C-111` 신규(+2)**
+정본(이 절)      →  id 84   ← 최신 변동(판정 ⑦): `B-38`·`C-109`·`C-111` closed(−3) · `C-113`·`C-114` 신규(+2). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -747,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 85건 (A 0 · **등급 B 7** · 등급 C 78)
+##### 열린 항목 — id 84건 (A 0 · **등급 B 6** · 등급 C 78)
 
-**등급 B (7).** 여섯은 트리거 미도래다 — **`B-38`은 다르다**: 트리거가 "live로 산출물을 내는 첫 slice"이고 **산출물을 내려는 순간이 곧 그 시점**이다(판정 ⑥ ⓔ).
+**등급 B (6) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed — live가 실제 산출물을 만들었다.)
 
 | id | 한 줄 | 기한/트리거 | 어디를 읽나 |
 |---|---|---|---|
@@ -759,7 +759,6 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-35` | claude 격리 홈에 **내용 allowlist 없음**. 계정 우선순위 축은 **범위 밖으로 축소**(2026-08-23 · 아래 판정 ④) | **격리 홈을 실제로 승인하기로 할 때.** 지금은 `claudeHome`이 optional이라 **도달하지 않는 경로**다 | §9.1 `M11① 대장 처리` 표 + `M11 진행 판정 ④` |
 | `B-36` | 그룹을 **탈출한 자손을 탐지할 커널 능력이 없다**(`B-18`에서 분리) | **linux(cgroup)** 또는 sandbox/컨테이너 채택 | §9.1 `M11① 대장 처리` 표 |
 | `B-37` | 닫힌 action 집합으로 **회복 불가한 worktree 잔재** 두 모양(`B-31`에서 분리) | **현장에서 실제로 관측될 때만** | §9.1 `M11① 대장 처리` 표 |
-| `B-38` | **task_assignment 본문에 operation 객체를 싣는 코드가 없다** → `materializeTaskDag`로 만든 live task는 **파일을 만들 수단이 구조적으로 없다**(DAG에 `operations` 축 부재 · 계약상 모델은 반드시 `operations: []`). typed write 능력 자체는 있다(`B-16` 개방 · offline에서 증명) | **live로 산출물을 내는 첫 slice** — 사용자 목표의 다음 마일스톤이 곧 그 시점이다 | `M11 진행 판정 ⑥` ⓔ + 아래 대장 표 |
 
 **`B-` 번호이지만 등급 C — nonblocking (2).**
 
@@ -776,7 +775,7 @@ C-29  C-30  C-31  C-33  C-34  C-35  C-36  C-37  C-38  C-39  C-43  C-46  C-47  C-
 C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-64
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
-C-106 C-107 C-108 C-109 C-110 C-111
+C-106 C-107 C-108 C-110 C-113 C-114
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -1906,7 +1905,100 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ⑥ — 무인 loop의 운영자 진입점 + `B-38` 발견(내 첫 진단 `B-16`은 오류였다)** (2026-08-24 · **이 절이 현행이며 아래 ⑤보다 최신이다**)
+##### **M11 진행 판정 ⑦ — `B-38`+`C-111` fixed · **live가 처음으로 산출물을 만들었다**(`C-109` closed)** (2026-08-25 · **이 절이 현행이며 아래 ⑥보다 최신이다**)
+
+### ⓐ 작업 방식 (사용자 지시 2026-08-25)
+
+**오케스트레이터 = Fable 5**(명령·취합·비평·문서·통합·live), **구현 = Opus 5 격리 worktree 세션**,
+개선 필요 시 다시 Opus로. 역할 분리는 기존과 같고 **리뷰어(오케스트레이터)가 구현자와 다른 세션**이라는
+규율도 유지된다.
+
+### ⓑ 무엇이 닫혔나
+
+**`B-38` fixed**: DAG node에 선택 `operations`(authorityId **참조** 목록 — 전문형 기각: DAG가 권위 값을
+적을 타입 자체를 만들지 않는다). 물질화가 승인(`operationAuthorityByTask`)과 대조해 승인 밖 id는
+생성 전 거부(`dag_materialize_seed_rejected` · durable 잔류 0), 통과분은 **계획 검증기
+(`validateTypedExecutionPlan`)를 직접 통과시킨 JSON 객체**로 `Inputs and Contracts`에 싣는다 —
+형태 정본 1개(M8 함정 차단). `operations` 없는 문서의 본문은 **바이트 동일**(이 slice 이전 코드로
+산출한 sha256 골든 3건 · mutation red).
+
+**`C-111` fixed**: `issueOperationDispatchPermit`이 **커밋 밖에서** `assertPlanWithinAssignment` —
+계획 operation이 durable `task.assignedOperations`의 **부분집합**(정확일치 기각: 두 번째 turn이
+구조적으로 불가능해진다)이 아니면 `dispatch_operation_unassigned`(revision·claim·pending 0).
+`approvedOperationFor` deny-by-default를 **대체하지 않는 두 번째 게이트**. bind 저장 = durable task
+필드(기각: 본문 재파싱은 렌더링 종속 · 요청 동봉은 호출자 값은 권위가 아님). `null`=축 미선언
+(kernel 직접 생성·spawn child — 이전과 같은 판정, state에 그대로 적힘) / `[]`=선언했고 deny-all.
+**`materializeTaskDag`는 `null`을 만들지 않는다.** durable schema 확장이므로 기존 state는
+`state_pre_b38_unsupported`로 마이그레이션 없이 거부(pre-M4b 전례 · `C-9`의 "offline 테스트 run뿐"이
+지금이 싼 시점임을 말한다).
+
+### ⓒ 오케스트레이터 비평 (구현 세션과 다른 세션 · 직접 실행)
+
+구현 세션 보고의 핵심 주장 5개를 재봤고 **전부 버텼다**: bind가 `#mutate` 앞(코드 순서) · 형태 정본
+하나(물질화가 검증기 직접 호출) · 골든 3건 실재 · pre-B38 거부·Test 25 배선 실재 ·
+**mutation ⓑ 직접 재현** — bind를 빼니 승인 안·지시 밖 `auth-side`가 **실제 파일을 만들고
+`completed`까지 갔다**(acceptance 6 FAIL = `C-111` 구멍의 실물).
+
+**배송 지적**: 구현 세션이 커밋 없이 작업 트리만 남겼다(직전 리뷰가 잡은 형태의 재발) — 패치로
+통합했다. 통합 중 오케스트레이터 실수 1건: mutation 복원에 `git checkout --`을 써서 **B-38 변경까지
+지웠다가** worktree 원본에서 복구(26/26 재확인). mutation 복원은 반드시 **정확한 역치환**으로 할 것.
+
+### ⓓ live 실측 — **이 하네스가 처음으로 실제 산출물을 만들었다** (2026-08-25 · claude 1회)
+
+운영자 시퀀스 그대로:
+
+```
+harness autopilot-create --workspace <ws> --run l2-run --milestone l2-m1 \
+  --approval approval.json --dag dag.json     # dag에 operations: ["auth-plan"]
+harness autopilot --workspace <ws> --run l2-run --milestone l2-m1 --worker-backend claude-plan --json
+→ worker_model {marker:"approved", detail:"claude-opus-5"}
+→ worker_session_started → worker_plan_received → task_completed → run_finished
+```
+
+검증(전부 실측):
+- **디스크에 없던 `docs/PLAN.md`(1053B)가 생겼다** — live 모델의 계획이 typed write로 만들었다.
+- **모델이 지시의 operation 객체를 복사하고 `content` placeholder를 실제 기획 문서로 바꿨다**
+  (placeholder 문자열 0건) — 판정 ⑥이 미증명으로 남긴 live 축이 이것이다.
+- **삼중 hash 일치**: 영수증 `resultSha256` == 디스크 바이트 == artifact 등록(`docs/PLAN.md@1` ·
+  producer `plan-doc` · role output).
+- task `completed` · 사람 개입 0 · `workerModel {approved, claude-opus-5}` · `workerIdentity ambient`.
+
+**`C-109` closed.** 지시→계획→집행→산출물→완료가 offline(acceptance 26/26)과 **live 양쪽에서**
+같은 경로로 완주했다.
+
+**과장하지 않는다**: 이것은 **파일 1개·task 1개·표본 1회**다. "하네스가 개발을 한다"가 아니라
+**"하네스가 승인 경계 안에서 모델 산출물을 실제 파일로 발행할 수 있다"** 까지가 증명이다.
+multi-task DAG·리뷰 왕복과 결합한 live·`run_process`/`git_worktree` 갈래의 live는 미실측이다.
+
+### ⓔ 실측 총계
+
+| 항목 | 값 |
+|---|---|
+| `npm test` | **exit 0** · `test:exec` **646/646**(+8) · `test:core` **482/482** · acceptance **PASS=210 / FAIL=0**(Test 25 포함) |
+| 신규 offline acceptance | **26/26** (`m11-b38-offline-acceptance.mjs` — 즉시 Test 25 배선) |
+| typecheck | clean |
+| mutation red | ⓐⓑⓒⓓ(구현 세션) + **ⓑ 오케스트레이터 독립 재현** |
+| live | **1회** — ⓓ |
+
+### ⓕ 증명하지 않은 것 (같은 무게로)
+
+- **표본 1회·파일 1개·task 1개**(ⓓ 한정). multi-task·왕복 결합·`run_process`/`git_worktree` live 미실측.
+- **`requestSpawn` child는 bind 밖**(`null`) — manifest 게이트 하나만. 신규 `C-113`.
+- **placeholder 복사 가능성**은 이번 표본에서 **발생하지 않았다** — 그러나 검증기는 그것을 막지 않으므로
+  열어 둔다(신규 `C-114` · 표본 1).
+- `operationId = authorityId` 파생: 같은 attempt에서 같은 authority 2회 사용은
+  `operation_already_recorded` — 알려진 천장(코드 주석).
+
+### ⓖ 대장 처리
+
+`B-38` → **fixed** · `C-111` → **fixed** · `C-109` → **closed**(위 ⓓ가 증거). 신규 2건:
+
+| id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용 | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `C-113` | C (P3) | **`requestSpawn` child는 지시-계획 bind 밖이다**(`assignedOperations: null` — manifest 게이트 하나만). 승인 경계 안이라 안전 문제는 아니다(`operationAuthorityByTask[childTaskId]`가 없으면 아무 operation도 못 낸다). 닫으려면 `spawn_child` 요청이 child의 operation 축을 선언해야 하고 그것은 새 축이다 | 확실(설계상) | worker가 만든 child의 지시 축 | 낮음 | 중 | **worker가 만든 child에게 typed write를 처음 주는 slice** | 미정 | `orchestrationKernel.ts` bind 주석 · 판정 ⑦ ⓕ | open |
+| `C-114` | C (P3) | **지시 template의 `content` placeholder를 모델이 그대로 복사해도 검증기가 통과한다**(placeholder 텍스트가 파일에 쓰인다 — 영수증·artifact hash로 관측 가능, 조용하지 않다). **live 표본 1회에서는 발생하지 않았다**(모델이 실제 내용으로 바꿨다) | 낮음(표본 1) | 산출물 품질 1건(경계는 무관) | 낮음 | 소~중(placeholder sentinel 거부 또는 관행 유지) | **live 표본이 쌓여 실제로 관측될 때** | 미정 | 판정 ⑦ ⓓ(발생 안 함 표본) · 구현 세션 보고 | open |
+
+##### **M11 진행 판정 ⑥ — 무인 loop의 운영자 진입점 + `B-38` 발견(내 첫 진단 `B-16`은 오류였다)** (2026-08-24 · 아래 ⑤보다 최신이다 — **M11의 현행은 위 판정 ⑦이다**)
 
 ### ⓐ 사용자가 고른 것 / 내가 정한 것
 
