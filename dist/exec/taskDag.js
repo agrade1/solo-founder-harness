@@ -40,11 +40,11 @@ export const MAX_DAG_TASKS = LIMITS.maxTasksPerRun;
 /** node 하나가 선언할 수 있는 산출/소비 항목 수. `maxArtifactRefs`와 같은 규모로 묶는다. */
 export const MAX_DAG_CONTRACT_PATHS = LIMITS.maxArtifactRefs;
 /** DAG node 1건의 **닫힌 key 집합**. 여기 없는 key는 문서에 담길 수 없다. */
-export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses", "operations"];
+export const DAG_NODE_KEYS = ["taskId", "roleId", "title", "scope", "ownership", "dependsOn", "provides", "consumes", "resourceClasses", "operations", "briefing"];
 /** 문서 최상위의 **닫힌 key 집합**. */
 export const DAG_DOCUMENT_KEYS = ["schemaVersion", "tasks"];
-/** `DAG_NODE_KEYS` 중 부재가 허용되는 것(생략 = 빈 목록). */
-const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses", "operations"];
+/** `DAG_NODE_KEYS` 중 부재가 허용되는 것(생략 = 빈 목록/빈 문자열). */
+export const DAG_NODE_OPTIONAL_KEYS = ["provides", "consumes", "resourceClasses", "operations", "briefing"];
 export const TASK_DAG_SCHEMA_VERSION = "1";
 /**
  * **이 모듈이 고유하게 내는 안정 오류 코드**(닫힌 목록).
@@ -208,6 +208,10 @@ export function validateTaskDag(raw) {
             // bind를 벗어나는 통로는 없다: `?? []`가 부재를 빈 집합으로 굳히고, 명시 `null`은 그 함수가
             // `null`을 돌려주므로 아래에서 `?? []`가 다시 접는다 — DAG node는 언제나 배열이다.
             operations: normalizeAssignedOperations(o.operations ?? [], `DAG node(${taskId}).operations`) ?? [],
+            // 상한은 **본문 바이트 상한**과 같은 값으로 잡는다: 이보다 긴 briefing은 어차피
+            // `assignmentBodyFor`가 `maxBodyBytes`에서 거부하므로 두 번째 규칙을 만들지 않는다.
+            // 명시적 `""`는 `assertText`가 `invalid_text`로 거부한다 — "빈 briefing"을 적는 방법은 **생략**뿐이다.
+            briefing: o.briefing === undefined ? "" : assertText(o.briefing, `DAG node(${taskId}).briefing`, LIMITS.maxBodyBytes),
         };
         byId.set(taskId, node);
         nodes.push(node);
