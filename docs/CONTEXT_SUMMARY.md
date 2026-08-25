@@ -1,5 +1,40 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-25 — **V3 M11⑦: `B-38`+`C-111` fixed · live가 처음으로 실제 산출물을 만들었다(`C-109` closed)**)
+
+- **작업 방식(사용자 지시)**: 오케스트레이터 = **Fable 5**(명령·취합·비평·문서·통합·live) · 구현 =
+  **Opus 5 격리 worktree 세션** · 개선도 Opus로. 리뷰어(오케스트레이터)와 구현자는 다른 세션.
+  판정 정본은 로드맵 **`M11 진행 판정 ⑦`**.
+- **`B-38` fixed**: DAG node에 선택 `operations`(authorityId **참조** 목록 — 전문형 기각). 물질화가
+  승인과 대조(승인 밖 id는 생성 전 거부·durable 잔류 0), 통과분은 **계획 검증기를 직접 통과시킨 JSON
+  객체**로 지시 본문에 싣는다(형태 정본 1개). `operations` 없는 문서 본문은 **바이트 동일**(골든 3건).
+- **`C-111` fixed**: kernel이 지시-계획 bind를 강제한다 — permit 발급의 **커밋 밖**에서 계획 operation이
+  durable `assignedOperations`의 **부분집합**이 아니면 `dispatch_operation_unassigned`(revision·claim 0).
+  deny-by-default 위에 얹는 두 번째 게이트. durable schema 확장이라 기존 state는
+  `state_pre_b38_unsupported`로 거부(pre-M4b 전례). `null`=축 미선언 / `[]`=deny-all.
+- **비평(오케스트레이터 직접)**: 핵심 주장 5개 재검 — 전부 버텼다. **mutation ⓑ 독립 재현**: bind를
+  빼니 승인 안·지시 밖 `auth-side`가 실제 파일을 만들고 `completed`까지(6 FAIL = `C-111` 구멍의 실물).
+  배송 지적: 구현 세션이 또 커밋 없이 작업 트리만 남겼다(패치로 통합). 오케스트레이터 실수 1건:
+  mutation 복원에 `git checkout --`을 써 B-38 변경까지 지웠다가 worktree 원본에서 복구 —
+  **mutation 복원은 정확한 역치환으로만.**
+- **live 실측(claude 1회) — 이 하네스가 처음으로 실제 산출물을 만들었다(`C-109` closed)**:
+  `autopilot-create`(operations 축) → `autopilot --worker-backend claude-plan` →
+  **디스크에 없던 `docs/PLAN.md`(1053B)가 생겼다.** 모델이 지시의 operation 객체를 복사하고
+  **placeholder를 실제 기획 문서로 바꿨으며**, 영수증 `resultSha256` == 디스크 바이트 == artifact
+  등록(`docs/PLAN.md@1`) 삼중 일치 · `completed` · 사람 개입 0 ·
+  `workerModel {approved, claude-opus-5}`.
+- **과장하지 않는다**: 파일 1개·task 1개·표본 1회다. 증명된 것은 "하네스가 승인 경계 안에서 모델
+  산출물을 실제 파일로 발행할 수 있다"까지 — multi-task DAG·리뷰 왕복 결합 live·
+  `run_process`/`git_worktree` 갈래 live는 미실측.
+- **실측**: `npm test` exit 0 · `test:exec` **646/646**(+8) · `test:core` **482/482** ·
+  acceptance **210/0**(Test 25 포함) · 신규 acceptance **26/26** · typecheck clean ·
+  mutation red ⓐⓑⓒⓓ + ⓑ 독립 재현.
+- **신규**: `C-113`(spawn child는 bind 밖 — child에 typed write를 처음 주는 slice에서) ·
+  `C-114`(placeholder 복사 가능성 — 이번 표본에서는 발생 안 함 · 표본 1).
+- **열린 항목**: A **0** · 등급 B **6** · 등급 C **78** · id **84**.
+
+---
+
 ## 최신 (2026-08-24 — **V3 M11⑥: 무인 loop 운영자 진입점 · 신규 `B-38`(가장 중요) · 내 첫 진단 정정**)
 
 - **`autopilot-create` + `autopilot --worker-backend`가 생겼다.** L1은 새 계약이 아니라 **배선**이었다 —
