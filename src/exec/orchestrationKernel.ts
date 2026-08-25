@@ -107,6 +107,7 @@ import {
   emptyTaskExecution,
   formatTimestamp,
   holdsResources,
+  normalizeAssignedOperations,
   normalizeOwnership,
   normalizeResourceClasses,
   normalizeWorkspacePath,
@@ -154,6 +155,13 @@ export interface TaskSeed {
    * task를 만드는 쪽(중앙)이 정하는 선언이다.
    */
   resourceClasses?: string[];
+  /**
+   * **이 task의 지시가 실은 승인 operation authorityId 집합**(V3 M11 — `B-38`/`C-111`).
+   * 생략·`null`이면 "지시가 operation 축을 선언하지 않았다"이고 그때는 manifest 게이트 하나만 적용된다.
+   * 배열이면 turn의 계획은 그 집합 **안**에서만 operation을 낼 수 있다(`issueOperationDispatchPermit`).
+   * **권위를 만들지 않는다** — 여기 적힌 id도 `operationAuthorityByTask`에 없으면 집행되지 않는다.
+   */
+  assignedOperations?: string[] | null;
   /** 이 task의 task_assignment 메시지 id. */
   assignmentMessageId: string;
   /** 이 task의 task_assignment Markdown body. */
@@ -1777,6 +1785,41 @@ function assertTurnClaimableBy(state: OrchestrationRunState, taskId: string, tur
       "turn_conflict",
       `turn ${turnId}은 이미 task ${other.taskId}가 durable하게 claim했다 — 두 task가 같은 turn을 claim할 수 없다`,
     );
+  }
+}
+
+/**
+ * **계획의 operation이 그 task의 지시가 실은 집합 안인가**(V3 M11 — 대장 `C-111`).
+ *
+ * `B-38` 이전에는 계획의 operation이 **manifest 권위(`approvedOperationFor`)로만** 대조되고 지시
+ * (task_assignment) 본문과 묶이지 않았다 → 운영자가 DAG의 자유 텍스트 `scope`에 operation 객체를 적어
+ * 보내면 모델이 그것을 내고 집행됐다. 승인 경계 안이라 안전 문제는 아니었지만 **지시 축이 계약이 아니라
+ * 관행**이었다. 이 함수가 그 축을 kernel 계약으로 만든다.
+ *
+ * **kernel이 지시의 operation을 어디서 아는가 — durable task 필드(`assignedOperations`)다.**
+ * 기각한 대안 둘:
+ *  ⓐ **assignment 본문 재파싱** — kernel이 `asg-<taskId>`라는 물질화 쪽 명명 규칙과 본문 Markdown 형태를
+ *    알아야 한다. 게이트가 **본문 렌더링에 종속**되므로 본문 문구를 손대는 순간 게이트가 조용히 넓어지거나
+ *    좁아진다. 형태 규칙의 두 번째 사본을 만드는 셈이라 기각했다.
+ *  ⓑ **permit 요청에 DAG 문서를 함께 넘기기** — 호출자가 준 값은 권위가 아니다(deny-by-default 위반).
+ *
+ * 새 durable 필드를 넣는 비용은 옛 state의 처리 판단인데, pre-M4b·pre-M5c 전례대로 **마이그레이션 없이
+ * 거부**한다(`state_pre_b38_unsupported`). 대장 `C-9`가 "실제 운영 run 없음 — offline 테스트 run뿐"이라고
+ * 적어 둔 그 시점이라 지금이 가장 싸다.
+ */
+function assertPlanWithinAssignment(task: OrchestrationTask, plan: TypedExecutionPlan): void {
+  const assigned = task.assignedOperations;
+  // `null` = 지시가 operation 축을 선언한 적이 없다(kernel API 직접 생성 · `requestSpawn` child).
+  // 그때는 manifest 게이트 하나만 적용된다 — bind 이전과 **같은 판정**이고, 이 사실은 durable state에
+  // 그대로 적혀 있어 읽을 수 있다(조용한 완화가 아니다). `materializeTaskDag`는 `null`을 만들지 않는다.
+  if (assigned === null) return;
+  for (const op of plan.operations) {
+    if (!assigned.includes(op.authorityId)) {
+      throw new OrchestrationError(
+        "dispatch_operation_unassigned",
+        `계획의 operation이 이 task의 지시에 없다: ${op.operationId}(authority ${op.authorityId})`,
+      );
+    }
   }
 }
 
@@ -4019,6 +4062,17 @@ export class OrchestrationKernel {
     const attemptId = pre.execution.attemptId!;
     // binding은 **durable state에서 나온다** — 호출자가 신원을 고르는 통로가 없다.
     const plan = validateTypedExecutionPlan(input?.plan, { runId: this.#state.runId, taskId, attemptId, turnId });
+    // **지시-계획 bind**(V3 M11 — 대장 `C-111`). 커밋 **밖**에서 본다: 지시 밖 계획은 dispatch claim을
+    // 만들지 못하므로 revision도 event도 남기지 않는다(무효 계획이 turn을 소모하지 않는다).
+    //
+    // `approvedOperationFor`의 deny-by-default를 **대체하지 않는다** — 그 위에 얹는 두 번째 게이트다.
+    // 여기를 지나도 집행 시점에 승인 권위를 다시 해석하고, 승인 밖이면 그대로 거부다.
+    //
+    // **부분집합이지 정확 일치가 아니다**: turn은 여러 번 돌고(계획 turn → 집행 turn) 첫 turn은
+    // `operations: []`가 정상이다. 게다가 같은 attempt 안에서 같은 `operationId`를 다시 여는 것은
+    // `operation_already_recorded`로 이미 막히므로, 정확 일치를 요구하면 **두 번째 turn이 구조적으로
+    // 불가능**해진다. 지시가 여는 것은 상한이고 계획이 고르는 것은 그 안의 부분집합이다.
+    assertPlanWithinAssignment(pre, plan);
     const planDigest = sha256Hex(JSON.stringify(plan));
 
     // **정확히 같은 (turn, 계획)의 재발급은 durable 커밋 없이 멱등이다**(3A 3차 리비전 `C1`).
@@ -5387,6 +5441,10 @@ function addTask(
     scope: assertText(seed.scope, "scope", LIMITS.maxTextLength),
     ownership: normalizeOwnership(seed.ownership, "ownership"),
     resourceClasses: normalizeResourceClasses(seed.resourceClasses ?? [], "resourceClasses"),
+    // **생략 = `null`**(지시 축 없음)이지 빈 집합이 아니다. `?? null`을 쓰는 이유가 여기 있다:
+    // `?? []`로 접으면 kernel API로 직접 만든 기존 task가 전부 "operation 0건을 선언한 task"가 되어
+    // 승인된 operation이 있는데도 집행이 막힌다. 두 값의 구분은 durable 계약이다(`OrchestrationTask`).
+    assignedOperations: normalizeAssignedOperations(seed.assignedOperations ?? null, "assignedOperations"),
     parentTaskId,
     childTaskIds: [],
     dependsOn,

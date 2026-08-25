@@ -100,6 +100,7 @@ import {
   assertText,
   assertTimestamp,
   holdsResources,
+  normalizeAssignedOperations,
   normalizeOwnership,
   normalizeResourceClasses,
   normalizeWorkspacePath,
@@ -242,6 +243,7 @@ export const TASK_KEYS = [
   "scope",
   "ownership",
   "resourceClasses",
+  "assignedOperations",
   "parentTaskId",
   "childTaskIds",
   "dependsOn",
@@ -434,6 +436,17 @@ function validateTask(raw: unknown): OrchestrationTask {
       "M5c 이전 orchestration state다(task.execution 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다",
     );
   }
+  // `B-38`/`C-111` 이전 state에는 지시-계획 bind 축이 없다. **기본값으로 채우지 않고 거부한다** —
+  // pre-M4b·pre-M5c와 같은 판단이고 근거도 같다(대장 `C-9`가 "실제 운영 run 없음, offline 테스트
+  // run뿐"이라고 적어 둔 그 시점이다). 채울 수 있는 값이 둘 다 거짓말이라 고를 수도 없다:
+  // `null`로 채우면 옛 run이 bind를 **영영 벗어나고**, `[]`로 채우면 승인된 operation을 쓰던 옛 run이
+  // 원인 불명으로 죽는다. 어느 쪽이든 stateDigest가 어차피 어긋난다.
+  if (!("assignedOperations" in o)) {
+    throw new OrchestrationError(
+      "state_pre_b38_unsupported",
+      "지시-계획 bind 이전 orchestration state다(task.assignedOperations 없음). 마이그레이션하지 않으며 새 run을 만들어야 한다",
+    );
+  }
   closedKeys(o, TASK_KEYS, "task");
   return {
     taskId: assertSlug(o.taskId, "task.taskId"),
@@ -443,6 +456,7 @@ function validateTask(raw: unknown): OrchestrationTask {
     scope: assertText(o.scope, "task.scope", LIMITS.maxTextLength),
     ownership: normalizeOwnership(o.ownership, "task.ownership"),
     resourceClasses: normalizeResourceClasses(o.resourceClasses, "task.resourceClasses"),
+    assignedOperations: normalizeAssignedOperations(o.assignedOperations, "task.assignedOperations"),
     parentTaskId: o.parentTaskId === null ? null : assertSlug(o.parentTaskId, "task.parentTaskId"),
     childTaskIds: slugArray(o.childTaskIds, "task.childTaskIds", LIMITS.maxChildrenPerTask),
     dependsOn: slugArray(o.dependsOn, "task.dependsOn", LIMITS.maxDependsOn),

@@ -459,6 +459,7 @@
         "scope",
         "ownership",
         "resourceClasses",
+        "assignedOperations",
         "parentTaskId",
         "childTaskIds",
         "dependsOn",
@@ -493,6 +494,18 @@
           "maxItems": 4,
           "uniqueItems": true,
           "items": { "$ref": "#/definitions/slug" }
+        },
+        "assignedOperations": {
+          "description": "V3 M11(B-38/C-111) — 지시(task_assignment)가 이 task에 실은 승인 operation의 authorityId 집합(사전순·중복 없음). **권위가 아니라 지시 축**이며 manifest.operationAuthorityByTask를 좁히기만 한다(넓히지 못한다). `[]` = 지시가 축을 선언했고 그 집합이 비었다 → 어떤 operation도 낼 수 없다 · `null` = 지시가 축을 선언한 적이 없다 → manifest 게이트 하나만 적용된다(kernel API 직접 생성·spawn child). materializeTaskDag는 null을 만들지 않는다. 이 필드가 없는 state는 마이그레이션하지 않고 state_pre_b38_unsupported로 거부한다.",
+          "oneOf": [
+            {
+              "type": "array",
+              "maxItems": 32,
+              "uniqueItems": true,
+              "items": { "$ref": "#/definitions/slug" }
+            },
+            { "type": "null" }
+          ]
         },
         "parentTaskId": { "oneOf": [{ "$ref": "#/definitions/slug" }, { "type": "null" }] },
         "childTaskIds": {
