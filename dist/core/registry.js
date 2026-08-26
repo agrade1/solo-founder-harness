@@ -18,8 +18,8 @@ export function isApproval(step) {
 }
 const AGENT_REGISTRY_PATH = "registry/agent_registry.json";
 const WORKFLOWS_PATH = "registry/workflows.json";
-function readJson(relPath) {
-    const abs = fromPackage(relPath);
+function readJson(relPath, absOverride) {
+    const abs = absOverride ?? fromPackage(relPath);
     if (!existsSync(abs)) {
         throw new Error(`registry 파일을 찾을 수 없습니다: ${relPath}`);
     }
@@ -34,9 +34,9 @@ function readJson(relPath) {
 export function loadAgentRegistry() {
     return readJson(AGENT_REGISTRY_PATH);
 }
-/** registry/workflows.json 로드 */
-export function loadWorkflows() {
-    return readJson(WORKFLOWS_PATH).workflows;
+/** registry/workflows.json 로드. absPath를 주면 그 파일에서 읽는다(테스트 fixture용 — loadToolProfiles와 같은 seam). */
+export function loadWorkflows(absPath) {
+    return readJson(WORKFLOWS_PATH, absPath).workflows;
 }
 /** common prompt 파일이 실제로 존재하는지 확인 */
 export function commonPromptExists(reg) {

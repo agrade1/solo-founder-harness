@@ -1,5 +1,7 @@
 import { createInterface } from "node:readline";
-import { runWorkflow, loadRunState } from "../core/runWorkflow.js";
+import { join } from "node:path";
+import { runWorkflow, loadRunState, killedIdeaBlock, IDEA_REL } from "../core/runWorkflow.js";
+import { projectPaths } from "../core/project.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
@@ -36,6 +38,14 @@ providerOverride) {
         console.log(`workflow 재개: ${workflowName} (project: ${project}, provider: ${provider.id}, step ${prior.resume_from}부터)`);
     }
     else {
+        // [B-40] 폐기 잠금: kill 게이트가 없는 다른 workflow로 새로 돌려 kill 증거를 completed로 덮어쓰는 길을
+        // 막는다. runWorkflow도 같은 함수로 던지지만, CLI는 거부를 exit 2(무인 loop 진입점과 같은 코드)로 낸다.
+        const blocked = killedIdeaBlock(loadRunState(project), join(projectPaths(project).root, IDEA_REL));
+        if (blocked) {
+            console.error(`⛔ ${blocked}`);
+            process.exitCode = 2;
+            return;
+        }
         console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
     }
     const { state, savedFiles, runStatePath } = await runWorkflow({
@@ -93,6 +103,9 @@ providerOverride) {
     }
     console.log(`run_state: ${runStatePath}`);
     // Obsidian vault export (옵션). --vault 또는 HARNESS_VAULT 환경변수.
+    // [B-40] killed 분기보다 **먼저** 두는 것은 의도다: 폐기도 기록으로 남아야 한다(vault만 보는 사람이
+    // 이 아이디어가 왜 멈췄는지 알아야 한다). 예전 문제는 순서가 아니라 export 내용이 killed를
+    // "진행"으로 적던 것이었고, 그건 obsidianExport에서 고쳤다(상태 줄 + 게이트 결과 줄).
     const vaultPath = vault ?? process.env.HARNESS_VAULT;
     if (vaultPath && vaultPath.trim()) {
         try {

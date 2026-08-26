@@ -2,6 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
+import { killedIdeaBlock, IDEA_REL } from "./runWorkflow.js";
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
 function readIfExists(abs) {
     return existsSync(abs) ? readFileSync(abs, "utf8") : null;
@@ -32,6 +33,12 @@ const RULES = [
 export function buildTaskPrompt(project, today) {
     const paths = projectPaths(project);
     const state = readRunState(project);
+    // [B-40] 폐기된 아이디어로는 구현 지시문을 만들지 않는다. 아래에 Next Actions가 없으면
+    // "MVP의 첫 기능 하나를 구현한다"를 지어내는 경로가 있는데, killed run에서 그것이 돌면
+    // 게이트가 죽인 아이디어가 구현 지시문으로 부활한다. 아이디어를 고치면(digest 변경) 통과한다.
+    const blocked = killedIdeaBlock(state, join(paths.root, IDEA_REL));
+    if (blocked)
+        throw new Error(blocked);
     const ceo = readIfExists(join(paths.docs, "06_CEO_DECISION.md"));
     const prd = readIfExists(join(paths.docs, "02_PRD.md"));
     const idea = readIfExists(join(paths.docs, "00_IDEA.md"));

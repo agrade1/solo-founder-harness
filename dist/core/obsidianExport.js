@@ -83,7 +83,12 @@ export function exportToVault(args) {
     const order = items.map((it, i) => `${i + 1}. [[${it.note}]]${it.role ? ` — ${it.role}` : ""}`).join("\n");
     const metaLines = [];
     metaLines.push(`- provider: ${state.provider}`);
+    metaLines.push(`- 상태: ${state.status ?? (state.failed_agent ? "failed" : "completed")}`);
     metaLines.push(`- 완료 단계: ${state.completed_steps.length}개`);
+    if (state.status === "killed") {
+        const k = state.killed_by;
+        metaLines.push(`- ⛔ 폐기: ${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}' 판정 — 파이프라인 종료(후속 단계 미실행)`);
+    }
     if (state.failed_agent)
         metaLines.push(`- 실패 agent: ${state.failed_agent}`);
     if (state.usage.input_tokens > 0 || state.usage.output_tokens > 0) {
@@ -93,7 +98,9 @@ export function exportToVault(args) {
         metaLines.push(`- 비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 (${c.resolved ? "해소" : "미해결"})`);
     }
     for (const g of state.gate_jumps) {
-        metaLines.push(`- 게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${g.jumped_to ? `${g.jumped_to} 되돌림` : "진행"}`);
+        // killed 게이트도 jumped_to가 null이라 예전 삼항은 "진행"으로 적었다 — vault만 보는 사람에게 거짓이 된다.
+        const outcome = g.killed ? "폐기 — run 종료" : g.jumped_to ? `${g.jumped_to} 되돌림` : "진행";
+        metaLines.push(`- 게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${outcome}`);
     }
     for (const s of state.spawned_agents) {
         metaLines.push(`- 분화: ${s.id} (${s.name}) — ${s.executed ? "실행됨" : "계획만"}`);
