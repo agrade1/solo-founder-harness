@@ -65,6 +65,18 @@ async function drain(executable: string, timeoutMs = 30_000): Promise<string> {
   }
 }
 
+/** 오류 **메시지**를 재는 변형(`drain`은 코드만 본다). 진단 꼬리 계약(C-117)이 이것으로 고정된다. */
+async function drainMessage(executable: string): Promise<string> {
+  try {
+    const cfg = configDir();
+    const stream = startLivePlanTurn({ executable, configDir: cfg, configDirIdentity: identityOf(cfg), model: null, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+    for await (const _ of stream) { /* 소진 */ }
+    return "(통과 — 거부되지 않았다)";
+  } catch (e) {
+    return e instanceof OrchestrationError ? e.message : `non-orchestration:${String(e)}`;
+  }
+}
+
 const EMIT = (result: string, usage = "null"): string =>
   `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write(JSON.stringify({ result: ${JSON.stringify(result)}, usage: ${usage} }));\n`;
 
@@ -92,6 +104,29 @@ test("[M10-T3] 비정상 종료·계약 밖 출력은 각각 닫힌 코드로 �
   const notExec = bin("");
   writeFileSync(notExec, "not an executable\n", { mode: 0o700 });
   assert.equal(await drain(notExec), "!worker_spawn_failed");
+});
+
+test("[C-117] 계획 추출 실패는 **출력 길이 + 꼬리 200자**를 진단으로 싣는다", async () => {
+  // C-117: live 실패 2건이 `worker_plan_absent` 코드 하나만 남겨서 "출력이 잘렸다"와 "모델이 산문으로
+  // 거부했다"를 구분할 수 없었다(transcript는 설계상 미저장). **fixture는 200자를 넘긴다** — 그래야
+  // slice가 실제로 잘라내는 경로를 지나고, 머리가 실리지 않는다는 단정이 공허하지 않다.
+  const prose = `머리-UNIQUEHEAD\n${"계획 없이 설명만 길게 적는다.\n".repeat(20)}꼬리-UNIQUETAIL`;
+  assert.ok(prose.length > 200, `fixture가 200자를 넘지 않으면 이 테스트는 공허하다(${prose.length})`);
+  const absent = await drainMessage(bin(EMIT(prose)));
+  assert.ok(absent.includes(`출력 ${prose.length}자`), `출력 길이가 진단에 없다 — ${absent}`);
+  assert.ok(absent.includes("꼬리-UNIQUETAIL"), `꼬리가 진단에 없다 — ${absent}`);
+  assert.ok(!absent.includes("UNIQUEHEAD"), `꼬리가 bounded가 아니다(머리까지 실렸다) — ${absent}`);
+  assert.ok(!absent.includes("\n"), `진단이 한 줄로 접히지 않았다 — ${JSON.stringify(absent)}`);
+
+  // 같은 규율이 unparsable 갈래에도 적용된다: 후보는 뽑혔지만(`"result"` 포함·균형 잡힌 블록)
+  // `[,]`가 JSON이 아니다 → 여기서도 길이와 꼬리가 원인을 가른다.
+  const bad = `{"result": {"summary": "머리-UNIQUEHEAD ${"길게 적는다 ".repeat(40)}\n꼬리-UNIQUETAIL", "outputs": [,]}}`;
+  assert.ok(bad.length > 200, `fixture가 200자를 넘지 않으면 이 테스트는 공허하다(${bad.length})`);
+  const unparsable = await drainMessage(bin(EMIT(bad)));
+  assert.ok(unparsable.includes(`후보 ${bad.length}자`), `후보 길이가 진단에 없다 — ${unparsable}`);
+  assert.ok(unparsable.includes("꼬리-UNIQUETAIL"), `꼬리가 진단에 없다 — ${unparsable}`);
+  assert.ok(!unparsable.includes("UNIQUEHEAD"), `꼬리가 bounded가 아니다(머리까지 실렸다) — ${unparsable}`);
+  assert.ok(!unparsable.includes("\n"), `진단이 한 줄로 접히지 않았다 — ${JSON.stringify(unparsable)}`);
 });
 
 test("[M10-T3] extractPlanJson: 중첩·본문 중괄호·여러 후보 중 마지막을 고른다", () => {

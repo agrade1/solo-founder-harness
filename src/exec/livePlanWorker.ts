@@ -259,6 +259,20 @@ function workerError(code: (typeof LIVE_WORKER_CODES)[number], what: string): Or
 }
 
 /**
+ * **진단 꼬리**(C-117): 마지막 200자를 제어문자·개행을 공백으로 접어 **한 줄**로 만든다.
+ *
+ * 이것은 골격 주석의 "원문 durable 반입 없음"에 대한 **예외가 아니다** — `worker_exit_nonzero`가
+ * `errText.trim().slice(0, 200)`로 stderr 꼬리를 남기는 것과 **같은 규율**이다(코드와 짧은 꼬리만).
+ * durable로 가는 것은 여전히 안정 코드 하나뿐이고(`workerMarker`/pause detail은 `err.code`만 읽는다)
+ * 꼬리는 운영자가 보는 오류 메시지에만 실린다.
+ *
+ * 왜 길이까지 함께 적나: C-117에서 계획 추출이 깨졌을 때 **원인을 가르는 것이 길이**였다. 거대한 길이 +
+ * 닫히지 않은 중괄호 = 출력 절단, 짧은 길이 = 모델이 산문으로 거부. 코드만으로는 둘이 구분되지 않아
+ * 실측 2회가 전부 "가설"로 남았다.
+ */
+const diagnosticTail = (s: string): string => s.slice(-200).replace(/[\u0000-\u001f\u007f]/g, " ");
+
+/**
  * 모델 출력 텍스트에서 **계획 JSON 하나**를 꺼낸다. 모델은 설명을 덧붙이거나 fence로 감싸므로
  * 마지막 균형 잡힌 `{...}` 블록을 찾는다 — **파싱은 여기서 하지 않는다**(검증기가 정본이다).
  *
@@ -420,12 +434,17 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
       /* 봉투가 아니면 원문에서 찾는다 */
     }
     const json = extractPlanJson(text);
-    if (json === null) throw workerError("worker_plan_absent", "출력에서 계획 JSON을 찾지 못했다");
+    // 실패 두 갈래에 **길이 + 꼬리 200자**를 싣는다(C-117) — 코드만으로는 "출력이 잘렸다"와 "모델이
+    // 산문으로 거부했다"가 구분되지 않아 live 실패 2건이 원인 미상으로 남았다. 규율은 위
+    // `worker_exit_nonzero`의 stderr 꼬리와 같다: **원문이 아니라 코드와 짧은 꼬리만**.
+    if (json === null) {
+      throw workerError("worker_plan_absent", `출력에서 계획 JSON을 찾지 못했다(출력 ${text.length}자 · 꼬리 200자: ${diagnosticTail(text)})`);
+    }
     let parsed: unknown;
     try {
       parsed = JSON.parse(json);
     } catch {
-      throw workerError("worker_plan_unparsable", "계획 후보가 JSON이 아니다");
+      throw workerError("worker_plan_unparsable", `계획 후보가 JSON이 아니다(후보 ${json.length}자 · 꼬리 200자: ${diagnosticTail(json)})`);
     }
     // **binding은 모델이 고르지 못한다**: durable 값으로 덮어쓴 뒤 검증한다(계획이 다른 attempt·다른
     // run을 주장할 통로가 없다). 검증기는 offline backend와 **같은 함수**다.
