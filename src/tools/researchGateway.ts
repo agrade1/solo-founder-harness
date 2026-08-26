@@ -23,8 +23,9 @@ export const MAX_BACKEND_CALLS_PER_RUN = 8;
 /**
  * 중앙·프롬프트로 넘어가는 **발췌** 길이 상한(코드 포인트).
  *
- * 정직하게: 하네스는 offline에서 모델 요약을 만들지 않는다. 여기서 만드는 것은 원문의 **앞부분 발췌**이며
- * 그래서 이름도 요약이 아니라 발췌다. 원문 전체는 파일에만 있고 중앙이 운반하는 것은 이 상한까지다.
+ * 정직하게: 하네스는 offline에서 모델 요약을 만들지 않는다. 여기서 만드는 것은 **저장 응답의
+ * 앞부분 발췌**이며 그래서 이름도 요약이 아니라 발췌다. 저장 응답 전문은 파일에만 있고 중앙이
+ * 운반하는 것은 이 상한까지다. (**웹 페이지 원문이 아니다** — search 경로는 Tavily 스니펫을 담는다.)
  */
 export const MAX_EXCERPT_CHARS = 400;
 
@@ -41,7 +42,7 @@ export type ResearchRequest =
   | { type: "search"; query: string }
   | { type: "extract"; query: string; urls: string[] };
 
-/** backend 1건의 결과(원문 포함). 이 형태는 **하네스 안에서만** 돌아다닌다. */
+/** backend 1건의 결과(**응답 본문 포함**). 이 형태는 **하네스 안에서만** 돌아다닌다. */
 export interface BackendResult {
   source: string;
   title: string;
@@ -147,7 +148,7 @@ export interface RunResearchOpts {
    *    위협은 여기다 — 모델 출력 한 줄이 하네스에게 임의 URL을 가져오게 만드는 경로다.
    *  - `search`(**벤더가 후보를 고른다**): 목록이 있으면 그 안으로 **좁히고**, `null`이면 좁히지 않는다.
    *    검색 후보의 도메인은 질의 전에 알 수 없으므로 여기에 allowlist를 강제하면 검색이 성립하지 않는다.
-   *    좁히지 않는다고 신뢰하는 것은 아니다 — 후보도 원문은 파일로만 가고 프롬프트에는 래핑된 발췌만 간다.
+   *    좁히지 않는다고 신뢰하는 것은 아니다 — 후보도 **저장 응답**은 파일로만 가고 프롬프트에는 래핑된 발췌만 간다.
    */
   allowedDomains: string[] | null;
   /**
@@ -172,7 +173,7 @@ export interface RunResearchResult {
 
 /**
  * 선언을 실행해 `EvidenceItem` 목록을 만든다. 같은 요청은 backend를 다시 부르지 않는다(캐시).
- * 원문은 `storeEvidence`가 파일로만 남기고 여기서는 포인터만 돌려준다.
+ * **저장 응답 바이트**는 `storeEvidence`가 파일로만 남기고 여기서는 포인터만 돌려준다.
  */
 export async function runResearch(requests: ResearchRequest[], opts: RunResearchOpts): Promise<RunResearchResult> {
   const seen = new Map<string, EvidenceItem[]>();

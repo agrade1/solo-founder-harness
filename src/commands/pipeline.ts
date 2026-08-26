@@ -62,7 +62,7 @@ import {
   type RunState,
 } from "../core/runWorkflow.js";
 import { generateTaskPrompt } from "../core/taskPrompt.js";
-import { researchModeLines, resolveResearchRuntime, type ResearchRuntime } from "../core/researchRuntime.js";
+import { researchModeLines, researchOutcomeLines, resolveResearchRuntime, type ResearchRuntime } from "../core/researchRuntime.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { DEFAULT_PROVIDER_ID, getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/provider.js";
@@ -439,6 +439,8 @@ async function nextLocked(
   // 여기서 내보내면 "run completed"만 적힌 노트가 나오고, 그 시점에 파이프라인은 아직 확인 대기
   // 기록을 갖지 못한다 → vault만 보는 사람에게 거짓 완료 영수증이다. try/finally로 모든 종료
   // 경로(정상·거부)에서 한 번만 내보낸다.
+  // [C-126/A-6] 실제 mode 영수증은 run이 끝난 **뒤에만** 낼 수 있다 (사전 문구는 "설정됨"까지다).
+  for (const line of researchOutcomeLines(result.state.research?.attempts)) console.log(line);
   try {
     if (result.state.status === "killed") {
       const next = reconcileKilled(root, state, stage, result.state, now());
