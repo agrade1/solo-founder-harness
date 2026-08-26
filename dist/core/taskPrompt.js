@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
 import { ideaGateStatus, readRunState, snapshotIdea, IDEA_REL } from "./runWorkflow.js";
+import { pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
 function readIfExists(abs) {
     return existsSync(abs) ? readFileSync(abs, "utf8") : null;
@@ -33,6 +34,14 @@ export function buildTaskPrompt(project, today) {
     const gate = ideaGateStatus(read, ideaSnapshot);
     if (!gate.ok)
         throw new Error(`${gate.code}: ${gate.message}`);
+    // [B-41/2단] 단계 체크포인트 게이트. 파이프라인을 쓰는 프로젝트에서는 **완료 후**(또는 마지막
+    // dev-handoff 단계의 실행 대기)에만 지시문을 만든다 — 확인 대기 중인 산출물로 구현을 시작하는 것이
+    // 이 기능이 막으려는 것 그 자체다. 승인 후 문서가 바뀌었으면 drift로 거부한다(전수 대조).
+    // 파이프라인이 없으면 `absent` → ok라서 기존 사용법은 완전히 불변이다.
+    // **정직한 한계**: 이 검증 뒤에 아래 로직이 문서를 다시 읽는다 — 그 사이 창은 남는다(§8-5).
+    const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(paths.root)), paths.root, "task-prompt");
+    if (!pipeGate.ok)
+        throw new Error(pipeGate.message);
     const state = read.kind === "ok" ? read.state : null;
     const ceo = readIfExists(join(paths.docs, "06_CEO_DECISION.md"));
     const prd = readIfExists(join(paths.docs, "02_PRD.md"));
