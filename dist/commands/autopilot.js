@@ -66,7 +66,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { LIMITS, ORCHESTRATOR_ID, OrchestrationError, REQUIRED_BODY_HEADINGS, TYPED_EXECUTION_PLAN_SCHEMA_VERSION, assertSlug, formatTimestamp, opensProcess, } from "../exec/orchestrationTypes.js";
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
-import { LIVE_PLAN_BACKEND, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
+import { LIVE_PLAN_BACKEND, foldDiagnosticText, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
 import { CODEX_PLAN_BACKEND, startCodexPlanTurn } from "../exec/codexPlanWorker.js";
 import { assertCodeReviewRoundtrip, DesignRoundtripError } from "../exec/designReviewRoundtrip.js";
 import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
@@ -559,6 +559,8 @@ async function runTaskTurn(ctx) {
     let marker = "worker_failed";
     /** turn 예외의 **원본 안정 코드**. marker가 담지 못하는 원인을 pause 이벤트로 올린다(위 `workerMarker`). */
     let workerFailureCode = null;
+    /** turn 예외의 **진단 꼬리**(C-117 · A-1). 코드가 담지 못하는 원인 단서를 화면 전용 채널로만 올린다. */
+    let workerDiagnostic = null;
     let usage = { inputTokens: 0, outputTokens: 0 };
     try {
         const binding = { runId: kernel.getState().runId, taskId, attemptId, turnId };
@@ -669,6 +671,9 @@ async function runTaskTurn(ctx) {
     catch (err) {
         // marker는 닫힌 집합이라 원인을 다 담지 못한다 → **원본 코드를 따로 들고** pause 이벤트에 싣는다.
         workerFailureCode = codeOf(err);
+        // **코드만으로는 부족했다**(C-117 · A-1): worker가 오류 메시지에 남긴 진단 꼬리가 여기서 버려져
+        // 어디에도 출력되지 않았다 = 죽은 진단. 화면 전용 채널로 올린다(durable 아님 — `AutopilotEvent`).
+        workerDiagnostic = workerDiagnosticOf(err);
         marker = workerMarker(err);
         plan = null;
     }
@@ -732,7 +737,9 @@ async function runTaskTurn(ctx) {
         const reason = pauseReasonFor(marker);
         kernel.pauseTask({ taskId, actionId: id("pause"), pauseReason: reason });
         // `pauseReason`은 durable task 상태에 이미 있다 → 이벤트 `detail`은 **원인 코드**에 쓴다(있을 때).
-        emit({ kind: "task_paused", taskId, marker, detail: workerFailureCode ?? reason });
+        // 진단 꼬리는 **있을 때만** 별도 필드로 붙는다: `detail`·`marker`는 안정 코드 계약이라(정확일치로
+        // 무는 테스트가 여럿이다) 바이트 하나도 섞지 않는다.
+        emit({ kind: "task_paused", taskId, marker, detail: workerFailureCode ?? reason, ...(workerDiagnostic === null ? {} : { diagnostic: workerDiagnostic }) });
         return { taskId, state: "paused", marker };
     }
     // **집행한 프로세스가 0이 아닌 코드로 끝났으면 전진하지 않는다**(V3 M10 T6 · 대장 `C-45` 소비면).
@@ -1221,6 +1228,37 @@ function workerMarker(err) {
 function codeOf(err) {
     return err instanceof OrchestrationError ? err.code : "autopilot_internal_error";
 }
+/**
+ * turn 예외의 **화면 전용 진단 꼬리**(C-117 · A-1). `AutopilotEvent.diagnostic`의 유일한 출처다.
+ *
+ * `OrchestrationError`만 통과시키는 이유: 그 밖의 예외는 내부 버그(`autopilot_internal_error`)이고
+ * 그 `message`·스택은 계약이 모양을 아는 문자열이 아니다 — 운영자 스트림에 임의 런타임 문자열을
+ * 흘리는 통로를 만들지 않는다(그것이 필요하면 별도 slice로 승인받을 일이다).
+ *
+ * **상한은 여기서 다시 건다**: live worker의 메시지는 그 층이 이미 200자로 접은 것이지만
+ * (`livePlanWorker`의 `diagnosticTail`) 이 catch는 **모든 층의 예외**를 받는다 — 그리고 이미 긴 것이
+ * 있다(`orchestrationKernel`은 승인 레코드를 `JSON.stringify`해 메시지에 넣는 자리가 둘이다).
+ * 길이를 만드는 쪽을 신뢰하면 화면 계약이 조용히 깨진다. 400자인 이유는 200자 꼬리 + 코드·수치
+ * 접두사가 잘리지 않고 들어가는 가장 작은 값이기 때문이다.
+ *
+ * **접는 규칙은 자체 구현하지 않는다**(적대적 리뷰 A-1): `livePlanWorker.foldDiagnosticText` 하나를
+ * 쓴다. 이전 판은 `[ -]`(C0+DEL)를 **여기서 따로** 적었고, 그래서 C1(U+009B) ·
+ * U+2028/29 · bidi 제어문자가 통과해 이 문자열이 도착하는 **운영자 stdout**에서 터미널 escape·
+ * 줄 쪼개기·bidi spoofing이 가능했다. 규칙이 두 벌이면 한쪽만 안전해진다.
+ *
+ * 기각한 대안: `detail`에 이어붙이기. `detail`은 안정 코드이고 정확일치로 무는 테스트가 여럿이다 —
+ * 자유 서술을 섞으면 그 계약이 사라진다(같은 이유로 `marker`도 건드리지 않는다).
+ *
+ * **export한 이유**(테스트 전용 통로가 아니라 상한 자체를 물기 위해): live 경로로 오는 메시지는
+ * 이미 200자 아래라 통합 테스트만으로는 400자 상한 단정이 공허하다. 상한은 이 함수에서 직접 잰다.
+ */
+export function workerDiagnosticOf(err) {
+    if (!(err instanceof OrchestrationError))
+        return null;
+    // `OrchestrationError.message`는 언제나 ``<code>: <본문>``이라 꼬리에 코드가 한 번 더 실린다 —
+    // `detail`과 중복이지만 화면 채널에서는 그 편이 읽기 쉽고, `detail`의 정확일치 계약은 그대로다.
+    return foldDiagnosticText(err.message).trim().slice(0, 400);
+}
 function id(kind) {
     return `${kind}.${randomBytes(8).toString("hex")}`;
 }
@@ -1308,6 +1346,18 @@ backend) {
     };
     return REQUIRED_BODY_HEADINGS.result.map((h) => `## ${h}\n\n${filled[h] ?? "- (없음)"}`).join("\n\n");
 }
+// ── CLI 배선 ────────────────────────────────────────────────────────────────
+/**
+ * `--json`의 **stdout sink**(적대적 리뷰 A-4). 이벤트 하나 = NDJSON 한 줄이다.
+ *
+ * 왜 함수로 떼어냈나: 진단이 "운영자에게 도달한다"는 성질의 마지막 구간이 여기인데, 콜백 안에
+ * 인라인으로 있으면 **테스트가 물 수 있는 이름이 없다** — `onEvent`까지만 재는 테스트는 이 줄을
+ * 통째로 지워도 통과했다(그 상태로 "도달"을 주장했다).
+ *
+ * 줄 계약: 이벤트 문자열 필드는 `workerDiagnosticOf`가 이미 접었으므로(제어·서식·줄종결자 → 공백)
+ * `JSON.stringify` 결과에 실제 개행이 없고, 여기서 붙이는 `\n` 하나가 레코드 구분자다.
+ */
+export const jsonEventLine = (e) => `${JSON.stringify(e)}\n`;
 /** `harness autopilot` 명령 본체. 출력은 stdout, run 수준 거부는 exit 2다. */
 export async function runAutopilotCommand(opts) {
     const workspaceRoot = resolve(opts.workspace ?? process.cwd());
@@ -1372,7 +1422,7 @@ export async function runAutopilotCommand(opts) {
             // 자동 강등 — 새 렌더러·새 의존성 0). `--json`은 **기계 계약**이므로 원본 event를 그대로 흘린다.
             onEvent: opts.json
                 ? (e) => {
-                    process.stdout.write(`${JSON.stringify(e)}\n`);
+                    process.stdout.write(jsonEventLine(e));
                 }
                 : autopilotProgressBridge(createProgressReporter()),
         });
