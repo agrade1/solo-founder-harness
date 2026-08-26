@@ -385,22 +385,36 @@ async function nextLocked(
     return reject("pipeline_run_not_started", `단계 '${stage.id}' 실행이 시작되지 않았습니다 (파이프라인 상태 불변): ${(err as Error).message}`, 1);
   }
 
-  const vaultPath = o.vault ?? process.env.HARNESS_VAULT;
-  if (vaultPath && vaultPath.trim()) {
-    try {
-      const ex = exportToVault({ vault: vaultPath.trim(), state: result.state });
-      console.log(`Obsidian: ${ex.notesWritten}개 노트 → ${ex.folder}`);
-    } catch (err) {
-      console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${(err as Error).message}`);
+  // [Codex A-5] vault export는 **아래 전이(pending/killed/failed 기록)가 끝난 뒤**에 한다:
+  // 여기서 내보내면 "run completed"만 적힌 노트가 나오고, 그 시점에 파이프라인은 아직 확인 대기
+  // 기록을 갖지 못한다 → vault만 보는 사람에게 거짓 완료 영수증이다. try/finally로 모든 종료
+  // 경로(정상·거부)에서 한 번만 내보낸다.
+  try {
+    if (result.state.status === "killed") {
+      const next = reconcileKilled(root, state, stage, result.state, now());
+      writePipelineState(root, next);
+      console.log(`⛔ 폐기 판정 — 파이프라인 종료(killed): ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
+      return done("pipeline_killed_reconciled", 0);
     }
+    return commitAfterRun(o, { project, root, now, state, stage, result });
+  } finally {
+    exportVault(o, root, result.state);
   }
+}
 
-  if (result.state.status === "killed") {
-    const next = reconcileKilled(root, state, stage, result.state, now());
-    writePipelineState(root, next);
-    console.log(`⛔ 폐기 판정 — 파이프라인 종료(killed): ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
-    return done("pipeline_killed_reconciled", 0);
-  }
+/** run 결과를 파이프라인 상태에 반영한다 (failed → last_failure · completed → pending). */
+function commitAfterRun(
+  o: NextPipelineOptions,
+  ctx: {
+    project: string;
+    root: string;
+    now: () => string;
+    state: PipelineState;
+    stage: Extract<PipelineStage, { kind: "workflow" }>;
+    result: Awaited<ReturnType<typeof runWorkflow>>;
+  },
+): PipelineCommandResult {
+  const { project, root, now, state, stage, result } = ctx;
   if (result.state.status === "failed") {
     // 실패 attempt가 **정당하게 덮은** 파일의 digest를 영수증에 남긴다 — resume의 예외는 이것에만 결박된다.
     const at = now();
@@ -438,6 +452,35 @@ async function nextLocked(
     seeds: manifest.seeds,
   };
   return commitPending(root, state, base, now(), project);
+}
+
+/**
+ * [Codex A-5] Obsidian export — **파이프라인 사실을 명시 인자로 넘긴다**(방금 쓴 durable state에서
+ * 읽는다). vault가 파이프라인 상태를 추측하지 않고, "확인 대기"가 "완료"로 적히지 않는다.
+ */
+function exportVault(o: NextPipelineOptions, root: string, runState: RunState): void {
+  const vaultPath = o.vault ?? process.env.HARNESS_VAULT;
+  if (!vaultPath || !vaultPath.trim()) return;
+  const read = readPipelineStateAt(pipelineStatePath(root));
+  const st = read.kind === "ok" ? read.state : null;
+  try {
+    const ex = exportToVault({
+      vault: vaultPath.trim(),
+      state: runState,
+      pipeline: st
+        ? {
+            stage: currentStage(st)?.id ?? "(완료)",
+            index: Math.min(st.current_index + 1, DEFAULT_PIPELINE.length),
+            total: DEFAULT_PIPELINE.length,
+            status: st.status,
+            checkpointId: st.pending?.checkpoint_id ?? null,
+          }
+        : null,
+    });
+    console.log(`Obsidian: ${ex.notesWritten}개 노트 → ${ex.folder}`);
+  } catch (err) {
+    console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${(err as Error).message}`);
+  }
 }
 
 /** pending 기록 + awaiting_approval 전이 (원자 쓰기 1회). `last_failure`는 성공 시 null로 내린다. */

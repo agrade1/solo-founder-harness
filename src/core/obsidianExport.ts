@@ -33,7 +33,23 @@ export function resolveVault(vault: string): string {
  * - run index note(MOC) → 실행 순서대로 [[wikilink]] 나열 + 메타(usage/루프/게이트)
  * 원본 프로젝트 파일은 건드리지 않는다 (읽기 + vault에 사본 생성).
  */
-export function exportToVault(args: { vault: string; state: RunState }): ObsidianExportResult {
+/**
+ * [Codex A-5] vault에 적을 **단계 체크포인트 사실**. 호출자가 명시로 넘긴다(이 모듈이 파이프라인
+ * 상태를 추측하지 않는다). 넘기지 않으면 예전과 같은 노트가 나온다 — run만 아는 소비자는 불변.
+ *
+ * 왜 필요한가: run_state가 `completed`라는 것은 "그 workflow가 끝났다"는 뜻이고, 파이프라인이
+ * 그 산출물을 **확인 대기**로 잡고 있으면 vault만 보는 사람에게 "완료"는 거짓 영수증이다
+ * (B-40이 killed에서 A급으로 잡은 것과 같은 부류).
+ */
+export interface PipelineNote {
+  stage: string;
+  index: number; // 1-based
+  total: number;
+  status: string;
+  checkpointId: string | null;
+}
+
+export function exportToVault(args: { vault: string; state: RunState; pipeline?: PipelineNote | null }): ObsidianExportResult {
   const vaultRoot = resolveVault(args.vault);
   const { state } = args;
   const project = state.project;
@@ -106,6 +122,17 @@ export function exportToVault(args: { vault: string; state: RunState }): Obsidia
   metaLines.push(`- provider: ${state.provider}`);
   metaLines.push(`- 상태: ${state.status ?? (state.failed_agent ? "failed" : "completed")}`);
   metaLines.push(`- 완료 단계: ${state.completed_steps.length}개`);
+  // [A-5] 파이프라인 사실을 **run 상태 바로 뒤에** 적는다 — "완료"만 읽고 개발 착수로 넘어가지 않게.
+  if (args.pipeline) {
+    const p = args.pipeline;
+    metaLines.push(
+      `- 단계 체크포인트: ${p.index}/${p.total} '${p.stage}' · ${p.status}` +
+        (p.checkpointId ? ` (checkpoint ${p.checkpointId} — 사람 확인 대기)` : ""),
+    );
+    if (p.status === "awaiting_approval") {
+      metaLines.push("- ⏸ 이 산출물은 **아직 승인되지 않았다** — 승인 전에는 작업 지시문·handoff가 거부된다.");
+    }
+  }
   if (state.status === "killed") {
     const k = state.killed_by;
     metaLines.push(`- ⛔ 폐기: ${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}' 판정 — 파이프라인 종료(후속 단계 미실행)`);

@@ -26,6 +26,7 @@ import {
 import { projectPaths } from "../core/project.js";
 import { IDEA_REL, loadRunState, runWorkflow } from "../core/runWorkflow.js";
 import { buildTaskPrompt } from "../core/taskPrompt.js";
+import { buildSummary } from "../core/summary.js";
 import { runHandoff } from "../core/handoff.js";
 import { mockProvider } from "../providers/mockProvider.js";
 import { approveCheckpoint, nextPipeline, rejectCheckpoint, restartPipeline, statusPipeline, unlockPipeline } from "./pipeline.js";
@@ -481,6 +482,56 @@ test("[B-41/A-6] 마지막 단계만 승인해 '완료' 영수증을 받아낼 �
   // 복원하면 승인된다(검사가 무조건 거부가 아니다).
   await quiet(() => rejectCheckpoint({ project: name, stage: "dev-handoff", checkpointId: pending.checkpoint_id, now: () => FIXED }));
   writeFileSync(join(root, "docs/06_CEO_DECISION.md"), readFileSync(join(root, "docs/06_CEO_DECISION.md"), "utf8"), "utf8");
+  rmProject(name);
+});
+
+// ── Codex A-5 ─────────────────────────────────────────────────
+test("[B-41/A-5] summary·vault가 '확인 대기'를 '완료'로 적지 않는다", async () => {
+  const name = "_b41_a5";
+  const vault = join(tmpdir(), `b41-a5-vault-${process.pid}`);
+  makeProject(name);
+  try {
+    // vault export까지 함께 — pending 기록 **뒤에** 내보내는지가 이 테스트의 절반이다.
+    const r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, vault }));
+    assert.equal(r.code, "pipeline_awaiting_approval");
+    const pending = stateOf(name).pending!;
+
+    // ① summary: run_state는 completed지만 요약은 **확인 대기**를 정본으로 적는다.
+    assert.equal(loadRunState(name)?.status, "completed", "전제: run 자체는 완주했다");
+    const summary = buildSummary(name, "2026-01-01");
+    assert.match(summary, /단계 체크포인트: 1\/4 'idea-validation' · awaiting_approval/);
+    assert.match(summary, new RegExp(`checkpoint ${pending.checkpoint_id}`), "checkpoint id가 정본 표시");
+    assert.match(summary, /단계 확인 대기/);
+    assert.match(summary, /승인되기 전에는 `task-prompt`·`handoff`·`plan-dag`가 거부된다/, "무엇이 막혀 있는지 말한다");
+    // run 완료를 "task-prompt로 진행"으로 안내하지 않는다 — 승인 전에는 그 안내가 틀린 말이다.
+    assert.doesNotMatch(summary, /완료 — `harness task-prompt`로 작업 지시문 생성/, "승인 전에 지시문 생성을 권하지 않는다");
+    assert.match(summary, /workflow `idea-validation` 자체는 완주했다/, "run 사실은 숨기지 않는다");
+
+    // ② vault: 인덱스 노트가 단계 대기를 적는다 (run '완료'만 읽고 개발 착수로 넘어가지 않게).
+    const index = readFileSync(join(vault, name, "idea-validation_run.md"), "utf8");
+    assert.match(index, /- 단계 체크포인트: 1\/4 'idea-validation' · awaiting_approval \(checkpoint [0-9a-f]{12} — 사람 확인 대기\)/);
+    assert.match(index, /아직 승인되지 않았다/);
+    assert.match(index, /- 상태: completed/, "run 자체의 상태도 그대로 적는다 (숨기지 않는다)");
+
+    // ③ 승인 후에는 완료로 바뀐다 (위 단정이 상수가 아니다).
+    await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: pending.checkpoint_id, now: () => FIXED }));
+    assert.match(buildSummary(name, "2026-01-01"), /단계 실행 대기\*\* 2\/4 'mvp-planning'/);
+  } finally {
+    rmSync(vault, { recursive: true, force: true });
+    rmProject(name);
+  }
+});
+
+test("[B-41/A-5] 완료 후 문서가 바뀌면 summary가 '하류 막힘'을 적는다 (완료라고만 적지 않는다)", async () => {
+  const name = "_b41_a5b";
+  await runToCompletion(name);
+  const root = projectPaths(name).root;
+  assert.match(buildSummary(name, "2026-01-01"), /4단계 전부 승인 완료/, "대조군: 정상 완료");
+  writeFileSync(join(root, "docs/06_CEO_DECISION.md"), "# 바꿔치기\n", "utf8");
+  const s = buildSummary(name, "2026-01-01");
+  assert.match(s, /승인 후 문서가 바뀌었다/);
+  assert.match(s, /docs\/06_CEO_DECISION\.md/);
+  assert.match(s, /거부된다/);
   rmProject(name);
 });
 
