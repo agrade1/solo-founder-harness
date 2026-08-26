@@ -131,6 +131,11 @@ function tap(
       let md = r.markdown;
       const isSecond = (input.revisionRequest ?? "").includes("1차 판단 전문 시작");
       if (input.agent.agent_id === "research" && !isSecond) {
+        // **선언은 이 tap이 온전히 통제한다.** mock이 종결자(`RESEARCH_REQUEST none`)를 기본으로 내게
+        // 된 뒤로는 먼저 **지우고** 나서 주입해야 한다 — 안 지우면 ⓐ `decl: null`이 "무선언"이 아니라
+        // "명시적 none"을 시험하게 되고(무선언 vs none을 가르는 계약이 공허해진다) ⓑ 다른 fixture는
+        // 선언이 **두 개**가 되어 파서가 보는 것이 의도와 달라진다.
+        md = md.replace(/\nRESEARCH_REQUEST none\n/g, "\n");
         if (opts.decl !== null) md += `\n${opts.decl ?? 'RESEARCH_REQUEST query="시장 규모" | type=search'}\n`;
         if (opts.firstPassPadBytes) md += "\n" + "가".repeat(Math.ceil(opts.firstPassPadBytes / 3));
       }
