@@ -1,6 +1,8 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, ensureDir } from "../core/project.js";
+import { ensureEnvTemplate } from "../core/envFile.js";
+import { TAVILY_SECRET_REF } from "../tools/tavilyBackend.js";
 
 /** init이 생성하는 필수 docs 6개 (spec 4.1 = acceptance Test 1) */
 function docTemplates(name: string, today: string): Record<string, string> {
@@ -91,4 +93,14 @@ export function runInit(name: string): void {
   for (const f of created) console.log(`    + ${f}`);
   for (const f of skipped) console.log(`    = ${f} (이미 존재, 유지)`);
   console.log(`  outputs/ 준비 완료`);
+
+  // [C-126] 리서치 키는 **사용자 단위**라 workspace 루트에 하나만 둔다(프로젝트별이 아니다).
+  // 여기서 만들어 두는 이유: "키를 달라"는 안내가 실행 가능해야 한다 — 넣을 파일이 이미 있어야 한다.
+  // 이미 있으면 한 글자도 건드리지 않는다.
+  const env = ensureEnvTemplate();
+  console.log(
+    env.created
+      ? `  ${env.path} 생성 — 외부 검색을 쓰려면 ${TAVILY_SECRET_REF}= 뒤에 **값만** 채우세요 (비워 두면 자체 리서치로 진행 · 커밋 금지)`
+      : `  ${env.path} 이미 존재 — 유지 (내용을 건드리지 않았습니다)`,
+  );
 }
