@@ -45,7 +45,8 @@
  * 손으로 옮겨 적은 사본은 이 파일에 없다(규칙 산문은 파생할 수 없으므로 최소로 적는다).
  */
 import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { killedIdeaBlock, loadRunStateAt } from "../core/runWorkflow.js";
 import { LIMITS, OrchestrationError, type ApprovedOperation } from "../exec/orchestrationTypes.js";
 import { SPECIALIST_ROLES, validateApprovalManifest } from "../exec/approvalManifest.js";
 import {
@@ -119,6 +120,24 @@ function readIdeaDocument(file: string): string {
     throw new OrchestrationError("invalid_text", `아이디어 문서가 비어 있다: ${path}`);
   }
   return text;
+}
+
+/**
+ * [B-40] **폐기된 아이디어로는 run을 만들지 않는다.** kill 게이트가 죽인 아이디어가 DAG 초안 → 실행으로
+ * 부활하는 길을 닫는다. `createRunFromDocuments` **앞에서** 던지므로 durable 잔류가 0이다.
+ *
+ * **한계(정직하게 적는다)**: 아이디어 경로가 `<project>/docs/00_IDEA.md` 꼴일 때만 프로젝트를 찾는다
+ * (`dirname(dirname(idea))/outputs/run_state.json`). 아이디어 문서를 프로젝트 밖 임의 경로에 두면
+ * 연결할 run_state가 없어 **이 검사는 아무것도 막지 못한다** — 그 경로를 프로젝트로 되짚는 규칙이
+ * 하네스에 없기 때문이고, 없는 규칙을 여기서 지어내지 않는다. 판정 자체는 `killedIdeaBlock` 하나를
+ * 공유하므로 run/task-prompt와 규칙이 갈리지 않는다.
+ */
+function assertIdeaNotKilled(idea: string): void {
+  const ideaAbs = resolve(idea);
+  const projectRoot = dirname(dirname(ideaAbs));
+  const state = loadRunStateAt(join(projectRoot, "outputs", "run_state.json"));
+  const blocked = killedIdeaBlock(state, ideaAbs);
+  if (blocked) throw new OrchestrationError("dag_materialize_seed_rejected", blocked);
 }
 
 /** `["a","b"]` → `` `a` · `b` `` (상수 목록을 지시 산문에 싣는 유일한 형식). */
@@ -231,6 +250,7 @@ function planDagNode(
  * 던지는 것은 전부 기존 검증기의 안정 코드다.
  */
 export function createPlanDagRun(opts: PlanDagCliOptions): AutopilotCreateResult & { draftPaths: string[] } {
+  assertIdeaNotKilled(opts.idea);
   const workspaceRoot = resolve(opts.workspace ?? process.cwd());
   const rawManifest = readJsonDocument(opts.approval, "invalid_manifest");
   // 여기서 `validateApprovalManifest`를 직접 부르는 이유는 **파생**이다(검증이 아니다 — 그것은
