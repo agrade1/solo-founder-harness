@@ -17,11 +17,11 @@ live가 **실제 산출물을 만들고**(판정 ⑦) 아이디어에서 **DAG �
 
 | 항목 | 값 |
 |---|---|
-| `main` | `9959574` (판정 ⑧까지 머지) |
-| suite | `test:exec` 646 · `test:core` 492 · acceptance 217 — 전부 green |
-| 열린 대장 | A **0** · 등급 B **6** · 등급 C **80** · id **86** |
-| 판정 정본 | 로드맵 `M11 진행 판정 ⑧` (새 판정은 그 **위에** 삽입하고 "현행" 문구를 갱신하라) |
-| live 실측 | 판정 ⑦(단일 task 산출물 생성) · 판정 ⑧(12-task DAG 초안) — 각 1회 |
+| `main` | 판정 ⑨까지 머지(L2b 포함 — 착수 전 `git log`로 실측하라) |
+| suite | `test:exec` 646 · `test:core` 501 · acceptance 224 — 전부 green |
+| 열린 대장 | A **0** · 등급 B **6** · 등급 C **85** · id **91** |
+| 판정 정본 | 로드맵 `M11 진행 판정 ⑨` (새 판정은 그 **위에** 삽입하고 "현행" 문구를 갱신하라) |
+| live 실측 | 판정 ⑦(단일 task 산출물) · ⑧(12-task DAG 초안) · ⑨(multi-task **부분** — 1/4 완주 · `C-117` 발견) |
 
 **사용자의 목표**: 새 레포에 아이디어 문서를 두면 기획→리서치→검증→디자인→개발까지 도는 하네스.
 Opus 5가 개발, Fable(+Codex)이 비평 루프. MVP부터 그 뒤까지.
@@ -32,12 +32,13 @@ Opus 5가 개발, Fable(+Codex)이 비평 루프. MVP부터 그 뒤까지.
 
 ## 2. 진행 중 / 다음 순서 (사용자 승인된 추천 순서)
 
-1. **L2b — `draft-approval`/`validate-approval`** (승인 초안 도구 · **진행 중이거나 통합 대기** —
-   서브에이전트 보고를 확인하라). 헌법: **초안은 그대로 실행 불가**(sentinel이 검증기에서 거부돼야 한다 ·
-   권위-의미 필드는 사람이 채운다) · PATH 자동 발견 금지 · mint 금지.
-2. **multi-task live** — L2a가 만든 12-task 초안(구독컷)의 **문서 단계**(research→prd→ux→design)를
-   실제로 돌린다. 기능 구현 task는 `B-10`(edit 가능 실행) 영역이라 이 단계에 넣지 않는다.
-3. 그 뒤 사용자 결정 대기: **L5b**(Fable 리뷰어 — 안 A 추천) · `C-93`(다른 레포 대상) · `B-10`.
+1. ~~L2b~~ → **착지**(판정 ⑨). ~~multi-task live 1차~~ → **부분 성공**(1/4 완주 · 실패가 산출물).
+2. **1순위 = `C-117`**: multi-provides live task가 `worker_plan_absent`로 죽는다(2-file task 2/2 실패 ·
+   1-file 성공). 설계 결정이 선행한다 — ⓐ planner 지침에 "task당 provides 1개"(플랜 층 해결 · 싸다)
+   ⓑ turn 분할 발행(계약 층 해결 · 정확하지만 비싸다). 결정 후 Opus 구현 → 4-task 문서 단계 재도전
+   (workspace 잔재: scratchpad `l2blive` — 새로 만들어라).
+3. **`C-118`**(resumeTask CLI) · `C-120`(validate-approval에 audit 배선) — 값싼 CLI slice 하나로 묶을 만하다.
+4. 그 뒤 사용자 결정 대기: **L5b**(Fable 리뷰어 — 안 A 추천) · `C-93`(다른 레포 대상) · `B-10`(기능 구현 task).
 
 ## 3. 작업 loop (실측으로 다듬어진 현행)
 

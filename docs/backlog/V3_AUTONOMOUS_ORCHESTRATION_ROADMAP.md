@@ -711,7 +711,7 @@ id / 제목
 ```bash
 awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목 \(2026-07-26/' \
     docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
-  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 86
+  | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l   # 91
 ```
 
 이 명령이 세는 것은 **이 절의 목록**이지 대장 전체가 아니다. 즉 이것은 **"목록과 선언한 수가
@@ -737,7 +737,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 86   ← 최신 변동(판정 ⑧): `C-115`·`C-116` 신규(+2). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
+정본(이 절)      →  id 91   ← 최신 변동(판정 ⑨): `C-117`~`C-121` 신규(+5). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -747,7 +747,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 86건 (A 0 · **등급 B 6** · 등급 C 80)
+##### 열린 항목 — id 91건 (A 0 · **등급 B 6** · 등급 C 85)
 
 **등급 B (6) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed — live가 실제 산출물을 만들었다.)
 
@@ -775,7 +775,8 @@ C-29  C-30  C-31  C-33  C-34  C-35  C-36  C-37  C-38  C-39  C-43  C-46  C-47  C-
 C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-64
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
-C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116
+C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-117 C-118 C-119
+C-120 C-121
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -1905,7 +1906,69 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ⑧ — L2a: `plan-dag` — 하네스가 아이디어에서 DAG 초안을 만들었다 (live 12-task · 첫 시도 통과)** (2026-08-25 · **이 절이 현행이며 아래 ⑦보다 최신이다**)
+##### **M11 진행 판정 ⑨ — L2b `draft-approval` 착지 · multi-task live 첫 실측(부분 성공 — 경계 발견 2)** (2026-08-26 · **이 절이 현행이며 아래 ⑧보다 최신이다**)
+
+### ⓐ L2b — 승인 초안 도구 (구현 Opus · 비평 오케스트레이터)
+
+**`harness draft-approval`**: 검증된 DAG에서 `ownershipByTask`·`operationAuthorityByTask`를 파생하고
+**권위-의미 36자리를 sentinel로 남긴다**(`approvedCommit`·`expiresAt`·`writableRoots`·예산 3 ·
+정책 8 · 실행 파일 10 · `maxBytes` 12). **mint 방지는 관행이 아니라 집행이다**: 산출한 초안을
+`validateApprovalManifest`에 먹여 보고 **통과하면 파일을 쓰지 않고 `draft_would_be_executable`로
+던진다**(mutation 1b가 실증 — sentinel 16자리를 유효값으로 치환하니 focused 8건이 그 코드로 죽었다).
+PATH 자동 발견 없음(mutation 2 — PATH에 가짜 claude/git/node/ps를 깔아도 sentinel 유지).
+`writableRoots`를 파생하지 않는 이유: ownership 그대로면 `maxWritableRoots=8`에 12-task가 죽고,
+접두사 압축은 **사람이 승인한 적 없는 넓은 루트를 하네스가 짓는 것**(mint에 가장 가까운 동작)이라 기각.
+**`validate-approval`**: read-only 반복 판정(남은 sentinel 목록을 사람이 읽게).
+
+**비평**: mutation 1a 독립 재현 ✔(강화된 단정이 `["expiresAt"]`를 이름으로 잡는다 · 복원 38/38).
+구현 세션이 **C-116 형식을 완전히 지켰고**, mutation 1a가 처음 GREEN이었던 것과 mutation 2의
+"엉뚱한 이유 red"를 세지 않은 것을 스스로 보고했다 — 이 정직성이 이 판정이 기대는 근거다.
+커밋 3개 배송(함정 회피 2연속).
+
+### ⓑ draft-approval 실전 첫 투입 (운영자 = 오케스트레이터)
+
+L2a가 live로 만든 **실제 12-task 초안**에서 문서 단계 4개(market-scan→prd→ux-flows→design-direction)를
+잘라 밟았다: `draft-approval`(경고: 4 task 전부 `operations` 미배선 — 목록 출력) → sentinel 채움 →
+operations를 DAG에 배선 → `validate-approval` exit 0 → `autopilot-create` **task 4건 생성**.
+
+운영자 실수 2건을 fail closed가 정확히 잡았다: ⓐ timestamp를 마이크로초로 씀 → `invalid_timestamp`
+ⓑ `validate-approval`의 exit 코드를 파이프 뒤에서 잼(`tail`의 코드를 읽음 — 측정 실수).
+
+### ⓒ multi-task live — 부분 성공, 경계 2개 발견 (claude 4회)
+
+| task | provides | 결과 |
+|---|---|---|
+| `market-scan` | 파일 1개 | **completed** — `docs/research/competitors.md`(17,969B) 생성 |
+| `prd` | 파일 **2개** | **worker_plan_absent ×2** → attempts 소진(2/2) · paused |
+| `ux-flows`·`design-direction` | — | 상류 미완으로 미도달 |
+
+**경계 ①**: multi-provides task(문서 전문 2개를 JSON 계획 하나에)가 **2회 연속** `worker_plan_absent`
+("출력에서 계획 JSON을 찾지 못했다")로 실패했다. 파일 1개짜리는 같은 run에서 성공했다.
+**가설**(원문 transcript는 설계상 미저장이라 가설로만): 긴 문서 2개의 JSON escape/출력 길이가
+계획 추출을 깨뜨린다. 표본: 1 task × 2 attempt. → `C-117`.
+
+**경계 ②**: pause 복구가 **kernel API뿐이다**(`resumeTask` — autopilot이 대신 놓아주지 않는 것은
+의도된 계약이나, **CLI 배선이 없어** 운영자가 스크립트를 짜야 했다). → `C-118`.
+
+**과장하지 않는다**: multi-task live의 증명은 **"의존 순서로 2 task가 돌고 1개가 산출물을 냈다"**까지다.
+4-task 완주는 실패했고 그 실패가 이 실측의 가장 값진 산출물이다.
+
+### ⓓ 실측 총계
+
+`npm test` exit 0 · 646/646 · **501/501**(+9) · acceptance **224/0**(Test 27 포함) · L2b acceptance
+38/38 · typecheck clean · mutation red 5종(C-116 형식) + 1a 독립 재현 · **live 4회**(성공 2턴 · 실패 2턴).
+
+### ⓔ 대장 처리 (신규 5)
+
+| id | 분류 | 항목 | 기한/트리거 | 상태 |
+|---|---|---|---|---|
+| `C-117` | C (P2) | **multi-provides live task가 `worker_plan_absent`로 실패한다**(표본: 2-file task 2/2 실패 · 1-file 성공). 가설: 문서 전문 여러 개를 계획 JSON 하나에 담는 계약의 한계. 후보: planner 지침에 "task당 provides 1개" · 또는 turn 분할 발행 | **multi-task live 재시도 slice(다음 세션 1순위)** | open |
+| `C-118` | C (P3) | **`resumeTask` CLI 배선이 없다** — pause 복구는 사람 결정이 맞지만 그 결정을 실행할 CLI가 없어 스크립트를 짜야 한다 | 다음 CLI slice | open |
+| `C-119` | C (P3) | **DAG `operations` 배선이 두 번째 병목** — 승인을 채워도 node에 `operations`가 없으면 그 task는 아무것도 못 쓴다. 지금은 `draft-approval`의 stdout 경고뿐(도구가 DAG를 고치지 않는다 — 그것은 별도 승인 결정) | 사용자가 배선 자동화를 원할 때 | open |
+| `C-120` | C (P3) | `validate-approval`이 `auditApprovalManifest`(R1~R6)를 부르지 않는다 — 사람이 쓴 `writableRoots`가 과도해도 통과 | 값싼 후속 — 다음 CLI slice | open |
+| `C-121` | C (P4) | `draft-approval`에 `--codex` 플래그가 없다(초안은 `codex: null` — 리뷰 왕복 승인은 손으로) | codex 왕복을 초안에 넣을 때 | open |
+
+##### **M11 진행 판정 ⑧ — L2a: `plan-dag` — 하네스가 아이디어에서 DAG 초안을 만들었다 (live 12-task · 첫 시도 통과)** (2026-08-25 · 아래 ⑦보다 최신이다 — **M11의 현행은 위 판정 ⑨이다**)
 
 ### ⓐ 무엇이 생겼나
 
