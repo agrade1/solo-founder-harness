@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
-import { killedIdeaBlock, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { ideaGateStatus, readRunState, IDEA_REL, type RunState } from "./runWorkflow.js";
 
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
 
@@ -10,16 +10,8 @@ function readIfExists(abs: string): string | null {
   return existsSync(abs) ? readFileSync(abs, "utf8") : null;
 }
 
-function readRunState(project: string): RunState | null {
-  const p = join(projectPaths(project).outputs, "run_state.json");
-  const raw = readIfExists(p);
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as RunState;
-  } catch {
-    return null;
-  }
-}
+// [B-40/A-4] 이 파일에 있던 지역 run_state 리더를 지웠다: `catch { return null }`로 손상을 부재로 접어서
+// 깨진 killed state를 못 본 척했다. 이제 core의 `readRunState`(부재/손상 구분) 하나만 쓴다.
 
 // Claude Code 작업 지시문에 항상 포함하는 규칙 (PERMISSION_POLICY §6)
 const RULES: string[] = [
@@ -35,13 +27,15 @@ const RULES: string[] = [
 /** Claude Code 작업 지시문 markdown을 생성한다. */
 export function buildTaskPrompt(project: string, today: string): string {
   const paths = projectPaths(project);
-  const state = readRunState(project);
 
   // [B-40] 폐기된 아이디어로는 구현 지시문을 만들지 않는다. 아래에 Next Actions가 없으면
   // "MVP의 첫 기능 하나를 구현한다"를 지어내는 경로가 있는데, killed run에서 그것이 돌면
-  // 게이트가 죽인 아이디어가 구현 지시문으로 부활한다. 아이디어를 고치면(digest 변경) 통과한다.
-  const blocked = killedIdeaBlock(state, join(paths.root, IDEA_REL));
-  if (blocked) throw new Error(blocked);
+  // 게이트가 죽인 아이디어가 구현 지시문으로 부활한다. 해제는 재평가 run의 '진행' 판정뿐이고,
+  // 손상된 run_state도 거부한다(A-4) — 폐기 기록이 그 안에 있을 수 있다.
+  const read = readRunState(project);
+  const gate = ideaGateStatus(read, join(paths.root, IDEA_REL));
+  if (!gate.ok) throw new Error(`${gate.code}: ${gate.message}`);
+  const state = read.kind === "ok" ? read.state : null;
 
   const ceo = readIfExists(join(paths.docs, "06_CEO_DECISION.md"));
   const prd = readIfExists(join(paths.docs, "02_PRD.md"));

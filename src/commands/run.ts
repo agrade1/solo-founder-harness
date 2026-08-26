@@ -1,7 +1,8 @@
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { runWorkflow, loadRunState, killedIdeaBlock, IDEA_REL } from "../core/runWorkflow.js";
+import { runWorkflow, loadRunState, readRunState, ideaGateStatus, IDEA_REL } from "../core/runWorkflow.js";
 import { projectPaths } from "../core/project.js";
+import { loadWorkflows, findWorkflow, hasKillGate } from "../core/registry.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
@@ -57,10 +58,16 @@ export async function runRun(
     console.log(`workflow 재개: ${workflowName} (project: ${project}, provider: ${provider.id}, step ${prior.resume_from}부터)`);
   } else {
     // [B-40] 폐기 잠금: kill 게이트가 없는 다른 workflow로 새로 돌려 kill 증거를 completed로 덮어쓰는 길을
-    // 막는다. runWorkflow도 같은 함수로 던지지만, CLI는 거부를 exit 2(무인 loop 진입점과 같은 코드)로 낸다.
-    const blocked = killedIdeaBlock(loadRunState(project), join(projectPaths(project).root, IDEA_REL));
-    if (blocked) {
-      console.error(`⛔ ${blocked}`);
+    // 막는다. 잠금 중 허용은 재평가 run(kill 게이트가 있는 workflow) 하나뿐.
+    // runWorkflow도 같은 함수로 던지지만, CLI는 거부를 exit 2(무인 loop 진입점과 같은 코드)로 낸다.
+    const wf = findWorkflow(loadWorkflows(), workflowName);
+    const gate = ideaGateStatus(
+      readRunState(project),
+      join(projectPaths(project).root, IDEA_REL),
+      wf ? hasKillGate(wf) : false,
+    );
+    if (!gate.ok) {
+      console.error(`⛔ ${gate.code}: ${gate.message}`);
       process.exitCode = 2;
       return;
     }
