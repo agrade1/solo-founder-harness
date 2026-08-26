@@ -1,5 +1,6 @@
 import { runWorkflow, loadRunState, readRunState, ideaGateStatus, snapshotProjectIdea, gateOutcomeLabel } from "../core/runWorkflow.js";
 import { loadWorkflows, findWorkflow, hasKillGate } from "../core/registry.js";
+import { projectPipelineGate } from "../core/pipeline.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
@@ -31,6 +32,17 @@ export async function runRun(
 ): Promise<void> {
   const provider = providerOverride ?? getProvider(providerId);
   const approve = yes ? async () => true : stdinApprover;
+
+  // [B-41/2단] 활성 파이프라인에서 일반 run은 **전면 거부**다(resume 포함) — 현 단계 실행 권한은
+  // `pipeline next` 단독이다. 상태별로 허용하면 "승인 직후 awaiting_run에서 다음 단계를 직접 run"이
+  // 열려 단계 건너뛰기가 성립한다. runWorkflow도 같은 게이트를 던지지만, CLI는 거부를 exit 2로 낸다
+  // (무인 loop 진입점과 같은 코드). 거부 문장은 게이트가 만든 것을 그대로 출력한다.
+  const pipeGate = projectPipelineGate(project, "run");
+  if (!pipeGate.ok) {
+    console.error(`⛔ ${pipeGate.message}`);
+    process.exitCode = 2;
+    return;
+  }
 
   if (resume) {
     // 재개 전 안전 점검: 완료된 실행을 덮어쓰지 않는다 (FAILURE_RECOVERY).

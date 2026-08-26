@@ -16,7 +16,11 @@ check() { # check "설명" <조건 종료코드>
 }
 
 VAULT="projects/_acceptance_vault"
-cleanup() { rm -rf "$PDIR" "$VAULT"; }
+# [B-41] 파이프라인 시나리오는 **별도 프로젝트**를 쓴다: 활성 파이프라인이 있으면 그 프로젝트에서
+# 일반 `run`이 거부되므로(pipeline_run_reserved) $PROJ를 공유하면 Test 3~12가 깨진다.
+PPROJ="_acceptance_pipe"
+PPDIR="projects/$PPROJ"
+cleanup() { rm -rf "$PDIR" "$VAULT" "$PPDIR"; }
 trap cleanup EXIT
 cleanup
 
@@ -529,6 +533,106 @@ echo "$M12L2B_OUT" | grep -q "digest가 그 파일 내용의 sha256이다"
 check "M12 L2b 명시한 경로만 digest가 실림(대조군) 출력" $?
 echo "$M12L2B_OUT" | grep -q "재실행은 채우던 초안을 덮어쓰지 않는다"
 check "M12 L2b 초안을 지우거나 덮어쓰지 않음 출력" $?
+
+
+echo ""
+echo "== Test 28: B-41 단계 체크포인트 오케스트레이션 — pipeline status/next/approve/restart/unlock (mock · 무과금) =="
+# `C-104`/판정 ⑥ ⓖ의 교훈대로 **만들자마자 여기 등록한다**. 종료 코드는 **파이프 없이** 잰다
+# (`| tail` 뒤에서 재면 tail의 코드가 잡힌다).
+$HARNESS init "$PPROJ" >/dev/null
+printf '# idea\n\n## 아이디어 한 줄 정의\n\n- 체크포인트 acceptance 아이디어\n' > "$PPDIR/docs/00_IDEA.md"
+PS="$PPDIR/outputs/pipeline_state.json"
+
+OUT="$($HARNESS pipeline status --project "$PPROJ" 2>&1)"; RC=$?
+[ "$RC" -eq 0 ];                                      check "status(파이프라인 없음) exit 0" $?
+echo "$OUT" | grep -q "파이프라인 없음";               check "status가 미시작을 말한다" $?
+test ! -f "$PS";                                      check "status는 state를 만들지 않는다(read-only)" $?
+
+# ① 1단계 실행 → **확인 대기**로 들어간다 (다음 단계는 돌지 않는다)
+OUT="$($HARNESS pipeline next --project "$PPROJ" 2>&1)"; RC=$?
+[ "$RC" -eq 0 ];                                      check "next(1단계) exit 0" $?
+echo "$OUT" | grep -q "확인 대기";                     check "1단계 후 확인 대기 진입" $?
+grep -q '"status": "awaiting_approval"' "$PS";         check "durable 상태가 awaiting_approval" $?
+CP1="$(echo "$OUT" | grep -o 'checkpoint: [0-9a-f]\{12\}' | head -1 | awk '{print $2}')"
+[ -n "$CP1" ];                                        check "checkpoint id 출력" $?
+node -e "const s=require('./$PS');process.exit(s.pending&&s.pending.seeds.length>=5?0:1)"
+check "영수증에 승인 판단 seed가 실린다" $?
+test ! -f "$PPDIR/docs/03_UX_FLOW.md";                check "다음 단계 산출물이 아직 없다(전진 없음)" $?
+
+# ② 확인 대기 중에는 우회가 전부 막힌다
+BEFORE="$(cat "$PS")"
+$HARNESS run mvp-planning --project "$PPROJ" --yes >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                      check "확인 대기 중 직접 run 거부(exit 2)" $?
+$HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                      check "확인 대기 중 task-prompt 거부(exit 2)" $?
+$HARNESS handoff --project "$PPROJ" --cwd . >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 1 ];                                      check "확인 대기 중 handoff 거부(exit 1)" $?
+OUT="$($HARNESS pipeline next --project "$PPROJ" 2>&1)"; RC=$?
+[ "$RC" -eq 0 ];                                      check "대기 중 next는 안내만(exit 0)" $?
+[ "$BEFORE" = "$(cat "$PS")" ];                        check "네 방향 거부가 state 바이트를 건드리지 않았다" $?
+
+# ③ 신원 결박: 틀린 checkpoint id는 거부, 맞으면 전진
+$HARNESS pipeline approve idea-validation --checkpoint 000000000000 --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 1 ];                                      check "틀린 checkpoint id 승인 거부(exit 1)" $?
+[ "$BEFORE" = "$(cat "$PS")" ];                        check "거부가 state를 바꾸지 않았다" $?
+$HARNESS pipeline approve idea-validation --checkpoint "$CP1" --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ];                                      check "승인 exit 0" $?
+grep -q '"decision": "approved"' "$PS";                check "승인 영수증 기록" $?
+$HARNESS run dev-preflight --project "$PPROJ" --yes >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                      check "승인 직후 단계 건너뛰기 run 거부(exit 2)" $?
+
+# ④ 승인된 문서를 바꾸면 다음 단계가 **모델 호출 전에** 거부한다
+cp "$PPDIR/docs/02_PRD.md" "$PPDIR/outputs/_prd.bak"
+printf '\n변조\n' >> "$PPDIR/docs/02_PRD.md"
+OUT="$($HARNESS pipeline next --project "$PPROJ" 2>&1)"; RC=$?
+[ "$RC" -eq 1 ];                                       check "승인 후 문서 교체 → next 거부(exit 1)" $?
+echo "$OUT" | grep -q "승인된 산출물이 승인 시점 바이트와 다릅니다"; check "drift 사유 출력" $?
+test ! -f "$PPDIR/docs/03_UX_FLOW.md";                 check "거부 시 2단계 산출물 미생성(모델 호출 전 정지)" $?
+cp "$PPDIR/outputs/_prd.bak" "$PPDIR/docs/02_PRD.md"
+
+# ⑤ 남은 세 단계를 실행·승인해 완주한다 (내부 승인 step만 비대화 승인)
+for STAGE in mvp-planning dev-preflight dev-handoff; do
+  OUT="$($HARNESS pipeline next --project "$PPROJ" --yes-internal-gates 2>&1)"; RC=$?
+  [ "$RC" -eq 0 ];                                     check "next($STAGE) exit 0" $?
+  CP="$(echo "$OUT" | grep -o 'checkpoint: [0-9a-f]\{12\}' | head -1 | awk '{print $2}')"
+  $HARNESS pipeline approve "$STAGE" --checkpoint "$CP" --project "$PPROJ" >/dev/null 2>&1; RC=$?
+  [ "$RC" -eq 0 ];                                     check "approve($STAGE) exit 0" $?
+done
+grep -q '"status": "completed"' "$PS";                 check "4단계 승인 후 completed" $?
+$HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ];                                       check "완료 후에는 task-prompt가 열린다" $?
+
+# ⑥ 완료 후 승인 문서를 바꾸면 하류가 다시 닫힌다
+printf '\n변조\n' >> "$PPDIR/docs/06_CEO_DECISION.md"
+$HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                       check "완료 후 문서 교체 → task-prompt 거부(exit 2)" $?
+
+# ⑦ lock: mutating 명령은 거부되고 status는 읽힌다 · 살아 있는 owner의 lock은 회수하지 않는다
+printf '{"pid": %s, "nonce": "aaaaaaaaaaaaaaaa", "at": "2026-01-01T00:00:00.000Z"}' "$$" > "$PPDIR/outputs/pipeline.lock"
+$HARNESS pipeline next --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                       check "lock 보유 중 mutation 거부(exit 2)" $?
+$HARNESS pipeline status --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ];                                       check "lock 중에도 status는 동작(exit 0)" $?
+$HARNESS pipeline unlock --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 1 ];                                       check "살아 있는 owner의 lock은 회수 거부(exit 1)" $?
+test -f "$PPDIR/outputs/pipeline.lock";                check "거부 시 lock이 남는다" $?
+rm -f "$PPDIR/outputs/pipeline.lock"
+
+# ⑧ restart: 종료된 파이프라인만 · 기존 state는 지우지 않고 rename 보관
+$HARNESS pipeline restart --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ];                                       check "completed에서 restart exit 0" $?
+ls "$PPDIR/outputs" | grep -q '^pipeline_state\..*\.json$'; check "restart가 기존 state를 archive로 보관(삭제 없음)" $?
+grep -q '"current_index": 0' "$PS";                    check "restart 후 첫 단계로" $?
+$HARNESS pipeline restart --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 1 ];                                       check "진행 중 파이프라인의 restart 거부(exit 1)" $?
+
+# ⑨ 손상된 state는 fail closed (바이트 불변 · exit 2)
+echo '{ not json' > "$PS"
+$HARNESS pipeline status --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                       check "손상 state → status exit 2" $?
+$HARNESS pipeline next --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 2 ];                                       check "손상 state → next exit 2" $?
+[ "$(cat "$PS")" = '{ not json' ];                     check "손상 state 바이트 불변" $?
 
 echo ""
 echo "==================================="

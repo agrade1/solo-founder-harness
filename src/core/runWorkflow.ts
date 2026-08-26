@@ -17,6 +17,7 @@ import {
   type WorkflowStep,
 } from "./registry.js";
 import { projectPaths, projectExists } from "./project.js";
+import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import {
@@ -458,6 +459,21 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   if (!args.resume) {
     const gateStatus = ideaGateStatus(priorRead, idea, hasKillGate(workflow));
     if (!gateStatus.ok) throw new Error(`${gateStatus.code}: ${gateStatus.message}`);
+  }
+
+  // [B-41/2단] **활성 파이프라인에서 workflow를 돌릴 수 있는 것은 `pipeline next` 하나뿐이다.**
+  // 여기서 fresh와 resume을 **둘 다** 막는다: resume만 열어두면 "체크포인트 대기 중에 --resume으로
+  // 단계를 마저 돌린다"가 그대로 우회 통로가 된다(설계 §6은 fresh 경로를 지목했지만, 같은 게이트를
+  // 두 경로에 걸어도 pipeline next는 lease로 통과하므로 잃는 것이 없고 닫히는 것이 하나 늘어난다).
+  // lease는 "lock 보유 + 현 단계 workflow + awaiting_run" 세 사실에 결박된다(§2.4) — raw 문자열로
+  // 자기 권한을 주장하는 인자가 아니다.
+  const pipeRead = readPipelineStateAt(pipelineStatePath(projectPaths(project).root));
+  const pipeGate = pipelineGateStatus(pipeRead, projectPaths(project).root, "run");
+  if (!pipeGate.ok) {
+    const leased =
+      pipeGate.code === "pipeline_run_reserved" &&
+      leaseAllowsRun(pipeRead, projectPaths(project).root, workflowId, args.pipelineLease);
+    if (!leased) throw new Error(`${pipeGate.code}: ${pipeGate.message}`);
   }
 
   // [B-41/1단] **내부 승인 게이트는 응답자 없이 시작하지 않는다.** 예전 계약은 "approve 미지정 =
