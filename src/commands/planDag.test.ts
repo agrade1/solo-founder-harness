@@ -181,6 +181,15 @@ test("[M12/L2a] 문서 계약이 **상수에서 파생**된다 — key 하나라
   assert.ok(assignmentBody(f).includes(`> - node의 key는 정확히 이것뿐이다`), "계약이 지시 본문에 실리지 않았다");
 });
 
+test("[C-117] briefing은 **task당 provides 1개**를 planner 지침으로 싣는다(live 실행층 실측 제약)", () => {
+  // 이 지침이 사라지면 planner가 다시 문서 전문 2개를 한 task에 담고, live worker가 `worker_plan_absent`로
+  // 죽는다(C-117 실측 2/2). 검증기는 이것을 막지 않는다 — **지침 줄이 유일한 방어**라 여기서 못 박는다.
+  const line = dagContractBriefing().split("\n").find((l) => l.includes("`provides`는 **task당 1개**로 하라")) ?? "";
+  assert.ok(line !== "", "provides-1 지침 줄이 briefing에서 사라졌다");
+  // 같은 줄이 **검증기 파생이 아님**을 밝혀야 한다 — 그렇지 않으면 헤더의 "검증기에서 파생했다"와 모순된다.
+  assert.ok(line.includes("검증기 규칙이 아니라"), `실측 제약 표기가 빠졌다 — ${line}`);
+});
+
 test("[M12/L2a] 아이디어가 상한을 넘으면 **fail closed** — 자르지 않고 run도 만들지 않는다", () => {
   const f = files(manifest(), "가".repeat(LIMITS.maxBodyBytes)); // UTF-8 3바이트 × 16384 = 48KB
   assert.equal(codeOf(() => plan(f)), "text_too_long");
