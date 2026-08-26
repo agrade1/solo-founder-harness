@@ -1,5 +1,37 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-26 밤 — **`B-41` closed: 단계 체크포인트 — 하네스가 단계마다 사람 확인을 받고 멈춘다**)
+
+- **사용자 요구 충족**: `harness pipeline` 6 명령 + 고정 4단계(idea-validation → mvp-planning →
+  dev-preflight → dev-handoff). 단계가 끝나면 산출물·digest·`checkpoint_id`를 내고 **승인 대기로
+  멈춘다**. 승인은 사람이 단계명+checkpoint id를 타이핑한다(체크포인트용 `--yes`는 **없다**).
+  승인된 산출물의 한 줄 요약이 **다음 단계 입력(`seedFindings`)으로 durable하게** 흐른다.
+- **우회 봉쇄**: action별 게이트 하나를 `run`·`task-prompt`·`handoff`·`plan-dag`·`runWorkflow`가
+  공유한다. 활성 파이프라인에서 일반 `run`은 거부(fresh·resume 모두) — 단계 실행은 **lock을 쥔
+  파이프라인 연산 안**에서만(lease = WeakMap 불투명 신원 · nonce 문자열은 그 자체가 뒷문이라 제거).
+  **`current_index`는 승인 영수증에서 replay로 파생**(숫자만 올려 건너뛸 수 없다) · 문서 바이트 결박
+  (승인 직전 재검증 + fresh 전수 검증 + 승인 후 교체는 하류 drift 거부) · unreadable/semantic/replay
+  위반은 **바이트 불변 exit 2** · lock 획득 **직후 재독** · realpath containment.
+- **Codex 4라운드(계획 2 + 구현 2)가 A 27건**: 계획 1차는 **재설계**("opt-in 순서 관리기일 뿐") ·
+  계획 2차 A 7 · 구현 1차 A 12(**승인 이력 replay 부재** · lease 공개 API · **summary·vault가 확인
+  대기를 "완료"로** — 거짓 영수증 **세 번째** · approve가 과거 drift 무시 · lock 전 읽기 · sidecar
+  미결박 · 상한·containment 주장 거짓 · kill provenance 거짓 · archive 덮어쓰기) · 검증 2차에서 남은
+  3건은 오케스트레이터 직접 처리(mock이 `a11y` 없어 designContract 불만족 · 배타 주장 잔존 ·
+  **vault가 손상 state를 부재로 접어 거짓 완료 영수증**).
+- **실측**: `npm test` exit 0 · **649/649** · **580/580**(+44) · acceptance **272/0**(+48 · Test 28) ·
+  mutation **34종**(독립 재현 2: 단계 건너뛰기 봉쇄 · replay 제거) · CLI 스모크 9시나리오(4단계 완주 ·
+  우회 6종 차단 · `--yes-internal-gates` 격리 · **dev-handoff 자기오염 발견→멱등화 후 재실측**).
+- **교훈**: ⓐ **거짓 영수증은 새 상태를 도입할 때마다 재발한다**(killed → 게이트 실패 →
+  awaiting_approval에서 세 번) — 새 상태를 만들면 **소비자 전수**를 훑어야 한다 ⓑ **문자열 자격증명은
+  우회다**(내부 전용 인자를 공개 API에 두면 뒷문).
+- **닫은 범위**: v1 프로젝트 경로 4개뿐. **`exec`/`mission`/`autopilot`은 미배선**(`C-132`·신규 `B-44`) ·
+  파일 직접 수정 · 실제 두 프로세스 경합 미증명(`C-135`).
+- **신규**: `B-44` · `C-134` · `C-135`. **열린 항목**: A **0** · B **10** · C **98** · id **108**(실측 108).
+- **다음**: `C-126`(리서치 API + `.env`) — 설계 개정 2 완료(Codex A 10 + B 4 반영) · **B-41 착지본과
+  재대조(integration gate)가 구현 전 필수**.
+
+---
+
 ## 최신 (2026-08-26 밤 — **`B-40` closed: 아이디어 kill 게이트 — CEO '폐기'가 처음으로 집행된다**)
 
 - **구현 = Opus 5 · 비평 = Codex**(사용자 지시 2026-08-26 저녁 · 세션 모델도 Opus 5로 전환).
