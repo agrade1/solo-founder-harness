@@ -15,7 +15,7 @@
 
 ## 기능 (v2.6.0 — 전부 릴리스 완료)
 
-> v1(문서 자동화) 이후 v2.x에서 아래를 순차 추가·완료했다. **현재 진행 중인 개발 항목은 없다.** (v3는 실사용 통증이 확인되면 착수 — `docs/backlog/V3_KICKOFF.md`)
+> v1(문서 자동화) 이후 v2.x에서 아래를 순차 추가·완료했다. **v3(exec/mission 실행 계층 + plan-dag/autopilot 오케스트레이션)는 진행 중이다** — 현황·계약은 `docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md`(활성 3문서)와 `docs/CONTEXT_SUMMARY.md`가 정본이다.
 
 - **실제 LLM provider** (mock과 교체 가능): `--provider mock | claude-code | anthropic`
   - `claude-code`(B안): `claude -p`에 위임, Claude 구독으로 실행 (추가 API 비용 0). `claude` CLI 로그인 필요.
@@ -124,7 +124,7 @@ npx harness task-prompt --project <프로젝트명>
 
 | 워크플로우 | 언제 | 특징 |
 |---|---|---|
-| `idea-validation` | 아이디어 go/no-go 빠른 검증 | 5단계, 게이트 없음 |
+| `idea-validation` | 아이디어 빠른 검증 **보고서**(CEO 판정 문서를 만들 뿐, 판정이 실행을 자동 중단하지는 않는다) | 5단계, 게이트 없음 |
 | `mvp-planning` | MVP 범위 잡기 | pm→ux→**design→[디자인 게이트]**→tech + red_team 비평 루프 |
 | `full-predev` | **제품 아이디어 종합 사전검토(가장 많이 씀)** | research→pm→ux→**design→[디자인 게이트]**→tech→red→ceo + CEO 게이트 |
 | `dev-preflight` | 개발 직전 | 에이전트 분화 + 승인게이트 + 병렬 task-prompt |
@@ -132,7 +132,7 @@ npx harness task-prompt --project <프로젝트명>
 ### 주의
 
 - 실제 아이디어는 **private 레포**에. 공개 레포면 `00_IDEA.md`·`docs/`·`evidence/` 등을 `.gitignore` 처리.
-- 하네스는 **텔레메트리 없음** — 아무것도 외부로 안 보낸다. 전부 로컬.
+- 하네스 **자체 텔레메트리는 없다**. 단, provider를 고르면 **prompt(아이디어 원문 포함)가 그 provider로 전송된다** — `claude-code`는 Claude CLI(로그인 계정)로, `anthropic`은 Anthropic API로. 완전 로컬은 `--provider mock`(기본)뿐이다.
 - `--provider mock`(기본)은 오프라인 더미 출력(구조 확인용). 실제 판단은 `--provider claude-code`(구독 로그인 필요).
 
 ## 하네스 자체 개발/수정 시 (from source)

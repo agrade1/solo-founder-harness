@@ -1,5 +1,25 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-26 밤 — **전체 감사(Codex): 목표 대비 갭 판정 · README A급 3곳 즉시 수정 · B-40/B-41·C-125~129 등재**)
+
+- **목표 명확화(사용자)**: 완전 자동이 아니라 **"단계 완료 → 사용자 확인 요청 → 승인 대기 → 다음
+  단계"**. 리서치는 **외부 API(Tavily) 우선 + 없으면 자체 리서치 fallback**, 키는 하네스가 만든
+  `.env`에 사용자가 값만 입력. 보고는 쉬운 말로.
+- **감사 판정(Codex 5.6 read-only · 오케스트레이터 실물 검증)**: 부품은 상당히 구현(설치·문서
+  에이전트 9종·critique_loop/gate/approval·안전 실행기·typed write) · **목표 연결은 불성립** —
+  ① CEO '폐기'가 상태 전이가 아니다(**`B-40` kill 게이트 — 1순위**) ② 층간(v1→exec/mission→v3)
+  체크포인트 오케스트레이션 부재(`B-41`) ③ 아이디어 비평→개정 루프 부재(`C-125`)
+  ④ `tavilyBackend`/`researchGateway` 구현돼 있으나 production 미배선(`C-126` · .env 설계 포함)
+  ⑤ v1 필수 섹션 검증 warning-only(`C-127`) ⑥ 디자인 시안 단계 부재(`C-128`) ⑦ exec/mission
+  ownership 기계 강제 부재(`C-129`). `C-123`(consumes 비가시)은 P1로 재확인.
+- **README A급 즉시 수정**: "아무것도 외부로 안 보낸다"(실제로는 provider로 아이디어 전송) ·
+  "v3 미착수 + 존재하지 않는 V3_KICKOFF.md 참조" · "go/no-go"(게이트 없음) — 3곳 정정.
+- **열린 항목**: A **0** · B **9** · C **92** · id **101**(자기 검증 101 실측).
+- **다음 슬라이스 추천(사용자 결정 대기)**: ① `B-40` kill 게이트 ② `B-41` 단계 체크포인트
+  ③ `C-126` research adapter(.env) — 이 셋이 명확화된 목표의 최소 골격이다.
+
+---
+
 ## 최신 (2026-08-26 — **V3 M11⑩: `C-117` closed · 문서 단계 4종 산출물 완성 · 비평 루프에 Codex 첫 투입**)
 
 - **`C-117` closed(결정 ⓐ)**: planner 지침 "provides는 task당 1개"(계획층) + `worker_plan_absent`/
