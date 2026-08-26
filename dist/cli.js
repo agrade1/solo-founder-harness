@@ -64,7 +64,7 @@ program
     await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes, opts.toolProfile, opts.bare, opts.handoff, opts.cwd, opts.handoffToolProfile);
 });
 // [B-41] **단계 체크포인트 오케스트레이션.** 각 단계가 끝나면 사람이 문서를 확인하고 승인해야
-// 다음 단계가 돈다 — 활성 파이프라인에서 workflow 실행 권한은 `pipeline next` 단독이고(일반 `run`은
+// 다음 단계가 돈다 — 활성 파이프라인에서 workflow 실행은 lock을 쥔 `pipeline next` 안에서만 일어나고(일반 `run`은
 // `pipeline_run_reserved`로 거부), 체크포인트에는 `--yes`/`--force`가 **없다**(그것이 이 기능의 존재 이유다).
 const pipeline = program
     .command("pipeline")

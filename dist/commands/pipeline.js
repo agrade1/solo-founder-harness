@@ -18,9 +18,9 @@
  * 자동 승인하며, **checkpoint 전이 함수에는 approver·boolean 인자가 아예 없다** — 그래서 그 플래그가
  * 체크포인트에 닿으려면 시그니처를 바꿔야 하고, 컴파일이 월경을 먼저 막는다(의도).
  */
-import { existsSync, renameSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_PIPELINE, PIPELINE_ID, PIPELINE_LOCK_REL, PIPELINE_STATE_REL, acquireLock, approvedDigests, buildManifest, checkpointIdFor, currentStage, digestArtifacts, driftProblem, newPipelineState, pipelineGateStatus, pipelineStatePath, pipelineWorkflowProblem, readLock, readPipelineStateAt, runStateSources, seedFindingsFrom, writePipelineState, PipelineError, } from "../core/pipeline.js";
+import { DEFAULT_PIPELINE, PIPELINE_ID, PIPELINE_LOCK_REL, PIPELINE_STATE_REL, lockPipeline, approvedDigests, buildManifest, checkpointIdFor, currentStage, digestArtifacts, driftProblem, effectiveDigests, newPipelineState, pipelineGateStatus, pipelineStatePath, pipelineWorkflowProblem, readLock, readPipelineStateAt, runStateSources, seedFindingsFrom, writePipelineState, PipelineError, } from "../core/pipeline.js";
 import { projectExists, projectPaths } from "../core/project.js";
 import { findWorkflow, hasKillGate, loadWorkflows } from "../core/registry.js";
 import { ideaGateStatus, readRunStateAt, readRunState, runWorkflow, snapshotProjectIdea, } from "../core/runWorkflow.js";
@@ -122,7 +122,16 @@ export function statusPipeline(o) {
         console.log(`다시 세우기: harness pipeline restart --project ${st.project} (기존 state는 지우지 않고 rename 보관)`);
     }
     else {
-        printCompletedGuidance(st.project);
+        // [B-41/결정 2] 완료 상태에서도 **하류가 막혀 있으면 그 사실을 먼저 말한다.** 예전 status는
+        // drift가 있어도 "완료 — 직접 실행하세요"만 출력했다(오케스트레이터 스모크에서 실측).
+        const gate = pipelineGateStatus(read, root, "handoff");
+        if (!gate.ok) {
+            console.log("");
+            console.log(`⚠ 하류가 막혀 있습니다 — ${gate.message}`);
+        }
+        else {
+            printCompletedGuidance(st.project);
+        }
     }
     // [표시 전용] 화해되지 않은 killed run도 사실대로 적는다 — **여기서 아무것도 쓰지 않는다**(status는 read-only).
     if (st.status !== "killed") {
@@ -152,21 +161,29 @@ export async function nextPipeline(o) {
     const wfProblem = pipelineWorkflowProblem(loadWorkflows().map((w) => w.workflow_id));
     if (wfProblem)
         return reject("pipeline_stage_workflow_missing", wfProblem, 2);
-    // ② lock (mutating)
-    const lock = acquireLock(root, now);
+    // ② lock (mutating). [A-3] nonce는 이 경계 밖으로 나가지 않는다 — lease는 locked.runStage가 발행한다.
+    const lock = lockPipeline(root, now);
     if (!lock.ok)
         return reject("pipeline_locked", lock.message, 2);
+    const locked = lock.locked;
     try {
-        return await nextLocked(o, { project, root, now, read, nonce: lock.nonce });
+        // [Codex A-7] lock 획득 **직후 재독·재검증**한 snapshot만 mutation에 쓴다(lockPipeline이 그 read를
+        // 들고 온다). ①의 read는 lock 밖에서 찍힌 것이라, 그 사이 다른 프로세스가 전이를 끝냈으면
+        // stale snapshot으로 덮어쓴다(승인 하나가 조용히 사라지는 부류다).
+        if (locked.read.kind === "unreadable") {
+            const gate = pipelineGateStatus(locked.read, root, "run");
+            return reject("pipeline_state_unreadable", gate.ok ? "" : gate.message, 2);
+        }
+        return await nextLocked(o, { project, root, now, read: locked.read, locked });
     }
     finally {
-        lock.release();
+        locked.release();
     }
 }
 async function nextLocked(o, 
 // read는 nextPipeline이 unreadable을 이미 걸러낸 뒤의 것이다 (타입으로 그 사실을 들고 온다).
 ctx) {
-    const { project, root, now, nonce } = ctx;
+    const { project, root, now, locked } = ctx;
     let state;
     if (ctx.read.kind === "absent") {
         // 파이프라인 시작 전에 **폐기 잠금**(B-40)을 본다: 죽은 아이디어로 파이프라인을 세우지 않는다.
@@ -176,6 +193,18 @@ ctx) {
         const ideaGate = ideaGateStatus(readRunState(project), snapshotProjectIdea(project), wf ? hasKillGate(wf) : false);
         if (!ideaGate.ok)
             return reject(ideaGate.code, ideaGate.message, 2);
+        // [Codex A-10] run_state가 이미 폐기 판정이면 **파이프라인을 만들지 않는다.**
+        // 예전엔 만들고 나서 곧바로 화해로 죽였고(write 2회), 더 나쁘게 그 kill 영수증은 "현재 단계"를
+        // 적어서 **거짓말**을 했다: 파이프라인 밖에서 mvp-planning이 폐기됐는데 영수증은
+        // "idea-validation이 폐기됐다"고 증언했다. 폐기를 푸는 것은 사람이 직접 돌리는 재평가 run이므로
+        // 여기서 만들 것이 없다.
+        const rsBefore = readRunStateAt(join(root, RUN_STATE_REL));
+        if (rsBefore.kind === "ok" && rsBefore.state.status === "killed") {
+            const k = rsBefore.state.killed_by;
+            return reject("run_state_killed", `이 프로젝트의 마지막 run이 폐기 판정입니다 (workflow '${rsBefore.state.workflow_id}' · ` +
+                `${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}') — 파이프라인을 만들지 않았습니다.\n` +
+                `먼저 재평가를 직접 돌려 '진행' 판정을 받으세요: harness run <kill 게이트 workflow> --project ${project}`, 2);
+        }
         state = newPipelineState(project, now());
         writePipelineState(root, state); // 전이: 파이프라인 생성 (원자 쓰기 1회)
         console.log(`파이프라인 시작: ${PIPELINE_ID} · ${DEFAULT_PIPELINE.map((s) => s.id).join(" → ")}`);
@@ -211,6 +240,16 @@ ctx) {
         return reject("run_state_unreadable", `run_state.json이 있지만 읽을 수 없습니다: ${rsRead.path} (${rsRead.detail}).\n폐기 기록이 이 파일에 있을 수 있어 덮어쓰지 않습니다 — 파일을 복원하거나 검토 후 지우세요.`, 2);
     }
     if (rsRead.kind === "ok" && rsRead.state.status === "killed") {
+        // [Codex A-10] **provenance 대조**: 그 폐기가 **이 단계의 workflow**에서 나온 것일 때만
+        // 현 단계 영수증으로 기록한다. 다른 workflow가 죽은 것을 현 단계 이름으로 적으면 영수증이
+        // 거짓말을 한다(그리고 그 거짓 영수증이 checkpoint 이력의 정본이 된다).
+        const rsWf = rsRead.state.workflow_id;
+        if (stage.kind !== "workflow" || rsWf !== stage.workflowId) {
+            return reject("pipeline_killed_elsewhere", `run_state가 폐기 판정인데 그 workflow('${rsWf}')는 현 단계('${stage.id}')가 아닙니다 — ` +
+                `현 단계 영수증으로 적으면 거짓 기록이 되므로 아무것도 쓰지 않았습니다.\n` +
+                `재평가를 직접 돌려 '진행' 판정을 받은 뒤(harness run <kill 게이트 workflow> --project ${project}) 다시 시도하거나, ` +
+                `'harness pipeline restart --project ${project}'로 파이프라인을 다시 세우세요.`, 1);
+        }
         const next = reconcileKilled(root, state, stage, rsRead.state, now());
         writePipelineState(root, next);
         console.log(`⛔ 폐기 판정을 파이프라인에 반영했습니다 (killed) — ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
@@ -268,7 +307,10 @@ ctx) {
         `${resume ? " · resume" : ""}${seeds.length ? ` · 승인 판단 seed ${seeds.length}건` : ""}`);
     let result;
     try {
-        result = await runWorkflow({
+        // [Codex A-3] 실행은 **lock을 쥔 연산의 runStage 안에서만** 일어난다: lease는 그 호출 동안만
+        // 발행되고(현 단계 workflow + awaiting_run일 때만) 끝나면 만료된다. 임의 호출자가 nonce를
+        // 읽어 lease를 만들 길이 없다 — 그것이 예전 판의 구멍이었다.
+        result = await locked.runStage(stage.workflowId, (lease) => runWorkflow({
             workflowId: stage.workflowId,
             project,
             provider,
@@ -279,30 +321,33 @@ ctx) {
             now: o.now,
             // seed는 **durable 저장본**에서만 온다 — 여기서 문서 파일을 다시 읽지 않는다(§5).
             seedFindings: seeds.length > 0 ? seeds : undefined,
-            // lease: lock을 쥔 이 프로세스가 **현 단계 workflow 하나**를 돌린다는 증명.
-            pipelineLease: { nonce },
-        });
+            pipelineLease: lease,
+        }));
     }
     catch (err) {
         // run_state가 만들어지지 않는 경로(잠금·approver 부재·profile 거부 등) — 파이프라인 상태 불변.
         return reject("pipeline_run_not_started", `단계 '${stage.id}' 실행이 시작되지 않았습니다 (파이프라인 상태 불변): ${err.message}`, 1);
     }
-    const vaultPath = o.vault ?? process.env.HARNESS_VAULT;
-    if (vaultPath && vaultPath.trim()) {
-        try {
-            const ex = exportToVault({ vault: vaultPath.trim(), state: result.state });
-            console.log(`Obsidian: ${ex.notesWritten}개 노트 → ${ex.folder}`);
+    // [Codex A-5] vault export는 **아래 전이(pending/killed/failed 기록)가 끝난 뒤**에 한다:
+    // 여기서 내보내면 "run completed"만 적힌 노트가 나오고, 그 시점에 파이프라인은 아직 확인 대기
+    // 기록을 갖지 못한다 → vault만 보는 사람에게 거짓 완료 영수증이다. try/finally로 모든 종료
+    // 경로(정상·거부)에서 한 번만 내보낸다.
+    try {
+        if (result.state.status === "killed") {
+            const next = reconcileKilled(root, state, stage, result.state, now());
+            writePipelineState(root, next);
+            console.log(`⛔ 폐기 판정 — 파이프라인 종료(killed): ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
+            return done("pipeline_killed_reconciled", 0);
         }
-        catch (err) {
-            console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${err.message}`);
-        }
+        return commitAfterRun(o, { project, root, now, state, stage, result });
     }
-    if (result.state.status === "killed") {
-        const next = reconcileKilled(root, state, stage, result.state, now());
-        writePipelineState(root, next);
-        console.log(`⛔ 폐기 판정 — 파이프라인 종료(killed): ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
-        return done("pipeline_killed_reconciled", 0);
+    finally {
+        exportVault(o, root, result.state);
     }
+}
+/** run 결과를 파이프라인 상태에 반영한다 (failed → last_failure · completed → pending). */
+function commitAfterRun(o, ctx) {
+    const { project, root, now, state, stage, result } = ctx;
     if (result.state.status === "failed") {
         // 실패 attempt가 **정당하게 덮은** 파일의 digest를 영수증에 남긴다 — resume의 예외는 이것에만 결박된다.
         const at = now();
@@ -339,6 +384,36 @@ ctx) {
     };
     return commitPending(root, state, base, now(), project);
 }
+/**
+ * [Codex A-5] Obsidian export — **파이프라인 사실을 명시 인자로 넘긴다**(방금 쓴 durable state에서
+ * 읽는다). vault가 파이프라인 상태를 추측하지 않고, "확인 대기"가 "완료"로 적히지 않는다.
+ */
+function exportVault(o, root, runState) {
+    const vaultPath = o.vault ?? process.env.HARNESS_VAULT;
+    if (!vaultPath || !vaultPath.trim())
+        return;
+    const read = readPipelineStateAt(pipelineStatePath(root));
+    const st = read.kind === "ok" ? read.state : null;
+    try {
+        const ex = exportToVault({
+            vault: vaultPath.trim(),
+            state: runState,
+            pipeline: st
+                ? {
+                    stage: currentStage(st)?.id ?? "(완료)",
+                    index: Math.min(st.current_index + 1, DEFAULT_PIPELINE.length),
+                    total: DEFAULT_PIPELINE.length,
+                    status: st.status,
+                    checkpointId: st.pending?.checkpoint_id ?? null,
+                }
+                : null,
+        });
+        console.log(`Obsidian: ${ex.notesWritten}개 노트 → ${ex.folder}`);
+    }
+    catch (err) {
+        console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${err.message}`);
+    }
+}
 /** pending 기록 + awaiting_approval 전이 (원자 쓰기 1회). `last_failure`는 성공 시 null로 내린다. */
 function commitPending(root, state, base, at, project) {
     const pending = { ...base, checkpoint_id: checkpointIdFor(base) };
@@ -368,14 +443,21 @@ function openDecision(o, verb, now) {
     if (read.kind === "absent") {
         return { ok: false, res: reject("pipeline_absent", `파이프라인이 없습니다 (${o.project}) — 'harness pipeline next'로 시작하세요.`, 1) };
     }
-    const lock = acquireLock(root, now);
+    const lock = lockPipeline(root, now);
     if (!lock.ok)
         return { ok: false, res: reject("pipeline_locked", lock.message, 2) };
+    const locked = lock.locked;
     const fail = (code, message, exit) => {
-        lock.release();
+        locked.release();
         return { ok: false, res: reject(code, message, exit) };
     };
-    const state = read.state;
+    // [Codex A-7] lock 밖 snapshot으로 판정하면 그 사이 끝난 전이를 덮어쓴다 — 재독·재검증한 것만 쓴다.
+    const fresh = locked.read;
+    if (fresh.kind !== "ok") {
+        const gate = pipelineGateStatus(fresh, root, "run");
+        return fail(fresh.kind === "absent" ? "pipeline_absent" : "pipeline_state_unreadable", gate.ok ? "파이프라인이 사라졌습니다" : gate.message, 2);
+    }
+    const state = fresh.state;
     if (state.status === "killed") {
         return fail("pipeline_killed", `폐기 판정으로 종료된 파이프라인입니다 — ${verb}할 체크포인트가 없습니다.`, 1);
     }
@@ -396,7 +478,7 @@ function openDecision(o, verb, now) {
     const stage = currentStage(state);
     if (!stage)
         return fail("pipeline_stage_out_of_range", `current_index가 단계 범위를 벗어났습니다 (${state.current_index})`, 2);
-    return { ok: true, root, state, pending, stage, release: lock.release };
+    return { ok: true, root, state, pending, stage, release: locked.release };
 }
 // ── approve ─────────────────────────────────────────────────────
 export function approveCheckpoint(o) {
@@ -406,9 +488,11 @@ export function approveCheckpoint(o) {
         return opened.res;
     const { root, state, pending, stage } = opened;
     try {
-        // ② 승인 직전 **재검증**: 파일이 실제로 있고 정규 파일이며 size·sha256이 그대로여야 한다.
-        //    (사람이 확인한 화면과 지금 디스크가 같다는 것을 승인 순간에 다시 확인한다.)
-        const problem = driftProblem(root, pending.artifacts);
+        // ② 승인 직전 **전수 재검증**: pending 산출물 + **앞 단계 승인 바이트 전부**(A-6).
+        //    pending만 보면 "마지막 체크포인트 대기 중에 앞 단계 문서를 바꾸고 마지막만 승인" →
+        //    '전체 완료' 영수증이 나온다. pending이 같은 경로를 다시 담으면 그 경로 기준은 pending이다
+        //    (정당한 재작성을 drift로 잡지 않는다 — effectiveDigests가 그 우선순위를 표현한다).
+        const problem = driftProblem(root, effectiveDigests(state, pending.artifacts).values());
         if (problem) {
             return reject("pipeline_artifact_drift", `${problem}\n확인한 바이트가 아니므로 승인하지 않았습니다 (상태 불변) — 파일을 복원하거나 'harness pipeline reject'로 되돌린 뒤 다시 실행하세요.`, 1);
         }
@@ -423,6 +507,10 @@ export function approveCheckpoint(o) {
             }
             const rs = rsRead.state;
             if (rs.status === "killed") {
+                // [A-10] provenance: 이 단계의 workflow가 죽은 것이 아니면 영수증을 만들지 않는다.
+                if (rs.workflow_id !== stage.workflowId) {
+                    return reject("pipeline_killed_elsewhere", `run_state가 폐기 판정인데 그 workflow('${rs.workflow_id}')는 이 단계('${stage.id}')가 아닙니다 — 승인하지 않았고 아무것도 쓰지 않았습니다.`, 1);
+                }
                 const next = reconcileKilled(root, state, stage, rs, now());
                 writePipelineState(root, next);
                 return reject("pipeline_killed_reconciled", `run이 폐기(killed) 판정입니다 — 승인하지 않고 파이프라인을 종료했습니다 (${next.checkpoints.at(-1)?.note}).`, 1);
@@ -503,21 +591,43 @@ export function restartPipeline(o) {
     const now = o.now ?? (() => new Date().toISOString());
     const root = projectPaths(o.project).root;
     const abs = pipelineStatePath(root);
-    const read = readPipelineStateAt(abs);
-    if (read.kind === "absent") {
+    if (readPipelineStateAt(abs).kind === "absent") {
         return reject("pipeline_absent", `파이프라인이 없습니다 (${o.project}) — 'harness pipeline next'로 시작하세요.`, 1);
     }
-    const lock = acquireLock(root, now);
+    const lock = lockPipeline(root, now);
     if (!lock.ok)
         return reject("pipeline_locked", lock.message, 2);
+    const locked = lock.locked;
     try {
+        // [Codex A-7] lock 획득 후 재독 — 그 사이 owner가 상태를 바꿨을 수 있다(진행 중 파이프라인을
+        // archive해 버리는 것이 이 경로의 최악이다).
+        const read = locked.read;
+        if (read.kind === "absent")
+            return reject("pipeline_absent", `파이프라인이 사라졌습니다 (${o.project}).`, 1);
         if (read.kind === "ok" && read.state.status !== "killed" && read.state.status !== "completed") {
             return reject("pipeline_active", `진행 중인 파이프라인은 다시 시작할 수 없습니다 (상태 ${read.state.status} · 단계 ${stageLabel(read.state)}) — ` +
                 `체크포인트를 우회하는 통로를 만들지 않습니다. 확인 대기면 approve/reject로 판정하세요.`, 1);
         }
         const at = now();
-        const archive = join(root, PIPELINE_STATE_REL.replace(/\.json$/, `.${at.replace(/[-:.]/g, "").replace(/Z$/, "")}.json`));
-        renameSync(abs, archive); // **삭제 없음** — 기존 영수증은 그대로 보관된다
+        // [Codex A-11] `renameSync`는 **destination을 교체한다** — 같은 시각 이름이 이미 있으면 앞 archive가
+        // 사라지고 "삭제 없음·exact bytes 보존"이 거짓이 된다. 그래서 이름을 **exclusive-create로 예약**
+        // (`flag:"wx"`)한 뒤 그 자리에만 rename한다: 우리가 방금 만든 빈 파일만 덮는다.
+        const stamp = at.replace(/[-:.]/g, "").replace(/Z$/, "");
+        let archive = "";
+        for (let n = 1; n <= 100; n++) {
+            const cand = join(root, PIPELINE_STATE_REL.replace(/\.json$/, `.${stamp}${n === 1 ? "" : `-${n}`}.json`));
+            try {
+                closeSync(openSync(cand, "wx")); // 이미 있으면 throw → 다음 이름
+                archive = cand;
+                break;
+            }
+            catch {
+                continue;
+            }
+        }
+        if (!archive)
+            return reject("pipeline_archive_name_exhausted", `archive 이름을 예약할 수 없습니다 (${stamp} 계열 100개 사용 중)`, 1);
+        renameSync(abs, archive); // **삭제 없음** — 기존 영수증은 예약한 자리로 그대로 보관된다
         const fresh = newPipelineState(o.project, at);
         writePipelineState(root, fresh);
         console.log(`파이프라인을 다시 시작했습니다 — 기존 state는 보관: ${archive.slice(root.length + 1)}`);
@@ -525,7 +635,7 @@ export function restartPipeline(o) {
         return done("pipeline_restarted", 0);
     }
     finally {
-        lock.release();
+        locked.release();
     }
 }
 // ── unlock (lock 불요 · 죽은 owner만) ───────────────────────────

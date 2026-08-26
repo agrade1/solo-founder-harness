@@ -18,6 +18,19 @@ export const mockProvider = {
         // acceptance/golden 전부가 ceo_decision_absent로 죽는다(만족 불가능한 계약).
         // 기본은 '진행' — 무과금 회귀 경로가 완주해야 한다. kill/jump 경로는 테스트 fixture가 토큰을 바꾼다.
         const decisionBlock = agent.agent_id === "founder_ceo" ? "## Decision\n\n- 진행\n\n" : "";
+        // [B-41/Codex A-2] `token_output`을 선언한 agent(design)는 그 사이드카를 **반드시** 낸다.
+        // 파이프라인 영수증이 선언된 사이드카까지 결박하는데(승인 후 교체 탐지) mock이 그것을 안 내면
+        // 계약을 만족할 수 없는 fixture가 된다 — 그럴 때 고칠 것은 계약이 아니라 **test provider**다.
+        // 3계층(primitive→semantic→component)은 token-lint의 tokens.json 규율과 같은 모양이다.
+        const tokensBlock = agent.token_output
+            ? "## Design Tokens\n\n```json\n" +
+                JSON.stringify({
+                    primitive: { color: { "gray-900": "#111827", "blue-500": "#3b82f6" }, space: { "2": "8px" } },
+                    semantic: { color: { text: "{primitive.color.gray-900}", action: "{primitive.color.blue-500}" }, space: { gap: "{primitive.space.2}" } },
+                    component: { button: { bg: "{semantic.color.action}", fg: "{semantic.color.text}", gap: "{semantic.space.gap}" } },
+                }, null, 2) +
+                "\n```\n\n"
+            : "";
         const markdown = `# Agent Output
 
 ## Metadata
@@ -37,7 +50,7 @@ export const mockProvider = {
 - 이전 판단 요약:
 ${priorBlock}
 
-${decisionBlock}## Main Judgment
+${decisionBlock}${tokensBlock}## Main Judgment
 
 - [MOCK] ${agent.name}의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다.
 

@@ -15,13 +15,6 @@ function yamlStr(s) {
 export function resolveVault(vault) {
     return isAbsolute(vault) ? vault : resolve(process.cwd(), vault);
 }
-/**
- * workflow 실행 결과를 Obsidian vault로 export 한다.
- * - 각 완료 agent 출력 → <vault>/<project>/<agent_id>.md (frontmatter + 원문 + 연결 wikilink)
- * - 분화된 하위 에이전트 출력도 함께 export
- * - run index note(MOC) → 실행 순서대로 [[wikilink]] 나열 + 메타(usage/루프/게이트)
- * 원본 프로젝트 파일은 건드리지 않는다 (읽기 + vault에 사본 생성).
- */
 export function exportToVault(args) {
     const vaultRoot = resolveVault(args.vault);
     const { state } = args;
@@ -86,6 +79,15 @@ export function exportToVault(args) {
     metaLines.push(`- provider: ${state.provider}`);
     metaLines.push(`- 상태: ${state.status ?? (state.failed_agent ? "failed" : "completed")}`);
     metaLines.push(`- 완료 단계: ${state.completed_steps.length}개`);
+    // [A-5] 파이프라인 사실을 **run 상태 바로 뒤에** 적는다 — "완료"만 읽고 개발 착수로 넘어가지 않게.
+    if (args.pipeline) {
+        const p = args.pipeline;
+        metaLines.push(`- 단계 체크포인트: ${p.index}/${p.total} '${p.stage}' · ${p.status}` +
+            (p.checkpointId ? ` (checkpoint ${p.checkpointId} — 사람 확인 대기)` : ""));
+        if (p.status === "awaiting_approval") {
+            metaLines.push("- ⏸ 이 산출물은 **아직 승인되지 않았다** — 승인 전에는 작업 지시문·handoff가 거부된다.");
+        }
+    }
     if (state.status === "killed") {
         const k = state.killed_by;
         metaLines.push(`- ⛔ 폐기: ${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}' 판정 — 파이프라인 종료(후속 단계 미실행)`);

@@ -264,18 +264,23 @@ export async function runHandoff(opts) {
     const { project } = opts;
     const serviceCwd = resolve(opts.cwd ?? process.cwd());
     const reentryCommand = buildReentryCommand(project, serviceCwd, opts.toolProfileId);
+    // [B-41/2단] 단계 체크포인트 게이트 — 파이프라인이 있으면 **완료 후**에만 handoff한다
+    // (확인 대기·앞 단계·폐기는 전부 거부 · 승인 후 문서가 바뀌면 drift 거부).
+    // 별도 outcome 종류를 만들지 않고 `not_completed`를 쓴다: 결과가 같고(세션 미개시 · exit 1)
+    // 사유 문장은 **게이트가 만든 것을 그대로** 전달하므로 코드(`pipeline_*`)가 문장 안에 남는다.
+    // 파이프라인이 없으면 ok → 기존 경로 완전 불변.
+    const contextRootForGate = projectPaths(project).root;
+    const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(contextRootForGate)), contextRootForGate, "handoff");
     // 1) --print: 실행·preflight·상태 변경 없이 재진입 명령만 출력(선택된 profile 보존).
+    //    [B-41/결정 2] 게이트가 거부 상태면 **그 사실을 함께 출력**한다. 게이트 앞에서 반환하는 계약은
+    //    유지한다(print는 실행·상태 변경이 없다) — 그러나 곧 실패할 명령을 아무 경고 없이 안내하는 것은
+    //    안내 품질 결함이었다(오케스트레이터 스모크에서 실측). 출력하는 명령 자체는 그대로다.
     if (opts.print) {
+        if (!pipeGate.ok)
+            log(`(주의: 지금 이 명령은 거부됩니다 — ${pipeGate.message})`);
         log(reentryCommand);
         return { action: "printed", reentryCommand };
     }
-    // 1b) [B-41/2단] 단계 체크포인트 게이트 — 파이프라인이 있으면 **완료 후**에만 handoff한다
-    //     (확인 대기·앞 단계·폐기는 전부 거부 · 승인 후 문서가 바뀌면 drift 거부).
-    //     별도 outcome 종류를 만들지 않고 `not_completed`를 쓴다: 결과가 같고(세션 미개시 · exit 1)
-    //     사유 문장은 **게이트가 만든 것을 그대로** 전달하므로 코드(`pipeline_*`)가 문장 안에 남는다.
-    //     파이프라인이 없으면 ok → 기존 경로 완전 불변.
-    const contextRootForGate = projectPaths(project).root;
-    const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(contextRootForGate)), contextRootForGate, "handoff");
     if (!pipeGate.ok) {
         log(pipeGate.message);
         return { action: "not_completed", reason: pipeGate.message };
