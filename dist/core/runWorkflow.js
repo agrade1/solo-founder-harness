@@ -110,6 +110,7 @@ export async function runWorkflow(args) {
     let failedIndex = null;
     let budgetStopped = false;
     let rejected = false;
+    let killed_by = null;
     let warned80 = false;
     let currentAgentId = "";
     const tokensSpent = () => usagePerAgent.reduce((s, u) => s + u.input_tokens + u.output_tokens, 0);
@@ -334,7 +335,7 @@ export async function runWorkflow(args) {
                 }
                 if (isGate(step)) {
                     // ── CEO 게이트 분기 ────────────────────────────
-                    const { decider, on, max_jumps } = step.gate;
+                    const { decider, on, max_jumps, kill } = step.gate;
                     const gateStartIso = now();
                     const gateT0 = Date.now();
                     reporter?.emit({ type: "step_start", index: i + 1, total, agentId: decider, kind: "gate" });
@@ -354,7 +355,20 @@ export async function runWorkflow(args) {
                     if (!gateBudget.has(i))
                         gateBudget.set(i, Math.max(0, max_jumps ?? 0));
                     const remaining = gateBudget.get(i) ?? 0;
-                    const decision = extractDecision(lastMarkdown.get(decider) ?? "", Object.keys(on));
+                    const deciderMd = lastMarkdown.get(decider) ?? "";
+                    // ── kill 판정은 jump/진행보다 먼저 ─────────────────
+                    // 순서가 뒤바뀌면 '폐기'와 '축소'가 같은 판정문에 함께 있을 때 되돌림이 이겨 죽은 아이디어가 계속 돈다.
+                    // kill을 앞에 두면 최악이 "사람이 새 run으로 다시 시작"이고, 뒤에 두면 최악이 "미달 아이디어를
+                    // 그대로 개발 착수" — 후자가 이 게이트가 존재하는 이유 그 자체다. 그래서 멈추는 쪽으로 fail closed.
+                    const killDecision = kill && kill.length > 0 ? extractDecision(deciderMd, kill) : null;
+                    if (killDecision) {
+                        killed_by = { decider, decision: killDecision };
+                        gate_jumps.push({ decider, decision: killDecision, jumped_to: null, killed: true });
+                        console.log(`  ⛔ 게이트: ${decider} 판정 '${killDecision}' → run 종료(killed) — 후속 단계 미실행`);
+                        endGate(true); // 게이트 자체는 정상 동작했다 (판정을 내리는 것이 이 step의 일)
+                        break;
+                    }
+                    const decision = extractDecision(deciderMd, Object.keys(on));
                     const jumpTarget = decision ? on[decision] : null;
                     if (decision && jumpTarget && remaining > 0) {
                         const targetIdx = workflow.steps.findIndex((s) => s === jumpTarget);
@@ -545,15 +559,18 @@ export async function runWorkflow(args) {
             per_agent: usagePerAgent,
         };
         const stopped = failed_agent !== null || budgetStopped || rejected;
-        runStatus = stopped ? "failed" : "completed";
+        // kill은 failed의 한 종류가 아니다: 실패 누산기(failed_agent/budgetStopped/rejected)를 전혀 건드리지 않으므로
+        // stopped=false다. 따라서 resume_from/loop_state는 자연히 null이 되고(killed는 재개 불가), status만 갈라진다.
+        runStatus = killed_by ? "killed" : stopped ? "failed" : "completed";
         const state = {
             workflow_id: workflowId,
             project,
             provider: provider.id,
-            status: stopped ? "failed" : "completed",
+            status: runStatus,
             completed_steps,
             failed_agent,
             failed_reason: stopped ? failed_reason : null,
+            killed_by,
             resume_from: stopped ? failedIndex : null,
             loop_state: stopped && failedIndex !== null ? { step_index: failedIndex } : null,
             warnings,

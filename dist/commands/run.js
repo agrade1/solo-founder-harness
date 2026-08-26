@@ -16,8 +16,9 @@ function stdinApprover(message) {
 }
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffToolProfileId, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
-handoffRunner = runHandoffCommand) {
-    const provider = getProvider(providerId);
+handoffRunner = runHandoffCommand, // [M3b.2] 테스트 주입 seam
+providerOverride) {
+    const provider = providerOverride ?? getProvider(providerId);
     const approve = yes ? async () => true : stdinApprover;
     if (resume) {
         // 재개 전 안전 점검: 완료된 실행을 덮어쓰지 않는다 (FAILURE_RECOVERY).
@@ -27,8 +28,9 @@ handoffRunner = runHandoffCommand) {
             process.exitCode = 1;
             return;
         }
-        if (prior.status === "completed") {
-            console.log(`이미 완료된 실행입니다 (${prior.workflow_id}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
+        // killed는 completed와 동급 terminal — 재개 대상이 아니고, 고친 아이디어로 새 run을 시작한다.
+        if (prior.status === "completed" || prior.status === "killed") {
+            console.log(`이미 종료된 실행입니다 (${prior.workflow_id}, status=${prior.status}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
             return;
         }
         console.log(`workflow 재개: ${workflowName} (project: ${project}, provider: ${provider.id}, step ${prior.resume_from}부터)`);
@@ -67,7 +69,8 @@ handoffRunner = runHandoffCommand) {
         console.log(`디자인 게이트: ${state.design_gate.status}${state.design_gate.tokens_hash ? ` (tokens ${state.design_gate.tokens_hash.slice(0, 12)}…)` : ""}`);
     }
     for (const g of state.gate_jumps) {
-        console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${g.jumped_to ? `${g.jumped_to} 되돌림` : "진행"}`);
+        const outcome = g.killed ? "폐기 — run 종료" : g.jumped_to ? `${g.jumped_to} 되돌림` : "진행";
+        console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${outcome}`);
     }
     if (state.spawned_agents.length > 0) {
         const executed = state.spawned_agents.filter((s) => s.executed).length;
@@ -99,6 +102,16 @@ handoffRunner = runHandoffCommand) {
         catch (err) {
             console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${err.message}`);
         }
+    }
+    // kill 게이트 폐기 판정: 종료 코드 0. 게이트가 제 일을 했으므로 실행은 성공이다 —
+    // 비정상 종료 코드는 agent 실패·예산 초과·승인 거부(재개 가능한 중단)에만 쓴다.
+    // handoff로 이어붙이지 않는다: 죽은 아이디어를 개발 착수로 넘기지 않는 것이 이 게이트의 목적.
+    if (state.status === "killed") {
+        const k = state.killed_by;
+        console.log("");
+        console.log(`⛔ 폐기 판정: ${k?.decider ?? "(게이트)"}가 '${k?.decision ?? "폐기"}' 판정 — 후속 단계는 실행되지 않았습니다.`);
+        console.log(`재개(--resume)는 불가합니다. 아이디어를 고쳐 새 run으로 시작하세요: harness run ${state.workflow_id} --project ${project}`);
+        return;
     }
     // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호
     if (state.status === "failed") {
