@@ -23,3 +23,10 @@ projects/*/outputs/tool-trace/
 
 # [M4a] orchestration run 상태 (run_state.json / events.jsonl / messages / snapshot) — 커밋 금지
 outputs/orchestration/
+
+# [C-126] 리서치 키(.env)와 수집 근거 — 커밋 금지.
+# `.env`: TAVILY_API_KEY 한 이름만 담는 파일(하네스가 0600으로 만든다). 커밋되면 키 회전이 유일한 대응이다.
+# `outputs/research/`: 저장된 검색 응답·evidence 인덱스·attempt 영수증. 외부 응답 바이트라 레포에 넣지 않는다
+#   (checkpoint 결박은 로컬 파일 digest로 하고, 그 파일을 커밋하지는 않는다).
+.env
+projects/*/outputs/research/

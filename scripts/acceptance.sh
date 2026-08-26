@@ -8,6 +8,12 @@ PROJ="_acceptance_check"
 PDIR="projects/$PROJ"
 HARNESS="npx tsx src/cli.ts"
 
+# [C-126] **무과금·offline 보장.** 이 스크립트는 실제 CLI를 띄우므로, 개발자 셸에 리서치 키가
+# export돼 있으면 리서치 step이 external로 판정돼 **실제 Tavily 호출**이 나간다. 여기서 빈 값으로
+# 덮어 self 경로를 고정한다(테스트를 약화시키는 것이 아니라 실행 환경을 결정론으로 만드는 것이다 —
+# external 경로는 fake backend 단위 테스트가 재고, live는 오케스트레이터가 1회만 직접 한다).
+export TAVILY_API_KEY=""
+
 PASS=0
 FAIL=0
 check() { # check "설명" <조건 종료코드>

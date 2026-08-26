@@ -134,8 +134,16 @@ test("[B-41/P1] fresh → next 완주 → awaiting_approval · checkpoint_id 재
   assert.equal(p.stage, "idea-validation");
   assert.equal(p.workflow_id, "idea-validation");
   assert.equal(p.checkpoint_id, checkpointIdFor(p), "id는 payload에서 재계산한 값과 같다");
+  // [C-126] 리서치 attempt receipt도 승인 대상이다(§6.1) — self 모드에서도 남는다. 그래서 목록에
+  // `outputs/research/receipt-<sha>.json`이 **정확히 하나** 더 있다(이름은 내용 해시라 값을 박지 않는다).
+  const receipts = p.artifacts.map((a) => a.path).filter((x) => x.startsWith("outputs/research/receipt-"));
+  assert.equal(receipts.length, 1, `리서치 영수증 1개가 결박된다 (실제: ${p.artifacts.map((a) => a.path).join(", ")})`);
+  assert.match(receipts[0], /^outputs\/research\/receipt-[0-9a-f]{64}\.json$/, "receipt 이름은 내용 해시다");
   assert.deepEqual(
-    p.artifacts.map((a) => a.path).sort(),
+    p.artifacts
+      .map((a) => a.path)
+      .filter((x) => !x.startsWith("outputs/research/"))
+      .sort(),
     ["docs/01_RESEARCH.md", "docs/02_PRD.md", "docs/05_RED_TEAM.md", "docs/06_CEO_DECISION.md", "outputs/chief_of_staff.md"].sort(),
     "완료 step의 산출물 전부가 영수증에 있다",
   );
@@ -347,10 +355,18 @@ test("[B-41/P7] 실패 → last_failure 영수증 실물 → resume(완료 step 
   assert.ok(failed.last_failure, "실패 영수증이 실물로 남는다");
   assert.equal(failed.last_failure!.stage, "idea-validation");
   assert.equal(failed.last_failure!.workflow_id, "idea-validation");
+  // [C-126/A-4] `written`은 `savedFiles`를 digest하므로 **리서치가 저장한 것도 사실대로** 잡힌다
+  // (self 모드는 receipt 하나 · external partial이면 raw까지). 그래서 resume 사전 drift 검증이
+  // 그 파일들을 "사람이 손댄 것"으로 오해하지 않는다.
   assert.deepEqual(
-    failed.last_failure!.written.map((w) => w.path).sort(),
+    failed.last_failure!.written.map((w) => w.path).filter((p) => !p.startsWith("outputs/research/")).sort(),
     ["docs/01_RESEARCH.md", "outputs/chief_of_staff.md"],
     "실패 attempt가 실제로 덮은 파일의 digest",
+  );
+  assert.equal(
+    failed.last_failure!.written.filter((w) => w.path.startsWith("outputs/research/receipt-")).length,
+    1,
+    "리서치 영수증도 written에 있다 (없으면 resume이 그 파일을 drift로 본다)",
   );
   assert.ok(failed.last_failure!.written.every((w) => /^[0-9a-f]{64}$/.test(w.sha256)));
 

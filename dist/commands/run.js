@@ -8,11 +8,13 @@ import { runHandoffCommand } from "./handoff.js";
 // [B-41/1단] 승인자는 공유 모듈 하나다 — pipeline next도 같은 함수를 쓴다(EOF/close/error에서
 // 정확히 한 번 false). 여기 지역 사본이 있으면 두 진입점의 비TTY 동작이 갈린다.
 import { stdinApprover } from "./approver.js";
+import { researchModeLines, researchOutcomeLines, resolveResearchRuntime } from "../core/researchRuntime.js";
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffToolProfileId, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
 handoffRunner = runHandoffCommand, // [M3b.2] 테스트 주입 seam
 providerOverride, // [B-40] 테스트 주입 seam — 등록된 provider id로는 만들 수 없는 판정 출력(예: CEO '폐기')이 필요할 때만. cli는 넘기지 않는다.
-workflowsPath) {
+workflowsPath, // [B-40] 테스트 주입 seam — 실제 registry엔 없는 게이트 형태(대상 부재 등)의 CLI 렌더를 재려면 필요. cli는 넘기지 않는다.
+researchOverride) {
     const provider = providerOverride ?? getProvider(providerId);
     const approve = yes ? async () => true : stdinApprover;
     // [B-41/2단] 활성 파이프라인에서 일반 run은 **전면 거부**다(resume 포함) — 단계를 돌리려면
@@ -57,6 +59,11 @@ workflowsPath) {
         }
         console.log(`workflow 실행: ${workflowName} (project: ${project}, provider: ${provider.id})`);
     }
+    // [C-126/A-1] 키 해석은 **workflow 실행 전 1회**다. 파이프라인 경로는 이 함수를 거치지 않으므로
+    // `nextLocked`가 같은 `resolveResearchRuntime()`을 따로 부른다 — 판정 함수는 하나다.
+    const researchRuntime = researchOverride ?? resolveResearchRuntime();
+    for (const line of researchModeLines(researchRuntime))
+        console.log(line);
     const { state, savedFiles, runStatePath } = await runWorkflow({
         workflowId: workflowName,
         project,
@@ -70,8 +77,13 @@ workflowsPath) {
         toolProfileId,
         bare,
         workflowsPath,
+        research: researchRuntime,
     });
     console.log("");
+    // [C-126/A-6] **실행 후** 실제 mode 영수증. 위 사전 문구는 "설정됨"까지만 말한다 — 모델이 `none`을
+    // 냈는지, 결과가 0건이었는지, 중단됐는지는 여기서만 알 수 있다.
+    for (const line of researchOutcomeLines(state.research?.attempts))
+        console.log(line);
     console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
     if (state.failed_agent) {
         console.log(`실패 agent: ${state.failed_agent}`);

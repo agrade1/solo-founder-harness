@@ -114,7 +114,7 @@ test("end-to-end: 선언 → mock backend → EvidenceItem → 래핑된 digest"
     });
     assert.equal(backendCalls, 1);
     assert.equal(items.length, 1);
-    // 원문은 파일에만 있다.
+    // 저장 응답은 파일에만 있다.
     assert.ok(readFileSync(join(dir, items[0].rawPath), "utf8").includes("RAW_BODY_MARKER"));
     const digest = renderEvidenceDigest(items);
     assert.ok(digest.includes(items[0].sha256) && digest.includes(items[0].source));

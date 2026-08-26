@@ -737,7 +737,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 108  ← 최신 변동(판정 ⑫): `B-41` closed(−1) · `B-44`·`C-134`·`C-135` 신규(+3). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
+정본(이 절)      →  id 110  ← 최신 변동(판정 ⑬): `C-126` closed(−1) · `C-136`~`C-138` 신규(+3). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -747,7 +747,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 108건 (A 0 · **등급 B 10** · 등급 C 98)
+##### 열린 항목 — id 110건 (A 0 · **등급 B 10** · 등급 C 100)
 
 **등급 B (10) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed · **`B-40`은 판정 ⑪에서 closed** —
 CEO '폐기'가 처음으로 집행된다.)
@@ -772,7 +772,7 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-1` | 조용한 호스트에서 **부하(stress) acceptance 재실행** | **release 준비 시점** — 마일스톤 게이트 아님 | 707 |
 | `B-2` | **live runner 재실행**과 evidence 재생성 | **release 준비 시점** — 마일스톤 게이트 아님 | 708 |
 
-**등급 C (96).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
+**등급 C (98).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
 
 ```text
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
@@ -781,8 +781,8 @@ C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
 C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
-C-120 C-121 C-122 C-123 C-124 C-125 C-126 C-127 C-128 C-129
-C-130 C-131 C-132 C-133 C-134 C-135
+C-120 C-121 C-122 C-123 C-124 C-125 C-127 C-128 C-129
+C-130 C-131 C-132 C-133 C-134 C-135 C-136 C-137 C-138
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -798,14 +798,13 @@ C-130 C-131 C-132 C-133 C-134 C-135
 감사. **README 과대주장 3곳은 A급으로 즉시 수정했다**(외부 전송 서술 · v3 상태 · go/no-go 표기 —
 같은 커밋). `C-123`(consumes 비가시)은 감사가 P1로 재확인했다(기등재). 신규 등재:
 
-> **`B-40`(kill 게이트)과 `B-41`(단계 체크포인트)도 이 감사에서 등재됐고 각각 `M12 진행 판정 ⑪`·`⑫`에서 closed다.** 이 표에서
+> **`B-40`(kill 게이트)·`B-41`(단계 체크포인트)·`C-126`(리서치 어댑터)도 이 감사에서 등재됐고 각각 `M12 진행 판정 ⑪`·`⑫`·`⑬`에서 closed다.** 이 표에서
 > 그 행을 뺀 이유는 **정본 절의 자기 검증 명령이 닫힌 id를 열린 것으로 세지 않게** 하기 위함이다
 > (킥오프 §4-7: 한 id의 상태는 가장 늦은 **판정 절**이 정한다). 등재 당시 서술은 판정 ⑪ ⓔ와 git 이력에 있다.
 
 | id | 분류 | 항목 | 기한/트리거 | 상태 |
 |---|---|---|---|---|
 | `C-125` | C (P1) | **아이디어 자체의 비평→개정 루프 부재** — `critique_loop`의 수정 대상이 `tech_lead`뿐. 최소 수정: versioned venture brief + PM↔RedTeam bounded loop(원본 `00_IDEA.md` 비파괴) | 기획 파이프라인 고도화 slice | open |
-| `C-126` | C (P1) | **research adapter의 production 미배선** — `tavilyBackend`·`researchGateway`는 구현돼 있으나 호출부가 benchmark 스크립트뿐. 사용자 설계(2026-08-26): 하네스가 `.env`를 생성하고 키가 있으면 Tavily, 없으면 자체 리서치 fallback · evidence digest(URL·hash·시각)를 PRD/CEO 입력에 첨부 | `B-40`/`B-41`과 같은 묶음 후보 | open |
 | `C-127` | C (P1) | **v1 필수 섹션 검증이 warning-only** — 재생성 상한 후에도 깨진 산출물이 completed로 하류에 전달된다(`runWorkflow.ts`). 최소 수정: 계약 미충족 시 paused/failed + 하류 차단 | 기획 파이프라인 실사용 전 | open |
 | `C-128` | C (P2) | **디자인 시안 산출 단계 부재** — DESIGN.md/tokens.json까지만이고 시안 생성·검증은 전부 사람(설계상 명시). 시안 artifact(HTML/React prototype) task는 별도 결정 | 사용자가 시안 자동화를 원할 때 | open |
 | `C-129` | C (P2) | **exec/mission의 파일 ownership이 기계적으로 강제되지 않는다** — permission compiler가 "향후 훅에서 강제"로 명시(프롬프트 규칙뿐). 최소 수정: PreToolUse write gate 또는 commit-diff ownership 검사 | edit 가능 provider 실사용 확대 전(`B-10`과 연계) | open |
@@ -1930,7 +1929,95 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M12 진행 판정 ⑫ — `B-41` 단계 체크포인트: 하네스가 단계마다 사람 확인을 받고 멈춘다(Codex 계획 2 + 구현 2라운드 · A 27건 수용)** (2026-08-26 · **이 절이 현행이며 아래 ⑪보다 최신이다**)
+##### **M12 진행 판정 ⑬ — `C-126` 리서치 어댑터: 키가 있으면 외부 검색, 없으면 자체 리서치(Codex 계획 2 + gate 1 + 구현 2라운드 · A 32건 수용) · live 미실측** (2026-08-26 · **이 절이 현행이며 아래 ⑫보다 최신이다**)
+
+### ⓐ 사용자 요구와 구현된 것
+
+사용자 요구(2026-08-26): **"리서치용 외부 API 키를 사용자에게 요청하고 **있으면 그 API를, 없으면
+자체 리서치로** 진행. 키 요구는 하네스가 `.env`를 만들어 두고 사용자는 **값만** 채우게."**
+
+- **`.env` UX**: `harness init`이 **0600 템플릿**을 만들고 "값만 채우세요"를 안내한다. 파일 머리에
+  커밋 금지 경고 + **"키가 있으면 모델이 만든 검색어가 외부(Tavily)로 전송된다"는 고지**.
+- **비밀 경계**: `TAVILY_API_KEY` **단일 allowlist** · **`process.env`를 변경하지 않는다**(값은
+  research config로만 운반) → **자식 프로세스(claude-code·exec·mission·handoff) env에 키가 없다**
+  (테스트가 **실제 spawn으로 관측**한다). backend 응답의 `source`·`title`·raw는 **저장 전 redaction**.
+- **git 안전 게이트 하나**(`ensureEnvFileReady`): git **3-state**(판정 불가 = 거부) → **추적 중이면
+  키를 읽지 않고 거부**(회전·`git rm --cached` 안내) → **ignore 보장·재확인** → **그 다음** 0600
+  생성/권한 검증. `init`과 self 판정이 같은 함수를 쓴다. **history 정리는 주장하지 않는다.**
+- **fallback**: `self`는 **키 부재에만**. 외부 시도 실패는 **resumable failed**(원인별 안정 코드) —
+  "실패해도 계속"은 **사용자 결정 대기**로 남겼다. mode 4종(`self`/`external_declined`/`external_empty`/
+  `external`) + bounded `attempts[]` · `external`은 **evidence ≥1**일 때만 · **`RESEARCH_REQUEST none`
+  종결자**로 "무선언(형식 위반)"과 "검색 불필요"를 가른다.
+- **결박**: attempt마다 **write-once content-addressed receipt** + `runStateSources`가 그 receipt와
+  참조 raw를 **B-41 checkpoint manifest에** 넣는다 → 증거·mode가 바뀌면 `checkpoint_id`가 바뀐다.
+  `evidence.jsonl`은 **비권위 인덱스**(append가 drift가 되지 않게). resume은 **receipt를 재검증**한 뒤
+  (파일명 hash · 본문 exact-equal · raw 재해시) **receipt에서** digest를 재구성한다.
+- **예산(byte)**: seed 16,384(B-41 계약 불변) · evidence digest 16,384 · 2차의 1차 문서 32,768 —
+  초과는 **자르지 않고 fail closed**. 상한 집행 근거는 **단조 증가 durable `totals`**(bounded 표시
+  배열이 아니다 — 그것으로 복원하면 resume 반복이 상한을 다시 연다).
+- **extract 봉인** 유지(`allowedDomains: null` = 전부 거부) · search만. 저장물은 **"Tavily 스니펫"** 이고
+  해시는 **"저장 응답 바이트"** 의 것이다(웹 원문 검증이 아니다).
+
+### ⓑ 비평 — Codex 5라운드가 A 32건
+
+| 라운드 | 결과 |
+|---|---|
+| 계획 1차 | **A 10 + B 4**: **전역 `.env` 로더가 실행 권한 주입면**(`PATH`·`NODE_OPTIONS`)이며 **자식 프로세스로 키가 상속된다** · `.gitignore`는 이미 추적된 파일을 보호하지 못한다 · "실패해도 계속"은 승인 범위 밖 · mode가 사실을 유일하게 표현 못함 · **2차 호출이 1차 문서를 못 받는다** · run 상한 미성립 · **"웹 원문" 거짓** · 저장 전 redaction 부재 · 시각 창 resume · "B-41 0줄" 미검증 |
+| **integration gate**(B-41 착지 후) | **A 5 + B 1**: **`pipeline next`가 배선을 우회**(파이프라인은 `run.ts`를 거치지 않는다 → 1단계가 항상 self) · "최종 1회 commit"이 **1차 호출 비용을 버린다** · evidence가 checkpoint에 **미결박**(그런데 jsonl을 결박하면 append가 drift) · partial을 사실대로 못 만든다 · **실패 안내가 거부될 명령을 가리킨다** · 프롬프트 예산 미정의 |
+| 구현 1차 | **A 7 + B 3 + C 1**: **resume 근거 미결박**(run_state 변조본이 모델에 가고 checkpoint는 옛 receipt를 결박 = **모델이 소비한 근거 ≠ 승인된 근거**) · **receipt 봉인 fail-open**(쓰기 실패를 warn으로 삼킴 · 일부 실패는 seal 우회) · **resume 반복이 run 상한을 다시 연다**(과금 폭주) · malformed 결과가 정상 empty/partial로 둔갑 · `.env`가 게이트보다 먼저 생성 + git probe 오류가 "repo 아님"으로 접힘 · 설정 상태를 mode로 과대 렌더 · "원문" 문구 4곳 잔존 |
+| 구현 2차(오케스트레이터 CLI 실측) | **A-5 잔여 1건**: 리비전 보고와 주석은 "init·self 양쪽이 공용 게이트를 쓴다"고 했지만 **`init.ts`는 여전히 `ensureEnvTemplate()`을 직접 불렀다** → git repo에서 `.env`가 **unignored로 생성**됐다(`git check-ignore` 불일치 실측). 오케스트레이터가 직접 수정·재검증 |
+
+**교훈**: **"양쪽이 같은 함수를 쓴다"는 보고는 호출부를 grep해서 확인해야 한다** — 주석까지 그렇게
+적혀 있어도 코드가 아닐 수 있다(B-40의 "`extractDecision` 호출부가 있다"와 같은 부류의 세 번째 사례).
+
+### ⓒ 오케스트레이터 실측 (CLI · 파이프 없이)
+
+| 시나리오 | 결과 |
+|---|---|
+| `harness init` | `.env` **0600** 생성 + 값만 채우라는 안내 + 전송 고지 · git repo면 **ignore 규칙을 먼저** 추가(수정 후 `check-ignore` 일치) · non-repo면 그대로 생성 |
+| 키 없이 workflow | **self로 진행** + CLI가 이유를 말한다 · `run_state.research.attempts[0]`에 `mode:"self"` · backend 0회 |
+| 추적 중인 `.env` | **키를 읽지 않고 거부** + 회전·`git rm --cached` 안내 |
+| 가짜 키 + `--provider mock` | 처음엔 `research_declaration_missing`으로 **exit 1**(mock이 선언을 못 낸다) → **오케스트레이터가 mock에 `RESEARCH_REQUEST none` 종결자를 넣어** exit 0 · `external_declined` · **backend 0회(크레딧 0)** |
+
+mutation 독립 재현 2종: **키를 `process.env`에 심기**(red 3건 — E8이 **실제 spawn으로 자식 env 관측**) ·
+**resume 영수증 재검증 제거**(run_state 변조가 통과 → red).
+
+### ⓓ 실측 총계
+
+`npm test` exit 0 · **649/649** · **634/634**(+54) · acceptance **272/0** · typecheck·build exit 0 ·
+mutation **19종**(구현 11 + 리비전 8 · C-116 형식 · 독립 재현 2) · **live Tavily 0회**.
+
+구현 세션이 **처음 GREEN·부분 GREEN mutation 4건**을 숨기지 않고 보고했다(n2가 다른 가드로 잡힌 것 ·
+n7이 fixture 한계로 무력했던 것 · m2가 의도한 가드가 아닌 `requireSealed()`에 잡힌 것 → m2b 추가 ·
+B-1 테스트가 처음 red여서 자기 가정이 틀렸음을 알게 된 것). **설계의 A급 결함 1건도 구현 세션이
+찾았다**: receipt 이름을 시각 기반으로 하면 재실행마다 갈려 **B-41 불변식("같은 바이트 → 같은
+checkpoint_id")이 깨진다** → content-addressed로 바꿨다.
+
+### ⓔ 미증명 — **live 0회가 이 판정의 가장 큰 공백이다**
+
+- **Tavily 실호출 0회**: endpoint·응답 형태·크레딧 단가·rate limit **미확정**. 특히 **A-4의
+  malformed 판정이 실제 응답에서 오탐하지 않는지**가 새 미검증 항목이다(스텁으로만 쟀다).
+- **≈64KB 최악 프롬프트**(seed 16 + digest 16 + 1차 32)를 provider가 감당하는지 **미실측**.
+- live 모델의 선언/`none` 준수율 표본 0(불이행 시 fail closed — 마찰 가능 · `B-42`와 같은 축).
+- **fresh(non-resume) run은 `totals`를 이어받지 않는다** — 상한이 "per run" 계약이라 그대로 지켰지만
+  fresh를 반복하는 경로의 총 과금은 이 슬라이스가 막지 않는다.
+- attempts 4개 초과 실패 후 "마지막 성공 attempt" 탈락 → resume digest 복원이 빌 수 있다.
+- 프로세스 간 memo 소실 → resume 후 같은 질의는 크레딧 재소모.
+- `summary`/vault에 research mode 미렌더 · `extract` 봉인(원문 검증 불가) — 아래 대장.
+
+**live 최소 시나리오는 사용자 키가 필요하다**(설계 의도 그대로 `.env`에 값만 채우면 된다).
+검증 9항목·크레딧 1회 소모 계획은 `docs/handoff/C126_RESEARCH_ADAPTER_DESIGN.md`가 담고 있다.
+
+### ⓕ 대장 처리 (closed 1 · 신규 C 3)
+
+| id | 분류 | 항목 | 기한/트리거 | 상태 |
+|---|---|---|---|---|
+| `C-126` | C (P1) | 리서치 어댑터 production 배선 + `.env` — 단일 allowlist·`process.env` 불변·git 게이트·self fallback·receipt 결박·byte 예산. **live 미실측** | — | **closed (판정 ⑬ · live는 `C-138`)** |
+| `C-136` | C (P2) | **`summary`/vault에 research mode 미렌더** — run_state·receipt엔 있는데 두 소비자가 읽지 않는다(거짓은 아니지만 사람이 mode를 보려면 파일을 열어야 한다) | 리서치가 실사용에 들어갈 때 | open |
+| `C-137` | C (P2) | **`extract` 봉인** — 모델이 URL을 고르는 경로는 allowlist 정본이 없어 전부 거부다(승인 축이 생길 때까지). 그래서 저장물은 검색 스니펫뿐이고 **원문 검증은 불가** | 승인 문서에 도메인 allowlist 축을 열 때 | open |
+| `C-138` | C (P1) | **live Tavily 0회** — 응답 형태·크레딧·rate limit·malformed 오탐·≈64KB 프롬프트 수용 전부 미실측. 사용자 키 필요 | **사용자가 `.env`에 키를 채우면 즉시** | open |
+
+##### **M12 진행 판정 ⑫ — `B-41` 단계 체크포인트: 하네스가 단계마다 사람 확인을 받고 멈춘다(Codex 계획 2 + 구현 2라운드 · A 27건 수용)** (2026-08-26 · 아래 ⑪보다 최신이다 — **현행은 위 판정 ⑬이다**)
 
 ### ⓐ 사용자 요구와 구현된 것
 

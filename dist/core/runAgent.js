@@ -14,7 +14,7 @@ function loadPrompt(relPath, label) {
  * prompt 파일이 없으면 throw → 호출자(runWorkflow)가 failed_agent로 기록한다.
  */
 export async function runAgent(args) {
-    const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, agentPromptText, execContext, ideaContent } = args;
+    const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, researchRequest, evidenceDigest, agentPromptText, execContext, ideaContent } = args;
     const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
     // 동적 분화된 하위 에이전트는 파일 대신 런타임 생성 프롬프트를 쓴다.
     const agentPrompt = agentPromptText ?? loadPrompt(agent.prompt_path, agent.agent_id);
@@ -32,6 +32,8 @@ export async function runAgent(args) {
         retryFeedback,
         revisionRequest,
         spawnRequest,
+        researchRequest,
+        evidenceDigest,
         execContext,
     });
     return { agentId: agent.agent_id, markdown, usage };

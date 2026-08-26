@@ -62,6 +62,7 @@ import {
   type RunState,
 } from "../core/runWorkflow.js";
 import { generateTaskPrompt } from "../core/taskPrompt.js";
+import { researchModeLines, researchOutcomeLines, resolveResearchRuntime, type ResearchRuntime } from "../core/researchRuntime.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { DEFAULT_PROVIDER_ID, getProvider } from "../providers/index.js";
 import type { Provider } from "../providers/provider.js";
@@ -207,6 +208,12 @@ export interface NextPipelineOptions {
   // ── test seams (CLI 미노출) ──
   now?: () => string;
   providerOverride?: Provider;
+  /**
+   * [C-126/A-1] 리서치 runtime override. `providerOverride`·`now`와 같은 계열의 테스트 seam이고
+   * CLI는 넘기지 않는다 — 미지정이면 `resolveResearchRuntime()`이 실키/`.env`를 본다.
+   * **이 자리가 있어야 external 경로를 무과금(fake backend)으로 검증할 수 있다.**
+   */
+  researchRuntimeOverride?: ResearchRuntime;
 }
 
 export async function nextPipeline(o: NextPipelineOptions): Promise<PipelineCommandResult> {
@@ -393,11 +400,15 @@ async function nextLocked(
 
   // ── workflow 단계 ──
   const provider = o.providerOverride ?? getProvider(o.provider ?? DEFAULT_PROVIDER_ID);
+  // [C-126/A-1] **파이프라인이 리서치 어댑터의 1급 소비자다.** 여기서 해석하지 않으면 `run.ts`를
+  // 거치지 않는 이 경로(→ locked.runStage → runWorkflow)에서 1단계는 항상 self가 된다.
+  const researchRuntime = o.researchRuntimeOverride ?? resolveResearchRuntime();
   const seeds = seedFindingsFrom(state);
   console.log(
     `단계 실행: ${stageLabel(state)} · workflow '${stage.workflowId}' · provider ${provider.id}` +
       `${resume ? " · resume" : ""}${seeds.length ? ` · 승인 판단 seed ${seeds.length}건` : ""}`,
   );
+  for (const line of researchModeLines(researchRuntime)) console.log(line);
   let result: Awaited<ReturnType<typeof runWorkflow>>;
   try {
     // [Codex A-3] 실행은 **lock을 쥔 연산의 runStage 안에서만** 일어난다: lease는 그 호출 동안만
@@ -416,6 +427,7 @@ async function nextLocked(
         // seed는 **durable 저장본**에서만 온다 — 여기서 문서 파일을 다시 읽지 않는다(§5).
         seedFindings: seeds.length > 0 ? seeds : undefined,
         pipelineLease: lease,
+        research: researchRuntime,
       }),
     );
   } catch (err) {
@@ -427,6 +439,8 @@ async function nextLocked(
   // 여기서 내보내면 "run completed"만 적힌 노트가 나오고, 그 시점에 파이프라인은 아직 확인 대기
   // 기록을 갖지 못한다 → vault만 보는 사람에게 거짓 완료 영수증이다. try/finally로 모든 종료
   // 경로(정상·거부)에서 한 번만 내보낸다.
+  // [C-126/A-6] 실제 mode 영수증은 run이 끝난 **뒤에만** 낼 수 있다 (사전 문구는 "설정됨"까지다).
+  for (const line of researchOutcomeLines(result.state.research?.attempts)) console.log(line);
   try {
     if (result.state.status === "killed") {
       const next = reconcileKilled(root, state, stage, result.state, now());
@@ -434,7 +448,7 @@ async function nextLocked(
       console.log(`⛔ 폐기 판정 — 파이프라인 종료(killed): ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
       return done("pipeline_killed_reconciled", 0);
     }
-    return commitAfterRun(o, { project, root, now, state, stage, result });
+    return commitAfterRun(o, { project, root, now, state, stage, result, research: researchRuntime });
   } finally {
     exportVault(o, root, result.state);
   }
@@ -450,11 +464,15 @@ function commitAfterRun(
     state: PipelineState;
     stage: Extract<PipelineStage, { kind: "workflow" }>;
     result: Awaited<ReturnType<typeof runWorkflow>>;
+    research: ResearchRuntime;
   },
 ): PipelineCommandResult {
   const { project, root, now, state, stage, result } = ctx;
   if (result.state.status === "failed") {
     // 실패 attempt가 **정당하게 덮은** 파일의 digest를 영수증에 남긴다 — resume의 예외는 이것에만 결박된다.
+    // [C-126/A-4] `savedFiles`에는 리서치 receipt와 저장된 raw도 들어 있다(partial 포함) — 그래서
+    // 중간에 죽어도 "무엇이 덮였나"가 사실대로 남고, resume 사전 drift 검증이 그것을 손댄 것으로
+    // 오해하지 않는다.
     const at = now();
     const next: PipelineState = {
       ...state,
@@ -467,10 +485,24 @@ function commitAfterRun(
       updated_at: at,
     };
     writePipelineState(root, next);
+    const reason = result.state.failed_reason ?? "사유 미기록";
     console.error(
-      `단계 '${stage.id}' 실행이 중단됐습니다 (${result.state.failed_reason ?? "사유 미기록"}) — 상태는 실행 대기(awaiting_run) 그대로입니다.\n` +
+      `단계 '${stage.id}' 실행이 중단됐습니다 (${reason}) — 상태는 실행 대기(awaiting_run) 그대로입니다.\n` +
         `고친 뒤 다시: harness pipeline next --project ${project} (같은 workflow를 resume합니다)`,
     );
+    // [C-126/A-5] 리서치 실패는 **복구 경로가 정확히 둘**이다. `awaiting_run`에서는 restart가 거부되고
+    // pending이 없어 reject도 불가하므로, 이 둘 말고는 탈출구가 없다 — 그래서 여기 적는다.
+    // 실패한 external attempt는 **지우지 않는다**(영수증으로 남는다).
+    if (reason.startsWith("research_")) {
+      console.error(
+        `리서치 복구 경로 두 개:\n` +
+          `  ⓐ 원인(키 오류·네트워크·크레딧)을 고친 뒤: harness pipeline next --project ${project}\n` +
+          `  ⓑ 외부 검색 없이 진행: 셸의 TAVILY_API_KEY를 unset하고 ${
+            ctx.research.kind === "self" ? ctx.research.envPath : "workspace 루트의 .env"
+          }의 값을 비운 뒤 같은 명령 — 키 부재는 **승인된 자체 리서치(self) fallback**입니다.\n` +
+          `  (실패한 external attempt는 삭제하지 않고 outputs/research/의 영수증에 남습니다.)`,
+      );
+    }
     return done("pipeline_stage_failed", 1);
   }
 

@@ -63,11 +63,11 @@ export const TAVILY_SECRET_REF = "TAVILY_API_KEY";
  */
 export const TAVILY_SETUP_HINT = [
   `${TAVILY_SECRET_REF}가 설정돼 있지 않다. **키 값을 프롬프트나 채팅에 붙여넣지 마라.**`,
-  "셸에서 직접 설정한다:",
-  `  export ${TAVILY_SECRET_REF}=<발급받은 키>            # 이 셸에서만`,
-  `  echo 'export ${TAVILY_SECRET_REF}=<키>' >> ~/.zshrc  # 영구`,
-  "무료 키: https://tavily.com (1,000 크레딧/월 · 카드 불요)",
-  "설정한 뒤 같은 명령을 다시 실행하라.",
+  "둘 중 하나로 넣는다:",
+  `  ① 하네스가 만들어 둔 workspace 루트의 .env 파일에서 \`${TAVILY_SECRET_REF}=\` 뒤에 값만 채운다 (권장 · 0600)`,
+  `  ② 셸에서 직접: export ${TAVILY_SECRET_REF}=<발급받은 키>`,
+  "무료 키: https://tavily.com (실측 필요 — 크레딧·플랜 과금은 계정마다 다르다)",
+  "설정한 뒤 같은 명령을 다시 실행하라. 키가 없으면 자체 리서치(self)로 진행한다.",
 ].join("\n");
 
 /**
@@ -83,14 +83,21 @@ export interface TavilyOptions {
   /** 검색 1회가 돌려줄 후보 수(§6.3: 4~8건). */
   maxResults?: number;
   timeoutMs?: number;
+  /**
+   * [C-126] 키를 **인자로** 받는다. `.env` 리더(`core/envFile.ts`)가 해석한 값이 여기로만 흐르고
+   * `process.env`에는 실리지 않는다 — 자식 프로세스(claude-code/exec/mission/handoff)는 부모 env를
+   * 상속하므로, env에 넣는 순간 키가 모델 세션으로 들어간다.
+   * 미지정 시에만 `process.env[TAVILY_API_KEY]`로 강하한다(기존 스크립트 호출부 보존).
+   */
+  apiKey?: string;
 }
 
 /**
- * 환경변수 `TAVILY_API_KEY`에서 key를 읽어 backend를 만든다. 없으면 **호출 전에** fail-closed다
- * (키 없이 조용히 빈 결과를 돌려주면 그것이 곧 거짓 근거다).
+ * key로 backend를 만든다(`opts.apiKey` → 없으면 `process.env.TAVILY_API_KEY`). 없으면 **호출 전에**
+ * fail-closed다 (키 없이 조용히 빈 결과를 돌려주면 그것이 곧 거짓 근거다).
  */
 export function createTavilyBackend(opts: TavilyOptions = {}): ResearchBackend {
-  const apiKey = process.env[TAVILY_SECRET_REF];
+  const apiKey = opts.apiKey ?? process.env[TAVILY_SECRET_REF];
   if (typeof apiKey !== "string" || apiKey.length === 0) {
     throw new TavilyError("secret_missing", TAVILY_SETUP_HINT);
   }
@@ -107,7 +114,16 @@ export function createTavilyBackend(opts: TavilyOptions = {}): ResearchBackend {
       );
       const results = (json as { results?: unknown })?.results;
       if (!Array.isArray(results)) throw new TavilyError("backend_malformed", "Tavily search 응답에 results 배열이 없다");
-      return results.map((r) => pick(r, "url", "content")).filter((r): r is BackendResult => r !== null);
+      // [C-126/A-4] **해석 못 한 항목을 조용히 버리지 않는다.** 예전 `.filter(r !== null)`은
+      // ⓐ 전부 malformed면 `external_empty`("결과가 없었다")로, ⓑ 혼합이면 `external` partial 성공으로
+      // 둔갑시켰고, 영수증에는 그 사실도 drop counter도 없었다 — **거짓 영수증**이다.
+      // 빈 배열만 empty로 허용하고, 하나라도 해석 불가면 fail closed다.
+      const picked = results.map((r) => pick(r, "url", "content"));
+      const bad = picked.filter((r) => r === null).length;
+      if (bad > 0) {
+        throw new TavilyError("backend_malformed", `Tavily search 응답에 해석할 수 없는 항목이 ${bad}/${picked.length}건 있다`);
+      }
+      return picked as BackendResult[];
     },
     async extract(url: string): Promise<BackendResult> {
       const json = await post(EXTRACT_URL, apiKey, { urls: [url], extract_depth: "basic" }, timeoutMs);

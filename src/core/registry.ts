@@ -11,6 +11,12 @@ export interface AgentDef {
   required_headers?: string[];
   /** 산출 markdown 안의 ```json 블록을 이 경로로 추출·저장(예: docs/tokens.json). design 에이전트용. */
   token_output?: string;
+  /**
+   * [C-126] 이 agent가 **외부 검색 어댑터를 쓰는 리서치 step**인가. `true`면 runWorkflow가 1차(선언)→
+   * 검색→2차(근거 반영) 형태로 돌린다. 키가 없으면 self로 강하해 1회만 돈다(기존 동작과 같다).
+   * 미지정 = 기존 단일 호출 step (프롬프트·저장 바이트 불변).
+   */
+  web_research?: boolean;
 }
 
 export interface AgentRegistry {

@@ -13,7 +13,8 @@
       "name": "Research Agent",
       "role": "시장, 고객, 경쟁, 기존 대안, 진입 가능성 조사",
       "prompt_path": "agents/research_agent.md",
-      "default_output": "docs/01_RESEARCH.md"
+      "default_output": "docs/01_RESEARCH.md",
+      "web_research": true
     },
     {
       "agent_id": "pm",

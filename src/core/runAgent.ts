@@ -16,6 +16,10 @@ export interface RunAgentArgs {
   retryFeedback?: string;
   revisionRequest?: string;
   spawnRequest?: string;
+  /** [C-126] 리서치 1차의 선언 지시 (키가 있을 때만 · 미지정이면 프롬프트 바이트 불변). */
+  researchRequest?: string;
+  /** [C-126] 래핑된 근거 digest (2차와 수신자 allowlist agent에만). */
+  evidenceDigest?: string;
   /** 있으면 prompt_path 파일 대신 이 텍스트를 agent prompt로 사용 (동적 분화된 하위 에이전트용). */
   agentPromptText?: string;
   /**
@@ -49,7 +53,7 @@ function loadPrompt(relPath: string, label: string): string {
  * prompt 파일이 없으면 throw → 호출자(runWorkflow)가 failed_agent로 기록한다.
  */
 export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
-  const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, agentPromptText, execContext, ideaContent } = args;
+  const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, researchRequest, evidenceDigest, agentPromptText, execContext, ideaContent } = args;
 
   const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
   // 동적 분화된 하위 에이전트는 파일 대신 런타임 생성 프롬프트를 쓴다.
@@ -69,6 +73,8 @@ export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
     retryFeedback,
     revisionRequest,
     spawnRequest,
+    researchRequest,
+    evidenceDigest,
     execContext,
   });
 

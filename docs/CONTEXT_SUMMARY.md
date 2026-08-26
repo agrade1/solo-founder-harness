@@ -1,5 +1,39 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-26 밤 — **`C-126` closed: 리서치 어댑터 — 키 있으면 외부 검색, 없으면 자체 리서치 · live 미실측**)
+
+- **사용자 요구 충족(offline 범위)**: `harness init`이 **0600 `.env`**를 만들고 "값만 채우세요"를
+  안내한다(커밋 금지 경고 + **검색어 외부 전송 고지**). 키 있으면 Tavily search, 없으면 **self**.
+- **비밀 경계**: `TAVILY_API_KEY` **단일 allowlist** · **`process.env` 불변**(값은 research config로만
+  운반) → **자식 프로세스 env에 키 없음**(테스트가 **실제 spawn으로 관측**) · backend 응답의
+  source·title·raw는 **저장 전 redaction**. **git 게이트 하나**: 3-state(판정 불가=거부) → 추적 중이면
+  **키를 읽지 않고 거부**(회전 안내) → ignore 보장·재확인 → **그 다음** 0600 생성/검증.
+- **정직한 fallback**: self는 **키 부재에만** · 외부 실패는 **resumable failed** · mode 4종 +
+  `RESEARCH_REQUEST none` 종결자로 "형식 위반"과 "검색 불필요"를 가른다 · `external`은 evidence ≥1.
+- **결박**: attempt마다 **content-addressed write-once receipt**를 B-41 checkpoint manifest에 넣는다
+  (증거·mode 변경 → `checkpoint_id` 변경) · `evidence.jsonl`은 비권위 인덱스 · resume은 **receipt를
+  재검증**(파일명 hash·본문 exact-equal·raw 재해시)한 뒤 **receipt에서** digest를 재구성 · 상한은
+  **단조 durable `totals`**로 집행(bounded 배열로 복원하면 resume 반복이 상한을 다시 연다).
+- **Codex 5라운드 A 32건**: 전역 `.env` 로더가 **실행 권한 주입면 + 자식 상속** · `.gitignore`는 이미
+  추적된 파일을 못 지킨다 · **`pipeline next`가 배선 우회**(1단계가 항상 self) · 최종 1회 commit이
+  **1차 비용 유실** · **resume 근거 미결박**(모델이 소비한 근거 ≠ 승인된 근거) · **receipt 봉인
+  fail-open** · **resume 반복이 과금 상한 우회** · malformed가 empty로 둔갑 · 설정 상태를 mode로
+  과대 렌더 · "웹 원문" 문구. 마지막 A 1건은 **오케스트레이터 CLI 실측**이 잡았다(리비전 보고·주석이
+  "init·self 양쪽이 공용 게이트를 쓴다"고 했지만 `init.ts`는 여전히 raw 함수를 불러 `.env`가
+  **unignored로 생성**됐다) → 교훈: **"양쪽이 같은 함수를 쓴다"는 호출부 grep으로 확인해야 한다.**
+- **실측**: `npm test` exit 0 · **649/649** · **634/634**(+54) · acceptance **272/0** · mutation 19종
+  (독립 재현 2: 키를 process.env에 심기 · resume 영수증 재검증 제거) · **live Tavily 0회**.
+- **가장 큰 공백 = live 0회**(`C-138`): 응답 형태·크레딧·rate limit·**malformed 오탐**·≈64KB 프롬프트
+  수용 전부 미실측. **사용자가 `.env`에 키를 채우면 즉시** 최소 시나리오(크레딧 1) 실행 가능 —
+  검증 9항목은 `docs/handoff/C126_RESEARCH_ADAPTER_DESIGN.md`.
+- **신규**: `C-136`(summary/vault에 mode 미렌더) · `C-137`(extract 봉인) · `C-138`(live 미실측).
+  **열린 항목**: A **0** · B **10** · C **100** · id **110**(자기 검증 110 실측).
+- **명확화된 목표(2026-08-26) 3골격 전부 닫혔다**: `B-40` kill 게이트(판정 ⑪) · `B-41` 단계
+  체크포인트(⑫) · `C-126` 리서치 어댑터(⑬). **다음**: live 실측(`C-138`) · `C-127`(v1 검증 차단) ·
+  `C-125`(아이디어 개정 루프) · `B-43`/`B-44`(autopilot 게이트) · `C-123`(consumes 계약).
+
+---
+
 ## 최신 (2026-08-26 밤 — **`B-41` closed: 단계 체크포인트 — 하네스가 단계마다 사람 확인을 받고 멈춘다**)
 
 - **사용자 요구 충족**: `harness pipeline` 6 명령 + 고정 4단계(idea-validation → mvp-planning →

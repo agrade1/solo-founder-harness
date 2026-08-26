@@ -1,4 +1,4 @@
-/** V3 M7 T2 — EvidenceItem 저장 계약 테스트. 원문은 파일, 중앙은 포인터. */
+/** V3 M7 T2 — EvidenceItem 저장 계약 테스트. 저장 응답은 파일, 중앙은 포인터. */
 import { strict as assert } from "node:assert";
 import { test } from "node:test";
 import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";

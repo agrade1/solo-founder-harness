@@ -115,12 +115,12 @@ const run1 = await gw.runResearch(requests, { backend, evidenceDir: dir, now: NO
 check("mock backend 1회 호출로 EvidenceItem이 만들어진다", run1.backendCalls === 1 && run1.items.length === 1);
 const item = run1.items[0];
 const rawOnDisk = readFileSync(join(dir, item.rawPath), "utf8");
-check("원문은 파일에만 있다", rawOnDisk.includes("RAW_TAIL_ONLY_MARKER"));
+check("저장 응답은 파일에만 있다", rawOnDisk.includes("RAW_TAIL_ONLY_MARKER"));
 check(
   "중앙이 운반하는 것은 원문 전체가 아니라 상한 절삭된 발췌다",
   !JSON.stringify(item).includes("RAW_TAIL_ONLY_MARKER") && [...item.summary].length <= gw.MAX_EXCERPT_CHARS + 32,
 );
-check("digest에도 원문 뒷부분이 실리지 않는다", !gw.renderEvidenceDigest(run1.items).includes("RAW_TAIL_ONLY_MARKER"));
+check("digest에도 저장 응답 뒷부분이 실리지 않는다", !gw.renderEvidenceDigest(run1.items).includes("RAW_TAIL_ONLY_MARKER"));
 const digest = gw.renderEvidenceDigest(run1.items);
 check("digest가 source·sha256 포인터를 싣는다", digest.includes(item.sha256) && digest.includes(item.source));
 

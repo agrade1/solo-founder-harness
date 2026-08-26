@@ -52,6 +52,14 @@ export const mockProvider: Provider = {
         "\n```\n\n"
       : "";
 
+    // [C-126] **선언을 요구받았으면 종결자를 낸다.** 리서치 선언(`RESEARCH_REQUEST`)이 프롬프트에
+    // 실렸는데 아무 선언도 내지 않으면 계약이 `research_declaration_missing`으로 fail closed다
+    // (무선언 ≠ `none` — 그 구분이 "모델이 형식을 어겼다"를 잡는 축이다). mock은 검색어를 지을 수
+    // 없으니 **명시적 `none`** 이 정직한 답이고, 그래야 실키가 셸에 있는 개발자가 `--provider mock`으로
+    // 돌려도 ⓐ 실패하지 않고 ⓑ **크레딧을 쓰지 않는다**(backend 0회 · mode `external_declined`).
+    // B-40의 `## Decision`·B-41의 tokens.json과 같은 규율: **test provider가 자기가 받은 계약을
+    // 만족하지 못하면 고칠 것은 계약이 아니라 test provider다.**
+    const researchNoneLine = input.researchRequest ? "\nRESEARCH_REQUEST none\n" : "";
     const markdown = `# Agent Output
 
 ## Metadata
@@ -123,7 +131,7 @@ ${nextAgentLine}
 ## Handoff Notes
 
 - [MOCK] 다음 agent가 알아야 할 핸드오프 메모
-`;
+${researchNoneLine}`;
 
     // 기본 usage는 0 (실제 provider만 토큰 계측). 단, 예산 로직 검증용으로
     // HARNESS_MOCK_TOKENS가 설정되면 호출당 그 값을 input 토큰으로 계측한다.
