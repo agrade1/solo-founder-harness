@@ -1,5 +1,30 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-26 — **V3 M11⑩: `C-117` closed · 문서 단계 4종 산출물 완성 · 비평 루프에 Codex 첫 투입**)
+
+- **`C-117` closed(결정 ⓐ)**: planner 지침 "provides는 task당 1개"(계획층) + `worker_plan_absent`/
+  `unparsable`에 출력 길이·꼬리 200자 진단 + `task_paused` 이벤트 `diagnostic` 필드(화면 전용 ·
+  durable 비반입 · `--json` sink까지 테스트가 문다). ⓑ turn 분할 발행은 기각·유예(`C-122`).
+  검증기는 조이지 않았다. 판정 정본 **판정 ⑩**.
+- **작업 방식 변경(사용자 지시 2026-08-26)**: **비평 루프 = Codex**(계획·구현 = Claude · 모델은 사안
+  무게별 — Fable/Opus 5/Codex 5.5/5.6). 첫 적용: Codex 5.6 적대적 리뷰가 A 4(제어문자 stdout 통과 ·
+  과대주장 · head를 "꼬리"로 서술 · sink 미검증)를 냈고 전부 실물 검증 후 수정. Fable 비평은 A-1
+  (죽은 진단 — catch가 message를 버려 도달 0)을 잡았다. 교훈 = **sink까지 물어야 진단이 산다**.
+- **live 7회(성공 5 · 실패 2)**: ① 22-task DAG 초안 첫 시도 통과 · **provides 전부 1개**(표본 1)
+  ② 문서 단계 4-task 중 3 완주(PRD 28,014B 포함 · 삼중 hash 일치 — ⑨에서 2-file로 죽던 단계가
+  1-file로 완주) ③ `ux-flows` 2/2 실패 → **진단이 원인을 증거로 남김**(가짜 tool-use — consumes
+  포인터 역참조 시도 · 신규 `C-123`: live worker는 consumes 내용을 못 본다) ④ 새 run에서 briefing
+  발췌 인라인 우회 → USER_FLOWS.md 31,396B 완주. **문서 단계 4종 산출물 전부 실재.**
+- **실측**: `npm test` exit 0 · **649/649** · **505/505** · acceptance **224/0** · mutation 13종
+  (독립 재현 2) · fail closed 1건(한글 briefing UTF-8 상한).
+- **신규**: `B-39`(codex backend 진단 비대칭) · `C-122`~`C-124`. **열린 항목**: A **0** · B **7** ·
+  C **87** · id **94**.
+- **다음 세션**: `docs/handoff/M12_ORCHESTRATION_KICKOFF.md`를 먼저 읽어라. 추천 순서 = `C-118`
+  (resumeTask CLI — 이번에도 스크립트로 때움) + `C-120` + `C-124`를 값싼 CLI slice 하나로 · 그 뒤
+  사용자 결정(L5b · `C-93` · `B-10` · `C-123` 계약 결정).
+
+---
+
 ## 최신 (2026-08-26 — **V3 M11⑨: L2b `draft-approval` 착지 · multi-task live 부분 성공(경계 2 발견)**)
 
 - **`draft-approval`/`validate-approval`**: DAG에서 ownership·write 권위를 파생하고 **권위-의미

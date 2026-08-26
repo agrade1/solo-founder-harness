@@ -737,7 +737,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 91   ← 최신 변동(판정 ⑨): `C-117`~`C-121` 신규(+5). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
+정본(이 절)      →  id 94   ← 최신 변동(판정 ⑩): `C-117` closed(−1) · `B-39`·`C-122`~`C-124` 신규(+4). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -747,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 91건 (A 0 · **등급 B 6** · 등급 C 85)
+##### 열린 항목 — id 94건 (A 0 · **등급 B 7** · 등급 C 87)
 
-**등급 B (6) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed — live가 실제 산출물을 만들었다.)
+**등급 B (7) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed — live가 실제 산출물을 만들었다.)
 
 | id | 한 줄 | 기한/트리거 | 어디를 읽나 |
 |---|---|---|---|
@@ -759,6 +759,7 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-35` | claude 격리 홈에 **내용 allowlist 없음**. 계정 우선순위 축은 **범위 밖으로 축소**(2026-08-23 · 아래 판정 ④) | **격리 홈을 실제로 승인하기로 할 때.** 지금은 `claudeHome`이 optional이라 **도달하지 않는 경로**다 | §9.1 `M11① 대장 처리` 표 + `M11 진행 판정 ④` |
 | `B-36` | 그룹을 **탈출한 자손을 탐지할 커널 능력이 없다**(`B-18`에서 분리) | **linux(cgroup)** 또는 sandbox/컨테이너 채택 | §9.1 `M11① 대장 처리` 표 |
 | `B-37` | 닫힌 action 집합으로 **회복 불가한 worktree 잔재** 두 모양(`B-31`에서 분리) | **현장에서 실제로 관측될 때만** | §9.1 `M11① 대장 처리` 표 |
+| `B-39` | codex plan backend는 계획 추출 실패에 **진단 꼬리가 없다**(`worker_plan_missing`뿐 — claude backend와 비대칭) | **codex backend live 재시도 전** | `M11 진행 판정 ⑩` ⓔ 표 |
 
 **`B-` 번호이지만 등급 C — nonblocking (2).**
 
@@ -767,7 +768,7 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-1` | 조용한 호스트에서 **부하(stress) acceptance 재실행** | **release 준비 시점** — 마일스톤 게이트 아님 | 707 |
 | `B-2` | **live runner 재실행**과 evidence 재생성 | **release 준비 시점** — 마일스톤 게이트 아님 | 708 |
 
-**등급 C (78).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
+**등급 C (85).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
 
 ```text
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
@@ -775,8 +776,8 @@ C-29  C-30  C-31  C-33  C-34  C-35  C-36  C-37  C-38  C-39  C-43  C-46  C-47  C-
 C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-64
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
-C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-117 C-118 C-119
-C-120 C-121
+C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
+C-120 C-121 C-122 C-123 C-124
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -1906,7 +1907,77 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ⑨ — L2b `draft-approval` 착지 · multi-task live 첫 실측(부분 성공 — 경계 발견 2)** (2026-08-26 · **이 절이 현행이며 아래 ⑧보다 최신이다**)
+##### **M11 진행 판정 ⑩ — `C-117` closed(결정 ⓐ · live 검증) · 문서 단계 4종 산출물 완성 · 진단 꼬리가 실전에서 두 번 값했다** (2026-08-26 · **이 절이 현행이며 아래 ⑨보다 최신이다**)
+
+### ⓐ 설계 결정 — C-117은 계획층에서 푼다 (ⓑ는 유예)
+
+**ⓐ 채택**: `plan-dag` planner 지침(`dagContractBriefing`)에 **"provides는 task당 1개"** 를 싣는다.
+**ⓑ turn 분할 발행은 기각·유예**(→ `C-122`): plan schema·kernel permit(부분집합 게이트)·autopilot
+loop·영수증을 전부 건드리는 계약층 수술인데 지금 그것을 요구하는 실사용 경로가 없다 — 문서 단계는
+task 분할로 완전히 표현되고 재시도 단위도 파일 하나로 좁아진다. **검증기는 조이지 않았다**
+(multi-provides는 offline backend에서 멀쩡하다 — 이것은 문서 계약이 아니라 live 실행층 관측이다).
+함께: `worker_plan_absent`/`worker_plan_unparsable`에 **출력 길이 + 꼬리 200자 진단**을 싣고
+`task_paused` 이벤트의 새 선택 필드 `diagnostic`(화면 전용 · durable 비반입)으로 운영자에게 올린다 —
+transcript 미저장 설계에서 실패가 가설로만 남던 공백을 닫는다.
+
+### ⓑ 구현과 비평 — 새 작업 방식 첫 적용 (사용자 지시 2026-08-26: 비평 루프 = Codex)
+
+구현은 Opus worktree 세션(커밋 6건), 비평은 **Fable(오케스트레이터) 1회 + Codex 5.6 1회**:
+
+- **Fable 비평이 A-1을 잡았다**: 1차 구현의 진단 꼬리는 **죽은 진단**이었다 — 유일한 실사용 호출자인
+  autopilot catch가 `err.message`를 버려 꼬리가 어디에도 출력되지 않았다. 선례로 인용된
+  `worker_exit_nonzero`의 stderr 꼬리도 같은 이유로 이미 도달 불가였다(선례가 아니라 같은 결함).
+- **Codex 5.6 적대적 리뷰(read-only)가 A 4 · B 1 · C 2를 냈고 전부 실물 검증 후 수용**:
+  ① sanitizer가 C0+DEL만 접어 C1 CSI·U+2028/29·bidi가 stdout에 통과(→ 공유 `foldDiagnosticText`,
+  `\p{Cc}\p{Cf}`+Zl/Zp) ② provides-1 지침의 근거가 단일 관측의 인과 일반화(과대주장 — live 실측이
+  1-file 반례까지 보탰다 → 관측·원인 미확정으로 정정) ③ `worker_exit_nonzero`의 "꼬리"는 실제로
+  **머리** 200자였다(코드를 진짜 꼬리로 정정) ④ "운영자 도달" 테스트가 stdout sink를 안 물었다
+  (`jsonEventLine` 분리 + 명령 실행 검증 — **sink를 지우는 mutation에 이전 테스트는 GREEN이었다**).
+- mutation 13종 전부 C-116 형식 red · 오케스트레이터 독립 재현 2종(M7 부착 제거 · M11 sink 제거) ·
+  복원마다 바이트 동일 확인. 교훈 = **"오류 메시지에 적는 것만으로는 진단이 살지 않는다 — sink까지
+  물어야 한다"**(A-1과 A-4가 같은 형태의 구멍이었다).
+
+### ⓒ live 실측 — claude 7회 (성공 5 · 실패 2 · 실패가 이번에도 산출물이다)
+
+| run | 결과 |
+|---|---|
+| `l2c-plan` (1회) | 새 지침을 실은 planner가 **22-task DAG** 초안 → `validate-dag` 첫 시도 통과 · **22개 전부 provides 1개**(판정 ⑧의 초안은 2-file `prd`를 냈었다) |
+| `l2c-docs` (4회) | 문서 단계 4-task(의존 폐쇄 절단: research 2 병렬 → `pm-prd` → `ux-flows`) 중 **3 완주** — COMPETITIVE_SCAN 12,668B · USER_INTERVIEWS 21,758B · **PRD 28,014B**(판정 ⑨에서 2-file로 2/2 죽던 단계가 1-file로는 완주) · 전부 삼중 hash 일치. `ux-flows`는 2/2 실패 후 attempts 소진 |
+| `l2c-ux` (1회 + resume 1회) | `resumeTask`는 여전히 kernel API 직접 호출(`C-118` 재확인). attempts 소진 뒤 **새 run**에서 운영자 우회(briefing에 PRD 발췌 3,000자 인라인 · consumes 제거) → **첫 turn 완주** · USER_FLOWS.md **31,396B** · 삼중 hash 일치 |
+
+**진단이 두 번 값했다**: `ux-flows` 실패 2건의 `diagnostic`이 ⓐ 출력 380자 · PRD를 찾는 가짜 tool-use
+ⓑ 출력 166자 · 가짜 `<invoke name="Read">` + "File does not found."를 남겼다 — **절단(거대 길이)이
+아니라 산문 거부였고**, 원인은 파일 수가 아니라 **consumes 포인터를 역참조하려는 시도**였다(신규
+`C-123`: live worker는 도구 0이라 consumes 산출물 내용을 볼 수 없다 — 문맥은 포인터·요약뿐).
+`.agents/workspaces/...` 경로는 모델이 지어낸 것(실제 접근 없음 — M8 실측과 같은 부류, 이번엔 증거가 남았다).
+
+fail closed 실물 1건: 한글 briefing 7,641자(UTF-8 ~19KB)가 본문 상한 16,384B에서 생성 전 거부 →
+발췌 축소 후 통과(자르지 않는 계약이 운영자 실수를 잡았다).
+
+### ⓓ 실측 총계
+
+`npm test` exit 0 · **649/649**(exec +2) · **505/505**(core +4... 신규 테스트 순증 6) · acceptance
+**224/0** · typecheck clean · mutation 13종(오케스트레이터 독립 재현 2) · live **7회**(성공 5 · 실패 2).
+
+**미증명(같은 무게로)**: 판정 ⑨의 2-file `prd` 실패 원인은 **여전히 미확정**(당시 transcript 없음 —
+이제 진단이 있으니 다음 발생은 증거를 남긴다) · provides-1 지침 준수는 **표본 1**(22-task 초안 하나) ·
+`diagnostic`은 사람용 렌더러에 안 나온다(`--json` 전용 · `C-124`) · codex backend는 같은 실패에 진단이
+없다(`B-39`) · consumes 경계의 계약적 해결은 열려 있다(briefing 인라인은 운영자 우회일 뿐 · `C-123`).
+
+### ⓔ 대장 처리 (closed 1 · 신규 B 1 · 신규 C 3)
+
+| id | 분류 | 항목 | 기한/트리거 | 상태 |
+|---|---|---|---|---|
+| `C-117` | C (P2) | multi-provides live task `worker_plan_absent` — **결정 ⓐ(planner 지침 provides-1) 구현·통합·live 검증**(22/22 준수 · 문서 단계 4종 산출물 완성). 원인 가설은 미확정으로 남기고 일반화하지 않는다(Codex 리뷰 A-2) — 진단 꼬리가 이후 발생을 증거화한다 | — | **closed (판정 ⑩)** |
+| `B-39` | B | **codex plan backend는 같은 계획 추출 실패에 진단 꼬리가 없다**(`worker_plan_missing`뿐 — 비대칭). qa-security role이 자동으로 이 backend를 탄다 | **codex backend live 재시도 전** | open |
+| `C-122` | C (P3) | **turn 분할 발행(계약층 ⓑ) 유예** — plan schema·permit·loop·영수증 전면 변경이라 기각했다 | multi-provides task가 실제로 필요해질 때(문서 하나가 한 turn 출력을 넘거나 원자적 다중 파일 발행 요구) | open |
+| `C-123` | C (P2) | **live worker는 consumes 산출물 내용을 볼 수 없다**(도구 0 · 문맥은 포인터·요약뿐). 실측: ux-flows 2/2 가짜 tool-use 실패 · 우회(운영자 briefing 발췌 인라인) 실증 완료. 계약적 해결(bounded 발췌 자동 동봉 등)은 새 승인 축 결정 | 문서 파이프라인에서 하류 task 품질이 중요해질 때 | open |
+| `C-124` | C (P3) | `AutopilotEvent.diagnostic`이 **사람용 렌더러에 노출되지 않는다**(`--json` 전용 — `autopilotProgress`는 marker·detail만 읽는다) | 값싼 후속 — 다음 CLI slice(`C-118`·`C-120`과 묶기) | open |
+
+`C-118`(resumeTask CLI 부재)은 이번에도 운영자 스크립트로 때웠다 — **재확인, open 유지**. `C-119`
+(operations 배선)는 `draft-approval`의 경고 출력이 실물에서 배선 누락 4건을 정확히 안내했다 — open 유지.
+
+##### **M11 진행 판정 ⑨ — L2b `draft-approval` 착지 · multi-task live 첫 실측(부분 성공 — 경계 발견 2)** (2026-08-26 · 아래 ⑧보다 최신이다 — **M11의 현행은 위 판정 ⑩이다**)
 
 ### ⓐ L2b — 승인 초안 도구 (구현 Opus · 비평 오케스트레이터)
 
