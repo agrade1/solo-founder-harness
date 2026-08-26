@@ -76,7 +76,7 @@ import {
 import type { AgentMessageEnvelope, AutopilotMarker, OrchestrationTask, PauseReason } from "../exec/orchestrationTypes.js";
 import { ORCHESTRATION_SCHEMA_VERSION } from "../exec/orchestrationTypes.js";
 import { MAX_PLAN_JSON_BYTES, OFFLINE_PLAN_BACKEND, startOfflinePlanTurn } from "../exec/offlinePlanWorker.js";
-import { LIVE_PLAN_BACKEND, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
+import { LIVE_PLAN_BACKEND, foldDiagnosticText, planContractPrompt, startLivePlanTurn } from "../exec/livePlanWorker.js";
 import { CODEX_PLAN_BACKEND, startCodexPlanTurn } from "../exec/codexPlanWorker.js";
 import { assertCodeReviewRoundtrip, DesignRoundtripError, type RoundtripParticipant } from "../exec/designReviewRoundtrip.js";
 import { autopilotProgressBridge } from "../exec/autopilotProgress.js";
@@ -1475,6 +1475,11 @@ function codeOf(err: unknown): string {
  * 길이를 만드는 쪽을 신뢰하면 화면 계약이 조용히 깨진다. 400자인 이유는 200자 꼬리 + 코드·수치
  * 접두사가 잘리지 않고 들어가는 가장 작은 값이기 때문이다.
  *
+ * **접는 규칙은 자체 구현하지 않는다**(적대적 리뷰 A-1): `livePlanWorker.foldDiagnosticText` 하나를
+ * 쓴다. 이전 판은 `[ -]`(C0+DEL)를 **여기서 따로** 적었고, 그래서 C1(U+009B) ·
+ * U+2028/29 · bidi 제어문자가 통과해 이 문자열이 도착하는 **운영자 stdout**에서 터미널 escape·
+ * 줄 쪼개기·bidi spoofing이 가능했다. 규칙이 두 벌이면 한쪽만 안전해진다.
+ *
  * 기각한 대안: `detail`에 이어붙이기. `detail`은 안정 코드이고 정확일치로 무는 테스트가 여럿이다 —
  * 자유 서술을 섞으면 그 계약이 사라진다(같은 이유로 `marker`도 건드리지 않는다).
  *
@@ -1485,7 +1490,7 @@ export function workerDiagnosticOf(err: unknown): string | null {
   if (!(err instanceof OrchestrationError)) return null;
   // `OrchestrationError.message`는 언제나 ``<code>: <본문>``이라 꼬리에 코드가 한 번 더 실린다 —
   // `detail`과 중복이지만 화면 채널에서는 그 편이 읽기 쉽고, `detail`의 정확일치 계약은 그대로다.
-  return err.message.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, 400);
+  return foldDiagnosticText(err.message).trim().slice(0, 400);
 }
 
 function id(kind: string): string {

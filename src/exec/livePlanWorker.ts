@@ -259,7 +259,23 @@ function workerError(code: (typeof LIVE_WORKER_CODES)[number], what: string): Or
 }
 
 /**
- * **진단 꼬리**(C-117): 마지막 200자를 제어문자·개행을 공백으로 접어 **한 줄**로 만든다.
+ * **진단 텍스트 접기**(C-117 · 적대적 리뷰 A-1). 제어·서식 문자를 공백으로 바꿔 한 줄로 만든다.
+ * 진단 문자열을 만드는 자리는 **전부 이 함수 하나**를 쓴다(`autopilot`의 `workerDiagnosticOf` 포함) —
+ * 접는 규칙이 두 벌이면 한쪽만 안전해진다.
+ *
+ * **`[ -]`로는 부족했다**: 그 집합은 C0+DEL뿐이라 **U+0085 · U+009B(C1 CSI)** ·
+ * **U+2028/U+2029**(JS 줄 종결자) · **bidi 제어문자(U+202E 등)** 가 살아남는다. 이 문자열은 `--json`
+ * 이벤트로 **운영자 stdout**에 나가고 `JSON.stringify`는 U+2028/29를 escape하지 않는다 → 모델이 낸
+ * 바이트가 터미널 escape·bidi spoofing·줄 쪼개기로 그대로 도달할 수 있었고, "bounded 한 줄"이라는
+ * 주장도 그 문자들 앞에서는 거짓이었다.
+ *
+ * `\p{Cc}`(C0+DEL+C1) · `\p{Cf}`(bidi·ZWJ 등 서식) · 두 줄 종결자(Zl/Zp)로 닫는다. 길이는 1:1로
+ * 보존되므로 slice 전후 어디서 접어도 상한 계산이 흔들리지 않는다.
+ */
+export const foldDiagnosticText = (s: string): string => s.replace(/[\p{Cc}\p{Cf}\u2028\u2029]/gu, " ");
+
+/**
+ * **진단 꼬리**(C-117): 마지막 200자를 위 규칙으로 접어 **한 줄**로 만든다.
  *
  * 이것은 골격 주석의 "원문 durable 반입 없음"에 대한 **예외가 아니다** — `worker_exit_nonzero`가
  * `errText.trim().slice(0, 200)`로 stderr 꼬리를 남기는 것과 **같은 규율**이다(코드와 짧은 꼬리만).
@@ -276,7 +292,7 @@ function workerError(code: (typeof LIVE_WORKER_CODES)[number], what: string): Or
  * 닫히지 않은 중괄호 = 출력 절단, 짧은 길이 = 모델이 산문으로 거부. 코드만으로는 둘이 구분되지 않아
  * 실측 2회가 전부 "가설"로 남았다.
  */
-const diagnosticTail = (s: string): string => s.slice(-200).replace(/[\u0000-\u001f\u007f]/g, " ");
+const diagnosticTail = (s: string): string => foldDiagnosticText(s.slice(-200));
 
 /**
  * 모델 출력 텍스트에서 **계획 JSON 하나**를 꺼낸다. 모델은 설명을 덧붙이거나 fence로 감싸므로
@@ -423,7 +439,13 @@ export function startLivePlanTurn(launch: LiveWorkerLaunch): WorkerStream {
     if (killedBy !== null) throw workerError("worker_deadline_exceeded", `${killedBy}로 종료했다`);
     if (exit.code !== 0) {
       // stderr 원문을 durable로 옮기지 않는다 — 코드와 짧은 꼬리만 오류 메시지에 남는다.
-      throw workerError("worker_exit_nonzero", `종료코드 ${exit.code} ${errText.trim().slice(0, 200)}`);
+      //
+      // **`slice(0, 200)`이었다 = 머리 200자**(적대적 리뷰 A-3에서 정정). 주석은 줄곧 "꼬리"라고 불렀고
+      // C-117의 새 진단도 그 서술을 선례로 인용했는데, 실제로는 반대쪽을 내고 있었다 — 실패 원인은
+      // 보통 stderr **끝**에 있으므로 진단 가치도 반대였다. 이제 `diagnosticTail`을 같이 쓴다.
+      // (누적 상한이 앞 4,000자만 모으므로 정확히는 **그 4,000자의 꼬리**다 — 상한 자체는 리뷰 C3의
+      // 결정이라 여기서 바꾸지 않는다.)
+      throw workerError("worker_exit_nonzero", `종료코드 ${exit.code} ${diagnosticTail(errText.trim())}`);
     }
 
     // CLI가 `--output-format json`으로 감싼 봉투에서 결과 텍스트와 **사용량**을 꺼낸다.
