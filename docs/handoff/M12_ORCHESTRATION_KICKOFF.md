@@ -58,6 +58,31 @@ Opus 5가 개발, Fable(+Codex)이 비평 루프. MVP부터 그 뒤까지.
 4. live 재실측 시 workspace·승인 생성기는 **세션 scratchpad에 새로 만든다**(세션 종료 시 소멸 —
    실물 예시는 판정 ⑦·⑧·⑩ 시퀀스와 `scripts/m12-l2b-offline-acceptance.mjs`가 정본).
 
+### 2.1 설계 문서는 세션 scratchpad에 있다 (인계 주의)
+
+`B-41`·`C-126`의 설계 문서는 오케스트레이터 세션의 **scratchpad**(`.../scratchpad/B41_DESIGN.md` ·
+`C126_DESIGN.md`)에 있었고 **세션 종료 시 사라진다**. `B-41`은 착지했으므로 결정·근거·기각 대안이
+`M12 진행 판정 ⑫`와 코드 주석·커밋에 남아 정본이 옮겨졌다. **`C-126`은 아직 설계 단계다** — 그
+설계가 승인되면(Codex integration gate 통과) **`docs/handoff/C126_RESEARCH_ADAPTER_DESIGN.md`로
+영구화한 뒤** 구현에 넘긴다. 그 파일이 없고 scratchpad도 없으면, 아래 압축 요약이 남은 전부다:
+
+- `.env`는 workspace 루트 단수 · `harness init`이 0600 템플릿 생성 + `.gitignore` managed block 멱등
+  추가 · **이미 추적 중인 `.env`면 키를 읽지 않고 거부**(회전·`git rm --cached` 안내 · history 정리는
+  주장하지 않는다) · `git check-ignore`로 부정 규칙(`!.env`)까지 판정.
+- 리더는 신규 `src/core/envFile.ts`(의존성 0) · **`TAVILY_API_KEY` 단일 allowlist** ·
+  **`process.env`를 변경하지 않는다** · 값은 research config로만 운반해 `createTavilyBackend({apiKey})`에
+  전달(자식 프로세스 env에 키가 실리지 않는 것이 테스트 계약).
+- fallback: **self는 키 부재에만**. 외부 시도 실패는 **resumable failed**(원인별 사유 코드) —
+  "실패해도 계속"은 **사용자 결정 대기**. mode 4종 + bounded `attempts[]` · `external`은 evidence ≥1.
+- 배선: 1차 문서 + `RESEARCH_REQUEST`(없으면 `none` 종결자 필수) → gateway → 2차에 **1차 전문+hash**
+  전달 → **commit은 최종 1회**(단 usage·warning은 호출마다 기록). **extract는 봉인**(allowlist 정본을
+  아무도 갖지 않는다) · search만.
+- 결박: **content-addressed raw + 불변 attempt receipt**를 checkpoint manifest에 넣고
+  `evidence.jsonl`은 **비권위 인덱스**(append가 drift가 되지 않게).
+- 예산(byte 단위): seed 16,384(B-41 계약 불변) · evidence digest 16,384 · 2차의 1차 문서 32,768 ·
+  초과는 **자르지 않고 fail closed**.
+- 증거 문구: "Tavily **스니펫**", "저장 **응답 바이트** hash" — 웹 원문 검증이 아니다.
+
 ## 3. 작업 loop (실측으로 다듬어진 현행)
 
 ```
