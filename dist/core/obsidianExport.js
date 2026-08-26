@@ -2,6 +2,7 @@ import { readFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, resolve, isAbsolute, basename } from "node:path";
 import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent } from "./registry.js";
 import { projectPaths, ensureDir } from "./project.js";
+import { gateOutcomeLabel } from "./runWorkflow.js";
 /** Obsidian 노트 basename으로 안전한 문자열 (링크 해석은 basename 기준). */
 function safeName(s) {
     return s.replace(/[\\/:*?"<>|#^[\]]/g, "-").replace(/\s+/g, " ").trim();
@@ -98,9 +99,9 @@ export function exportToVault(args) {
         metaLines.push(`- 비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 (${c.resolved ? "해소" : "미해결"})`);
     }
     for (const g of state.gate_jumps) {
-        // killed 게이트도 jumped_to가 null이라 예전 삼항은 "진행"으로 적었다 — vault만 보는 사람에게 거짓이 된다.
-        const outcome = g.killed ? "폐기 — run 종료" : g.jumped_to ? `${g.jumped_to} 되돌림` : "진행";
-        metaLines.push(`- 게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${outcome}`);
+        // [A-2] 결과를 추론하지 않고 outcome을 읽는다 (CLI와 같은 함수). 예전 삼항은 폐기와 실패를
+        // 전부 "진행"으로 적었고, vault만 보는 사람에게 그것은 거짓 영수증이었다.
+        metaLines.push(`- 게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${gateOutcomeLabel(g)}`);
     }
     for (const s of state.spawned_agents) {
         metaLines.push(`- 분화: ${s.id} (${s.name}) — ${s.executed ? "실행됨" : "계획만"}`);
