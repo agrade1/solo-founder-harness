@@ -108,7 +108,8 @@ const inline = (items) => items.map((i) => `\`${i}\``).join(" · ");
 export function dagContractBriefing() {
     const required = DAG_NODE_KEYS.filter((k) => !DAG_NODE_OPTIONAL_KEYS.includes(k));
     return [
-        "## 산출물 계약 — task DAG 문서 (아래 규칙은 검증기 `validateTaskDag`에서 그대로 파생했다)",
+        "## 산출물 계약 — task DAG 문서 (아래 규칙은 검증기 `validateTaskDag`에서 그대로 파생했다 — " +
+            "**단 1건, `provides` 개수 지침은 검증기가 아니라 live 실행층 실측 제약이며 그 줄에 그렇게 적혀 있다**)",
         "",
         `- 문서 최상위 key는 정확히 이것뿐이다(다른 key는 거부): ${inline(DAG_DOCUMENT_KEYS)}`,
         `- \`schemaVersion\`은 문자열 "${TASK_DAG_SCHEMA_VERSION}"이다.`,
@@ -127,6 +128,28 @@ export function dagContractBriefing() {
         `- \`ownership\`은 1개 이상 ${LIMITS.maxOwnershipPaths}개 이하, \`provides\`/\`consumes\`는 각각 ${MAX_DAG_CONTRACT_PATHS}개 이하다.`,
         `- \`dependsOn\`은 **이 문서 안에 있는** taskId만 가리킨다(${LIMITS.maxDependsOn}개 이하). 자기 자신·중복·순환은 거부된다.`,
         "- `provides`는 그 task가 만들 산출물이며 **자기 `ownership` 안**이어야 한다.",
+        // **C-117 결정 ⓐ — 계획층에서 푼다.**
+        //
+        // **관측(인과가 아니다)**: 문서 전문 2개를 한 task의 `provides`에 담은 live task가
+        // `worker_plan_absent`로 2/2 실패했고, 같은 run의 1-file task는 성공했다(17,969B). transcript는 설계상
+        // 미저장이라 **원인은 미확정**이다. 그리고 **반례가 있다**: 다른 1-file task(ux-flows)도 같은 코드로
+        // 죽었다(가짜 tool-use 출력) — 즉 `worker_plan_absent`는 파일 수와 무관한 실패 모드를 포함하며
+        // "provides 2개가 계획 추출을 깨뜨린다"는 **관측이 뒷받침하지 않는 일반화**다(적대적 리뷰 A-2에서 정정).
+        //
+        // 그래서 이 지침의 근거는 인과가 아니라 **위험 회피 + 재시도 단위 축소**다: 나누면 multi-provides라는
+        // 조건 자체가 사라지고(논리적 사실), 실패했을 때 다시 도는 단위가 task 하나로 작아진다.
+        //
+        // 기각한 대안 ⓑ **turn 분할 발행**(한 task가 여러 turn에 걸쳐 provides를 하나씩 낸다): plan schema ·
+        // kernel permit · autopilot loop · 영수증을 전부 건드리는 **계약층** 변경인데 지금 그것을 요구하는
+        // 실사용 경로가 없다. 문서 단계는 task 분할로 완전히 표현되고 재시도 단위도 task 하나로 작아진다.
+        //
+        // 검증기(`validateTaskDag`)는 **조이지 않았다**: 손으로 쓴 DAG의 multi-provides는 offline backend에서
+        // 멀쩡히 돈다 → 이것은 문서 계약이 아니라 live 실행층의 실측 제약이고, 그래서 검증 규칙이 아니라
+        // **지침 한 줄**로만 산다(그 사실을 줄 안에 적어 헤더의 "검증기에서 파생했다"와 모순되지 않게 한다).
+        "- `provides`는 **task당 1개**로 하라 — 산출물이 여러 개인 단계는 task를 나눠 각각 1개씩 `provides`하고 " +
+            "`dependsOn`/`consumes`로 이어라. (**검증기 규칙이 아니라 live 실행층 관측에서 나온 지침이다**: 실측에서 " +
+            "2-file task가 2/2 실패했고 1-file 대조군은 성공했다 — **원인은 미확정**이다. 위험 회피와 재시도 단위 " +
+            "축소를 위해 나눈다 — C-117.)",
         "- `consumes`는 그 task가 읽을 남의 산출물이며 **이행적 의존 중 누군가가 `provides`로 선언한 것**이어야 한다.",
         "- 서로 의존으로 묶이지 않은(= 동시에 돌 수 있는) 두 task는 **같은 경로를 소유할 수 없다**. 겹쳐야 한다면 " +
             "`dependsOn`으로 순서를 주거나 같은 `resourceClasses`를 공유해라.",
