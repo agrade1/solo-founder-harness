@@ -1,23 +1,13 @@
-import { createInterface } from "node:readline";
-import { join } from "node:path";
 import { runWorkflow, loadRunState, readRunState, ideaGateStatus, snapshotProjectIdea, gateOutcomeLabel } from "../core/runWorkflow.js";
 import { loadWorkflows, findWorkflow, hasKillGate } from "../core/registry.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
 import { runHandoffCommand } from "./handoff.js";
+// [B-41/1단] 승인자는 공유 모듈 하나다 — pipeline next도 같은 함수를 쓴다(EOF/close/error에서
+// 정확히 한 번 false). 여기 지역 사본이 있으면 두 진입점의 비TTY 동작이 갈린다.
+import { stdinApprover } from "./approver.js";
 import type { Provider } from "../providers/provider.js";
-
-/** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
-function stdinApprover(message: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(`\n[승인 필요] ${message} (y/N): `, (ans) => {
-      rl.close();
-      resolve(/^y(es)?$/i.test(ans.trim()));
-    });
-  });
-}
 
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(
