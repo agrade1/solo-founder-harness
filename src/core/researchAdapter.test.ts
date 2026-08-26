@@ -291,10 +291,18 @@ test("[C-126/E4] 셸이 이긴다 · `process.env`를 **변경하지 않는다**
 
 test("[C-126/E5] **추적 중인 `.env`면 키를 읽지 않는다** — 회전·git rm --cached 안내 · history 정리 무주장", () => {
   const dir = tmpGitRepo();
+  // 실측(mutation n2에서 발견): `git check-ignore`는 **추적 중인 경로를 ignore로 보고하지 않는다** —
+  // gitignore가 tracked 파일에 효력이 없기 때문이다. 그래서 미ignore 검사만으로도 **거부 자체는**
+  // 일어난다. 추적 검사가 하는 일은 두 가지이고 그것이 여기서 재는 것이다:
+  //   ⓐ **진단이 맞다** (회전 + `git rm --cached` vs "gitignore 규칙을 확인하라" — 후자는 오답이다)
+  //   ⓑ **쓸데없이 `.gitignore`를 건드리지 않는다** (추적 파일에 규칙을 더해도 아무 효과가 없다)
+  writeFileSync(join(dir, ".gitignore"), "*.local\n", "utf8");
+  const giBefore = readFileSync(join(dir, ".gitignore"), "utf8");
   writeFileSync(join(dir, ENV_FILE_NAME), `TAVILY_API_KEY=${FAKE_KEY}\n`, "utf8");
   execFileSync("git", ["add", "-f", ENV_FILE_NAME], { cwd: dir, stdio: "ignore" });
 
   const r = resolveResearchKey({ root: dir, env: {} });
+  assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), giBefore, "추적 중인 .env에는 gitignore 규칙을 더하지 않는다 (효과가 없다)");
   assert.equal(r.key, null, "추적 중이면 키를 읽지 않는다");
   assert.equal(r.source, "refused");
   assert.equal(r.refusedCode, "env_file_tracked_by_git");
