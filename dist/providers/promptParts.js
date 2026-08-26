@@ -1,3 +1,4 @@
+import { CEO_DECISION_TOKENS } from "../core/validate.js";
 /**
  * AGENT_OUTPUT_SCHEMA를 따르는 프롬프트를 구성한다.
  * claude-code는 system+user를 한 프롬프트로 합쳐 stdin에, anthropic은 system/user로 분리해 사용.
@@ -16,6 +17,16 @@ export function buildPromptParts(input, providerId) {
     const revisionBlock = revisionRequest ? `\n---\n# 🔁 비평 반영 수정 지시\n\n${revisionRequest}\n` : "";
     const retryBlock = retryFeedback ? `\n---\n# ⚠️ 재작성 지시\n\n${retryFeedback}\n` : "";
     const spawnBlock = spawnRequest ? `\n---\n# 🧩 하위 에이전트 분화\n\n${spawnRequest}\n` : "";
+    // [B-40] 게이트 decider의 **정본 판정 절**을 최종 출력 지시에 싣는다.
+    // 이 목록이 모델이 마지막으로 읽는 섹션 계약이라, 여기에 없으면 역할 프롬프트에 계약이 있어도
+    // live 모델이 절을 빼고 → 게이트가 ceo_decision_absent로 정지한다(만족 불가능한 계약).
+    // 토큰 목록은 파서 allowlist(CEO_DECISION_TOKENS)와 같은 어휘를 쓴다 — 어긋나면 게이트가 멈춘다.
+    const decisionSection = agent.agent_id === "founder_ceo"
+        ? `\n\n**"## Decision" 절은 필수다** (하네스 게이트가 읽는 유일한 자리): 본문은 ` +
+            `${CEO_DECISION_TOKENS.map((t) => `\`${t}\``).join(" / ")} 중 **정확히 한 토큰**만 담은 한 줄이다 ` +
+            `("- 폐기" 형태). 설명·괄호·복수 토큰("축소 후 진행")을 넣지 마라 — 판정을 읽을 수 없으면 ` +
+            `워크플로가 멈춘다. 뉘앙스는 Main Judgment 산문에 쓴다.`
+        : "";
     const user = `# 너의 역할: ${agent.name} (${agent.role})
 
 아래는 이 역할의 상세 운영 프롬프트다. 이 지침에 따라 판단하라.
@@ -51,11 +62,11 @@ ${priorBlock}
 - input_sources: docs/00_IDEA.md, 이전 agent 결과
 
 이어서 다음 "## 섹션"을 모두 포함한다 (헤더명은 정확히 일치시킬 것):
-Input Summary / Main Judgment / Key Findings / Decisions / Assumptions /
+${agent.agent_id === "founder_ceo" ? "Decision / " : ""}Input Summary / Main Judgment / Key Findings / Decisions / Assumptions /
 Risks(하위 "### Critical" "### High" "### Medium" "### Low") /
 Recommended Next Actions(1~3개) / Next Agent(값: ${nextAgentLine}) /
 Artifacts To Update(값: ${agent.default_output}) / Handoff Notes.
 
-Main Judgment은 결론을 먼저 한 문장으로 제시하고, 각 섹션은 이 역할 관점에서 구체적으로 채운다.${revisionBlock}${retryBlock}${spawnBlock}`;
+Main Judgment은 결론을 먼저 한 문장으로 제시하고, 각 섹션은 이 역할 관점에서 구체적으로 채운다.${decisionSection}${revisionBlock}${retryBlock}${spawnBlock}`;
     return { system: commonPrompt, user };
 }

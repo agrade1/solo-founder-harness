@@ -46,6 +46,17 @@ export function commonPromptExists(reg) {
 export function findAgent(reg, agentId) {
     return reg.agents.find((a) => a.agent_id === agentId);
 }
+/**
+ * [B-40] 이 workflow가 kill 게이트를 가졌는가 = **폐기 재평가를 돌릴 수 있는 workflow**인가.
+ * 폐기 잠금 상태에서 유일하게 허용되는 실행이 이것이라, run 커맨드와 runWorkflow가 같은 판정을 써야 한다.
+ */
+export function hasKillGate(wf) {
+    return wf.steps.some((s) => isGate(s) && (s.gate.kill ?? []).length > 0);
+}
+/** [B-40] kill 게이트를 가진 workflow id 목록 (거부 메시지에 "무엇을 돌려라"를 적기 위해). */
+export function reevaluationWorkflowIds(absPath) {
+    return loadWorkflows(absPath).filter(hasKillGate).map((w) => w.workflow_id);
+}
 /** workflow_id로 workflow 정의를 찾는다. 없으면 undefined. */
 export function findWorkflow(workflows, workflowId) {
     return workflows.find((w) => w.workflow_id === workflowId);

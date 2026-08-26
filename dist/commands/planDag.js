@@ -46,7 +46,7 @@
  */
 import { readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { killedIdeaBlock, loadRunStateAt } from "../core/runWorkflow.js";
+import { ideaGateStatus, readRunStateAt } from "../core/runWorkflow.js";
 import { LIMITS, OrchestrationError } from "../exec/orchestrationTypes.js";
 import { SPECIALIST_ROLES, validateApprovalManifest } from "../exec/approvalManifest.js";
 import { DAG_DOCUMENT_KEYS, DAG_NODE_KEYS, DAG_NODE_OPTIONAL_KEYS, MAX_DAG_CONTRACT_PATHS, MAX_DAG_TASKS, TASK_DAG_SCHEMA_VERSION, validateTaskDag, } from "../exec/taskDag.js";
@@ -112,10 +112,11 @@ function readIdeaDocument(file) {
 function assertIdeaNotKilled(idea) {
     const ideaAbs = resolve(idea);
     const projectRoot = dirname(dirname(ideaAbs));
-    const state = loadRunStateAt(join(projectRoot, "outputs", "run_state.json"));
-    const blocked = killedIdeaBlock(state, ideaAbs);
-    if (blocked)
-        throw new OrchestrationError("dag_materialize_seed_rejected", blocked);
+    const read = readRunStateAt(join(projectRoot, "outputs", "run_state.json"));
+    // allowReevaluation=false: DAG 초안은 재평가가 아니다. 잠금이 걸려 있으면 계속 거부한다.
+    const gate = ideaGateStatus(read, ideaAbs);
+    if (!gate.ok)
+        throw new OrchestrationError("dag_materialize_seed_rejected", `${gate.code}: ${gate.message}`);
 }
 /** `["a","b"]` → `` `a` · `b` `` (상수 목록을 지시 산문에 싣는 유일한 형식). */
 const inline = (items) => items.map((i) => `\`${i}\``).join(" · ");
