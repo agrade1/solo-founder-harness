@@ -4,10 +4,25 @@
 
 - **결정 — `agents/founder_ceo_agent.md`의 출력 계약에 `## Decision` 절을 추가하고**(본문은
   `진행`|`축소`|`검증`|`보류`|`폐기` 중 **정확히 한 토큰**), 게이트는 새 파서
-  `extractCeoDecision`으로 **그 절만** 읽는다. 절이 없거나 토큰이 0개·2개 이상이면 run을
-  `failed`(`ceo_decision_absent`/`ceo_decision_ambiguous`)로 멈춘다 — **조용히 진행하는 경로를 없앴다.**
-  토큰 목록은 상수 `CEO_DECISION_TOKENS` 하나에서 파생하고 `registry/workflows.json`의 gate
-  `on`/`kill` 키도 그 어휘를 쓴다(로더 테스트가 어휘 불일치를 거부한다).
+  `extractCeoDecision`으로 **그 절만** 읽는다. 파서는 코드펜스 안의 헤더·본문을 무시하고,
+  펜스 밖 `## Decision` 절이 정확히 1개·본문 비공백 줄이 정확히 1줄·그 줄이 토큰과 **완전 일치**할
+  때만 판정을 낸다(부분문자열 아님 — "진행성"·"축소 후 진행" 모두 거부).
+  **게이트 통과는 `진행` 토큰 하나뿐이다**: `보류`·매핑 없는 토큰·되돌림 예산 소진·되돌림 대상 부재는
+  전부 `failed`로 멈추며 사유 코드를 구분한다(`ceo_decision_hold` / `ceo_decision_unmapped` /
+  `gate_jump_budget_exhausted` / `gate_jump_target_missing` / `ceo_decision_absent` /
+  `ceo_decision_ambiguous`).
+- **"조용히 진행하는 경로"의 범위를 정확히 적는다** (초판은 과대주장이었다 — 실제로는
+  ⓐ 비진행 토큰이 암묵 진행으로 떨어지고 ⓑ 첫 절·부분문자열이라 판정을 심을 수 있었다. 둘 다 위에서
+  닫았다): **B-40이 닫은 것은 프로젝트 스코프 경로(`run` · `task-prompt` · `plan-dag`)뿐이다.**
+  남는 우회는 그대로 있고 종결을 주장하지 않는다 — ① `autopilot-create` 직접 호출(DAG를 손으로 써서
+  넘기는 경로 · 이번 스코프 밖) ② `outputs/run_state.json`을 사람이 지우면 잠금 근거가 사라진다
+  ③ 아이디어 문서만 새 프로젝트로 복사하면 그 프로젝트엔 폐기 기록이 없다 ④ `exec`/`mission`은
+  project/run_state 개념이 없어 잠금이 닿지 않는다.
+- **토큰 목록은 "단일 출처"가 아니다**(정정): 같은 낱말이 CEO 프롬프트 · `registry/workflows.json`의
+  gate 키 · `CEO_DECISION_TOKENS` 상수에 **수기로 중복**된다(프롬프트도 JSON도 TS 상수를 import할 수
+  없다). 상수의 실제 역할은 **파서 allowlist + registry 회귀 대조**이며, workflows.json 키가 목록에서
+  벗어나면 로더 테스트가 red가 된다. **프롬프트 쪽 어긋남은 코드로 잡히지 않는다** — 그것이 남는 위험이고,
+  그래서 `promptParts`가 최종 출력 지시에 토큰 목록을 상수에서 렌더해 최소한 live 경로는 묶어 뒀다.
 - **근거**: 기존 게이트는 `extractDecision`(Main Judgment + Decisions 섹션의 **부분문자열** 매칭)을 썼다.
   오탐("폐기하지 않는다" → kill)은 멈추는 쪽이라 참을 수 있지만 **누락은 fail open이고 그것이 이 게이트의
   목적을 깬다**: CEO 프롬프트 §8-E가 실제로 쓰는 "더 이상 시간을 쓰지 않는다", 그리고 "중단한다"·"드롭한다"
@@ -24,13 +39,24 @@
   비용이 비대칭이라 멈추는 쪽을 택했다.
 - **`mockProvider`도 같은 계약을 지킨다**(founder_ceo 출력에 `## Decision`/기본 `진행`): 그러지 않으면
   mock 기반 acceptance·golden 전부가 `ceo_decision_absent`로 죽어 **만족 불가능한 계약**이 된다.
-- **폐기의 효력은 digest로 잠근다**: `killed_by.idea_sha256`(kill 시점 `docs/00_IDEA.md` 해시)를 기록하고,
-  fresh run·`task-prompt`·`plan-dag`가 같은 함수(`killedIdeaBlock`)로 거부한다. `--force` 같은 플래그를
-  기각한 이유: "사람이 아이디어를 실제로 고쳤는가"가 판정을 무를 수 있는 유일하게 정직한 신호이고,
-  플래그는 그 질문에 답하지 않고 우회만 한다. digest가 없으면(파일 부재) **거부 쪽으로 닫는다**.
+- **폐기의 효력은 두 필드로 잠근다**(초판의 digest-변경-해제는 결함이었다 — 공백 하나만 바꿔도
+  기존 killed 산출물로 지시문·DAG를 만들 수 있었다. **아이디어 변경은 "재평가가 필요하다"는 신호일 뿐
+  "통과했다"는 증거가 아니다**):
+  ① `kill_history`(폐기 이력 · state를 쓸 때마다 **carry forward** — 이어받지 않으면 kill 뒤 아무 run이
+  증거를 지운다) ② `cleared_idea_sha256`(**kill 게이트가 '진행' 판정을 낸 그 순간**의 아이디어 digest —
+  다른 경로에서 적으면 그 경로가 곧 우회 통로다). 판정은 **단일 함수 `ideaGateStatus`** 하나이고
+  `run`·`task-prompt`·`plan-dag`가 그것만 쓴다. 잠금 중 허용되는 것은 **kill 게이트가 있는 workflow의
+  새 run 하나(=재평가)**뿐이며, `task-prompt`·`plan-dag`·kill 게이트 없는 workflow는 계속 거부한다.
+- **`--force` 같은 플래그를 기각한 이유**: 잠금을 푸는 조건이 "사람이 우회를 선언했다"가 되면 그 선언이
+  곧 게이트의 대체물이 된다. 해제 권한은 게이트에만 둔다.
+  단, digest가 감지하는 것은 **바이트 변경**뿐이다(정정 — 초판은 "실제로 고쳤는가의 유일한 신호"라고
+  적었다): 같은 프로젝트의 **읽을 수 있는** state에 대한 바이트 비교이며 공백만 바꿔도 다른 digest다.
+  그래서 digest는 "해제"가 아니라 "해제 증거의 신원"으로만 쓴다.
+- **손상된 state는 부재가 아니다**: `JSON.parse` 실패를 `null`로 접으면 소비자가 비차단으로 다뤄
+  **깨진 state를 새 state로 덮어쓴다**(system of record 소실). `readRunState`가 부재/손상을 구분하고
+  세 소비자 전부 `run_state_unreadable`로 fail closed한다. 아이디어 파일 부재도 같은 방향(`idea_missing`).
 - **한계**: `plan-dag --idea`는 `<project>/docs/00_IDEA.md` 꼴 경로만 프로젝트로 되짚는다(그 위치의
-  `outputs/run_state.json`만 본다). 프로젝트 밖 임의 경로의 아이디어는 이 검사가 막지 못하고,
-  `exec`/`mission`은 project/run_state 개념이 없어 범위 밖이다(대장에 미차단 경로로 등재).
+  `outputs/run_state.json`만 본다). 프로젝트 밖 임의 경로의 아이디어는 이 검사가 막지 못한다.
 
 ## 2026-08-13 (V3 M8 — **접근성 검증 대상은 산출물이 직접 선언한다**)
 
