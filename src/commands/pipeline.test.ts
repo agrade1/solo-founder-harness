@@ -20,12 +20,13 @@ import {
   checkpointIdFor,
   PIPELINE_LOCK_REL,
   lockPipeline,
+  seedFindingsFrom,
   type PipelineLease,
   type PipelineState,
 } from "../core/pipeline.js";
 import { projectPaths } from "../core/project.js";
 import { IDEA_REL, loadRunState, runWorkflow } from "../core/runWorkflow.js";
-import { buildTaskPrompt } from "../core/taskPrompt.js";
+import { buildTaskPrompt, generateTaskPrompt } from "../core/taskPrompt.js";
 import { buildSummary } from "../core/summary.js";
 import { runHandoff } from "../core/handoff.js";
 import { mockProvider } from "../providers/mockProvider.js";
@@ -834,21 +835,81 @@ test("[B-41/P12] seed는 **저장본**에서 온다 — 2단계 입력에 1단�
     "seed는 agent별 하나 (중복 누적 없음)",
   );
 
-  // seed는 durable 영수증에서 오므로, 그 문서를 지워도 값이 그대로다(파일 재독이면 여기서 red).
+  // [Codex A-12] **소비 함수를 직접 재는 것이 유일한 결정적 관측이다.**
+  // 예전 판은 ⓐ 문서를 바꾸지 않은 채 seed 전달만 봤고 ⓑ 삭제 fixture는 drift가 먼저 return해서
+  // `seedFindingsFrom()`에 도달하지 않았고 ⓒ 마지막 단정은 state 문자열을 다시 읽은 것뿐이었다 —
+  // 즉 "파일을 다시 읽지 않는다"를 아무것도 증명하지 않았다(m17이 core 단위로만 잡았다).
+  // 지금은 **문서를 바꾼 뒤/지운 뒤 `seedFindingsFrom(state)`를 직접 호출**해 값이 영수증 그대로임을 본다.
   const state2 = stateOf(name);
-  const pending2 = state2.pending!;
-  await quiet(() => approveCheckpoint({ project: name, stage: "mvp-planning", checkpointId: pending2.checkpoint_id, now: () => FIXED }));
-  rmSync(join(root, "docs/01_RESEARCH.md"));
+  await quiet(() => approveCheckpoint({ project: name, stage: "mvp-planning", checkpointId: state2.pending!.checkpoint_id, now: () => FIXED }));
+
+  const researchDoc = join(root, "docs/01_RESEARCH.md");
+  // ⓐ 문서 **변경**: 파일을 재독하면 seed 문장이 이 내용으로 바뀐다.
+  writeFileSync(researchDoc, "# 바꿔치기\n\n## Main Judgment\n\n- [TAMPERED] 전혀 다른 판단\n", "utf8");
+  let seeds = seedFindingsFrom(stateOf(name));
+  assert.ok(seeds.includes(researchSeed), `저장본 seed가 그대로다 (실제: ${JSON.stringify(seeds)})`);
+  assert.ok(!seeds.some((s) => s.includes("TAMPERED")), "바뀐 파일 내용이 seed에 실리지 않는다");
+
+  // ⓑ 문서 **삭제**: 파일을 재독하면 예외(ENOENT)가 난다 — 저장본에서 오므로 아무 일도 없다.
+  rmSync(researchDoc);
+  seeds = seedFindingsFrom(stateOf(name));
+  assert.ok(seeds.includes(researchSeed), "문서가 사라져도 seed 값은 영수증 그대로다");
+
+  // ⓒ 그리고 그 삭제는 **drift**로 다음 단계를 막는다(seed 경로와 drift 경로는 별개 판정이다).
   const stage3 = counting();
   const r = await quiet(() => nextPipeline({ project: name, providerOverride: stage3, now: () => FIXED, internalApprover: async () => true }));
-  // 승인 산출물이 사라졌으므로 drift로 거부된다 — 그런데 그 판정은 **파일**을 보고, seed는 저장본에 남아 있다.
   assert.equal(r.code, "pipeline_artifact_drift", "승인 문서 삭제도 drift다");
   assert.equal(stage3.calls, 0);
-  assert.equal(
-    stateOf(name).checkpoints[0].seeds.find((s) => s.agent_id === "research")!.line,
-    researchSeed,
-    "문서가 사라져도 영수증의 seed 값은 그대로다 (소비 시 파일을 다시 읽지 않는다)",
-  );
+  rmProject(name);
+});
+
+// ── 결정 1: 지시문 멱등성 ─────────────────────────────────────
+test("[B-41/결정1] 작업 지시문은 **멱등**하다 — 날짜가 달라도 바이트가 같아서 자기 게이트를 오염시키지 않는다", async () => {
+  const name = "_b41_idem";
+  await runToCompletion(name);
+  const root = projectPaths(name).root;
+  const abs = join(root, "outputs/claude_code_task_prompt.md");
+  const approved = readFileSync(abs);
+
+  // dev-handoff 단계가 승인한 그 파일을, **다른 날짜**로 다시 생성한다(완료 후 정상 사용 경로).
+  buildTaskPrompt(name, "2026-01-01");
+  const rel = generateTaskPrompt(name, "2027-12-31");
+  assert.equal(rel, "outputs/claude_code_task_prompt.md");
+  assert.equal(readFileSync(abs).equals(approved), true, "다른 날짜로 재생성해도 **바이트 동일**");
+  assert.ok(!readFileSync(abs, "utf8").includes("2027-12-31"), "본문에 날짜가 없다");
+
+  // 그래서 그 다음 소비가 계속 열려 있다 — 예전엔 여기서 drift로 막혔다(탈출구가 restart뿐이었다).
+  assert.match(buildTaskPrompt(name, "2028-06-06"), /## Task/, "재생성 후에도 지시문 생성이 열려 있다");
+  const h = await quiet(() => runHandoff({ project: name, cwd: tmpdir(), isTTY: false, logger: () => {} }));
+  assert.notEqual(h.action, "not_completed", `handoff가 drift로 막히지 않는다 (실제 ${h.action})`);
+  rmProject(name);
+});
+
+// ── 결정 2: 안내 품질 ─────────────────────────────────────────
+test("[B-41/결정2] handoff --print는 거부 상태를 함께 알리고, status는 하류 막힘을 표시한다", async () => {
+  const name = "_b41_print";
+  await runToCompletion(name);
+  const root = projectPaths(name).root;
+
+  // 대조군: 정상 완료면 경고 없이 명령만 안내한다.
+  let printed: string[] = [];
+  let out = await quiet(() => runHandoff({ project: name, print: true, cwd: tmpdir(), logger: (l) => printed.push(l) }));
+  assert.equal(out.action, "printed");
+  assert.equal(printed.some((l) => l.includes("거부됩니다")), false, "막힌 게 없으면 경고하지 않는다");
+
+  // 승인 문서를 바꾸면: --print는 **여전히 실행·상태 변경이 없지만** 곧 실패할 것을 말한다.
+  writeFileSync(join(root, "docs/06_CEO_DECISION.md"), "# 바꿔치기\n", "utf8");
+  printed = [];
+  out = await quiet(() => runHandoff({ project: name, print: true, cwd: tmpdir(), logger: (l) => printed.push(l) }));
+  assert.equal(out.action, "printed", "print 계약은 그대로 (게이트 앞 반환)");
+  assert.ok(printed.some((l) => l.includes("거부됩니다") && l.includes("pipeline_artifact_drift")), `거부 사유를 함께 출력 (실제: ${printed.join(" | ")})`);
+  assert.ok(printed.some((l) => l.startsWith("harness handoff")), "안내 명령 자체는 그대로 출력한다");
+
+  // status도 "완료 — 직접 실행하세요"만 말하지 않는다.
+  const log = await captureLogs(() => void statusPipeline({ project: name }));
+  assert.match(log, /하류가 막혀 있습니다/);
+  assert.match(log, /pipeline_artifact_drift/);
+  assert.doesNotMatch(log, /파이프라인 완료 — 다음은 사람이 직접 실행합니다/, "막힌 상태에서 실행을 권하지 않는다");
   rmProject(name);
 });
 

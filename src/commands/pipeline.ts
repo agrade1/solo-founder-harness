@@ -170,7 +170,15 @@ export function statusPipeline(o: { project: string }): PipelineCommandResult {
     console.log(`재평가: harness run <kill 게이트 workflow> --project ${st.project} (게이트가 '진행'을 내면 잠금이 풀립니다)`);
     console.log(`다시 세우기: harness pipeline restart --project ${st.project} (기존 state는 지우지 않고 rename 보관)`);
   } else {
-    printCompletedGuidance(st.project);
+    // [B-41/결정 2] 완료 상태에서도 **하류가 막혀 있으면 그 사실을 먼저 말한다.** 예전 status는
+    // drift가 있어도 "완료 — 직접 실행하세요"만 출력했다(오케스트레이터 스모크에서 실측).
+    const gate = pipelineGateStatus(read, root, "handoff");
+    if (!gate.ok) {
+      console.log("");
+      console.log(`⚠ 하류가 막혀 있습니다 — ${gate.message}`);
+    } else {
+      printCompletedGuidance(st.project);
+    }
   }
   // [표시 전용] 화해되지 않은 killed run도 사실대로 적는다 — **여기서 아무것도 쓰지 않는다**(status는 read-only).
   if (st.status !== "killed") {
