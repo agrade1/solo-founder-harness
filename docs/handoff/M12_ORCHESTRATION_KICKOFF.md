@@ -40,9 +40,11 @@ Opus 5가 개발, Fable(+Codex)이 비평 루프. MVP부터 그 뒤까지.
    4종 산출물 완성 · ⓑ는 `C-122`로 유예).
 2. **1순위 = 값싼 CLI slice**: `C-118`(resumeTask CLI — 두 세션 연속 스크립트로 때움) ·
    `C-120`(validate-approval에 audit 배선) · `C-124`(diagnostic을 사람용 렌더러에 노출) 묶음.
-3. 그 뒤 사용자 결정 대기: **L5b**(리뷰어 — 비평은 이제 Codex가 맡는다 · §0) · `C-93`(다른 레포 대상) ·
-   `B-10`(기능 구현 task) · **`C-123`**(consumes 경계 계약 결정 — bounded 발췌 자동 동봉 등 새 승인 축.
-   지금은 운영자 briefing 인라인 우회가 실증돼 있다).
+3. **전체 감사(2026-08-26 밤 · Codex) 이후 우선순위가 재정렬됐다** — 명확화된 목표(단계별 사용자
+   확인 게이트 · kill 게이트 · 리서치 API fallback)의 최소 골격: ① `B-40`(아이디어 kill 게이트 —
+   사용자 요구 1순위) ② `B-41`(단계 체크포인트 오케스트레이션) ③ `C-126`(research adapter
+   production 배선 + `.env`). 그 다음 `C-127`(v1 검증 차단) · `C-125`(아이디어 개정 루프) ·
+   `C-123`(consumes 계약 결정). 기존 후보(L5b · `C-93` · `B-10`)는 그 뒤.
 4. live 재실측 시 workspace·승인 생성기는 **세션 scratchpad에 새로 만든다**(세션 종료 시 소멸 —
    실물 예시는 판정 ⑦·⑧·⑩ 시퀀스와 `scripts/m12-l2b-offline-acceptance.mjs`가 정본).
 
