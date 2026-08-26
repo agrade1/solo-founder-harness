@@ -140,6 +140,10 @@
         "receipt_path": "outputs/research/receipt-a24a88a4abae0feb540a97a14dbb418e45d78903b7f8738afdf76edb90c1334d.json",
         "raw_paths": []
       }
-    ]
+    ],
+    "totals": {
+      "backend_calls": 0,
+      "results": 0
+    }
   }
 }
