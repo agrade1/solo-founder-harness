@@ -482,6 +482,29 @@ test("[M3b.2] run이 completed 아니면 handoff 거부(not_completed), spawn �
   rmSync(paths.root, { recursive: true, force: true });
 });
 
+test("[B-40] killed run(폐기 판정)도 handoff 거부(not_completed), spawn 없음 — 기존 completed 검사 그대로", async () => {
+  const name = "_h_killed";
+  const paths = projectPaths(name);
+  rmSync(paths.root, { recursive: true, force: true });
+  mkdirSync(paths.outputs, { recursive: true });
+  mkdirSync(paths.docs, { recursive: true });
+  const killedState = {
+    workflow_id: "idea-validation",
+    project: name,
+    provider: "mock",
+    status: "killed",
+    killed_by: { decider: "founder_ceo", decision: "폐기" },
+    resume_from: null,
+  };
+  writeFileSync(join(paths.outputs, "run_state.json"), JSON.stringify(killedState, null, 2) + "\n", "utf8");
+  const sp = captureSpawn();
+  const res = await runHandoff(baseOpts(name, { spawnInteractive: sp.fn }));
+  assert.equal(res.action, "not_completed", "폐기된 아이디어를 개발 착수로 넘기지 않는다");
+  assert.match(res.action === "not_completed" ? res.reason : "", /status=killed/);
+  assert.equal(sp.calls.length, 0);
+  rmSync(paths.root, { recursive: true, force: true });
+});
+
 test("[M3b.2] prompt 128KB 경계 초과 → 절대경로 읽기 지시로 대체", async () => {
   const name = "_h_128k";
   await completedProject(name);

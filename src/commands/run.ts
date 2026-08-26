@@ -4,6 +4,7 @@ import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
 import { runHandoffCommand } from "./handoff.js";
+import type { Provider } from "../providers/provider.js";
 
 /** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
 function stdinApprover(message: string): Promise<boolean> {
@@ -33,8 +34,9 @@ export async function runRun(
   handoffCwd?: string,
   handoffToolProfileId?: string, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
   handoffRunner: (o: { project: string; cwd?: string; yes?: boolean; toolProfileId?: string }) => Promise<unknown> = runHandoffCommand, // [M3b.2] 테스트 주입 seam
+  providerOverride?: Provider, // [B-40] 테스트 주입 seam — 등록된 provider id로는 만들 수 없는 판정 출력(예: CEO '폐기')이 필요할 때만. cli는 넘기지 않는다.
 ): Promise<void> {
-  const provider = getProvider(providerId);
+  const provider = providerOverride ?? getProvider(providerId);
   const approve = yes ? async () => true : stdinApprover;
 
   if (resume) {
@@ -45,8 +47,9 @@ export async function runRun(
       process.exitCode = 1;
       return;
     }
-    if (prior.status === "completed") {
-      console.log(`이미 완료된 실행입니다 (${prior.workflow_id}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
+    // killed는 completed와 동급 terminal — 재개 대상이 아니고, 고친 아이디어로 새 run을 시작한다.
+    if (prior.status === "completed" || prior.status === "killed") {
+      console.log(`이미 종료된 실행입니다 (${prior.workflow_id}, status=${prior.status}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
       return;
     }
     console.log(`workflow 재개: ${workflowName} (project: ${project}, provider: ${provider.id}, step ${prior.resume_from}부터)`);
@@ -86,7 +89,8 @@ export async function runRun(
     console.log(`디자인 게이트: ${state.design_gate.status}${state.design_gate.tokens_hash ? ` (tokens ${state.design_gate.tokens_hash.slice(0, 12)}…)` : ""}`);
   }
   for (const g of state.gate_jumps) {
-    console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${g.jumped_to ? `${g.jumped_to} 되돌림` : "진행"}`);
+    const outcome = g.killed ? "폐기 — run 종료" : g.jumped_to ? `${g.jumped_to} 되돌림` : "진행";
+    console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${outcome}`);
   }
   if (state.spawned_agents.length > 0) {
     const executed = state.spawned_agents.filter((s) => s.executed).length;
@@ -122,6 +126,17 @@ export async function runRun(
     } catch (err) {
       console.warn(`Obsidian export 실패 (실행 결과는 저장됨): ${(err as Error).message}`);
     }
+  }
+
+  // kill 게이트 폐기 판정: 종료 코드 0. 게이트가 제 일을 했으므로 실행은 성공이다 —
+  // 비정상 종료 코드는 agent 실패·예산 초과·승인 거부(재개 가능한 중단)에만 쓴다.
+  // handoff로 이어붙이지 않는다: 죽은 아이디어를 개발 착수로 넘기지 않는 것이 이 게이트의 목적.
+  if (state.status === "killed") {
+    const k = state.killed_by;
+    console.log("");
+    console.log(`⛔ 폐기 판정: ${k?.decider ?? "(게이트)"}가 '${k?.decision ?? "폐기"}' 판정 — 후속 단계는 실행되지 않았습니다.`);
+    console.log(`재개(--resume)는 불가합니다. 아이디어를 고쳐 새 run으로 시작하세요: harness run ${state.workflow_id} --project ${project}`);
+    return;
   }
 
   // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호

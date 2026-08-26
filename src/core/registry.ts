@@ -30,6 +30,12 @@ export interface GateDef {
   decider: string; // 판정하는 agent (예: founder_ceo, 게이트 전에 이미 실행돼 있어야 함)
   on: Record<string, string>; // 판정 키워드 → 되돌아갈 agent id (예: {"축소":"pm","검증":"research"})
   max_jumps: number; // 되돌림 상한 (무한루프 방지)
+  /**
+   * 아이디어 kill 키워드 (예: ["폐기"]). 매칭되면 run은 terminal 상태 "killed"로 끝난다 — 되돌림도 진행도 없다.
+   * on보다 먼저 판정한다 (runWorkflow의 게이트 분기 주석 참조: fail closed).
+   * 미지정이면 kill 판정 자체가 없다 (기존 워크플로 동작 불변).
+   */
+  kill?: string[];
 }
 
 /** 동적 분화: planner가 선언한 하위 전문 에이전트를 (승인 시) 런타임 생성·실행. */

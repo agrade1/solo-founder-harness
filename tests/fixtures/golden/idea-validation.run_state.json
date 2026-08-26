@@ -12,6 +12,7 @@
   ],
   "failed_agent": null,
   "failed_reason": null,
+  "killed_by": null,
   "resume_from": null,
   "loop_state": null,
   "warnings": [
@@ -36,7 +37,13 @@
     }
   ],
   "critique_rounds": [],
-  "gate_jumps": [],
+  "gate_jumps": [
+    {
+      "decider": "founder_ceo",
+      "decision": null,
+      "jumped_to": null
+    }
+  ],
   "spawned_agents": [],
   "design_gate": null,
   "step_timings": [
@@ -71,6 +78,13 @@
     {
       "agent_id": "founder_ceo",
       "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 0,
+      "ok": true
+    },
+    {
+      "agent_id": "founder_ceo",
+      "kind": "gate",
       "started_at": "2026-01-01T00:00:00.000Z",
       "elapsed_ms": 0,
       "ok": true

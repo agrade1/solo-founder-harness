@@ -36,7 +36,7 @@ export type RunEvent =
       savedTo?: string;
     }
   | { type: "gate_jump"; decider: string; decision: string; target: string }
-  | { type: "run_end"; status: "completed" | "failed"; elapsedMs: number }
+  | { type: "run_end"; status: "completed" | "failed" | "killed"; elapsedMs: number }
   // ── tool 이벤트 타입 골격 (M1: 타입만 정의, 방출 없음. 실제 배선은 M3+) ──
   | { type: "tool_start"; server: string; tool: string; callId: string }
   | { type: "tool_end"; callId: string; ok: boolean; elapsedMs: number; resultBytes?: number }
