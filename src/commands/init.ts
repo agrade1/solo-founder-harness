@@ -1,7 +1,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, ensureDir } from "../core/project.js";
-import { ensureEnvTemplate } from "../core/envFile.js";
+import { ensureEnvFileReady } from "../core/envFile.js";
 import { TAVILY_SECRET_REF } from "../tools/tavilyBackend.js";
 
 /** init이 생성하는 필수 docs 6개 (spec 4.1 = acceptance Test 1) */
@@ -97,10 +97,21 @@ export function runInit(name: string): void {
   // [C-126] 리서치 키는 **사용자 단위**라 workspace 루트에 하나만 둔다(프로젝트별이 아니다).
   // 여기서 만들어 두는 이유: "키를 달라"는 안내가 실행 가능해야 한다 — 넣을 파일이 이미 있어야 한다.
   // 이미 있으면 한 글자도 건드리지 않는다.
-  const env = ensureEnvTemplate();
-  console.log(
-    env.created
-      ? `  ${env.path} 생성 — 외부 검색을 쓰려면 ${TAVILY_SECRET_REF}= 뒤에 **값만** 채우세요 (비워 두면 자체 리서치로 진행 · 커밋 금지)`
-      : `  ${env.path} 이미 존재 — 유지 (내용을 건드리지 않았습니다)`,
-  );
+  // **게이트를 거쳐야 한다**(오케스트레이터 CLI 실측 · A-5 잔여): 예전 판은 여기서
+  // `ensureEnvTemplate()`을 직접 불러 **git 안전 검사 없이** `.env`를 만들었다 — git repo에
+  // `.gitignore`가 없으면 키 파일이 **unignored로 생성**됐다(실측: `git check-ignore .env` 불일치).
+  // `ensureEnvFileReady`는 git 3-state → 추적 중 거부 → ignore 보장·재확인 → 그 다음 0600 생성이다.
+  // 거부는 `init` 자체를 실패시키지 않는다: 프로젝트 골격 생성은 리서치 키와 무관한 일이고,
+  // 거부 사유를 그대로 출력해 사람이 고칠 수 있게 한다(조용한 실패가 아니다).
+  const env = ensureEnvFileReady();
+  if (env.ok) {
+    console.log(
+      env.created
+        ? `  ${env.path} 생성 — 외부 검색을 쓰려면 ${TAVILY_SECRET_REF}= 뒤에 **값만** 채우세요 (비워 두면 자체 리서치로 진행 · 커밋 금지)`
+        : `  ${env.path} 이미 존재 — 유지 (내용을 건드리지 않았습니다)`,
+    );
+  } else {
+    console.log(`  ${TAVILY_SECRET_REF} 파일 준비를 건너뜀 (${env.code}) — 외부 검색 없이 자체 리서치로 진행됩니다`);
+  }
+  for (const n of env.notices) console.log(`    ${n}`);
 }
