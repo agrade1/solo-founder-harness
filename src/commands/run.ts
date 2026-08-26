@@ -1,7 +1,6 @@
 import { createInterface } from "node:readline";
 import { join } from "node:path";
-import { runWorkflow, loadRunState, readRunState, ideaGateStatus, IDEA_REL } from "../core/runWorkflow.js";
-import { projectPaths } from "../core/project.js";
+import { runWorkflow, loadRunState, readRunState, ideaGateStatus, snapshotProjectIdea, gateOutcomeLabel } from "../core/runWorkflow.js";
 import { loadWorkflows, findWorkflow, hasKillGate } from "../core/registry.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
@@ -38,6 +37,7 @@ export async function runRun(
   handoffToolProfileId?: string, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
   handoffRunner: (o: { project: string; cwd?: string; yes?: boolean; toolProfileId?: string }) => Promise<unknown> = runHandoffCommand, // [M3b.2] 테스트 주입 seam
   providerOverride?: Provider, // [B-40] 테스트 주입 seam — 등록된 provider id로는 만들 수 없는 판정 출력(예: CEO '폐기')이 필요할 때만. cli는 넘기지 않는다.
+  workflowsPath?: string, // [B-40] 테스트 주입 seam — 실제 registry엔 없는 게이트 형태(대상 부재 등)의 CLI 렌더를 재려면 필요. cli는 넘기지 않는다.
 ): Promise<void> {
   const provider = providerOverride ?? getProvider(providerId);
   const approve = yes ? async () => true : stdinApprover;
@@ -60,12 +60,8 @@ export async function runRun(
     // [B-40] 폐기 잠금: kill 게이트가 없는 다른 workflow로 새로 돌려 kill 증거를 completed로 덮어쓰는 길을
     // 막는다. 잠금 중 허용은 재평가 run(kill 게이트가 있는 workflow) 하나뿐.
     // runWorkflow도 같은 함수로 던지지만, CLI는 거부를 exit 2(무인 loop 진입점과 같은 코드)로 낸다.
-    const wf = findWorkflow(loadWorkflows(), workflowName);
-    const gate = ideaGateStatus(
-      readRunState(project),
-      join(projectPaths(project).root, IDEA_REL),
-      wf ? hasKillGate(wf) : false,
-    );
+    const wf = findWorkflow(loadWorkflows(workflowsPath), workflowName);
+    const gate = ideaGateStatus(readRunState(project), snapshotProjectIdea(project), wf ? hasKillGate(wf) : false);
     if (!gate.ok) {
       console.error(`⛔ ${gate.code}: ${gate.message}`);
       process.exitCode = 2;
@@ -86,6 +82,7 @@ export async function runRun(
     reporter: createProgressReporter(),
     toolProfileId,
     bare,
+    workflowsPath,
   });
 
   console.log("");
@@ -94,7 +91,9 @@ export async function runRun(
     console.log(`실패 agent: ${state.failed_agent}`);
   }
   if (state.status === "failed") {
-    if (!state.failed_agent && state.failed_reason) {
+    // [B-40/A-2] failed_agent가 있으면 사유를 숨기던 조건을 없앴다 — 게이트 실패는 failed_agent(decider)가
+    // 있으면서 사유 코드가 유일한 정보다("보류라서 멈췄나 예산이 떨어졌나"). agent 실패에도 해롭지 않다.
+    if (state.failed_reason) {
       console.log(`중단 사유: ${state.failed_reason}`);
     }
     console.log(`재개: harness run ${state.workflow_id} --project ${project} --resume`);
@@ -106,8 +105,7 @@ export async function runRun(
     console.log(`디자인 게이트: ${state.design_gate.status}${state.design_gate.tokens_hash ? ` (tokens ${state.design_gate.tokens_hash.slice(0, 12)}…)` : ""}`);
   }
   for (const g of state.gate_jumps) {
-    const outcome = g.killed ? "폐기 — run 종료" : g.jumped_to ? `${g.jumped_to} 되돌림` : "진행";
-    console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${outcome}`);
+    console.log(`게이트: ${g.decider} 판정 '${g.decision ?? "미매칭"}' → ${gateOutcomeLabel(g)}`);
   }
   if (state.spawned_agents.length > 0) {
     const executed = state.spawned_agents.filter((s) => s.executed).length;
