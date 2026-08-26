@@ -512,6 +512,25 @@ echo "$M12L2A_OUT" | grep -q "지시가 DAG node key 전부를 이름으로 싣�
 check "M12 L2a 문서 계약이 상수에서 파생됨 출력" $?
 
 echo ""
+echo "== Test 27: M12 L2b DAG 문서 → 승인 manifest 초안 — draft-approval · validate-approval (offline · 무과금) =="
+# `C-104`/판정 ⑥ ⓖ의 교훈대로 **만들자마자 여기 등록한다**.
+# 스크립트가 실제 argv로 `src/cli.ts`를 띄우므로 재기동 안에서 `--import tsx`를 스스로 챙긴다.
+M12L2B_OUT="$(node scripts/m12-l2b-offline-acceptance.mjs 2>&1)"
+M12L2B_RC=$?
+[ "$M12L2B_RC" -eq 0 ];                           check "M12 L2b acceptance exit 0" $?
+echo "$M12L2B_OUT" | grep -q "FAIL=0";            check "M12 L2b 내부 체크 전부 통과" $?
+echo "$M12L2B_OUT" | grep -q "각각 혼자서\*\* 승인 검증기를 막는다"
+check "M12 L2b 초안이 그대로 실행될 수 없음(sentinel마다 개별 거부) 출력" $?
+echo "$M12L2B_OUT" | grep -q "그 승인으로 autopilot-create가 12-task run을 만든다"
+check "M12 L2b 채운 승인이 실행 경로까지 감(대조군) 출력" $?
+echo "$M12L2B_OUT" | grep -q "PATH에 후보가 있어도 실행 파일 자리는 전부 sentinel이다"
+check "M12 L2b PATH 자동 발견이 없음 출력" $?
+echo "$M12L2B_OUT" | grep -q "digest가 그 파일 내용의 sha256이다"
+check "M12 L2b 명시한 경로만 digest가 실림(대조군) 출력" $?
+echo "$M12L2B_OUT" | grep -q "재실행은 채우던 초안을 덮어쓰지 않는다"
+check "M12 L2b 초안을 지우거나 덮어쓰지 않음 출력" $?
+
+echo ""
 echo "==================================="
 echo " 결과: PASS=$PASS  FAIL=$FAIL"
 echo "==================================="
