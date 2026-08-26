@@ -8,7 +8,7 @@ import { runHandoffCommand } from "./handoff.js";
 // [B-41/1단] 승인자는 공유 모듈 하나다 — pipeline next도 같은 함수를 쓴다(EOF/close/error에서
 // 정확히 한 번 false). 여기 지역 사본이 있으면 두 진입점의 비TTY 동작이 갈린다.
 import { stdinApprover } from "./approver.js";
-import { researchModeLines, resolveResearchRuntime } from "../core/researchRuntime.js";
+import { researchModeLines, researchOutcomeLines, resolveResearchRuntime } from "../core/researchRuntime.js";
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffToolProfileId, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
 handoffRunner = runHandoffCommand, // [M3b.2] 테스트 주입 seam
@@ -80,6 +80,10 @@ researchOverride) {
         research: researchRuntime,
     });
     console.log("");
+    // [C-126/A-6] **실행 후** 실제 mode 영수증. 위 사전 문구는 "설정됨"까지만 말한다 — 모델이 `none`을
+    // 냈는지, 결과가 0건이었는지, 중단됐는지는 여기서만 알 수 있다.
+    for (const line of researchOutcomeLines(state.research?.attempts))
+        console.log(line);
     console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
     if (state.failed_agent) {
         console.log(`실패 agent: ${state.failed_agent}`);

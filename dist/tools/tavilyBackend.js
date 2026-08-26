@@ -85,7 +85,16 @@ export function createTavilyBackend(opts = {}) {
             const results = json?.results;
             if (!Array.isArray(results))
                 throw new TavilyError("backend_malformed", "Tavily search 응답에 results 배열이 없다");
-            return results.map((r) => pick(r, "url", "content")).filter((r) => r !== null);
+            // [C-126/A-4] **해석 못 한 항목을 조용히 버리지 않는다.** 예전 `.filter(r !== null)`은
+            // ⓐ 전부 malformed면 `external_empty`("결과가 없었다")로, ⓑ 혼합이면 `external` partial 성공으로
+            // 둔갑시켰고, 영수증에는 그 사실도 drop counter도 없었다 — **거짓 영수증**이다.
+            // 빈 배열만 empty로 허용하고, 하나라도 해석 불가면 fail closed다.
+            const picked = results.map((r) => pick(r, "url", "content"));
+            const bad = picked.filter((r) => r === null).length;
+            if (bad > 0) {
+                throw new TavilyError("backend_malformed", `Tavily search 응답에 해석할 수 없는 항목이 ${bad}/${picked.length}건 있다`);
+            }
+            return picked;
         },
         async extract(url) {
             const json = await post(EXTRACT_URL, apiKey, { urls: [url], extract_depth: "basic" }, timeoutMs);
