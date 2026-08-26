@@ -19,6 +19,8 @@ import {
   readPipelineStateAt,
   checkpointIdFor,
   PIPELINE_LOCK_REL,
+  lockPipeline,
+  type PipelineLease,
   type PipelineState,
 } from "../core/pipeline.js";
 import { projectPaths } from "../core/project.js";
@@ -728,45 +730,45 @@ test("[B-41/P13] lease: 위조 nonce로 runWorkflow 직접 호출 → 거부 / �
   assert.equal(stateOf(name).current_index, 1, "현 단계 = mvp-planning");
 
   const guard = counting();
-  // lease 없음 — 일반 호출자는 활성 파이프라인에서 항상 거부다.
+  // ① lease 없음 — 일반 호출자는 활성 파이프라인에서 항상 거부다.
   await assert.rejects(
     runWorkflow({ workflowId: "mvp-planning", project: name, provider: guard, now: () => FIXED, approve: async () => true }),
     /pipeline_run_reserved/,
     "lease 없는 programmatic 호출도 거부",
   );
-  // lock이 없으면 어떤 nonce도 통하지 않는다.
-  await assert.rejects(
-    runWorkflow({ workflowId: "mvp-planning", project: name, provider: guard, now: () => FIXED, approve: async () => true, pipelineLease: { nonce: "f".repeat(16) } }),
-    /pipeline_run_reserved/,
-    "lock 부재 상태의 lease는 무효",
-  );
-  // lock을 만들고 **위조 nonce**로 시도.
+  // ② [Codex A-3] **손으로 만든 lease**는 통하지 않는다: lock 파일에서 nonce를 읽어도 발행 신원이 없다.
+  //    (예전 판은 nonce 문자열이 곧 자격증명이었고 `acquireLock`이 공개 API였다 = 누구나 단계를 돌렸다.)
   writeFileSync(join(root, PIPELINE_LOCK_REL), JSON.stringify({ pid: process.pid, nonce: "a".repeat(16), at: FIXED }), "utf8");
+  const forged = { stage: "mvp-planning" } as PipelineLease;
   await assert.rejects(
-    runWorkflow({ workflowId: "mvp-planning", project: name, provider: guard, now: () => FIXED, approve: async () => true, pipelineLease: { nonce: "b".repeat(16) } }),
+    runWorkflow({ workflowId: "mvp-planning", project: name, provider: guard, now: () => FIXED, approve: async () => true, pipelineLease: forged }),
     /pipeline_run_reserved/,
-    "nonce 불일치 거부",
+    "발행되지 않은 lease 거부 (lock을 쥐고 있어도)",
   );
-  // 유효 nonce라도 **다른 단계**의 workflow는 열리지 않는다.
-  await assert.rejects(
-    runWorkflow({ workflowId: "dev-preflight", project: name, provider: guard, now: () => FIXED, approve: async () => true, pipelineLease: { nonce: "a".repeat(16) } }),
-    /pipeline_run_reserved/,
-    "타 단계 workflowId 거부 — lease는 현 단계 하나만 연다",
-  );
-  assert.equal(guard.calls, 0, "네 시도 전부 모델 호출 0");
+  rmSync(join(root, PIPELINE_LOCK_REL));
+  assert.equal(guard.calls, 0, "두 시도 전부 모델 호출 0");
 
-  // 대조군: 유효 nonce + 현 단계 workflow는 통과한다 (위 단정들이 공허하지 않다).
+  // ③ 대조군: **lockPipeline의 runStage 안에서만** 통과한다 (위 거부들이 공허하지 않다).
   const ok = counting();
-  const r = await runWorkflow({
-    workflowId: "mvp-planning",
-    project: name,
-    provider: ok,
-    now: () => FIXED,
-    approve: async () => true,
-    pipelineLease: { nonce: "a".repeat(16) },
-  });
+  const lock = lockPipeline(root, () => FIXED);
+  assert.equal(lock.ok, true, "lock 획득");
+  if (!lock.ok) return;
+  const r = await lock.locked.runStage("mvp-planning", (lease) =>
+    runWorkflow({ workflowId: "mvp-planning", project: name, provider: ok, now: () => FIXED, approve: async () => true, pipelineLease: lease }),
+  );
   assert.equal(r.state.status, "completed");
   assert.ok(ok.calls > 0);
+  // ④ 같은 lock으로도 **타 단계**는 발행되지 않는다 → 그 workflow는 돌 수 없다.
+  const other = counting();
+  await assert.rejects(
+    lock.locked.runStage("dev-preflight", (lease) =>
+      runWorkflow({ workflowId: "dev-preflight", project: name, provider: other, now: () => FIXED, approve: async () => true, pipelineLease: lease }),
+    ),
+    /pipeline_lease_denied/,
+    "타 단계 workflow는 lease 발행 자체가 거부된다",
+  );
+  assert.equal(other.calls, 0, "타 단계 시도는 모델 호출 0");
+  lock.locked.release();
   rmProject(name);
 });
 

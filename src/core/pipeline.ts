@@ -12,7 +12,9 @@
  *    **아무것도 하지 않는다** — 파일 바이트 불변 + exit 2. 손상을 "파이프라인 없음"으로 접으면
  *    그 순간이 곧 우회 통로다(B-40이 run_state에서 같은 결함을 잡았다).
  * 2. **게이트는 action별**: 활성 파이프라인에서 일반 `run`은 거부(`pipeline_run_reserved`)다 —
- *    현 단계 실행 권한은 `pipeline next` 단독이고, 그것도 lock-lease로만 증명된다(§2.4).
+ *    현 단계 실행은 **lock을 쥔 파이프라인 연산 안에서만** 일어난다: lease는 `lockPipeline(...)`이
+ *    `runStage` 호출 동안만 발행하는 **불투명 객체**이고(문자열 위조 불가 · 끝나면 만료), 그것이
+ *    여는 것은 '현 단계 workflow 하나'뿐이다(§2.4 · Codex A-3).
  * 3. **승인은 바이트 결박이고 run 신원 결박이 아니다**: 같은 workflow를 다시 돌려 **완전히 같은
  *    바이트**가 나오면 checkpoint_id도 같고 approve는 통과한다(검토한 내용과 동일하므로 수용).
  *    "어느 run이었나"는 결박하지 않는다.
@@ -448,14 +450,12 @@ export function readLock(projectRoot: string): LockInfo | null {
   }
 }
 
-export type LockAcquire = { ok: true; nonce: string; release: () => void } | { ok: false; message: string };
-
 /**
- * O_EXCL(`flag:"wx"`)로 lock을 만든다 — 이미 있으면 실패다. **mutating 명령만** 부른다
- * (`status`·`unlock`은 lock 없이 동작한다: 진행 중 owner의 상태를 못 보면 사람은 owner를 죽이는
- * 것 말고 할 수 있는 일이 없고, dead owner의 lock을 회수하는 명령이 그 lock을 기다리는 것은 교착이다).
+ * O_EXCL(`flag:"wx"`)로 lock을 만든다 — 이미 있으면 실패다. **비공개다**(Codex A-3):
+ * export하면 임의 호출자가 nonce를 받아 lease를 만들 수 있고, 그러면 "실행은 파이프라인 연산
+ * 안에서만"이라는 문장이 거짓이 된다. 밖에서 쓰는 것은 `lockPipeline` 하나다.
  */
-export function acquireLock(projectRoot: string, now: () => string): LockAcquire {
+function acquireLockRaw(projectRoot: string, now: () => string): { ok: true; nonce: string; release: () => void } | { ok: false; message: string } {
   const abs = join(projectRoot, PIPELINE_LOCK_REL);
   const nonce = randomBytes(8).toString("hex"); // 16-hex
   try {
@@ -486,22 +486,91 @@ export function acquireLock(projectRoot: string, now: () => string): LockAcquire
 }
 
 /**
- * lease 검증 — **두 가지를 함께** 결박한다(§2.4):
- *  ⓐ lock 파일의 owner nonce가 일치한다 = 호출자가 실제로 단일 writer 권한을 쥐고 있다,
- *  ⓑ 그 단계가 **지금 단계**이고 status가 `awaiting_run`이다 = pending 생략·타 단계 실행이 안 열린다.
- *
- * raw 문자열 인자로 "나는 파이프라인이다"라고 주장하게 하면(개정 2안) 임의 호출자가 검사를 생략한다.
- * lease의 근거는 파일시스템에서 검증 가능한 사실이다. (한계: 같은 머신의 코드는 lock 파일에서
- * nonce를 읽어 위조할 수 있다 — 로컬 fs 접근자 위협은 범위 밖이다.)
+ * **불투명 lease.** 값이 아니라 **신원**이다: 아래 `LEASE_NONCE`에 등록된 객체만 통과한다.
+ * 그래서 lock 파일에서 nonce 문자열을 읽어도 lease를 만들 수 없다(예전 판의 구멍 — Codex A-3).
+ * `stage`는 표시·디버깅용이며 그것만으로는 아무 권한도 없다.
  */
-export function leaseAllowsRun(read: PipelineStateRead, projectRoot: string, workflowId: string, lease?: { nonce: string }): boolean {
-  if (!lease || typeof lease.nonce !== "string") return false;
+export interface PipelineLease {
+  readonly stage: string;
+}
+
+/**
+ * lease → 그것을 발행한 lock의 nonce. **이 모듈만** 넣는다(발행 기록 그 자체).
+ * `runStage` 호출이 끝나면 삭제하므로, 빼돌린 lease를 나중에 다시 쓸 수 없다.
+ */
+const LEASE_NONCE = new WeakMap<PipelineLease, string>();
+
+/**
+ * lease 검증 — **세 가지를 함께** 결박한다(§2.4 + A-3):
+ *  ⓐ 이 모듈이 **발행했고 아직 유효한** lease 객체다(WeakMap 신원 — 문자열 위조 불가),
+ *  ⓑ 그 lease를 낸 lock을 지금도 쥐고 있다(lock 파일 nonce 일치 — 중간에 회수됐으면 무효),
+ *  ⓒ 상태가 `awaiting_run`이고 그 단계의 workflow가 **바로 이 workflowId**다.
+ *
+ * 정직한 한계: 같은 프로세스의 코드는 `lockPipeline(...).runStage(...)`를 직접 부를 수 있다 —
+ * 그러나 그것이 곧 "lock을 쥐고 현 단계 하나를 돌리는" 그 연산이다. 열리는 것은 그 연산뿐이고
+ * pending 생략·타 단계·drift 생략은 lease로도 열리지 않는다.
+ */
+export function leaseAllowsRun(read: PipelineStateRead, projectRoot: string, workflowId: string, lease?: PipelineLease): boolean {
+  if (!lease) return false;
+  const nonce = LEASE_NONCE.get(lease);
+  if (nonce === undefined) return false; // 발행되지 않았거나 이미 만료된 lease
   if (read.kind !== "ok") return false; // 손상·부재 state에서는 lease가 아무것도 열지 않는다
   const st = read.state;
   if (st.status !== "awaiting_run") return false;
   const stage = currentStage(st);
   if (!stage || stage.kind !== "workflow" || stage.workflowId !== workflowId) return false;
-  return readLock(projectRoot)?.nonce === lease.nonce;
+  return readLock(projectRoot)?.nonce === nonce;
+}
+
+/** lock을 쥔 동안의 파이프라인 조작면. `read`는 **lock 획득 후 재독**한 것이다(A-7). */
+export interface LockedPipeline {
+  read: PipelineStateRead;
+  /**
+   * **현 단계 workflow 하나**를 lease 아래에서 돌린다. lease는 이 호출 동안만 살아 있고,
+   * 발행 조건(현 단계 workflow · awaiting_run)을 스스로 확인한다 — 조건이 아니면 발행하지 않는다.
+   */
+  runStage<R>(workflowId: string, run: (lease: PipelineLease) => Promise<R>): Promise<R>;
+  release(): void;
+}
+
+/**
+ * [Codex A-3] mutating 파이프라인 연산의 **유일한 진입점**: lock 획득 → (재독) → 현 단계 실행 →
+ * 해제. nonce는 이 함수 밖으로 나가지 않고, lease는 `runStage` 콜백 안에서만 유효하다.
+ *
+ * `status`·`unlock`은 이것을 쓰지 않는다(lock 없이 동작한다 — 진행 중 owner의 상태를 못 보면 사람은
+ * owner를 죽이는 것 말고 할 수 있는 일이 없고, 죽은 lock 회수가 그 lock을 기다리는 것은 교착이다).
+ */
+export function lockPipeline(projectRoot: string, now: () => string): { ok: true; locked: LockedPipeline } | { ok: false; message: string } {
+  const lock = acquireLockRaw(projectRoot, now);
+  if (!lock.ok) return { ok: false, message: lock.message };
+  const read = readPipelineStateAt(pipelineStatePath(projectRoot));
+  return {
+    ok: true,
+    locked: {
+      read,
+      release: lock.release,
+      async runStage<R>(workflowId: string, run: (lease: PipelineLease) => Promise<R>): Promise<R> {
+        // 발행 조건은 **최신 state**로 본다: runStage 호출 전에 이 연산이 state를 썼을 수 있다
+        // (파이프라인 생성 직후가 그 경우다).
+        const cur = readPipelineStateAt(pipelineStatePath(projectRoot));
+        if (cur.kind !== "ok") throw new PipelineError("pipeline_lease_denied", "pipeline_state를 읽을 수 없어 단계를 실행하지 않습니다");
+        const stage = currentStage(cur.state);
+        if (cur.state.status !== "awaiting_run" || !stage || stage.kind !== "workflow" || stage.workflowId !== workflowId) {
+          throw new PipelineError(
+            "pipeline_lease_denied",
+            `현 단계가 '${stage?.id ?? "(범위 밖)"}'(${cur.state.status})이라 workflow '${workflowId}' 실행을 허가하지 않습니다`,
+          );
+        }
+        const lease: PipelineLease = { stage: stage.id };
+        LEASE_NONCE.set(lease, lock.nonce);
+        try {
+          return await run(lease);
+        } finally {
+          LEASE_NONCE.delete(lease); // 빼돌린 lease를 나중에 재사용할 수 없다
+        }
+      },
+    },
+  };
 }
 
 // ── manifest · seed (§4.4 · §5) ─────────────────────────────────
@@ -730,7 +799,7 @@ export function pipelineGateStatus(read: PipelineStateRead, projectRoot: string,
       message:
         `pipeline_run_reserved: 이 프로젝트는 단계 체크포인트 파이프라인이 진행 중입니다 ` +
         `(단계 ${st.current_index + 1}/${DEFAULT_PIPELINE.length} '${stage?.id ?? "?"}' · ${st.status}).\n` +
-        `workflow 실행은 'harness pipeline next --project ${st.project}'가 전담합니다 — 직접 run으로 단계를 건너뛸 수 없습니다.\n` +
+        `workflow 실행은 'harness pipeline next --project ${st.project}'로 하세요 — 직접 run으로 단계를 건너뛸 수 없습니다.\n` +
         `상태 확인: harness pipeline status --project ${st.project}`,
     };
   }

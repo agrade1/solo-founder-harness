@@ -25,7 +25,7 @@ import {
   PIPELINE_ID,
   PIPELINE_LOCK_REL,
   PIPELINE_STATE_REL,
-  acquireLock,
+  lockPipeline,
   approvedDigests,
   buildManifest,
   checkpointIdFor,
@@ -46,6 +46,7 @@ import {
   type ArtifactEntry,
   type PipelineCheckpoint,
   type PipelinePending,
+  type LockedPipeline,
   type PipelineStage,
   type PipelineState,
   type PipelineStateRead,
@@ -219,30 +220,30 @@ export async function nextPipeline(o: NextPipelineOptions): Promise<PipelineComm
   const wfProblem = pipelineWorkflowProblem(loadWorkflows().map((w) => w.workflow_id));
   if (wfProblem) return reject("pipeline_stage_workflow_missing", wfProblem, 2);
 
-  // ② lock (mutating)
-  const lock = acquireLock(root, now);
+  // ② lock (mutating). [A-3] nonce는 이 경계 밖으로 나가지 않는다 — lease는 locked.runStage가 발행한다.
+  const lock = lockPipeline(root, now);
   if (!lock.ok) return reject("pipeline_locked", lock.message, 2);
+  const locked = lock.locked;
   try {
-    // [Codex A-7] **lock 획득 직후 재독·재검증**하고 그 snapshot만 mutation에 쓴다. ①의 read는
-    // lock 밖에서 찍힌 것이라, 그 사이 다른 프로세스가 전이를 끝냈으면 stale snapshot으로 덮어쓴다
-    // (승인 하나가 조용히 사라지는 부류다). 두 번 읽는 값이 여기서 결정적으로 다르다.
-    const fresh = readPipelineStateAt(pipelineStatePath(root));
-    if (fresh.kind === "unreadable") {
-      const gate = pipelineGateStatus(fresh, root, "run");
+    // [Codex A-7] lock 획득 **직후 재독·재검증**한 snapshot만 mutation에 쓴다(lockPipeline이 그 read를
+    // 들고 온다). ①의 read는 lock 밖에서 찍힌 것이라, 그 사이 다른 프로세스가 전이를 끝냈으면
+    // stale snapshot으로 덮어쓴다(승인 하나가 조용히 사라지는 부류다).
+    if (locked.read.kind === "unreadable") {
+      const gate = pipelineGateStatus(locked.read, root, "run");
       return reject("pipeline_state_unreadable", gate.ok ? "" : gate.message, 2);
     }
-    return await nextLocked(o, { project, root, now, read: fresh, nonce: lock.nonce });
+    return await nextLocked(o, { project, root, now, read: locked.read, locked });
   } finally {
-    lock.release();
+    locked.release();
   }
 }
 
 async function nextLocked(
   o: NextPipelineOptions,
   // read는 nextPipeline이 unreadable을 이미 걸러낸 뒤의 것이다 (타입으로 그 사실을 들고 온다).
-  ctx: { project: string; root: string; now: () => string; read: Exclude<PipelineStateRead, { kind: "unreadable" }>; nonce: string },
+  ctx: { project: string; root: string; now: () => string; read: Exclude<PipelineStateRead, { kind: "unreadable" }>; locked: LockedPipeline },
 ): Promise<PipelineCommandResult> {
-  const { project, root, now, nonce } = ctx;
+  const { project, root, now, locked } = ctx;
   let state: PipelineState;
 
   if (ctx.read.kind === "absent") {
@@ -361,20 +362,24 @@ async function nextLocked(
   );
   let result: Awaited<ReturnType<typeof runWorkflow>>;
   try {
-    result = await runWorkflow({
-      workflowId: stage.workflowId,
-      project,
-      provider,
-      resume,
-      maxTokens: o.maxTokens ?? 0,
-      approve: o.internalApprover,
-      reporter: o.reporter,
-      now: o.now,
-      // seed는 **durable 저장본**에서만 온다 — 여기서 문서 파일을 다시 읽지 않는다(§5).
-      seedFindings: seeds.length > 0 ? seeds : undefined,
-      // lease: lock을 쥔 이 프로세스가 **현 단계 workflow 하나**를 돌린다는 증명.
-      pipelineLease: { nonce },
-    });
+    // [Codex A-3] 실행은 **lock을 쥔 연산의 runStage 안에서만** 일어난다: lease는 그 호출 동안만
+    // 발행되고(현 단계 workflow + awaiting_run일 때만) 끝나면 만료된다. 임의 호출자가 nonce를
+    // 읽어 lease를 만들 길이 없다 — 그것이 예전 판의 구멍이었다.
+    result = await locked.runStage(stage.workflowId, (lease) =>
+      runWorkflow({
+        workflowId: stage.workflowId,
+        project,
+        provider,
+        resume,
+        maxTokens: o.maxTokens ?? 0,
+        approve: o.internalApprover,
+        reporter: o.reporter,
+        now: o.now,
+        // seed는 **durable 저장본**에서만 온다 — 여기서 문서 파일을 다시 읽지 않는다(§5).
+        seedFindings: seeds.length > 0 ? seeds : undefined,
+        pipelineLease: lease,
+      }),
+    );
   } catch (err) {
     // run_state가 만들어지지 않는 경로(잠금·approver 부재·profile 거부 등) — 파이프라인 상태 불변.
     return reject("pipeline_run_not_started", `단계 '${stage.id}' 실행이 시작되지 않았습니다 (파이프라인 상태 불변): ${(err as Error).message}`, 1);
@@ -476,14 +481,15 @@ function openDecision(o: { project: string; stage: string; checkpointId: string 
   if (read.kind === "absent") {
     return { ok: false, res: reject("pipeline_absent", `파이프라인이 없습니다 (${o.project}) — 'harness pipeline next'로 시작하세요.`, 1) };
   }
-  const lock = acquireLock(root, now);
+  const lock = lockPipeline(root, now);
   if (!lock.ok) return { ok: false, res: reject("pipeline_locked", lock.message, 2) };
+  const locked = lock.locked;
   const fail = (code: string, message: string, exit: 1 | 2): Decided => {
-    lock.release();
+    locked.release();
     return { ok: false, res: reject(code, message, exit) };
   };
   // [Codex A-7] lock 밖 snapshot으로 판정하면 그 사이 끝난 전이를 덮어쓴다 — 재독·재검증한 것만 쓴다.
-  const fresh = readPipelineStateAt(pipelineStatePath(root));
+  const fresh = locked.read;
   if (fresh.kind !== "ok") {
     const gate = pipelineGateStatus(fresh, root, "run");
     return fail(fresh.kind === "absent" ? "pipeline_absent" : "pipeline_state_unreadable", gate.ok ? "파이프라인이 사라졌습니다" : gate.message, 2);
@@ -516,7 +522,7 @@ function openDecision(o: { project: string; stage: string; checkpointId: string 
   }
   const stage = currentStage(state);
   if (!stage) return fail("pipeline_stage_out_of_range", `current_index가 단계 범위를 벗어났습니다 (${state.current_index})`, 2);
-  return { ok: true, root, state, pending, stage, release: lock.release };
+  return { ok: true, root, state, pending, stage, release: locked.release };
 }
 
 // ── approve ─────────────────────────────────────────────────────
@@ -637,12 +643,13 @@ export function restartPipeline(o: { project: string; now?: () => string }): Pip
   if (readPipelineStateAt(abs).kind === "absent") {
     return reject("pipeline_absent", `파이프라인이 없습니다 (${o.project}) — 'harness pipeline next'로 시작하세요.`, 1);
   }
-  const lock = acquireLock(root, now);
+  const lock = lockPipeline(root, now);
   if (!lock.ok) return reject("pipeline_locked", lock.message, 2);
+  const locked = lock.locked;
   try {
     // [Codex A-7] lock 획득 후 재독 — 그 사이 owner가 상태를 바꿨을 수 있다(진행 중 파이프라인을
     // archive해 버리는 것이 이 경로의 최악이다).
-    const read = readPipelineStateAt(abs);
+    const read = locked.read;
     if (read.kind === "absent") return reject("pipeline_absent", `파이프라인이 사라졌습니다 (${o.project}).`, 1);
     if (read.kind === "ok" && read.state.status !== "killed" && read.state.status !== "completed") {
       return reject(
@@ -661,7 +668,7 @@ export function restartPipeline(o: { project: string; now?: () => string }): Pip
     console.log(`단계 ${stageLabel(fresh)}부터: harness pipeline next --project ${o.project}`);
     return done("pipeline_restarted", 0);
   } finally {
-    lock.release();
+    locked.release();
   }
 }
 

@@ -20,6 +20,7 @@ import {
   digestArtifacts,
   driftProblem,
   leaseAllowsRun,
+  lockPipeline,
   newPipelineState,
   pipelineGateStatus,
   pipelineStatePath,
@@ -28,6 +29,7 @@ import {
   seedFindingsFrom,
   writePipelineState,
   type PipelineCheckpoint,
+  type PipelineLease,
   type PipelineState,
 } from "./pipeline.js";
 import { loadWorkflows } from "./registry.js";
@@ -352,34 +354,67 @@ test("[B-41/§2.3] action × 상태 판정 표 전수 — run은 활성에서 �
   rmSync(root, { recursive: true, force: true });
 });
 
-// ── lease (P13) ───────────────────────────────────────────────
-test("[B-41/§2.4] lease는 nonce·현 단계 workflow·awaiting_run **세 사실**에 결박된다", () => {
+// ── lease (P13 · Codex A-3) ───────────────────────────────────
+test("[B-41/§2.4·A-3] lease는 **발행 신원**·lock nonce·현 단계 workflow·awaiting_run에 결박된다 (문자열 위조 불가)", async () => {
   const name = "_b41c_lease";
   const root = makeProject(name);
   const state: PipelineState = approvedThrough(name, 1, [{ path: "docs/01_RESEARCH.md", size: 1, sha256: A64 }]);
   writePipelineState(root, state);
   const read = readPipelineStateAt(pipelineStatePath(root));
-  const nonce = "0123456789abcdef";
-  const lockAbs = join(root, "outputs", "pipeline.lock");
 
-  // lock 파일이 없으면 어떤 nonce도 통하지 않는다.
-  assert.equal(leaseAllowsRun(read, root, "mvp-planning", { nonce }), false, "lock 부재 → lease 무효");
-  writeFileSync(lockAbs, JSON.stringify({ pid: process.pid, nonce, at: AT }), "utf8");
-  assert.equal(leaseAllowsRun(read, root, "mvp-planning", { nonce }), true, "대조군: 유효 lease는 현 단계를 연다");
-  assert.equal(leaseAllowsRun(read, root, "mvp-planning", { nonce: "f".repeat(16) }), false, "위조 nonce 거부");
+  // ① 손으로 만든 lease 객체는 통하지 않는다 — lock 파일에서 nonce를 읽어도 발행 신원이 없다.
+  //    (`nonce` 필드를 담는 것 자체가 이제 **컴파일 오류**다 — 그 사실은 아래 `_leaseShape`가 못 박는다.)
+  const forged = { stage: "mvp-planning" } as PipelineLease;
+  assert.equal(leaseAllowsRun(read, root, "mvp-planning", forged), false, "발행되지 않은 lease 거부");
   assert.equal(leaseAllowsRun(read, root, "mvp-planning", undefined), false, "lease 없는 호출자 거부");
-  // 같은 lock을 쥐고도 **다른 단계**는 열리지 않는다.
-  assert.equal(leaseAllowsRun(read, root, "dev-preflight", { nonce }), false, "타 단계 workflowId 거부");
-  assert.equal(leaseAllowsRun(read, root, "idea-validation", { nonce }), false, "지난 단계 workflowId 거부");
-  // awaiting_approval이면 lease도 못 연다 (pending 생략 금지).
+
+  // ② 대조군: lockPipeline의 runStage 안에서 발행된 lease는 **현 단계**를 연다.
+  const lock = lockPipeline(root, () => AT);
+  assert.equal(lock.ok, true, "lock 획득");
+  if (!lock.ok) return;
+  let captured: PipelineLease | null = null;
+  const inside = await lock.locked.runStage("mvp-planning", async (lease) => {
+    captured = lease;
+    // 같은 lease로도 **다른 단계**는 열리지 않는다.
+    assert.equal(leaseAllowsRun(read, root, "dev-preflight", lease), false, "타 단계 workflowId 거부");
+    assert.equal(leaseAllowsRun(read, root, "idea-validation", lease), false, "지난 단계 workflowId 거부");
+    return leaseAllowsRun(read, root, "mvp-planning", lease);
+  });
+  assert.equal(inside, true, "대조군: 발행된 lease는 현 단계를 연다 (위 거부들이 공허하지 않다)");
+
+  // ③ 호출이 끝나면 **만료**된다 — 빼돌린 lease를 나중에 재사용할 수 없다.
+  assert.equal(leaseAllowsRun(read, root, "mvp-planning", captured!), false, "runStage 종료 후 lease 만료");
+
+  // ④ 타 단계·비awaiting_run·손상 state에서는 **발행 자체를 거부**한다.
+  await assert.rejects(
+    lock.locked.runStage("dev-preflight", async () => "nope"),
+    /pipeline_lease_denied/,
+    "현 단계가 아니면 lease를 발행하지 않는다",
+  );
   const base = { stage: "mvp-planning", workflow_id: "mvp-planning", run_finished_at: AT, artifacts: [{ path: "docs/02_PRD.md", size: 1, sha256: A64 }], seeds: [] };
   writePipelineState(root, { ...state, status: "awaiting_approval", pending: { ...base, checkpoint_id: checkpointIdFor(base) } });
-  assert.equal(leaseAllowsRun(readPipelineStateAt(pipelineStatePath(root)), root, "mvp-planning", { nonce }), false, "awaiting_approval에서는 lease 무효");
-  // 손상 state에서는 lease가 아무것도 열지 않는다.
+  await assert.rejects(lock.locked.runStage("mvp-planning", async () => "nope"), /pipeline_lease_denied/, "awaiting_approval에서는 발행 거부");
   writeFileSync(pipelineStatePath(root), "{ broken", "utf8");
-  assert.equal(leaseAllowsRun(readPipelineStateAt(pipelineStatePath(root)), root, "mvp-planning", { nonce }), false, "unreadable에서 lease 무효");
+  await assert.rejects(lock.locked.runStage("mvp-planning", async () => "nope"), /pipeline_lease_denied/, "손상 state에서는 발행 거부");
+  lock.locked.release();
+
+  // ⑤ lock을 놓은 뒤에는 (다시 발행받아도) lock nonce가 없으므로 무효다.
+  const after = lockPipeline(root, () => AT);
+  assert.equal(after.ok, true, "release 후 다시 lock을 잡을 수 있다");
+  if (after.ok) after.locked.release();
   rmSync(root, { recursive: true, force: true });
 });
+
+/**
+ * [Codex A-3] **실행하지 않는다 — 컴파일 시점 단정.** lease는 값이 아니라 신원이므로 `nonce` 문자열로
+ * 만들 수 없다. 누가 `PipelineLease`에 nonce 필드를 되살리면 이 `@ts-expect-error`가 사라져 red가 된다.
+ */
+function _leaseShape(): void {
+  // @ts-expect-error lease는 nonce 문자열로 구성할 수 없다 (발행 신원이 필요하다)
+  const l: PipelineLease = { stage: "mvp-planning", nonce: "0123456789abcdef" };
+  void l;
+}
+void _leaseShape;
 
 // ── seed 상한 (§5) ────────────────────────────────────────────
 test("[B-41/§5] seed: 승인 영수증에서만 오고, 뒤 단계가 승계하고, 상한 초과는 자르지 않고 경로 참조로 대체한다", () => {

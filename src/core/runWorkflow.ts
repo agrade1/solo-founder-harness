@@ -17,7 +17,7 @@ import {
   type WorkflowStep,
 } from "./registry.js";
 import { projectPaths, projectExists } from "./project.js";
-import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
+import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt, type PipelineLease } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import {
@@ -226,12 +226,13 @@ export interface RunWorkflowArgs {
    */
   seedFindings?: string[];
   /**
-   * [B-41/2단] `harness pipeline`이 쥔 lock의 owner nonce. **활성 파이프라인에서 workflow를 돌릴 수
-   * 있는 유일한 통로**이고, 열어주는 것은 "lock을 실제로 쥔 프로세스가 **지금 단계의 workflow
-   * 하나**를 돌리는 것"뿐이다(§2.4 — nonce 일치 ∧ workflowId == 현 단계 ∧ status == awaiting_run).
-   * raw 문자열로 "나는 파이프라인이다"라고 주장하는 인자가 아니다: 근거는 lock 파일이다.
+   * [B-41/2단 · Codex A-3] `lockPipeline(...).runStage(...)`가 발행한 **불투명 lease**.
+   * 활성 파이프라인에서 workflow를 돌릴 수 있는 유일한 통로이고, 열어주는 것은 "lock을 쥔
+   * 파이프라인 연산이 **지금 단계의 workflow 하나**를 돌리는 것"뿐이다
+   * (§2.4 — 발행 신원 ∧ lock nonce 일치 ∧ workflowId == 현 단계 ∧ status == awaiting_run).
+   * **문자열이 아니다**: nonce를 읽어 만들 수 없고, 발행 호출이 끝나면 만료된다.
    */
-  pipelineLease?: { nonce: string };
+  pipelineLease?: PipelineLease;
 }
 
 const RUN_STATE_REL = "outputs/run_state.json";
