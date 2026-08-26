@@ -45,6 +45,7 @@
  * 손으로 옮겨 적은 사본은 이 파일에 없다(규칙 산문은 파생할 수 없으므로 최소로 적는다).
  */
 import { readFileSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { ideaGateStatus, readRunStateAt } from "../core/runWorkflow.js";
 import { LIMITS, OrchestrationError, type ApprovedOperation } from "../exec/orchestrationTypes.js";
@@ -93,7 +94,7 @@ export interface PlanDagCliOptions {
  * 규칙이 아니라 **같은 규칙을 먼저 보는 것**이고, 크기를 `statSync`로 먼저 보므로 거대한 파일을
  * 메모리에 올리지 않는다. **자르지 않는다.**
  */
-function readIdeaDocument(file: string): string {
+function readIdeaDocument(file: string): { text: string; bytes: Buffer } {
   const path = resolve(file);
   let bytes: Buffer;
   try {
@@ -119,7 +120,9 @@ function readIdeaDocument(file: string): string {
   if (text.trim().length === 0) {
     throw new OrchestrationError("invalid_text", `아이디어 문서가 비어 있다: ${path}`);
   }
-  return text;
+  // [B-40/A-1] 원본 바이트를 함께 돌려준다: 폐기 잠금 digest는 **지시 본문에 실리는 그 바이트**에서
+  // 나와야 한다. 경로를 두 번 읽으면 검사한 것과 싣는 것이 다를 수 있다.
+  return { text, bytes };
 }
 
 /**
@@ -132,12 +135,14 @@ function readIdeaDocument(file: string): string {
  * 하네스에 없기 때문이고, 없는 규칙을 여기서 지어내지 않는다. 판정 자체는 `killedIdeaBlock` 하나를
  * 공유하므로 run/task-prompt와 규칙이 갈리지 않는다.
  */
-function assertIdeaNotKilled(idea: string): void {
-  const ideaAbs = resolve(idea);
+function assertIdeaNotKilled(ideaPath: string, bytes: Buffer): void {
+  const ideaAbs = resolve(ideaPath);
   const projectRoot = dirname(dirname(ideaAbs));
   const read = readRunStateAt(join(projectRoot, "outputs", "run_state.json"));
+  // [A-1] digest는 **방금 읽어 지시 본문에 실릴 그 바이트**에서 낸다 (경로 재읽기 없음).
   // allowReevaluation=false: DAG 초안은 재평가가 아니다. 잠금이 걸려 있으면 계속 거부한다.
-  const gate = ideaGateStatus(read, ideaAbs);
+  const snapshot = { path: ideaAbs, sha256: createHash("sha256").update(bytes).digest("hex"), text: "" };
+  const gate = ideaGateStatus(read, snapshot);
   if (!gate.ok) throw new OrchestrationError("dag_materialize_seed_rejected", `${gate.code}: ${gate.message}`);
 }
 
@@ -251,13 +256,16 @@ function planDagNode(
  * 던지는 것은 전부 기존 검증기의 안정 코드다.
  */
 export function createPlanDagRun(opts: PlanDagCliOptions): AutopilotCreateResult & { draftPaths: string[] } {
-  assertIdeaNotKilled(opts.idea);
+  // [A-1] 아이디어를 한 번 읽고, 그 바이트로 잠금을 판정하고 그 바이트를 지시 본문에 싣는다.
+  // 잠금 거부는 승인 읽기·run 생성보다 앞이라 durable 잔재가 0이다.
+  const idea = readIdeaDocument(opts.idea);
+  assertIdeaNotKilled(opts.idea, idea.bytes);
   const workspaceRoot = resolve(opts.workspace ?? process.cwd());
   const rawManifest = readJsonDocument(opts.approval, "invalid_manifest");
   // 여기서 `validateApprovalManifest`를 직접 부르는 이유는 **파생**이다(검증이 아니다 — 그것은
   // `createRunFromDocuments`가 다시 한다): 승인이 정한 ownership·권위를 읽어야 node를 만들 수 있다.
   const manifest = validateApprovalManifest(rawManifest);
-  const { node, approvedOps } = planDagNode(manifest, readIdeaDocument(opts.idea), opts.idea);
+  const { node, approvedOps } = planDagNode(manifest, idea.text, opts.idea);
 
   // **본문 상한을 run 생성 *전에* 본다.** 물질화도 같은 함수로 같은 판정을 하지만 그때는 run이 이미
   // durable에 있다 → 아이디어 하나가 커서 거부되면 **task 0개인 run**이 남는다. 같은 함수를 부르므로

@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
-import { ideaGateStatus, readRunState, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { ideaGateStatus, readRunState, snapshotIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
 
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
 
@@ -32,14 +32,17 @@ export function buildTaskPrompt(project: string, today: string): string {
   // "MVP의 첫 기능 하나를 구현한다"를 지어내는 경로가 있는데, killed run에서 그것이 돌면
   // 게이트가 죽인 아이디어가 구현 지시문으로 부활한다. 해제는 재평가 run의 '진행' 판정뿐이고,
   // 손상된 run_state도 거부한다(A-4) — 폐기 기록이 그 안에 있을 수 있다.
+  // [A-1] 아이디어를 **한 번** 읽어 검사와 사용에 같은 바이트를 쓴다 — 검사 후 다시 읽으면
+  // "검사한 바이트 ≠ 지시문에 실리는 바이트"가 된다(재검증보다 이쪽이 더 싸고 창 자체가 없다).
+  const ideaSnapshot = snapshotIdea(join(paths.root, IDEA_REL));
   const read = readRunState(project);
-  const gate = ideaGateStatus(read, join(paths.root, IDEA_REL));
+  const gate = ideaGateStatus(read, ideaSnapshot);
   if (!gate.ok) throw new Error(`${gate.code}: ${gate.message}`);
   const state = read.kind === "ok" ? read.state : null;
 
   const ceo = readIfExists(join(paths.docs, "06_CEO_DECISION.md"));
   const prd = readIfExists(join(paths.docs, "02_PRD.md"));
-  const idea = readIfExists(join(paths.docs, "00_IDEA.md"));
+  const idea = ideaSnapshot.sha256 === null ? null : ideaSnapshot.text; // [A-1] 검사한 그 바이트를 쓴다
 
   // Task / Done Criteria 후보: CEO → PRD 순서로 Next Actions를 찾는다.
   let nextActions: string[] = [];

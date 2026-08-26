@@ -1,7 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
-import { join } from "node:path";
 import { fromPackage } from "./paths.js";
-import { projectPaths } from "./project.js";
 import type { AgentDef, AgentRegistry } from "./registry.js";
 import type { Provider, TokenUsage, ProviderExecContext } from "../providers/provider.js";
 
@@ -20,6 +18,12 @@ export interface RunAgentArgs {
   spawnRequest?: string;
   /** 있으면 prompt_path 파일 대신 이 텍스트를 agent prompt로 사용 (동적 분화된 하위 에이전트용). */
   agentPromptText?: string;
+  /**
+   * [B-40/A-1] 검토 대상 아이디어 본문. **호출자(runWorkflow)가 run 시작에 한 번 snapshot한 값**이며
+   * 이 함수는 파일을 다시 읽지 않는다 — 예전엔 여기서 매번 읽어서, CEO가 본 바이트와 게이트가
+   * digest를 낸 바이트가 다를 수 있었다(TOCTOU). run 안의 모든 프롬프트·기록이 같은 바이트를 쓴다.
+   */
+  ideaContent: string;
   /** [M2.1] 도구 정책 실행 context. --tool-profile 지정 시에만 전달된다. */
   execContext?: ProviderExecContext;
 }
@@ -45,15 +49,11 @@ function loadPrompt(relPath: string, label: string): string {
  * prompt 파일이 없으면 throw → 호출자(runWorkflow)가 failed_agent로 기록한다.
  */
 export async function runAgent(args: RunAgentArgs): Promise<RunAgentResult> {
-  const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, agentPromptText, execContext } = args;
+  const { agent, registry, workflowId, project, createdAt, priorFindings, contextMode, nextAgentId, provider, retryFeedback, revisionRequest, spawnRequest, agentPromptText, execContext, ideaContent } = args;
 
   const commonPrompt = loadPrompt(registry.common_prompt_path, "common");
   // 동적 분화된 하위 에이전트는 파일 대신 런타임 생성 프롬프트를 쓴다.
   const agentPrompt = agentPromptText ?? loadPrompt(agent.prompt_path, agent.agent_id);
-
-  // 검토 대상 아이디어 원문 (docs/00_IDEA.md). 없으면 빈 문자열 — mock은 미사용.
-  const ideaPath = join(projectPaths(project).root, "docs", "00_IDEA.md");
-  const ideaContent = existsSync(ideaPath) ? readFileSync(ideaPath, "utf8") : "";
 
   const { markdown, usage } = await provider.generate({
     agent,
