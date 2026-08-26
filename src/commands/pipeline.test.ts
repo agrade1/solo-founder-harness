@@ -379,7 +379,10 @@ test("[B-41/P8a] 승인 후 02_PRD.md 교체 → 다음 단계 fresh가 **모델
   const before = bytesOf(pipelineStatePath(root));
 
   const guard = counting();
-  const r = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED }));
+  // internalApprover를 **넘긴다**: 내부 승인 게이트 부재(approval_approver_missing)로도 호출 0이
+  // 되므로, 그것을 지우지 않으면 "drift가 막았다"는 증거가 다른 원인과 섞인다
+  // (mutation ⑧ 실측에서 실제로 그 혼동이 드러나 이 인자를 추가했다).
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED, internalApprover: async () => true }));
   assert.equal(r.code, "pipeline_artifact_drift");
   assert.equal(r.exit, 1);
   assert.equal(guard.calls, 0, "**모델 호출 0** — 교체본이 입력으로 들어가지 않았다");
@@ -418,6 +421,36 @@ test("[B-41/P8b] resume 예외는 last_failure 영수증에만 결박된다 (영
   const rejected = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED, internalApprover: async () => true }));
   assert.equal(rejected.code, "pipeline_artifact_drift", "영수증과도 다르면 resume도 거부");
   assert.equal(guard.calls, 0, "모델 호출 0");
+  rmProject(name);
+});
+
+test("[B-41/P8d] **영수증 없는 실패는 resume하지 않는다** — fresh로 강하해 앞 step까지 다시 돈다", async () => {
+  // 이 테스트는 mutation ⑨(resume 예외에서 last_failure 결박 제거)가 **두 번 GREEN으로 통과한 뒤**
+  // 만들었다. 첫 시도는 drift 거부를 단정했는데, 영수증이 없으면 예외 목록도 비어 있어 원본·변종이
+  // **같은 drift 판정**을 낸다 — 즉 그 단정으로는 resume 여부를 구분할 수 없었다(공허한 단정).
+  // 구분되는 관측은 하나다: **앞 step이 다시 도는가**(counting provider). 승인 산출물이 아직 없는
+  // 1단계에서 재면 drift가 끼어들지 않아 resume/fresh가 그대로 드러난다.
+  const name = "_b41_p8d";
+  makeProject(name);
+  const root = projectPaths(name).root;
+
+  process.env.HARNESS_FAIL_AT = "pm"; // chief_of_staff → research 까지 완료 후 실패
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED }));
+  delete process.env.HARNESS_FAIL_AT;
+  assert.ok(stateOf(name).last_failure, "전제: 영수증이 기록됐다");
+  assert.equal(loadRunState(name)?.status, "failed");
+
+  // **run_state 기록 후 pipeline_state 기록 전에 죽은 크래시**를 재현한다: 영수증만 지운다.
+  // (state는 여전히 semantic 검증을 통과하는 정상 state다 — 손상 fixture가 아니다.)
+  writeFileSync(pipelineStatePath(root), JSON.stringify({ ...stateOf(name), last_failure: null }, null, 2) + "\n", "utf8");
+  assert.equal(readPipelineStateAt(pipelineStatePath(root)).kind, "ok", "전제: 영수증 없는 정상 state");
+
+  const fresh = counting();
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: fresh, now: () => FIXED }));
+  assert.equal(r.code, "pipeline_awaiting_approval");
+  assert.equal(fresh.byAgent.get("chief_of_staff") ?? 0, 1, "영수증이 없으면 **fresh 재실행**이다 (resume이면 0회)");
+  assert.equal(fresh.byAgent.get("research") ?? 0, 1, "앞 step 전부 다시 돈다");
+  // 대조군은 P7이다: 영수증이 **있으면** 같은 상황에서 앞 step이 0회다(resume).
   rmProject(name);
 });
 
