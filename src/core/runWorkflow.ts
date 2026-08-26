@@ -57,8 +57,34 @@ export interface GateJumpEntry {
   decider: string;
   decision: string | null; // 매칭된 판정 키워드 (없으면 null)
   jumped_to: string | null; // 되돌아간 agent (점프 안 했으면 null)
-  /** kill 판정으로 run을 종료시킨 게이트에만 붙는다. 없으면 진행/되돌림. (jumped_to:null만으론 "미매칭 진행"과 구별 불가) */
-  killed?: true;
+  /**
+   * [B-40/A-2] 이 게이트가 **실제로 한 일**. `jumped_to === null`을 "진행"으로 읽는 소비자가
+   * 폐기와 실패(보류·unmapped·예산 소진·대상 부재)를 전부 "진행"으로 적고 있었다 —
+   * durable status는 failed인데 영수증은 진행이라고 증언하는 모순. 결과를 추론하지 말고 여기서 읽어라.
+   */
+  outcome: "proceed" | "jump" | "kill" | "failed";
+  /** outcome이 "failed"일 때의 안정 사유 코드 (run_state.failed_reason와 같은 값). */
+  reason?: string;
+}
+
+/**
+ * [B-40/A-2] 게이트 결과를 사람이 읽는 한 줄로. **CLI와 vault가 이 함수 하나를 쓴다** —
+ * 렌더가 두 벌이면 한쪽만 정직해진다(실제로 그렇게 killed가 "진행"으로 적히고 있었다).
+ * `outcome`이 없는 옛 run_state는 jumped_to로 추론하되 그 사실을 숨기지 않는다.
+ */
+export function gateOutcomeLabel(g: GateJumpEntry): string {
+  switch (g.outcome) {
+    case "kill":
+      return "폐기 — run 종료";
+    case "jump":
+      return `${g.jumped_to} 되돌림`;
+    case "proceed":
+      return "진행";
+    case "failed":
+      return `중단(${g.reason ?? "사유 미기록"})`;
+    default:
+      return g.jumped_to ? `${g.jumped_to} 되돌림` : "결과 미기록(구버전 run_state)";
+  }
 }
 
 /** 디자인 승인 게이트 결과 (design_gate). tokens_hash는 승인 시점 tokens.json 해시 — 코드화 단계 변경 감지용. */
@@ -205,14 +231,51 @@ export type RunStateRead =
   | { kind: "unreadable"; path: string; detail: string }
   | { kind: "ok"; state: RunState };
 
-/** 지정 절대경로의 run_state.json을 읽는다 (부재/손상 구분). */
+/**
+ * [B-40/A-3] **잠금 근거 필드의 최소 구조 검증.** JSON으로 파싱되기만 하면 통과시키면
+ * `status:"killed"`인데 `kill_history`가 없는 state가 "폐기된 적 없음"으로 읽혀 잠금이 사라진다
+ * (문법 손상만 막고 구조 손상은 열려 있었다).
+ *
+ * 전체 스키마 검증기를 새로 짓지 않는다 — 잠금 판정이 읽는 필드만 본다. **정상 구버전은 통과**시킨다
+ * (새 필드가 없는 completed/failed state = 잠금 없음, 하위 호환).
+ * @returns 문제가 있으면 사람이 읽을 이유, 없으면 null.
+ */
+function lockFieldsProblem(s: RunState): string | null {
+  const raw = s as unknown as Record<string, unknown>;
+  const hist = raw.kill_history;
+  if (hist !== undefined) {
+    if (!Array.isArray(hist)) return "kill_history가 배열이 아니다";
+    for (const [i, e] of hist.entries()) {
+      if (typeof e !== "object" || e === null) return `kill_history[${i}]가 객체가 아니다`;
+      if (!("idea_sha256" in (e as object))) return `kill_history[${i}]에 idea_sha256 키가 없다`;
+    }
+  }
+  const cleared = raw.cleared_idea_sha256;
+  if (cleared !== undefined && cleared !== null && typeof cleared !== "string") {
+    return "cleared_idea_sha256가 문자열도 null도 아니다";
+  }
+  // killed는 반드시 이력을 남긴다 — 없으면 그 state는 폐기 사실을 잃은 것이고 통과시킬 수 없다.
+  if (raw.status === "killed" && (!Array.isArray(hist) || hist.length === 0)) {
+    return "status가 killed인데 kill_history가 없거나 비어 있다";
+  }
+  return null;
+}
+
+/** 지정 절대경로의 run_state.json을 읽는다 (부재/문법 손상/구조 손상/정상 구분). */
 export function readRunStateAt(abs: string): RunStateRead {
   if (!existsSync(abs)) return { kind: "absent" };
+  let state: RunState;
   try {
-    return { kind: "ok", state: JSON.parse(readFileSync(abs, "utf8")) as RunState };
+    state = JSON.parse(readFileSync(abs, "utf8")) as RunState;
   } catch (err) {
     return { kind: "unreadable", path: abs, detail: (err as Error).message };
   }
+  if (typeof state !== "object" || state === null) {
+    return { kind: "unreadable", path: abs, detail: "최상위가 객체가 아니다" };
+  }
+  const problem = lockFieldsProblem(state);
+  if (problem) return { kind: "unreadable", path: abs, detail: problem };
+  return { kind: "ok", state };
 }
 
 /** 프로젝트의 run_state.json을 읽는다 (부재/손상 구분). */
@@ -229,15 +292,26 @@ export function loadRunState(project: string): RunState | null {
 /** 검토 대상 아이디어 문서의 프로젝트 상대경로 — kill 잠금의 기준 파일. */
 export const IDEA_REL = "docs/00_IDEA.md";
 
-/** 아이디어 문서의 sha256. 파일이 없으면 null. */
-export function ideaDigestAt(ideaAbs: string): string | null {
-  if (!existsSync(ideaAbs)) return null;
-  return createHash("sha256").update(readFileSync(ideaAbs)).digest("hex");
+/**
+ * [B-40/A-1] 아이디어 문서를 **한 번** 읽은 결과. 같은 바이트에서 나온 본문과 digest를 함께 들고 다녀서
+ * "심사한 바이트"와 "기록한 digest"가 갈라지지 않게 한다(TOCTOU).
+ */
+export interface IdeaSnapshot {
+  path: string;
+  sha256: string | null; // 파일이 없으면 null
+  text: string; // 없으면 빈 문자열
 }
 
-/** 프로젝트의 docs/00_IDEA.md sha256. 없으면 null. */
-export function ideaDigest(project: string): string | null {
-  return ideaDigestAt(join(projectPaths(project).root, IDEA_REL));
+/** 아이디어 문서를 한 번 읽어 snapshot을 만든다. 파일이 없으면 sha256=null, text="". */
+export function snapshotIdea(ideaAbs: string): IdeaSnapshot {
+  if (!existsSync(ideaAbs)) return { path: ideaAbs, sha256: null, text: "" };
+  const bytes = readFileSync(ideaAbs);
+  return { path: ideaAbs, sha256: createHash("sha256").update(bytes).digest("hex"), text: bytes.toString("utf8") };
+}
+
+/** 프로젝트의 docs/00_IDEA.md를 한 번 읽어 snapshot을 만든다. */
+export function snapshotProjectIdea(project: string): IdeaSnapshot {
+  return snapshotIdea(join(projectPaths(project).root, IDEA_REL));
 }
 
 /** [B-40] 폐기 잠금 판정. `ok`가 아니면 code가 안정 사유이고 message는 사람이 읽는 거부 이유다. */
@@ -258,9 +332,14 @@ export type IdeaGateStatus =
  * 그래서 잠금 중 허용되는 것은 **재평가 run 하나**(kill 게이트가 있는 workflow)뿐이고,
  * 그 run의 게이트가 '진행'을 내면 그때 해제 digest가 발급된다.
  *
+ * **아이디어는 호출자가 이미 읽은 snapshot으로 받는다**(A-1): 이 함수가 경로를 다시 읽으면
+ * "검사한 바이트"와 "쓰는 바이트"가 갈릴 수 있다(검사 통과 후 파일이 바뀌는 창).
+ *
  * @param allowReevaluation 호출자가 "kill 게이트가 있는 workflow의 새 run"일 때만 true.
+ *   재평가는 **아이디어 변경을 요구하지 않는다** — 같은 바이트를 다시 심사하는 것 자체는 정당하고
+ *   (사람이 근거를 새로 댈 수 있다), 막아야 할 것은 "심사 없이 통과"였다.
  */
-export function ideaGateStatus(read: RunStateRead, ideaAbs: string, allowReevaluation = false): IdeaGateStatus {
+export function ideaGateStatus(read: RunStateRead, idea: IdeaSnapshot, allowReevaluation = false): IdeaGateStatus {
   if (read.kind === "unreadable") {
     return {
       ok: false,
@@ -273,12 +352,12 @@ export function ideaGateStatus(read: RunStateRead, ideaAbs: string, allowReevalu
   if (read.kind === "absent") return { ok: true }; // 실행 이력 없음 — 기존 프로젝트 무영향
   const s = read.state;
   if ((s.kill_history ?? []).length === 0) return { ok: true }; // 폐기된 적 없음
-  const now = ideaDigestAt(ideaAbs);
+  const now = idea.sha256;
   if (now === null) {
     return {
       ok: false,
       code: "idea_missing",
-      message: `폐기 기록이 있는데 아이디어 문서를 읽을 수 없습니다: ${ideaAbs}. 해제 여부를 확인할 수 없어 거부합니다.`,
+      message: `폐기 기록이 있는데 아이디어 문서를 읽을 수 없습니다: ${idea.path}. 해제 여부를 확인할 수 없어 거부합니다.`,
     };
   }
   if ((s.cleared_idea_sha256 ?? null) === now) return { ok: true }; // 재평가에서 '진행' 판정을 받았다
@@ -292,7 +371,7 @@ export function ideaGateStatus(read: RunStateRead, ideaAbs: string, allowReevalu
     message:
       `폐기된 아이디어입니다 — ${last?.decider ?? "(게이트)"}가 '${last?.decision ?? "폐기"}' 판정으로 ` +
       `workflow '${s.workflow_id}'를 종료했습니다 (폐기 기록 ${(s.kill_history ?? []).length}건).\n` +
-      `아이디어를 고치는 것만으로는 해제되지 않습니다 — ${ideaAbs}를 고친 뒤 재평가를 먼저 돌리고 ` +
+      `아이디어를 고치는 것만으로는 해제되지 않습니다 — ${idea.path}를 고친 뒤 재평가를 먼저 돌리고 ` +
       `게이트에서 '진행' 판정을 받으세요: harness run <${rerun}> --project <name>`,
   };
 }
@@ -350,9 +429,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   // 돌려서 completed로 덮어쓰는 길이 열려 있었다(그러면 "파이프라인 중단"이 성립하지 않는다).
   // 잠금 중 허용되는 것은 kill 게이트가 있는 workflow의 새 run(=재평가) 하나뿐이다.
   // resume은 아래 status 검사가 이미 killed를 거부하므로 여기서 다시 보지 않는다.
+  // [A-1] 아이디어를 **여기서 한 번** 읽는다. 이 run의 모든 agent 프롬프트와 kill/clear digest가
+  // 이 snapshot 하나만 쓴다 — 예전엔 runAgent가 매번 읽고 게이트가 또 읽어서, CEO가 판정한 바이트와
+  // 해제 digest가 다른 바이트일 수 있었다(그 사이 파일이 바뀌면 CEO가 본 적 없는 것이 해제된다).
+  const idea = snapshotProjectIdea(project);
   const priorRead = readRunState(project);
   if (!args.resume) {
-    const gateStatus = ideaGateStatus(priorRead, join(projectPaths(project).root, IDEA_REL), hasKillGate(workflow));
+    const gateStatus = ideaGateStatus(priorRead, idea, hasKillGate(workflow));
     if (!gateStatus.ok) throw new Error(`${gateStatus.code}: ${gateStatus.message}`);
   }
 
@@ -513,6 +596,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           project,
           createdAt: now(),
           priorFindings: opts.priorFindingsOverride ?? findingsList(),
+          ideaContent: idea.text, // [A-1] run 시작 snapshot — agent마다 파일을 다시 읽지 않는다
           contextMode: opts.contextMode,
           nextAgentId,
           provider,
@@ -697,29 +781,31 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         // "사람이 새 run으로 다시 시작"이고, 뒤에 두면 최악이 "미달 아이디어를 그대로 개발 착수" —
         // 후자가 이 게이트가 존재하는 이유 그 자체다. 그래서 멈추는 쪽으로 fail closed.
         if (kill?.includes(decision)) {
-          const idea_sha256 = ideaDigest(project);
+          const idea_sha256 = idea.sha256; // [A-1] CEO가 실제로 판정한 바이트의 digest (재읽기 없음)
           killed_by = { decider, decision, idea_sha256 };
           kill_history.push({ decider, decision, idea_sha256, at: now() });
           cleared_idea_sha256 = null; // 폐기는 이전 해제를 무효화한다 (다시 재평가를 받아야 한다)
-          gate_jumps.push({ decider, decision, jumped_to: null, killed: true });
+          gate_jumps.push({ decider, decision, jumped_to: null, outcome: "kill" });
           console.log(`  ⛔ 게이트: ${decider} 판정 '${decision}' → run 종료(killed) — 후속 단계 미실행`);
           endGate(true); // 게이트 자체는 정상 동작했다 (판정을 내리는 것이 이 step의 일)
           break;
         }
 
         const jumpTarget = on[decision] ?? null;
+        // [C] 대상 존재 여부를 **예산보다 먼저** 판정한다. 예전엔 target 확인이 `remaining > 0` 안에만
+        // 있어서, 예산이 0이면 정의 오류(step 부재)가 `gate_jump_budget_exhausted`로 기록됐다 —
+        // fail closed이긴 하나 "원인마다 다른 코드"라는 계약이 깨진다.
+        const targetIdx = jumpTarget === null ? -1 : workflow.steps.findIndex((s) => s === jumpTarget);
+        const targetMissing = jumpTarget !== null && targetIdx < 0;
 
-        if (jumpTarget && remaining > 0) {
-          const targetIdx = workflow.steps.findIndex((s) => s === jumpTarget);
-          if (targetIdx >= 0) {
-            gateBudget.set(i, remaining - 1);
-            gate_jumps.push({ decider, decision, jumped_to: jumpTarget });
-            reporter?.emit({ type: "gate_jump", decider, decision, target: jumpTarget }); // 실제 jump일 때만
-            console.log(`  ⤴ 게이트: ${decider} 판정 '${decision}' → ${jumpTarget} 되돌림 (남은 되돌림 ${remaining - 1})`);
-            endGate(true);
-            i = targetIdx - 1; // 다음 i++가 targetIdx를 가리킴
-            continue;
-          }
+        if (jumpTarget !== null && !targetMissing && remaining > 0) {
+          gateBudget.set(i, remaining - 1);
+          gate_jumps.push({ decider, decision, jumped_to: jumpTarget, outcome: "jump" });
+          reporter?.emit({ type: "gate_jump", decider, decision, target: jumpTarget }); // 실제 jump일 때만
+          console.log(`  ⤴ 게이트: ${decider} 판정 '${decision}' → ${jumpTarget} 되돌림 (남은 되돌림 ${remaining - 1})`);
+          endGate(true);
+          i = targetIdx - 1; // 다음 i++가 targetIdx를 가리킴
+          continue;
         }
 
         // ── 게이트 통과는 '진행' 토큰 하나뿐 ────────────────
@@ -729,26 +815,29 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         // 통과 조건을 화이트리스트로 뒤집고, 그 밖은 **원인별로 다른 코드**로 멈춘다
         // (원인과 다른 코드를 적는 것은 이 레포가 C-96으로 잡은 부류다).
         if (decision === "진행") {
-          gate_jumps.push({ decider, decision, jumped_to: null });
+          gate_jumps.push({ decider, decision, jumped_to: null, outcome: "proceed" });
           console.log(`  ⤴ 게이트: ${decider} 판정 '진행' → 진행`);
           // [A-3] 폐기 잠금 해제 증거는 **이 자리에서만** 발급한다: kill 게이트가 있는 게이트가
           // '진행'을 낸 순간. 다른 경로에서 적으면 그 경로가 곧 우회 통로가 된다.
-          if ((kill ?? []).length > 0) cleared_idea_sha256 = ideaDigest(project);
+          // [A-1] 해제되는 것은 **CEO가 실제로 심사한 바이트**다. 여기서 파일을 다시 읽으면 판정 후
+          // 바뀐 내용(CEO가 본 적 없는 것)이 해제된다.
+          if ((kill ?? []).length > 0) cleared_idea_sha256 = idea.sha256;
           endGate(true);
           continue;
         }
         failed_agent = decider;
-        failed_reason =
-          jumpTarget === null
+        failed_reason = targetMissing
+          ? "gate_jump_target_missing" // on에 있지만 그 step이 workflow에 없다 (정의 오류 — 예산과 무관)
+          : jumpTarget === null
             ? decision === "보류"
               ? "ceo_decision_hold" // 판정 자체가 "지금은 하지 않는다" — 매핑 부재와 구분한다
               : "ceo_decision_unmapped" // 이 workflow에 해당 판정의 되돌림 대상이 없다
-            : remaining > 0
-              ? "gate_jump_target_missing" // on에 있지만 그 step이 workflow에 없다 (정의 오류)
-              : "gate_jump_budget_exhausted"; // 되돌려 봤는데 판정이 그대로다
+            : "gate_jump_budget_exhausted"; // 되돌려 봤는데 판정이 그대로다
         failedIndex = i;
-        gate_jumps.push({ decider, decision, jumped_to: null });
-        console.error(`  ✗ 게이트: ${decider} 판정 '${decision}' → 진행하지 않고 중단 (${failed_reason})`);
+        gate_jumps.push({ decider, decision, jumped_to: null, outcome: "failed", reason: failed_reason });
+        // 문구를 렌더러(gateOutcomeLabel)와 같은 형태로 맞춘다: "→ 진행하지 않고 중단"은
+        // "판정 X → 진행"을 부분문자열로 포함해 로그 grep·단정을 오염시킨다.
+        console.error(`  ✗ 게이트: ${decider} 판정 '${decision}' → 중단(${failed_reason})`);
         endGate(false);
         break;
       }
