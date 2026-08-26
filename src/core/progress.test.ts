@@ -204,7 +204,12 @@ test("이벤트: 실제 jump가 발생할 때만 gate_jump를 방출한다", asy
   // gate step도 step_start/end를 가진다 (kind gate)
   assert.ok(starts(events).some((e) => e.kind === "gate"), "gate step_start");
   assert.ok(ends(events).some((e) => e.kind === "gate"), "gate step_end");
-  assert.equal((events[events.length - 1] as Extract<RunEvent, { type: "run_end" }>).status, "completed");
+  // [B-40/A-1] 되돌림 예산이 소진됐는데 판정이 그대로 '축소'면 **진행하지 않고 멈춘다**.
+  // (예전 계약은 여기서 completed였다 — 같은 비진행 판정이 예산 소진만으로 통과로 바뀌는
+  //  거짓 성공 영수증이었다. 계약을 강화한 것이고 약화가 아니다.)
+  assert.equal((events[events.length - 1] as Extract<RunEvent, { type: "run_end" }>).status, "failed");
+  assert.equal(r.state.status, "failed");
+  assert.equal(r.state.failed_reason, "gate_jump_budget_exhausted");
   assert.ok(r.state.step_timings.some((t) => t.kind === "gate"));
 });
 

@@ -13,6 +13,8 @@
   "failed_agent": null,
   "failed_reason": null,
   "killed_by": null,
+  "kill_history": [],
+  "cleared_idea_sha256": "090bfaf26d83d719f8d7c888fbd5ade1f7d886de295c1272a5dc5e4a6a644fb0",
   "resume_from": null,
   "loop_state": null,
   "warnings": [
