@@ -1,20 +1,13 @@
-import { createInterface } from "node:readline";
 import { runWorkflow, loadRunState, readRunState, ideaGateStatus, snapshotProjectIdea, gateOutcomeLabel } from "../core/runWorkflow.js";
 import { loadWorkflows, findWorkflow, hasKillGate } from "../core/registry.js";
+import { projectPipelineGate } from "../core/pipeline.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
 import { createProgressReporter } from "./progress.js";
 import { runHandoffCommand } from "./handoff.js";
-/** stdin으로 y/N 승인을 묻는다 (승인 게이트용). y/yes만 승인. */
-function stdinApprover(message) {
-    return new Promise((resolve) => {
-        const rl = createInterface({ input: process.stdin, output: process.stdout });
-        rl.question(`\n[승인 필요] ${message} (y/N): `, (ans) => {
-            rl.close();
-            resolve(/^y(es)?$/i.test(ans.trim()));
-        });
-    });
-}
+// [B-41/1단] 승인자는 공유 모듈 하나다 — pipeline next도 같은 함수를 쓴다(EOF/close/error에서
+// 정확히 한 번 false). 여기 지역 사본이 있으면 두 진입점의 비TTY 동작이 갈린다.
+import { stdinApprover } from "./approver.js";
 /** harness run <workflow> --project <name> [--provider <id>] [--vault <path>] [--resume] */
 export async function runRun(workflowName, project, providerId = DEFAULT_PROVIDER_ID, maxRegenerations = 1, allowSpawn = false, vault, resume = false, maxTokens = 0, yes = false, toolProfileId, bare = false, handoff = false, handoffCwd, handoffToolProfileId, // [M3c-3b] --handoff-tool-profile (workflow용 --tool-profile과 분리)
 handoffRunner = runHandoffCommand, // [M3b.2] 테스트 주입 seam
@@ -22,6 +15,18 @@ providerOverride, // [B-40] 테스트 주입 seam — 등록된 provider id로�
 workflowsPath) {
     const provider = providerOverride ?? getProvider(providerId);
     const approve = yes ? async () => true : stdinApprover;
+    // [B-41/2단] 활성 파이프라인에서 일반 run은 **전면 거부**다(resume 포함) — 단계를 돌리려면
+    // **lock을 쥔 파이프라인 연산(`lockPipeline().runStage()`) 안**이어야 한다(Codex 검증 A-3에서
+    // "`pipeline next` 단독"이라는 배타 주장을 정정했다 — 그 연산을 부르는 것이 `next`뿐이라는 것은
+    // 코드가 보장하지 않는다). 상태별로 허용하면 "승인 직후 awaiting_run에서 다음 단계를 직접 run"이
+    // 열려 단계 건너뛰기가 성립한다. runWorkflow도 같은 게이트를 던지지만, CLI는 거부를 exit 2로 낸다
+    // (무인 loop 진입점과 같은 코드). 거부 문장은 게이트가 만든 것을 그대로 출력한다.
+    const pipeGate = projectPipelineGate(project, "run");
+    if (!pipeGate.ok) {
+        console.error(`⛔ ${pipeGate.message}`);
+        process.exitCode = 2;
+        return;
+    }
     if (resume) {
         // 재개 전 안전 점검: 완료된 실행을 덮어쓰지 않는다 (FAILURE_RECOVERY).
         const prior = loadRunState(project);

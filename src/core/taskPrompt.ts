@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
 import { ideaGateStatus, readRunState, snapshotIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
 
@@ -24,8 +25,14 @@ const RULES: string[] = [
   "작업 결과는 docs/WORKLOG.md에 남긴다.",
 ];
 
-/** Claude Code 작업 지시문 markdown을 생성한다. */
+/**
+ * Claude Code 작업 지시문 markdown을 생성한다.
+ *
+ * @param today 호출자가 넘기는 날짜. **본문에 싣지 않는다**(결정 1 — 지시문 멱등성). 시그니처는
+ *   호환을 위해 유지한다(`generateTaskPrompt`·handoff가 그대로 넘긴다).
+ */
 export function buildTaskPrompt(project: string, today: string): string {
+  void today;
   const paths = projectPaths(project);
 
   // [B-40] 폐기된 아이디어로는 구현 지시문을 만들지 않는다. 아래에 Next Actions가 없으면
@@ -38,6 +45,14 @@ export function buildTaskPrompt(project: string, today: string): string {
   const read = readRunState(project);
   const gate = ideaGateStatus(read, ideaSnapshot);
   if (!gate.ok) throw new Error(`${gate.code}: ${gate.message}`);
+
+  // [B-41/2단] 단계 체크포인트 게이트. 파이프라인을 쓰는 프로젝트에서는 **완료 후**(또는 마지막
+  // dev-handoff 단계의 실행 대기)에만 지시문을 만든다 — 확인 대기 중인 산출물로 구현을 시작하는 것이
+  // 이 기능이 막으려는 것 그 자체다. 승인 후 문서가 바뀌었으면 drift로 거부한다(전수 대조).
+  // 파이프라인이 없으면 `absent` → ok라서 기존 사용법은 완전히 불변이다.
+  // **정직한 한계**: 이 검증 뒤에 아래 로직이 문서를 다시 읽는다 — 그 사이 창은 남는다(§8-5).
+  const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(paths.root)), paths.root, "task-prompt");
+  if (!pipeGate.ok) throw new Error(pipeGate.message);
   const state = read.kind === "ok" ? read.state : null;
 
   const ceo = readIfExists(join(paths.docs, "06_CEO_DECISION.md"));
@@ -70,7 +85,17 @@ export function buildTaskPrompt(project: string, today: string): string {
 
   const lines: string[] = [];
   lines.push(`# Claude Code 작업 지시문 — ${project}`, "");
-  lines.push(`생성: ${today} (harness task-prompt, provider: ${state?.provider ?? "미실행"})`, "");
+  // [B-41/결정 1] **생성 날짜를 본문에 넣지 않는다 — 지시문을 멱등하게 유지한다.**
+  //
+  // 원칙: **산출물은 자기를 만드는 명령을 게이트하지 못한다.** 이 파일은 dev-handoff 단계의 승인
+  // 대상인데, 완료 후 `task-prompt`·`handoff`가 같은 파일을 다시 만든다. 본문에 날짜가 있으면
+  // 하루만 지나도 바이트가 달라져 그 다음 소비가 `pipeline_artifact_drift`로 막혔다(실측 재현:
+  // task-prompt exit 2 · handoff exit 1, 탈출구는 restart뿐). 근본 원인은 "같은 입력에 다른 바이트"
+  // 였고, 그것을 없애는 것이 가장 싸다.
+  // **일반적 경로 제외(설계 §9-6이 기각한 방향)를 도입한 것이 아니다** — drift 검증은 그대로 전수다.
+  // 시각이 필요한 곳은 승인 대상 **밖**이다: run_state.finished_at · pipeline 영수증의
+  // `run_finished_at`/`decided_at`가 "언제 만들어졌고 언제 승인됐나"를 담는다.
+  lines.push(`생성: harness task-prompt (provider: ${state?.provider ?? "미실행"})`, "");
 
   lines.push("## Context");
   lines.push(`- 프로젝트: ${project}`);

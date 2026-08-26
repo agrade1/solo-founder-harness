@@ -11,6 +11,10 @@ import { runTaskPrompt } from "./commands/taskPrompt.js";
 import { runExec } from "./commands/exec.js";
 import { runMissionCommand } from "./commands/mission.js";
 import { runHandoffCommand } from "./commands/handoff.js";
+import { approveCheckpoint, nextPipeline, rejectCheckpoint, restartPipeline, statusPipeline, unlockPipeline } from "./commands/pipeline.js";
+import { stdinApprover } from "./commands/approver.js";
+import { createProgressReporter } from "./commands/progress.js";
+import { DEFAULT_PIPELINE } from "./core/pipeline.js";
 import { AUTOPILOT_WORKER_BACKENDS, runAutopilotCommand } from "./commands/autopilot.js";
 import { runAutopilotCreateCommand } from "./commands/autopilotCreate.js";
 import { PLAN_DAG_TASK_ID, runPlanDagCommand, runValidateDagCommand } from "./commands/planDag.js";
@@ -19,6 +23,8 @@ import { DEFAULT_DRAFT_FILE, runDraftApprovalCommand, runValidateApprovalCommand
 // import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
 const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
 const program = new Command();
+/** 도움말에 싣는 단계 id 목록 — 상수에서 파생한다(손으로 옮겨 적은 사본을 만들지 않는다). */
+const PIPELINE_STAGE_IDS = DEFAULT_PIPELINE.map((s) => s.id);
 program
     .name("harness")
     .description("Solo Founder AI Harness (문서 자동화 + 실행 계층 exec/mission)")
@@ -56,6 +62,73 @@ program
     .action(async (workflowName, opts) => {
     const maxTokens = Number(opts.maxTokens ?? process.env.HARNESS_MAX_TOKENS ?? 0) || 0;
     await runRun(workflowName, opts.project, opts.provider, Number(opts.maxRegen), opts.allowSpawn, opts.vault, opts.resume, maxTokens, opts.yes, opts.toolProfile, opts.bare, opts.handoff, opts.cwd, opts.handoffToolProfile);
+});
+// [B-41] **단계 체크포인트 오케스트레이션.** 각 단계가 끝나면 사람이 문서를 확인하고 승인해야
+// 다음 단계가 돈다 — 활성 파이프라인에서 workflow 실행은 lock을 쥔 `pipeline next` 안에서만 일어나고(일반 `run`은
+// `pipeline_run_reserved`로 거부), 체크포인트에는 `--yes`/`--force`가 **없다**(그것이 이 기능의 존재 이유다).
+const pipeline = program
+    .command("pipeline")
+    .description(`[B-41] 고정 파이프라인(${PIPELINE_STAGE_IDS.join(" → ")})을 단계별로 전진시킨다 — 단계마다 사람이 산출물을 확인·승인해야 다음이 돈다 (승인 우회 플래그 없음)`);
+pipeline
+    .command("status")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .description("현재 단계·확인 대기 체크포인트·영수증을 출력한다 (읽기 전용 · lock 중에도 읽힌다)")
+    .action((opts) => {
+    statusPipeline({ project: opts.project });
+});
+pipeline
+    .command("next")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .option("--provider <id>", "LLM provider (mock | claude-code | anthropic)", "mock")
+    .option("--max-tokens <n>", "누적 토큰(input+output) 상한. 미지정 시 HARNESS_MAX_TOKENS, 기본 무제한")
+    .option("--vault <path>", "실행 결과를 Obsidian vault로 export. 미지정 시 HARNESS_VAULT")
+    .option("--yes-internal-gates", "workflow **내부** 승인 step(디자인 게이트 등)만 비대화로 승인한다 (CI용). 단계 체크포인트는 이 플래그로 통과되지 않는다 — approve 명령만이 판정한다", false)
+    .description("현 단계를 실행하고 **확인 대기**로 들어간다 (이미 대기 중이면 전진하지 않고 안내만 낸다)")
+    .action(async (opts) => {
+    const maxTokens = Number(opts.maxTokens ?? process.env.HARNESS_MAX_TOKENS ?? 0) || 0;
+    await nextPipeline({
+        project: opts.project,
+        provider: opts.provider,
+        maxTokens,
+        vault: opts.vault,
+        // 플래그는 여기서 **workflow 내부 approver로만** 변환된다. 체크포인트 전이 함수에는
+        // approver·boolean 인자가 아예 없으므로 이 값이 그쪽에 닿으려면 컴파일이 먼저 깨진다.
+        internalApprover: opts.yesInternalGates ? async () => true : stdinApprover,
+        reporter: createProgressReporter(),
+    });
+});
+pipeline
+    .command("approve")
+    .argument("<stage>", `승인할 단계 id (${PIPELINE_STAGE_IDS.join(" | ")})`)
+    .requiredOption("--checkpoint <id>", "확인한 산출물의 checkpoint id (status가 출력한 12-hex — 바이트 신원)")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .description("확인 대기 중인 단계를 승인하고 다음 단계로 넘긴다 (stage와 checkpoint id가 모두 일치해야 한다)")
+    .action((stage, opts) => {
+    approveCheckpoint({ project: opts.project, stage, checkpointId: opts.checkpoint });
+});
+pipeline
+    .command("reject")
+    .argument("<stage>", `되돌릴 단계 id (${PIPELINE_STAGE_IDS.join(" | ")})`)
+    .requiredOption("--checkpoint <id>", "되돌릴 산출물의 checkpoint id")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .option("--note <text>", "되돌리는 이유 (영수증에 남는다)")
+    .description("확인 대기 중인 단계를 되돌린다 — 같은 단계를 다시 실행한다 (기존 run을 채택하지 않는다)")
+    .action((stage, opts) => {
+    rejectCheckpoint({ project: opts.project, stage, checkpointId: opts.checkpoint, note: opts.note });
+});
+pipeline
+    .command("restart")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .description("종료된(killed/completed) 파이프라인을 처음부터 다시 세운다 — 기존 state는 지우지 않고 rename 보관. 진행 중이면 거부")
+    .action((opts) => {
+    restartPipeline({ project: opts.project });
+});
+pipeline
+    .command("unlock")
+    .requiredOption("--project <projectName>", "대상 프로젝트 이름")
+    .description("죽은 owner의 pipeline lock만 회수한다 (살아 있음·판별 불가는 거부 · 강제 플래그 없음)")
+    .action((opts) => {
+    unlockPipeline({ project: opts.project });
 });
 program
     .command("handoff")

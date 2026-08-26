@@ -416,7 +416,9 @@ test("[B-40/A-3] 해제 증거는 kill 게이트만 발급한다 — 게이트 �
   // 완주해도 cleared_idea_sha256은 null이어야 한다.
   const name = "_b40_noclear";
   makeProject(name);
-  const r = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED });
+  // [B-41/1단] dev-preflight에는 내부 승인 게이트가 있다 → 응답자를 **명시**해야 시작한다
+  // (예전엔 미지정이 자동 승인이었다). 단정을 약화한 것이 아니라 계약이 강해졌다.
+  const r = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED, approve: async () => true });
   assert.equal(r.state.status, "completed", "전제: 완주한다");
   assert.equal(r.state.cleared_idea_sha256, null, "kill 게이트 없는 workflow의 완주는 해제 증거가 아니다");
   assert.deepEqual(r.state.kill_history, []);
@@ -450,7 +452,7 @@ test("[B-40/A-3] 잠금 해제는 재평가 run의 '진행' 판정뿐 — kill_h
   assert.equal(reeval.state.kill_history.length, 1, "폐기 이력은 지워지지 않는다 (carry forward)");
 
   // 해제 후에는 잠금 없는 경로가 열린다.
-  const after = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED });
+  const after = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED, approve: async () => true });
   assert.equal(after.state.status, "completed");
   assert.equal(after.state.kill_history.length, 1, "그 뒤 run도 폐기 이력을 이어받는다");
   assert.equal(after.state.cleared_idea_sha256, snapshotProjectIdea(name).sha256, "해제 증거도 이어받는다");
@@ -789,7 +791,7 @@ test("[B-40/A-3] 정상 구버전 state(새 필드 없음)는 그대로 통과�
     JSON.stringify({ workflow_id: "idea-validation", project: name, status: "completed", completed_steps: ["founder_ceo"] }),
     "utf8",
   );
-  const r = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED });
+  const r = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED, approve: async () => true });
   assert.equal(r.state.status, "completed", "구버전 state는 잠금 없음");
   assert.deepEqual(r.state.kill_history, []);
   assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/);

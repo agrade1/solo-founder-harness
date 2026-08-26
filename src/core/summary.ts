@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment } from "./validate.js";
 import type { RunState } from "./runWorkflow.js";
+import { DEFAULT_PIPELINE, approvedDigests, currentStage, driftProblem, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 
 function readRunState(project: string): RunState | null {
   const p = join(projectPaths(project).outputs, "run_state.json");
@@ -21,8 +22,58 @@ function listMarkdown(dir: string): string[] {
     .sort();
 }
 
-/** 다음 작업을 상태로부터 도출한다. */
-function nextActions(state: RunState | null, project: string): string[] {
+/**
+ * [Codex A-5] **단계 체크포인트가 있으면 그것이 정본이다.**
+ *
+ * run_state가 `completed`라는 것은 "그 workflow가 끝났다"는 뜻일 뿐인데, 파이프라인이 그 산출물을
+ * **확인 대기**로 잡고 있으면 "완료 — task-prompt로 진행"은 거짓 영수증이다(B-40이 killed에서
+ * A급으로 잡은 것과 같은 부류: 같은 사실이 CLI에서는 대기, 요약에서는 완료로 적혔다).
+ * 그래서 파이프라인 상태를 **먼저** 적고, 그것이 하류를 막고 있으면 그 사실을 말한다.
+ */
+function pipelineActions(project: string, root: string): string[] | null {
+  const read = readPipelineStateAt(pipelineStatePath(root));
+  if (read.kind === "absent") return null; // 파이프라인 미사용 — 기존 문구 그대로
+  if (read.kind === "unreadable") {
+    return [`**pipeline_state를 읽을 수 없다** (${read.detail}) — 복구하거나 \`harness pipeline restart --project ${project}\` 전까지 단계 진행이 막힌다.`];
+  }
+  const st = read.state;
+  const stage = currentStage(st);
+  const label = `${st.current_index + 1}/${DEFAULT_PIPELINE.length} '${stage?.id ?? "(완료)"}'`;
+  switch (st.status) {
+    case "awaiting_approval":
+      return [
+        `**단계 확인 대기** ${label} — 산출물을 확인하고 승인해야 다음 단계가 돈다 (checkpoint \`${st.pending?.checkpoint_id ?? "?"}\`).`,
+        `승인: \`harness pipeline approve ${st.pending?.stage} --checkpoint ${st.pending?.checkpoint_id} --project ${project}\` · 되돌림: 같은 인자로 \`reject\`.`,
+        "이 단계가 승인되기 전에는 `task-prompt`·`handoff`·`plan-dag`가 거부된다 (작업 지시문을 만들지 않는다).",
+      ];
+    case "awaiting_run":
+      return [
+        `**단계 실행 대기** ${label} — \`harness pipeline next --project ${project}\`.` +
+          (st.last_failure ? ` (직전 실패 ${st.last_failure.stage} @ ${st.last_failure.at} — next가 자동 resume한다)` : ""),
+      ];
+    case "killed":
+      return [
+        `**파이프라인 폐기** — 지시문·DAG·handoff를 만들 수 없다. 재평가는 \`harness run <kill 게이트 workflow> --project ${project}\`, 다시 세우려면 \`harness pipeline restart\`.`,
+      ];
+    case "completed": {
+      const problem = driftProblem(root, approvedDigests(st).values());
+      if (problem) {
+        return [
+          `**승인 후 문서가 바뀌었다** — ${problem}. 사람이 확인한 내용이 아니므로 \`task-prompt\`·\`handoff\`·\`plan-dag\`가 거부된다.`,
+          `파일을 복원하거나 \`harness pipeline restart --project ${project}\`로 다시 심사한다.`,
+        ];
+      }
+      return [`파이프라인 4단계 전부 승인 완료 — \`harness task-prompt\` 또는 \`harness handoff\`로 개발 착수.`];
+    }
+  }
+}
+
+/**
+ * 다음 작업을 run_state로부터 도출한다.
+ * @param pipelineOwns 파이프라인이 다음 단계를 정하는 상태다 → run 완료를 "task-prompt로 진행"으로
+ *   안내하지 않는다(그 안내는 승인 전에는 틀린 말이다 — Codex A-5).
+ */
+function nextActions(state: RunState | null, project: string, pipelineOwns = false): string[] {
   if (!state) {
     return ["아직 workflow 미실행 — `harness run <workflow> --project <name>` 실행."];
   }
@@ -47,7 +98,11 @@ function nextActions(state: RunState | null, project: string): string[] {
       );
       break;
     case "completed":
-      actions.push(`workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
+      actions.push(
+        pipelineOwns
+          ? `workflow \`${state.workflow_id}\` 자체는 완주했다 — 다음 행동은 위 단계 체크포인트가 정한다(승인 전에는 지시문을 만들지 않는다).`
+          : `workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`,
+      );
       break;
     default: {
       // status가 없는 옛 run_state(필드 도입 전)는 failed_agent로 판단한다 — 기존 동작 보존.
@@ -87,6 +142,16 @@ export function buildSummary(project: string, today: string): string {
   } else {
     lines.push("- workflow 미실행 (run_state 없음)");
   }
+  const pipeRead = readPipelineStateAt(pipelineStatePath(paths.root));
+  if (pipeRead.kind === "ok") {
+    const st = pipeRead.state;
+    lines.push(
+      `- 단계 체크포인트: ${st.current_index + 1}/${DEFAULT_PIPELINE.length} '${currentStage(st)?.id ?? "(완료)"}' · ${st.status}` +
+        (st.pending ? ` (checkpoint ${st.pending.checkpoint_id})` : ""),
+    );
+  } else if (pipeRead.kind === "unreadable") {
+    lines.push("- 단계 체크포인트: **pipeline_state 손상 — 판정 불가(fail closed)**");
+  }
   lines.push("");
 
   // CEO 판단이 있으면 핵심 한 줄 노출
@@ -102,7 +167,12 @@ export function buildSummary(project: string, today: string): string {
   lines.push("");
 
   lines.push("## 다음 작업");
-  for (const a of nextActions(state, project)) lines.push(`- ${a}`);
+  // [Codex A-5] 파이프라인이 있으면 **그 상태가 먼저**다 (확인 대기를 완료로 적지 않는다).
+  const pipe = pipelineActions(project, paths.root);
+  if (pipe) for (const a of pipe) lines.push(`- ${a}`);
+  // 파이프라인이 완료·정상일 때만 기존 문구(task-prompt 안내)를 그대로 쓴다.
+  const pipelineOwns = pipe !== null && !(pipeRead.kind === "ok" && pipeRead.state.status === "completed");
+  for (const a of nextActions(state, project, pipelineOwns)) lines.push(`- ${a}`);
   lines.push("");
 
   return lines.join("\n");

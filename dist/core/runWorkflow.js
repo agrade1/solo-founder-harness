@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent, isCritiqueLoop, isGate, isFanout, isApproval, hasKillGate, reevaluationWorkflowIds, } from "./registry.js";
 import { projectPaths, projectExists } from "./project.js";
+import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
 import { validateAgentOutput, extractTokensJson, extractMainJudgment, extractCriticalRisks, extractSpawnDeclarations, extractCeoDecision, CEO_DECISION_TOKENS, } from "./validate.js";
@@ -217,6 +218,31 @@ export async function runWorkflow(args) {
         if (!gateStatus.ok)
             throw new Error(`${gateStatus.code}: ${gateStatus.message}`);
     }
+    // [B-41/2단] **활성 파이프라인에서 workflow를 돌리려면 lock을 쥔 파이프라인 연산 안이어야 한다.**
+    // (배타 주장을 정정한다 — Codex 검증 A-3: "`pipeline next` 하나뿐"은 거짓이었다. lease는 `lockPipeline`
+    //  의 `runStage` 안에서만 발행되지만, 그 연산을 부르는 것이 `next`뿐이라는 것은 **코드가 보장하지 않는다**.)
+    // 여기서 fresh와 resume을 **둘 다** 막는다: resume만 열어두면 "체크포인트 대기 중에 --resume으로
+    // 단계를 마저 돌린다"가 그대로 우회 통로가 된다(설계 §6은 fresh 경로를 지목했지만, 같은 게이트를
+    // 두 경로에 걸어도 pipeline next는 lease로 통과하므로 잃는 것이 없고 닫히는 것이 하나 늘어난다).
+    // lease는 "lock 보유 + 현 단계 workflow + awaiting_run" 세 사실에 결박된다(§2.4) — raw 문자열로
+    // 자기 권한을 주장하는 인자가 아니다.
+    const pipeRead = readPipelineStateAt(pipelineStatePath(projectPaths(project).root));
+    const pipeGate = pipelineGateStatus(pipeRead, projectPaths(project).root, "run");
+    if (!pipeGate.ok) {
+        const leased = pipeGate.code === "pipeline_run_reserved" &&
+            leaseAllowsRun(pipeRead, projectPaths(project).root, workflowId, args.pipelineLease);
+        if (!leased)
+            throw new Error(`${pipeGate.code}: ${pipeGate.message}`);
+    }
+    // [B-41/1단] **내부 승인 게이트는 응답자 없이 시작하지 않는다.** 예전 계약은 "approve 미지정 =
+    // 자동 승인"이었다(아래 approval 분기의 `: true`) — 사람 확인을 존재 이유로 삼는 step이
+    // programmatic 호출에서 조용히 통과했고, 비TTY에서는 대화형 응답자가 매달렸다.
+    // 판정을 **첫 모델 호출 전에** 낸다: 과금하고 나서 "물어볼 사람이 없다"를 발견하지 않는다.
+    if (!args.approve && workflow.steps.some(isApproval)) {
+        throw new Error(`approval_approver_missing: workflow '${workflowId}'에 내부 승인 게이트가 있는데 응답자가 없습니다 — ` +
+            `CLI는 --yes(비대화 승인) 또는 대화형 터미널로 실행하고, programmatic 호출은 approve를 넘기세요. ` +
+            `(승인 없이 자동 통과하지 않습니다 · 모델 호출 0회)`);
+    }
     // [M2/M2.1] 도구 profile: 지정 시 첫 모델 호출 전(run 시작 전)에 검증하고, compile된 정책을
     // execContext로 보존해 provider 실행에 전달한다. 미충족/불가면 throw → run_start·run_state 미생성.
     // 미지정이면 execContext=undefined → 기존 실행 경로·argv 완전 불변.
@@ -271,6 +297,15 @@ export async function runWorkflow(args) {
     let warned80 = false;
     let currentAgentId = "";
     const tokensSpent = () => usagePerAgent.reduce((s, u) => s + u.input_tokens + u.output_tokens, 0);
+    // [B-41/1단] 앞 단계 승인 영수증에서 온 seed를 findings 체인의 **맨 앞**에 깐다.
+    // key를 "agentId: …"의 접두사로 잡는 이유: 같은 agent가 이번 run에서 실행되면 commitOutcome의
+    // `findings.set(agent_id, …)`이 **같은 키를 덮어써** 최신 판단이 이긴다(Map은 자리를 유지한다).
+    // 접두사가 없는 문자열은 덮어쓸 대상이 없으므로 그냥 추가된다(호출자 형식 오류를 조용히 버리지 않는다).
+    // 미지정이면 이 루프가 0회 → findings 초기 상태 불변 → provider 입력 바이트 동일.
+    for (const line of args.seedFindings ?? []) {
+        const at = line.indexOf(":");
+        findings.set(at > 0 ? line.slice(0, at) : `seed_${findings.size}`, line);
+    }
     // ── resume: 이전 실패 지점부터 이어서 실행 ──────────────
     // 완료된 step은 재실행하지 않고 저장된 산출물을 컨텍스트(findings)로만 복원한다 (FAILURE_RECOVERY).
     let startIndex = 0;
@@ -658,7 +693,12 @@ export async function runWorkflow(args) {
                         }
                     }
                     const isDesignGate = Boolean(step.approval.tokens_path);
-                    const ok = approve ? await approve(message, show) : true; // approver 없으면 자동 승인(프로그램 호출 기본)
+                    // [B-41/1단] 응답자 부재는 **자동 승인이 아니다**. 여기까지 approve가 없다는 것은 위
+                    // preflight가 뚫린 것이므로(도달 불가) 승인하지 않고 멈춘다 — 이 자리에 `: true`를
+                    // 되살리면 preflight가 있어도 fail open이 복구된다.
+                    if (!approve)
+                        throw new Error(`approval_approver_missing: 승인 게이트에 응답자가 없습니다 ("${message}")`);
+                    const ok = await approve(message, show);
                     if (!ok) {
                         if (isDesignGate)
                             design_gate = { status: "pending", tokens_hash: null };

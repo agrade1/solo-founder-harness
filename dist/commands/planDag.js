@@ -48,6 +48,7 @@ import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { ideaGateStatus, readRunStateAt } from "../core/runWorkflow.js";
+import { pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "../core/pipeline.js";
 import { LIMITS, OrchestrationError } from "../exec/orchestrationTypes.js";
 import { SPECIALIST_ROLES, validateApprovalManifest } from "../exec/approvalManifest.js";
 import { DAG_DOCUMENT_KEYS, DAG_NODE_KEYS, DAG_NODE_OPTIONAL_KEYS, MAX_DAG_CONTRACT_PATHS, MAX_DAG_TASKS, TASK_DAG_SCHEMA_VERSION, validateTaskDag, } from "../exec/taskDag.js";
@@ -122,6 +123,13 @@ function assertIdeaNotKilled(ideaPath, bytes) {
     const gate = ideaGateStatus(read, snapshot);
     if (!gate.ok)
         throw new OrchestrationError("dag_materialize_seed_rejected", `${gate.code}: ${gate.message}`);
+    // [B-41/2단] **단계 체크포인트 게이트도 같은 자리에서 본다** — 개정 2가 산문으로 "닫힌다"고 적었던
+    // 것을 코드로 만든다(소비자 5곳이 같은 함수 하나를 쓴다). 확인 대기·앞 단계·폐기·drift는 전부 거부.
+    // 위 폐기 잠금과 **같은 한계**를 공유한다: 아이디어 경로가 `<project>/docs/00_IDEA.md` 꼴이 아니면
+    // projectRoot를 못 찾고, 그 경우 두 게이트 모두 아무것도 막지 못한다(신규 악화 없음 — §8 우회 4).
+    const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(projectRoot)), projectRoot, "plan-dag");
+    if (!pipeGate.ok)
+        throw new OrchestrationError("dag_materialize_seed_rejected", pipeGate.message);
 }
 /** `["a","b"]` → `` `a` · `b` `` (상수 목록을 지시 산문에 싣는 유일한 형식). */
 const inline = (items) => items.map((i) => `\`${i}\``).join(" · ");
