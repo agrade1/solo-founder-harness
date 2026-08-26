@@ -14,6 +14,7 @@ import { runHandoffCommand } from "./commands/handoff.js";
 import { AUTOPILOT_WORKER_BACKENDS, runAutopilotCommand } from "./commands/autopilot.js";
 import { runAutopilotCreateCommand } from "./commands/autopilotCreate.js";
 import { PLAN_DAG_TASK_ID, runPlanDagCommand, runValidateDagCommand } from "./commands/planDag.js";
+import { DEFAULT_DRAFT_FILE, runDraftApprovalCommand, runValidateApprovalCommand } from "./commands/draftApproval.js";
 // 버전 단일 원본: package.json. dev(tsx src/cli.ts)·dist(dist/cli.js) 모두
 // import.meta.url 기준 ../package.json = 레포 루트로 해석되어 드리프트가 구조상 불가능.
 const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "package.json"), "utf8"));
@@ -153,6 +154,32 @@ program
     .argument("<file>", "판정할 DAG 문서 JSON 파일")
     .action((file) => {
     runValidateDagCommand({ file });
+});
+// **DAG → 승인 초안**(L2b). `plan-dag`가 DAG 문서를 만들게 했다면, 이쪽은 그 DAG를 돌리는 데 필요한
+// 승인 manifest의 **기계적으로 파생되는 부분만** 초안으로 뽑는다. 권위-의미 필드는 sentinel이고
+// 그것을 사람이 채우기 전에는 `validateApprovalManifest`를 지나지 못한다(= 이 명령은 승인을 발행하지 않는다).
+program
+    .command("draft-approval")
+    .description("[v3-M12] 검증된 task DAG 문서에서 승인 manifest **초안**을 만든다 (승인을 발행하지 않는다 — 만료·예산·커밋·정책 시간값·실행 파일 digest·쓰기 상한은 sentinel이라 사람이 채우기 전에는 검증기를 통과하지 못한다 · PATH 자동 발견 없음)")
+    .requiredOption("--dag <path>", "task DAG 문서 JSON 파일 (validateTaskDag를 통과해야 한다)")
+    .requiredOption("--milestone <id>", "승인 milestone id")
+    .option("--out <path>", `초안 출력 경로 (기본 ${DEFAULT_DRAFT_FILE} · 이름에 "draft"가 있어야 하고 기존 파일을 덮어쓰지 않는다)`)
+    // 실행 파일은 **명시한 경로에서만** digest를 계산한다. 플래그가 없으면 그 자리도 sentinel이다 —
+    // 시스템에서 찾아 주지 않는다(ambient 발견이 곧 승인 우회 통로다).
+    .option("--claude <path>", "승인할 claude 실행 파일의 정규 절대경로 (미지정 시 sentinel)")
+    .option("--git <path>", "승인할 git 실행 파일의 정규 절대경로 (미지정 시 sentinel)")
+    .option("--node <path>", "승인할 node 실행 파일의 정규 절대경로 (미지정 시 sentinel)")
+    .option("--process-observer <path>", "승인할 프로세스 관측 실행 파일(ps)의 정규 절대경로 (미지정 시 sentinel)")
+    .option("--controller-entrypoint <path>", "승인할 controller entrypoint script의 정규 절대경로 (미지정 시 sentinel)")
+    .action((opts) => {
+    runDraftApprovalCommand(opts);
+});
+program
+    .command("validate-approval")
+    .description("[v3-M12] 승인 manifest(초안 포함)가 계약을 지키고 채우지 않은 자리가 없는지 판정한다 — 읽기 전용이며 파일을 고치거나 지우지 않는다")
+    .argument("<file>", "판정할 승인 manifest JSON 파일")
+    .action((file) => {
+    runValidateApprovalCommand({ file });
 });
 program
     .command("autopilot")
