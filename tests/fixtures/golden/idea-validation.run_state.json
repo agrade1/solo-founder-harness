@@ -40,7 +40,7 @@
   "gate_jumps": [
     {
       "decider": "founder_ceo",
-      "decision": null,
+      "decision": "진행",
       "jumped_to": null
     }
   ],

@@ -500,7 +500,12 @@ test("[B-40] killed run(폐기 판정)도 handoff 거부(not_completed), spawn �
   const sp = captureSpawn();
   const res = await runHandoff(baseOpts(name, { spawnInteractive: sp.fn }));
   assert.equal(res.action, "not_completed", "폐기된 아이디어를 개발 착수로 넘기지 않는다");
-  assert.match(res.action === "not_completed" ? res.reason : "", /status=killed/);
+  const reason = res.action === "not_completed" ? res.reason : "";
+  assert.match(reason, /status=killed/);
+  assert.match(reason, /founder_ceo가 '폐기' 판정/, "누가 무슨 판정으로 죽였는지");
+  // [B-40/A-4] killed에 --resume을 지시하면 불가능한 안내다 (resume은 status=failed만 받는다).
+  assert.doesNotMatch(reason, /--resume'로 마저 완료/, "killed에 재개 안내를 하지 않는다");
+  assert.match(reason, /00_IDEA\.md를 고쳐/);
   assert.equal(sp.calls.length, 0);
   rmSync(paths.root, { recursive: true, force: true });
 });

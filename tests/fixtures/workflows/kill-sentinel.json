@@ -1,0 +1,23 @@
+{
+  "_why": "[B-40] 격리 fixture. registry/workflows.json의 세 kill 게이트는 모두 workflow의 마지막 step이라 '게이트 뒤 step이 실행되지 않는다'를 증명할 수 없다(break를 continue로 바꿔도 통과한다). 여기서는 gate 뒤에 sentinel agent(chief_of_staff)가 있어 그 계약을 실제로 잴 수 있다. sentinel은 gate 앞에 없는 agent여야 한다 — 호출 0회를 세려면.",
+  "workflows": [
+    {
+      "workflow_id": "kill-sentinel",
+      "description": "테스트 전용: founder_ceo 판정 게이트 뒤에 sentinel step이 하나 있다.",
+      "steps": [
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "축소": "founder_ceo" }, "kill": ["폐기"], "max_jumps": 0 } },
+        "chief_of_staff"
+      ]
+    },
+    {
+      "workflow_id": "kill-overlap",
+      "description": "테스트 전용: 같은 토큰이 on과 kill에 둘 다 있다 — kill이 먼저 판정되는지 재는 fixture. (정상 workflow는 이렇게 쓰지 않는다)",
+      "steps": [
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "폐기": "founder_ceo" }, "kill": ["폐기"], "max_jumps": 1 } },
+        "chief_of_staff"
+      ]
+    }
+  ]
+}

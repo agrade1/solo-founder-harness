@@ -41,6 +41,9 @@ function doc(input: AgentRunInput, o: { critical?: boolean; decision?: string })
     ? `- [scripted] 판정: 이 방향은 '${o.decision}'(으)로 처리한다.`
     : `- [scripted] ${input.agent.name} 판단`;
   const extra = EXTRA_HEADERS.map((h) => `## ${h}\n\n- [scripted] ${h}\n`).join("\n");
+  // [B-40] gate decider의 **정본 판정 절**. 게이트는 이 절만 읽는다(산문 판정은 읽지 않는다).
+  // 없으면 게이트가 ceo_decision_absent로 fail closed하므로 fixture도 계약을 지켜야 한다.
+  const decision = input.agent.agent_id === "founder_ceo" ? `## Decision\n\n- ${o.decision ?? "진행"}\n\n` : "";
   return `# Agent Output
 
 ## Metadata
@@ -51,7 +54,7 @@ function doc(input: AgentRunInput, o: { critical?: boolean; decision?: string })
 
 - scripted
 
-## Main Judgment
+${decision}## Main Judgment
 
 ${judgment}
 
