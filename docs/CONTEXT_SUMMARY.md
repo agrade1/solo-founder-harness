@@ -11,14 +11,15 @@
   ⓓ **폐기가 우회로 풀리지 않는다**: `kill_history`(carry forward) + `cleared_idea_sha256`(kill 게이트가
   '진행' 낸 순간만 발급) + 단일 판정 함수를 run·task-prompt·plan-dag가 공유 ⓔ 손상 `run_state.json`은
   absent가 아니라 **unreadable로 fail closed**(파일 바이트 불변).
-- **Codex 3라운드가 A 9건을 냈고 전부 수용**: killed가 새 run으로 덮어써짐 · killed 산출물로 지시문/DAG
+- **Codex 4라운드 + 좁은 검증 1회가 A 13건을 냈고 전부 수용**: killed가 새 run으로 덮어써짐 · killed 산출물로 지시문/DAG
   생성 · **거짓 영수증**(CLI=폐기 / summary=완료 / vault=진행) · 산문 매칭 fail open · `보류`가 통과 ·
   펜스·중복 절로 **판정 선택 가능** · 아이디어 1바이트 변경이 곧 해제 · 손상 state 덮어쓰기 ·
-  **문서 과대주장 4건**(DECISIONS "조용히 진행하는 경로를 없앴다"·"유일한 신호"·"단일 출처",
-  `extractDecision` 호출부 0건인데 "다른 호출부가 있어 보존"). 교훈 = **안전 게이트는 판정을 읽는
+  **문서 과대주장 7건** · **TOCTOU**(CEO가 심사한 바이트 ≠ 발급된 digest — 게이트가 파일을 다시 읽었다) ·
+  **게이트 실패가 CLI·vault에서 "진행"으로 렌더**(killed에서 고친 거짓 영수증의 재발) ·
+  **구조 손상 state**(killed인데 kill_history 없음)가 잠금을 지움. 교훈 = **안전 게이트는 판정을 읽는
   자리가 아니라 판정이 흐르는 모든 경로를 닫아야 한다.**
-- **실측**: `npm test` exit 0 · **649/649** · **530/530**(+25) · acceptance **224/0** · mutation 11종
-  (오케스트레이터 독립 재현 2) · CLI 스모크 6시나리오(아이디어 수정 후에도 잠김 → 재평가 '진행' →
+- **실측**: `npm test` exit 0 · **649/649** · **536/536**(+31) · acceptance **224/0** · mutation 15종
+  (오케스트레이터 독립 재현 3 — TOCTOU 재도입 포함) · CLI 스모크 6시나리오(아이디어 수정 후에도 잠김 → 재평가 '진행' →
   해제 → 손상 state는 재평가조차 거부).
 - **닫은 범위를 정확히**: 프로젝트 스코프 경로(`run`·`task-prompt`·`plan-dag`)뿐. `autopilot-create`
   직접(`B-43`) · run_state 직접 삭제/아이디어 fork(`C-131`) · `exec`/`mission`(`C-132`)은 미차단.

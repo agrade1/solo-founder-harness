@@ -1931,7 +1931,7 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M12 진행 판정 ⑪ — `B-40` 아이디어 kill 게이트: CEO '폐기'가 처음으로 집행된다(Codex 3라운드 · A 9건 수용)** (2026-08-26 · **이 절이 현행이며 아래 ⑩보다 최신이다**)
+##### **M12 진행 판정 ⑪ — `B-40` 아이디어 kill 게이트: CEO '폐기'가 처음으로 집행된다(Codex 4라운드 · A 13건 수용)** (2026-08-26 · **이 절이 현행이며 아래 ⑩보다 최신이다**)
 
 ### ⓐ 무엇이 닫혔나 — 목표의 첫 조각
 
@@ -1952,7 +1952,16 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
   workflow(`dev-preflight` 등)는 계속 거부된다. 판정 함수는 **하나**(`ideaGateStatus`)이고 세 소비자가
   그것만 쓴다(규칙이 세 벌이면 한쪽만 정직해진다).
 - **손상된 `run_state.json`은 "없음"이 아니다**: `absent`/`unreadable`/`ok`를 구분하고 unreadable은
-  전 경로 fail closed(system of record를 덮어쓰지 않는다).
+  전 경로 fail closed(system of record를 덮어쓰지 않는다). **JSON은 유효하나 구조가 손상된 것**
+  (killed인데 `kill_history` 없음 · 새 필드 타입 오류)도 `unreadable`이다(`lockFieldsProblem`) —
+  단 새 필드가 없는 **정상 구버전 state는 그대로 통과**한다(하위 호환).
+- **심사한 바이트와 발급한 digest가 결박된다**(TOCTOU): run 시작에 아이디어를 **한 번** snapshot하고
+  (`snapshotIdea`) 모든 agent 프롬프트·kill/clear 기록이 그 하나만 쓴다. `runAgent`에서 파일을 읽는
+  코드를 **삭제**했다(재읽기 API를 남기면 다음 사람이 그것을 쓴다 — `ideaContent` 필수 인자화).
+  `task-prompt`·`plan-dag`도 검사한 그 바이트를 그대로 쓴다.
+- **게이트 결과를 추론하지 않고 읽는다**: `GateJumpEntry.outcome`(+`reason`)을 기록하고 CLI·vault가
+  **공유 렌더러 하나**(`gateOutcomeLabel`)를 쓴다. 이전에는 "killed도 아니고 jump도 아니면 진행"으로
+  **추론**해서, `보류`로 멈춘 run이 화면·vault에 "진행"으로 남았다(거짓 영수증).
 
 ### ⓑ 비평 — Codex 3라운드가 A 9건을 냈고 전부 수용했다 (사용자 지시: 비평 루프 = Codex)
 
@@ -1961,6 +1970,8 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | 1차(오케스트레이터 Fable) | mutation 독립 재현(kill 우선순위 역전 치환) · **"acceptance 사전 존재 실패" 주장 반박**(통합 체크아웃 224/0 — 원인은 구현 worktree의 `node_modules` 부재) |
 | 2차(Codex 5.6-sol) | **A 4건**: killed가 새 run으로 덮어써짐(kill 게이트 없는 workflow 우회) · killed 산출물로 `task-prompt`/`plan-dag` 생성 가능 · **거짓 영수증**(같은 run이 CLI=폐기 / summary=완료 / vault=진행) · 산문 매칭 fail open |
 | 3차(Codex 5.6-sol) | **A 5건**: 비진행 토큰 암묵 진행(`보류`가 통과) · 펜스·중복 절로 **판정을 고를 수 있음** · 아이디어 바이트 1회 변경이 곧 해제 · 손상 state를 absent로 접기 · **문서 과대주장**(DECISIONS의 "조용히 진행하는 경로를 없앴다"·"유일한 신호"·"단일 출처", `extractDecision` 호출부 0건인데 "다른 호출부가 있어 보존") |
+| 4차(Codex 5.6-sol) | **A 4건 + C 1건**: **TOCTOU** — CEO가 심사한 아이디어 바이트와 발급된 `cleared_idea_sha256`가 결박되지 않는다(게이트가 파일을 다시 읽는다) · **게이트 실패가 CLI·vault에서 여전히 "진행"으로 렌더**(killed에서 고친 거짓 영수증의 재발) · JSON은 유효하나 **구조가 손상된** state(killed인데 `kill_history` 없음)가 잠금을 지운다 · 과대주장 3건(DECISIONS "헤더 강제 안 함"인데 `required_headers` 추가됨 · CEO 프롬프트 "아이디어를 고쳐야 재시작"인데 구현은 같은 바이트 재평가 허용 · 커밋의 "clearance가 폐기와 경쟁"은 불가능) · 사유 코드 오배정(budget 0에서 target 부재가 예산 소진으로) |
+| 5차 검증(Codex 5.5 · 좁은 범위) | 위 5건 **닫힘 4 · 부분 1** — 남은 것은 `run.ts` 안내 문구가 "아이디어를 고쳐 새 run"이라 말하는 것뿐(구현은 같은 바이트 재평가를 허용한다). **오케스트레이터가 직접 정정**했고, 그 문구를 물던 기존 단정이 **틀린 계약을 고정하고 있었으므로** 재평가 안내 + "수정이 조건이 아님"의 두 단정으로 강화했다 |
 
 **교훈**: 안전 게이트는 "판정을 읽는 자리"가 아니라 **"판정이 흐르는 모든 경로"** 를 닫아야 한다 —
 자물쇠(게이트)를 달아도 창문(다른 명령·다른 workflow·깨진 상태 파일)이 열려 있으면 목표는 불성립이다.
@@ -1982,8 +1993,9 @@ mutation 독립 재현 2종: kill 우선순위 역전(red 1) · `kill_history` c
 
 ### ⓓ 실측 총계
 
-`npm test` exit 0 · **649/649** · **530/530**(+25) · acceptance **224/0** · typecheck·build exit 0 ·
-mutation 11종(C-116 형식 · 독립 재현 2) · live 0회(v1 층 · mock provider로 충분).
+`npm test` exit 0 · **649/649** · **536/536**(+31) · acceptance **224/0** · typecheck·build exit 0 ·
+mutation **15종**(C-116 형식 · 오케스트레이터 **독립 재현 3**: kill 우선순위 역전 · `kill_history`
+carry forward 제거 · **TOCTOU 재도입**) · live 0회(v1 층 · mock provider로 충분).
 
 **미증명(같은 무게로)**: **live provider가 `## Decision`을 실제로 내는지 미확인** — 3중 배선
 (`promptParts` 최종 지시 · CEO §15 예시 · `required_headers` 재생성 피드백)을 했지만 준수율은 실측이

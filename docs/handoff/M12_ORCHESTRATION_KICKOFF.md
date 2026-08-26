@@ -22,7 +22,7 @@ live가 **실제 산출물을 만들고**(판정 ⑦) 아이디어에서 **DAG �
 | 항목 | 값 |
 |---|---|
 | `main` | 판정 ⑪까지(B-40 kill 게이트 — 착수 전 `git log`로 실측하라) |
-| suite | `test:exec` 649 · `test:core` 530 · acceptance 224 — 전부 green |
+| suite | `test:exec` 649 · `test:core` 536 · acceptance 224 — 전부 green |
 | 열린 대장 | A **0** · 등급 B **10** · 등급 C **96** · id **106** |
 | 판정 정본 | 로드맵 `M12 진행 판정 ⑪` (새 판정은 그 **위에** 삽입하고 "현행" 문구를 갱신하라) |
 | live 실측 | 판정 ⑦(단일 task 산출물) · ⑧(12-task DAG 초안) · ⑨(multi-task 부분) · ⑩(**문서 단계 4종 완성**) · ⑪(kill 게이트 — v1 층이라 mock로 충분 · live 0회) |
@@ -89,8 +89,12 @@ mutation red 아니면 결함·미증명은 오케스트레이터가 닫기)은 
 ## 5. 대장 정본 읽는 법
 
 `grep -E '\| open \|'`로 **세지 마라**(스냅샷 중복). 정본은 §9.1 **`현행 열린 항목 — 정본`** 절이고
-자기 검증 명령이 그 절 안에 있다. 등급 B 7: `B-10` `B-13` `B-34` `B-35` `B-36` `B-37` `B-39` —
-전부 트리거 미도래. `C-116`은 구현 프롬프트마다 반영(§4-9 · 판정 ⑩까지 mutation 13종이 이 형식으로 red).
+자기 검증 명령이 그 절 안에 있다. 등급 B **10**: `B-10` `B-13` `B-34` `B-35` `B-36` `B-37` `B-39`
+`B-41` `B-42` `B-43` — 전부 트리거 미도래(`B-41`은 **지금 1순위**). `C-116`은 구현 프롬프트마다
+반영(§4-9 · 판정 ⑪까지 mutation 15종이 이 형식으로 red).
+
+**닫힌 id를 정본 절 표에 남기지 마라**: 자기 검증 명령이 그것을 열린 것으로 센다(판정 ⑪에서 실측 —
+`B-40` 행이 남아 106이 107로 나왔다). 등재 이력은 판정 절과 git이 갖는다(§4-7).
 
 ## 6. 착수 명령
 
@@ -100,7 +104,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
   docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
   | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l
 sed -n '1,40p' docs/CONTEXT_SUMMARY.md            # 최신 블록
-grep -n '^##### \*\*M11 진행 판정' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | head -1
+grep -n '^##### \*\*M1[12] 진행 판정' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | head -1
 ```
 
 ## 7. 서브에이전트 프롬프트 뼈대
