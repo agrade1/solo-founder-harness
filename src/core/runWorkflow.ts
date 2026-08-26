@@ -1,6 +1,6 @@
 import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { createHash } from "node:crypto";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import {
   loadAgentRegistry,
   loadWorkflows,
@@ -33,6 +33,25 @@ import type { Provider, ProviderExecContext } from "../providers/provider.js";
 import type { ProgressReporter, StepKind } from "./progress.js";
 import { loadToolProfiles, compileToolProfile, assertPolicyExecutable, hasMcpBinding } from "../tools/profiles.js";
 import { getProviderCapabilities } from "../providers/capabilities.js";
+import { runResearch, ResearchError } from "../tools/researchGateway.js";
+import {
+  EVIDENCE_DIGEST_RECIPIENTS,
+  RESEARCH_DECLARATION_INSTRUCTION,
+  RESEARCH_DIR_REL,
+  RESEARCH_FIRST_PASS_MAX_BYTES,
+  RESEARCH_MAX_ATTEMPTS,
+  buildEvidenceDigest,
+  createSessionBackend,
+  parseResearchDeclaration,
+  redactedQuery,
+  secondPassRequest,
+  sha256Of,
+  writeResearchReceipt,
+  type ResearchAttempt,
+  type ResearchRuntime,
+  type SessionBackend,
+} from "./researchRuntime.js";
+import { envFilePath } from "./envFile.js";
 
 export type { ProgressReporter } from "./progress.js"; // 하위 호환: 기존 import 경로 유지
 
@@ -158,6 +177,19 @@ export interface RunState {
   started_at: string;
   finished_at: string;
   handoff?: HandoffRecord; // [M3b.2] interactive handoff가 실제 spawn된 경우에만 기록 (그 외 부재)
+  /**
+   * [C-126] 리서치 영수증. **additive optional**이다 — 구버전 run_state는 이 필드 없이 그대로 통과한다.
+   *
+   * `attempts`는 `kill_history`(:546)와 **같은 자리·같은 규율로 carry forward**한다: resume이든
+   * 새 run이든 이전 state에서 이어받는다. 이어받지 않으면 mvp-planning의 run_state 하나가
+   * idea-validation의 리서치 영수증을 지운다.
+   *
+   * 코드 상한은 `RESEARCH_MAX_ATTEMPTS`(4)이고 **넘으면 오래된 것을 떨군다** — 장기 보존은
+   * receipt 파일이 담당하므로(§4.3) 여기서 잃는 것은 인덱스뿐이다. 다만 4번을 넘게 실패한 뒤에는
+   * "마지막 성공 attempt"가 떨궈져 resume digest 복원이 비게 될 수 있다(그 방향은 근거 없이
+   * 진행하는 것이 아니라 **다시 검색**하는 쪽이다 — 미차단 항목으로 남긴다).
+   */
+  research?: { attempts: ResearchAttempt[] };
 }
 
 /**
@@ -233,6 +265,15 @@ export interface RunWorkflowArgs {
    * **문자열이 아니다**: nonce를 읽어 만들 수 없고, 발행 호출이 끝나면 만료된다.
    */
   pipelineLease?: PipelineLease;
+  /**
+   * [C-126/A-1] 이 run의 리서치 진행 방식. **`runWorkflow`는 키를 모른다** — 이 인자가 유일한 입력이고
+   * 값은 `resolveResearchRuntime()`이 만든다(`runRun`과 파이프라인 `nextLocked` 양쪽이 부른다).
+   *
+   * 미지정 = `{kind:"self"}`와 같다(기존 테스트·exec 경로 · 외부 호출 0회). self에서도 attempt와
+   * receipt는 남는다 — 승인자가 "이 문서가 어떤 리서치 모드에서 나왔나"를 승인 바이트 안에서
+   * 보는 것이 §6.1의 요구다.
+   */
+  research?: ResearchRuntime;
 }
 
 const RUN_STATE_REL = "outputs/run_state.json";
@@ -548,10 +589,38 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   let warned80 = false;
   let currentAgentId = "";
 
+  // ── [C-126] 리서치 배선 ────────────────────────────────
+  // 미지정은 self다 — 이 함수는 키를 모르고, 외부 호출은 runtime이 external일 때만 일어난다.
+  const research: ResearchRuntime = args.research ?? { kind: "self", envPath: envFilePath(), notices: [] };
+  // [A-4·kill_history 선례] attempts는 **명시적 carry-forward**. 없으면 뒤 run 하나가 앞 단계
+  // 리서치 영수증을 지운다(그리고 checkpoint 결박 대상도 함께 사라진다).
+  const researchAttempts: ResearchAttempt[] = [...(priorState?.research?.attempts ?? [])];
+  const projectRoot = projectPaths(project).root;
+  /** 하류 수신자(EVIDENCE_DIGEST_RECIPIENTS)에게 실리는 digest. **새 attempt 시작 시 소거**된다. */
+  let evidenceDigest: string | null = null;
+  // [A-9] resume 재주입은 **시각 창이 아니라 attempt에 결박된 evidence snapshot**에서만 온다.
+  // 마지막 **성공** attempt 하나뿐이다 — 실패 attempt의 partial을 근거로 쓰면 "다 봤다"가 거짓이 된다.
+  if (args.resume) {
+    const lastOk = [...researchAttempts].reverse().find((a) => a.mode !== null && (a.evidence ?? []).length > 0);
+    if (lastOk) {
+      const d = buildEvidenceDigest(lastOk.evidence);
+      if (d.ok) evidenceDigest = d.digest;
+      else console.warn(`  ⚠ resume: 저장된 근거가 digest 예산(${d.limit}B)을 넘어 재주입하지 않았습니다 (${d.bytes}B)`);
+    }
+  }
+  // [§6.2] run 수명 sessionBackend가 cache와 호출 예산을 소유한다. resume은 앞 attempt들의
+  // 호출 수를 이어받는다 — **프로세스 간 memo는 소실되므로** 같은 질의는 크레딧을 다시 쓴다(문서화된 한계).
+  const sessionBackend: SessionBackend | null =
+    research.kind === "external"
+      ? createSessionBackend(research.backend, research.scrub, {
+          priorCalls: args.resume ? researchAttempts.reduce((s, a) => s + (a.backend_calls ?? 0), 0) : 0,
+        })
+      : null;
+
   const tokensSpent = () => usagePerAgent.reduce((s, u) => s + u.input_tokens + u.output_tokens, 0);
 
   // [B-41/1단] 앞 단계 승인 영수증에서 온 seed를 findings 체인의 **맨 앞**에 깐다.
-  // key를 "agentId: …"의 접두사로 잡는 이유: 같은 agent가 이번 run에서 실행되면 commitOutcome의
+  // key를 "agentId: …"의 접두사로 잡는 이유: 같은 agent가 이번 run에서 실행되면 persistFinalOutcome의
   // `findings.set(agent_id, …)`이 **같은 키를 덮어써** 최신 판단이 이긴다(Map은 자리를 유지한다).
   // 접두사가 없는 문자열은 덮어쓸 대상이 없으므로 그냥 추가된다(호출자 형식 오류를 조용히 버리지 않는다).
   // 미지정이면 이 루프가 0회 → findings 초기 상태 불변 → provider 입력 바이트 동일.
@@ -622,6 +691,10 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       stepIndex: number; // 1-based top-level step 순번
       kind: StepKind; // agent | critic | revise | spawn
       round?: number; // critique 라운드 (critic/revise)
+      /** [C-126] 1차에 주입하는 검색 선언 지시 (키가 있을 때만). */
+      researchRequest?: string;
+      /** [C-126] 명시 digest — 리서치 2차 전용. 미지정이면 아래 수신자 allowlist 규칙이 적용된다. */
+      evidenceDigest?: string;
     },
   ): Promise<StepOutcome> {
     currentAgentId = agent.agent_id;
@@ -635,6 +708,18 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     let usageOut = 0;
     let sawUsage = false;
     let ok = false;
+
+    // [C-126/B-1] digest 수신자는 **상수 allowlist**이고, `conclusion_only`(critic)에는 주지 않는다 —
+    // 편향 분리가 그 모드의 존재 이유라서 근거를 주면 격리가 깨진다. 명시 인자(2차)가 우선한다.
+    // digest가 null이면 undefined가 흘러 프롬프트 바이트가 기존과 동일하다(additive 계약).
+    const digestForStep =
+      opts.evidenceDigest ??
+      (opts.kind === "agent" &&
+      opts.contextMode !== "conclusion_only" &&
+      evidenceDigest !== null &&
+      EVIDENCE_DIGEST_RECIPIENTS.includes(agent.agent_id)
+        ? evidenceDigest
+        : undefined);
 
     reporter?.emit({
       type: "step_start",
@@ -665,6 +750,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           retryFeedback: feedback,
           revisionRequest: opts.revisionRequest,
           spawnRequest: opts.spawnRequest,
+          researchRequest: opts.researchRequest,
+          evidenceDigest: digestForStep,
           agentPromptText: opts.agentPromptText,
           execContext,
         });
@@ -703,8 +790,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     }
   }
 
-  // step 결과를 저장하고 run_state 누산기에 반영한다.
-  function commitOutcome(agent: AgentDef, o: StepOutcome): string {
+  /**
+   * [C-126/A-2] **모든 LLM 호출 직후** 부른다 — 리서치 1차처럼 **저장하지 않는 호출도 포함**.
+   *
+   * 예전 `commitOutcome`은 usage 누산과 저장을 겸했다. 리서치 1차를 통째로 미commit하면 **1차 LLM
+   * 비용이 `run_state.usage`와 `--max-tokens` 검사에서 사라진다**(2차·backend 실패 시 소비 전액 증발).
+   * 그래서 "비용·경고는 호출의 사실"과 "저장은 채택의 사실"을 분리했다. 1차의 헤더 누락 경고도
+   * 그 호출의 사실이므로 남긴다.
+   */
+  function recordOutcomeTelemetry(agent: AgentDef, o: StepOutcome): void {
     if (o.sawUsage) {
       usagePerAgent.push({ agent_id: agent.agent_id, input_tokens: o.usageIn, output_tokens: o.usageOut });
     }
@@ -715,6 +809,10 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       warnings.push({ agent_id: agent.agent_id, missing: o.validation.missing });
       console.warn(`  ⚠ ${agent.agent_id}: 필수 섹션 누락 — ${o.validation.missing.join(", ")} (저장은 진행)`);
     }
+  }
+
+  /** [C-126/A-2] **최종 채택본만** 저장한다 (saveArtifact·token_output·completed_steps·findings). */
+  function persistFinalOutcome(agent: AgentDef, o: StepOutcome): string {
     const saved = saveArtifact(project, agent.default_output, o.markdown);
     savedFiles.push(saved);
     // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
@@ -732,6 +830,175 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     findings.set(agent.agent_id, `${agent.agent_id}: ${extractMainJudgment(o.markdown)}`);
     lastMarkdown.set(agent.agent_id, o.markdown);
     return saved;
+  }
+
+  /**
+   * [C-126/§5.1] 리서치 step (형태 B — LLM 2회).
+   *
+   * 1차(선언 지시 주입 · telemetry만) → 말미 판정 → `runResearch` → 2차(1차 전문 + digest) →
+   * **최종 1회 저장**. attempt는 성공·실패 무관하게 **불변 receipt 파일**로 봉인된다.
+   *
+   * 실패는 전부 **resumable failed**(원인별 사유 코드)다 — "외부 실패 시 자체로 계속"은 사용자
+   * 결정 대기 항목이라 구현하지 않았다(설계 §10). 그 옵트인이 없으면 fail closed가 유일한 정직한 답이다.
+   */
+  async function runWebResearchStep(
+    agent: AgentDef,
+    i: number,
+    nextAgentId: string | undefined,
+    spawnRequest: string | undefined,
+  ): Promise<{ ok: true; saved: string; elapsedMs: number; mode: string } | { ok: false; reason: string; detail?: string }> {
+    const attempt: ResearchAttempt = {
+      started_at: now(),
+      mode: null,
+      requests: [],
+      backend_calls: 0,
+      cache_hits: 0,
+      dropped_by_domain: 0,
+      first_pass_sha256: null,
+      evidence: [],
+      receipt_path: "",
+      raw_paths: [],
+    };
+    // [B-1] 새 attempt가 시작되면 앞 attempt의 digest는 소거한다 — 게이트가 research로 되돌린 뒤에도
+    // 옛 근거가 하류 프롬프트에 남아 있으면 그것이 "이번 판단의 근거"라고 거짓말한다.
+    evidenceDigest = null;
+    const label = `[${i + 1}/${total}] ${agent.agent_id}`;
+
+    /** attempt를 봉인한다: receipt write-once → savedFiles → attempts(상한 집행). */
+    const seal = (mode: ResearchAttempt["mode"], errorCode?: string): void => {
+      attempt.mode = mode;
+      if (errorCode) attempt.error_code = errorCode;
+      try {
+        attempt.receipt_path = writeResearchReceipt(projectRoot, attempt);
+        // receipt와 raw는 checkpoint 결박 대상이고, 실패 시엔 `last_failure.written`에 잡혀야 한다
+        // (그래서 resume 사전 drift 검증이 partial 저장을 "손댄 것"으로 오해하지 않는다).
+        savedFiles.push(attempt.receipt_path);
+      } catch (err) {
+        // 영수증을 못 써도 run 자체를 다른 사유로 죽이지 않는다 — 사실은 남기고 진행 판정은 유지한다.
+        console.warn(`  ⚠ ${agent.agent_id}: 리서치 영수증 기록 실패 — ${(err as Error).message}`);
+      }
+      researchAttempts.push(attempt);
+      if (researchAttempts.length > RESEARCH_MAX_ATTEMPTS) {
+        researchAttempts.splice(0, researchAttempts.length - RESEARCH_MAX_ATTEMPTS);
+      }
+    };
+
+    // ── self: 키 부재 → 외부 호출 0회 (기존 동작과 같은 1-LLM step) ──
+    if (research.kind !== "external" || sessionBackend === null) {
+      const o = await runStepWithRegen(agent, nextAgentId, { spawnRequest, progressLabel: label, stepIndex: i + 1, kind: "agent" });
+      recordOutcomeTelemetry(agent, o);
+      const saved = persistFinalOutcome(agent, o);
+      seal("self");
+      return { ok: true, saved, elapsedMs: o.elapsedMs, mode: "self" };
+    }
+    const scrub = research.scrub;
+
+    // ── 1차: 선언 지시 주입 · **telemetry만**(미저장) ──
+    const first = await runStepWithRegen(agent, nextAgentId, {
+      spawnRequest,
+      researchRequest: RESEARCH_DECLARATION_INSTRUCTION,
+      progressLabel: `${label} (1차 · 검색 선언)`,
+      stepIndex: i + 1,
+      kind: "agent",
+    });
+    recordOutcomeTelemetry(agent, first);
+    attempt.first_pass_sha256 = sha256Of(first.markdown);
+
+    const decl = parseResearchDeclaration(first.markdown);
+    if (decl.kind === "missing") {
+      seal(null, "research_declaration_missing");
+      return { ok: false, reason: "research_declaration_missing", detail: `문서 말미에 선언도 'RESEARCH_REQUEST none'도 없다` };
+    }
+    if (decl.kind === "invalid") {
+      seal(null, "research_declaration_invalid");
+      return { ok: false, reason: "research_declaration_invalid", detail: scrub(decl.detail) };
+    }
+    if (decl.kind === "none") {
+      // 명시 종결자 — 모델이 "검색 불필요"를 선언했다. 1차가 곧 최종본이다.
+      const saved = persistFinalOutcome(agent, first);
+      seal("external_declined");
+      return { ok: true, saved, elapsedMs: first.elapsedMs, mode: "external_declined" };
+    }
+    attempt.requests = decl.requests.map((r) => ({ redacted_query: redactedQuery(r.query, scrub) }));
+    console.log(`  🔎 ${agent.agent_id}: 검색 선언 ${decl.requests.length}건 — 외부 검색(Tavily)으로 전송합니다`);
+
+    // ── 검색 실행 ──
+    const callsAt = sessionBackend.calls;
+    const hitsAt = sessionBackend.memoHits;
+    try {
+      const res = await runResearch(decl.requests, {
+        backend: sessionBackend,
+        evidenceDir: join(projectRoot, RESEARCH_DIR_REL),
+        now,
+        // [§5.4] extract 봉인: `null`이면 extract는 **전부 거부**되고 search는 좁혀지지 않는다.
+        allowedDomains: null,
+        // [A-4] partial을 사실대로 적는 유일한 자리 — 뒤 항목이 throw해도 앞 저장은 남는다.
+        onStored: (item, rel) => {
+          attempt.evidence.push(item);
+          const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
+          attempt.raw_paths.push(projRel);
+          savedFiles.push(projRel);
+        },
+      });
+      attempt.dropped_by_domain = res.droppedByDomain;
+    } catch (err) {
+      attempt.backend_calls = sessionBackend.calls - callsAt;
+      attempt.cache_hits = sessionBackend.memoHits - hitsAt;
+      const code = err instanceof ResearchError ? err.code : "research_backend_error";
+      const reason = code.startsWith("research_") ? code : "research_backend_error";
+      seal(null, reason);
+      return { ok: false, reason, detail: scrub((err as Error).message) };
+    }
+    attempt.backend_calls = sessionBackend.calls - callsAt;
+    attempt.cache_hits = sessionBackend.memoHits - hitsAt;
+
+    // ── 결과 0건: API는 정상이었고 후보가 없었다 (실패가 아니다) ──
+    if (attempt.evidence.length === 0) {
+      const saved = persistFinalOutcome(agent, first);
+      seal("external_empty");
+      return { ok: true, saved, elapsedMs: first.elapsedMs, mode: "external_empty" };
+    }
+
+    // ── 예산 (§6.3 · byte 단위 · 절단 금지) ──
+    const firstBytes = Buffer.byteLength(first.markdown, "utf8");
+    if (firstBytes > RESEARCH_FIRST_PASS_MAX_BYTES) {
+      seal(null, "research_first_pass_too_large");
+      return {
+        ok: false,
+        reason: "research_first_pass_too_large",
+        detail: `1차 문서가 ${firstBytes}B로 상한 ${RESEARCH_FIRST_PASS_MAX_BYTES}B를 넘는다 (자르지 않는다 — 근거 반영이 무의미해진다)`,
+      };
+    }
+    const digest = buildEvidenceDigest(attempt.evidence);
+    if (!digest.ok) {
+      seal(null, "research_budget_exceeded");
+      return {
+        ok: false,
+        reason: "research_budget_exceeded",
+        detail: `근거 digest가 ${digest.bytes}B로 상한 ${digest.limit}B를 넘는다 (조용히 자르지 않는다)`,
+      };
+    }
+
+    // ── 2차: 1차 전문 + digest → **이것만 저장** ──
+    let second: StepOutcome;
+    try {
+      second = await runStepWithRegen(agent, nextAgentId, {
+        revisionRequest: secondPassRequest(first.markdown, attempt.first_pass_sha256),
+        evidenceDigest: digest.digest,
+        progressLabel: `${label} (2차 · 근거 반영)`,
+        stepIndex: i + 1,
+        kind: "revise",
+      });
+    } catch (err) {
+      // 2차가 죽으면 1차 비용과 partial evidence는 **이미 사실**이다 — 영수증을 남기고 실패한다.
+      seal(null, "research_second_pass_failed");
+      throw err; // 기존 step 실패 경로(failed_agent/failed_reason)를 그대로 쓴다
+    }
+    recordOutcomeTelemetry(agent, second);
+    const saved = persistFinalOutcome(agent, second);
+    evidenceDigest = digest.digest; // 하류 수신자(pm·red_team·founder_ceo)에게 전달
+    seal("external");
+    return { ok: true, saved, elapsedMs: second.elapsedMs, mode: "external" };
   }
 
   // 실행 생명주기: run_start → (step_*)* → run_end. run_end는 예외가 나도 반드시 방출되도록
@@ -786,13 +1053,28 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             `SPAWN id=<영문소문자_id> | name=<이름> | focus=<한 줄 담당 범위>\n` +
             `분화가 불필요하면 정확히 "SPAWN none" 한 줄만 출력하라.`;
         }
+        // [C-126] `web_research: true` agent는 리서치 step이다 (1차 선언 → 검색 → 2차 반영).
+        // 그 밖의 step은 이 분기를 지나지 않으므로 프롬프트·저장 동작이 완전히 동일하다.
+        if (agent.web_research) {
+          const rr = await runWebResearchStep(agent, i, nextHint(workflow.steps, i), spawnRequest);
+          if (!rr.ok) {
+            failed_agent = agent.agent_id;
+            failed_reason = rr.reason;
+            failedIndex = i; // resume 시 이 step부터 — 원인을 고치면 리서치가 재실행된다
+            console.error(`  ✗ ${agent.agent_id}: 리서치 중단(${rr.reason})${rr.detail ? ` — ${rr.detail}` : ""}`);
+            break;
+          }
+          console.log(`  [${i + 1}/${total}] ✓ ${agent.agent_id} → ${rr.saved} (${fmtElapsed(rr.elapsedMs)}) · 리서치 ${rr.mode}`);
+          continue;
+        }
         const o = await runStepWithRegen(agent, nextHint(workflow.steps, i), {
           spawnRequest,
           progressLabel: `[${i + 1}/${total}] ${agent.agent_id}`,
           stepIndex: i + 1,
           kind: "agent",
         });
-        const saved = commitOutcome(agent, o);
+        recordOutcomeTelemetry(agent, o);
+        const saved = persistFinalOutcome(agent, o);
         console.log(`  [${i + 1}/${total}] ✓ ${agent.agent_id} → ${saved} (${fmtElapsed(o.elapsedMs)})`);
         continue;
       }
@@ -946,7 +1228,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             stepIndex: i + 1,
             kind: "spawn",
           });
-          const saved = commitOutcome(subAgent, so);
+          recordOutcomeTelemetry(subAgent, so);
+          const saved = persistFinalOutcome(subAgent, so);
           spawned_agents.push({ parent: planner, id: spec.id, name: spec.name, focus: spec.focus, executed: true, output: saved });
           console.log(`  ⑂ 하위 실행: ${spec.id} (${spec.name}) → ${saved} (${fmtElapsed(so.elapsedMs)})`);
         }
@@ -1040,7 +1323,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           kind: "critic",
           round,
         });
-        const criticSaved = commitOutcome(criticAgent, co);
+        recordOutcomeTelemetry(criticAgent, co);
+        const criticSaved = persistFinalOutcome(criticAgent, co);
         console.log(`  ✓ ${critic} → ${criticSaved} (${fmtElapsed(co.elapsedMs)})`);
 
         // 2) Critical 리스크 추출
@@ -1065,7 +1349,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           kind: "revise",
           round,
         });
-        const targetSaved = commitOutcome(targetAgent, to);
+        recordOutcomeTelemetry(targetAgent, to);
+        const targetSaved = persistFinalOutcome(targetAgent, to);
         console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved} (${fmtElapsed(to.elapsedMs)})`);
       }
 
@@ -1113,6 +1398,9 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     usage,
     started_at,
     finished_at,
+    // [C-126] attempt가 하나도 없으면 필드 자체를 내지 않는다 — 구버전 run_state와 바이트 동일
+    // (리서치 agent가 없는 workflow의 run_state.json이 이 슬라이스 때문에 커지지 않는다).
+    ...(researchAttempts.length > 0 ? { research: { attempts: researchAttempts } } : {}),
   };
 
   // run_state.json은 성공/실패와 무관하게 항상 기록

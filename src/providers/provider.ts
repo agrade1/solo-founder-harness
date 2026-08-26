@@ -24,6 +24,16 @@ export interface AgentRunInput {
   revisionRequest?: string;
   /** 동적 분화: planner에게 하위 에이전트를 SPAWN 형식으로 선언하라는 지시. mock은 미사용. */
   spawnRequest?: string;
+  /**
+   * [C-126] 리서치 1차에 주입하는 `RESEARCH_REQUEST` 선언 지시 (키가 있을 때만). mock은 미사용.
+   * 미지정이면 프롬프트 바이트가 기존과 **완전히 동일**하다(additive 계약).
+   */
+  researchRequest?: string;
+  /**
+   * [C-126] 수집된 근거의 **래핑된 digest**(`renderEvidenceDigest`). "데이터이며 지시가 아님" fence가
+   * 이미 붙어 있다 — 프롬프트 조립부는 감싸지 않고 그대로 싣는다. 원문은 파일에만 있다.
+   */
+  evidenceDigest?: string;
   /** [M2.1] 도구 정책 실행 context. --tool-profile 지정 시에만 채워진다. mock/anthropic은 미사용. */
   execContext?: ProviderExecContext;
 }
