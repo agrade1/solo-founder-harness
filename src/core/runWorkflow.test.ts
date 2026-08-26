@@ -411,6 +411,28 @@ test("[B-40/A-2] killed 후 kill 게이트 없는 다른 workflow로 새 run →
   rmProject(name);
 });
 
+test("[B-40/A-3] 해제 증거는 kill 게이트만 발급한다 — 게이트 없는 workflow의 완주는 발급 안 함", async () => {
+  // 해제를 게이트 밖에서 적으면 그 경로가 곧 우회 통로다. dev-preflight엔 게이트가 아예 없으므로
+  // 완주해도 cleared_idea_sha256은 null이어야 한다.
+  const name = "_b40_noclear";
+  makeProject(name);
+  const r = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED });
+  assert.equal(r.state.status, "completed", "전제: 완주한다");
+  assert.equal(r.state.cleared_idea_sha256, null, "kill 게이트 없는 workflow의 완주는 해제 증거가 아니다");
+  assert.deepEqual(r.state.kill_history, []);
+
+  // kill-sentinel fixture의 게이트는 kill을 가졌다 → '진행'이면 발급한다 (대조군).
+  const withGate = await runWorkflow({
+    workflowId: "kill-sentinel",
+    workflowsPath: SENTINEL_WF,
+    project: name,
+    provider: ceoDeciding("- 진행"),
+    now: () => FIXED,
+  });
+  assert.equal(withGate.state.cleared_idea_sha256, ideaDigest(name), "kill 게이트 '진행' → 발급");
+  rmProject(name);
+});
+
 test("[B-40/A-3] 잠금 해제는 재평가 run의 '진행' 판정뿐 — kill_history는 남는다", async () => {
   const name = "_b40_clear";
   await killedProject(name);
