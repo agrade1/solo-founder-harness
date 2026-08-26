@@ -1,5 +1,37 @@
 # DECISIONS.md
 
+## 2026-08-26 (B-40 kill 게이트 — **CEO 판정은 산문이 아니라 구조에서 읽는다**)
+
+- **결정 — `agents/founder_ceo_agent.md`의 출력 계약에 `## Decision` 절을 추가하고**(본문은
+  `진행`|`축소`|`검증`|`보류`|`폐기` 중 **정확히 한 토큰**), 게이트는 새 파서
+  `extractCeoDecision`으로 **그 절만** 읽는다. 절이 없거나 토큰이 0개·2개 이상이면 run을
+  `failed`(`ceo_decision_absent`/`ceo_decision_ambiguous`)로 멈춘다 — **조용히 진행하는 경로를 없앴다.**
+  토큰 목록은 상수 `CEO_DECISION_TOKENS` 하나에서 파생하고 `registry/workflows.json`의 gate
+  `on`/`kill` 키도 그 어휘를 쓴다(로더 테스트가 어휘 불일치를 거부한다).
+- **근거**: 기존 게이트는 `extractDecision`(Main Judgment + Decisions 섹션의 **부분문자열** 매칭)을 썼다.
+  오탐("폐기하지 않는다" → kill)은 멈추는 쪽이라 참을 수 있지만 **누락은 fail open이고 그것이 이 게이트의
+  목적을 깬다**: CEO 프롬프트 §8-E가 실제로 쓰는 "더 이상 시간을 쓰지 않는다", 그리고 "중단한다"·"드롭한다"
+  같은 표현은 어떤 키워드 목록에도 걸리지 않아 **미달 아이디어가 그대로 개발 착수로 진행**한다.
+- **대안과 기각 사유**: ⓐ **동의어 열거**(kill 배열에 표현을 계속 추가) — 자연어는 무한해서 닫히지 않고,
+  목록이 길어질수록 "빠진 표현"이 조용히 통과하는 확률만 커진다. ⓑ **부분문자열 매칭 유지 + 경고** —
+  경고는 진행을 막지 않으므로 fail open 그대로다. ⓒ **LLM에게 판정을 다시 물어보기** — 판정을 두 번
+  받는 셈이고 두 답이 갈릴 때 어느 쪽이 정본인지 정할 근거가 없다. ⓓ **`required_headers`로 강제** —
+  `registry/agent_registry.json`에 `Decision`을 넣으면 재생성 루프가 돌지만 **재생성 후에도 없으면 경고로
+  저장하고 진행**하므로(v1 검증은 경고 수준 — 대장 C-70) 게이트의 fail closed를 대체하지 못한다.
+  파서 쪽을 정본으로 두고 헤더 강제는 하지 않았다.
+- **파서 부재 시 왜 fail closed인가**: 잘못 멈추면 사람이 `## Decision` 한 줄을 고쳐 `--resume`하면 되고
+  (resume 지점이 그 게이트 step이다), 잘못 진행하면 게이트가 존재하는 이유 그 자체가 사라진다.
+  비용이 비대칭이라 멈추는 쪽을 택했다.
+- **`mockProvider`도 같은 계약을 지킨다**(founder_ceo 출력에 `## Decision`/기본 `진행`): 그러지 않으면
+  mock 기반 acceptance·golden 전부가 `ceo_decision_absent`로 죽어 **만족 불가능한 계약**이 된다.
+- **폐기의 효력은 digest로 잠근다**: `killed_by.idea_sha256`(kill 시점 `docs/00_IDEA.md` 해시)를 기록하고,
+  fresh run·`task-prompt`·`plan-dag`가 같은 함수(`killedIdeaBlock`)로 거부한다. `--force` 같은 플래그를
+  기각한 이유: "사람이 아이디어를 실제로 고쳤는가"가 판정을 무를 수 있는 유일하게 정직한 신호이고,
+  플래그는 그 질문에 답하지 않고 우회만 한다. digest가 없으면(파일 부재) **거부 쪽으로 닫는다**.
+- **한계**: `plan-dag --idea`는 `<project>/docs/00_IDEA.md` 꼴 경로만 프로젝트로 되짚는다(그 위치의
+  `outputs/run_state.json`만 본다). 프로젝트 밖 임의 경로의 아이디어는 이 검사가 막지 못하고,
+  `exec`/`mission`은 project/run_state 개념이 없어 범위 밖이다(대장에 미차단 경로로 등재).
+
 ## 2026-08-13 (V3 M8 — **접근성 검증 대상은 산출물이 직접 선언한다**)
 
 - **결정 — `tokens.json` 최상위에 `a11y.contrastPairs`를 필수로 추가하고**(3계층 → 4 key),

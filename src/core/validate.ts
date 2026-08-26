@@ -151,6 +151,34 @@ export function extractDecision(markdown: string, keywords: string[]): string | 
 }
 
 /**
+ * [B-40] CEO 정본 판정 토큰. `agents/founder_ceo_agent.md`의 "## Decision" 절 계약 그 자체이고,
+ * gate의 `on`/`kill` 키가 쓰는 어휘의 **단일 출처**다 (workflows.json은 이 중 하나를 키로 쓴다).
+ * 등급 순서는 CEO 프롬프트 §8의 A~E와 같다.
+ */
+export const CEO_DECISION_TOKENS = ["진행", "축소", "검증", "보류", "폐기"] as const;
+export type CeoDecisionToken = (typeof CEO_DECISION_TOKENS)[number];
+
+/**
+ * [B-40] "## Decision" 절에서 **정본 판정 토큰 하나**를 뽑는다. 산문 판정(Main Judgment)은 읽지 않는다.
+ *
+ * 왜 산문 부분문자열 매칭(`extractDecision`)을 게이트에서 쓰지 않는가: 오탐("폐기하지 않는다" → kill)은
+ * fail closed라 참을 수 있지만 **누락은 fail open**이다 — "중단한다"·"드롭한다"·"더 이상 시간을 쓰지 않는다"
+ * (CEO 프롬프트 §8-E의 실제 표현)는 폐기인데 어떤 키워드 목록에도 걸리지 않아 그대로 진행한다.
+ * 동의어를 열거해서는 닫히지 않는다(자연어는 무한하다). 그래서 판정을 **구조로** 받는다.
+ *
+ * 절 안의 서술은 허용하되 **토큰이 정확히 하나**여야 한다: "축소 후 진행"처럼 둘이면 ambiguous(fail closed).
+ * 절이 아예 없으면 absent — 호출자가 조용히 진행하지 않고 멈추는 것이 이 함수의 존재 이유다.
+ */
+export function extractCeoDecision(markdown: string): { token: CeoDecisionToken } | { error: "absent" | "ambiguous" } {
+  const header = /^##\s+Decision\s*$/;
+  if (!markdown.split("\n").some((l) => header.test(l))) return { error: "absent" };
+  const body = sectionText(markdown, header);
+  const found = CEO_DECISION_TOKENS.filter((t) => body.includes(t));
+  if (found.length !== 1) return { error: "ambiguous" };
+  return { token: found[0] };
+}
+
+/**
  * "## Main Judgment" 섹션의 첫 내용 줄을 handoff 요약으로 추출한다.
  * bullet(mock)이든 문단(실제 LLM)이든 첫 비어있지 않은 줄을 반환한다.
  */

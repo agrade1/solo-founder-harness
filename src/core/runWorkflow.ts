@@ -22,8 +22,9 @@ import {
   extractTokensJson,
   extractMainJudgment,
   extractCriticalRisks,
-  extractDecision,
   extractSpawnDeclarations,
+  extractCeoDecision,
+  CEO_DECISION_TOKENS,
 } from "./validate.js";
 import type { Provider, ProviderExecContext } from "../providers/provider.js";
 import type { ProgressReporter, StepKind } from "./progress.js";
@@ -103,7 +104,7 @@ export interface RunState {
    * kill 게이트가 run을 죽인 판정 (없으면 null). 폐기는 실패가 아니므로 failed_reason에 넣지 않는다 —
    * 넣으면 "failed"라는 필드 이름이 거짓이 되고, exit code·resume·handoff 분기가 실패와 뒤섞인다.
    */
-  killed_by: { decider: string; decision: string } | null;
+  killed_by: { decider: string; decision: string; idea_sha256: string | null } | null;
   resume_from: number | null; // 재개 시 실행할 step index (실패 시 = 중단된 step). completed/killed면 null
   loop_state: LoopState | null;
   warnings: StepWarning[];
@@ -164,6 +165,12 @@ export interface RunWorkflowArgs {
   toolProfileId?: string; // [M2] 활성 도구 profile. 지정 시 run 시작 전 fail-fast 검증. 미지정 시 무영향.
   bare?: boolean; // [M2] planning 격리(--strict-mcp-config + 내장도구 제한) — compile에 전달.
   toolProfilesPath?: string; // [M2.1] profile 파일 경로 override (기본: registry/tool_profiles.json). 테스트/M3용.
+  /**
+   * [B-40] workflows 파일 경로 override (기본: registry/tool_profiles.json 옆의 registry/workflows.json).
+   * 실제 세 workflow는 kill 게이트가 모두 마지막 step이라 "게이트 뒤 step이 안 돈다"를 증명할 수 없다 —
+   * 그 계약을 재려면 gate 뒤에 step이 있는 격리 fixture가 필요하다(toolProfilesPath와 같은 seam).
+   */
+  workflowsPath?: string;
 }
 
 const RUN_STATE_REL = "outputs/run_state.json";
@@ -175,15 +182,59 @@ function fmtElapsed(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
-/** outputs/run_state.json을 읽는다. 없거나 파싱 실패면 null. */
-export function loadRunState(project: string): RunState | null {
-  const p = join(projectPaths(project).root, RUN_STATE_REL);
-  if (!existsSync(p)) return null;
+/** 지정 절대경로의 run_state.json을 읽는다. 없거나 파싱 실패면 null. */
+export function loadRunStateAt(abs: string): RunState | null {
+  if (!existsSync(abs)) return null;
   try {
-    return JSON.parse(readFileSync(p, "utf8")) as RunState;
+    return JSON.parse(readFileSync(abs, "utf8")) as RunState;
   } catch {
     return null;
   }
+}
+
+/** outputs/run_state.json을 읽는다. 없거나 파싱 실패면 null. */
+export function loadRunState(project: string): RunState | null {
+  return loadRunStateAt(join(projectPaths(project).root, RUN_STATE_REL));
+}
+
+/** 검토 대상 아이디어 문서의 프로젝트 상대경로 — kill 잠금의 기준 파일. */
+export const IDEA_REL = "docs/00_IDEA.md";
+
+/** 아이디어 문서의 sha256. 파일이 없으면 null. */
+export function ideaDigestAt(ideaAbs: string): string | null {
+  if (!existsSync(ideaAbs)) return null;
+  return createHash("sha256").update(readFileSync(ideaAbs)).digest("hex");
+}
+
+/** 프로젝트의 docs/00_IDEA.md sha256. 없으면 null. */
+export function ideaDigest(project: string): string | null {
+  return ideaDigestAt(join(projectPaths(project).root, IDEA_REL));
+}
+
+/**
+ * [B-40] 폐기된 아이디어가 이 경로를 잠갔는가. 잠겼으면 **사람이 읽을 거부 이유**, 아니면 null.
+ *
+ * 잠금의 열쇠는 아이디어 문서 digest다 — 새 플래그(`--force` 같은 것)를 만들지 않았다. "사람이
+ * 아이디어를 실제로 고쳤는가"가 폐기 판정을 무를 수 있는 유일하게 정직한 신호이고, 플래그는
+ * 그 질문에 답하지 않고 우회만 한다. digest가 다르면 통과시킨다(사람이 고쳤다).
+ *
+ * digest가 `null`(아이디어 파일 부재)이면 **거부 쪽으로 닫는다**: 판정을 무를 근거를 확인할 수
+ * 없는 상태이고, 그때는 폐기 사실이 더 무겁다.
+ *
+ * 이 함수 하나를 run / task-prompt / plan-dag가 공유한다 — 호출부마다 규칙을 다시 쓰면 갈린다.
+ */
+export function killedIdeaBlock(state: RunState | null, ideaAbs: string): string | null {
+  if (!state || state.status !== "killed") return null;
+  const recorded = state.killed_by?.idea_sha256 ?? null;
+  const now = ideaDigestAt(ideaAbs);
+  // 통과는 "사람이 아이디어를 실제로 고쳤다"가 확인될 때만. 어느 쪽 digest든 없으면 확인이 불가능하므로 거부.
+  if (recorded !== null && now !== null && now !== recorded) return null;
+  const k = state.killed_by;
+  return (
+    `폐기된 아이디어입니다 — ${k?.decider ?? "(게이트)"}가 '${k?.decision ?? "폐기"}' 판정으로 ` +
+    `workflow '${state.workflow_id}'를 종료했습니다.\n` +
+    `${ideaAbs}를 고친 뒤 다시 시작하세요 (아이디어 내용이 그대로면 계속 거부합니다).`
+  );
 }
 
 /** 완료된 step id의 저장 산출물 상대경로를 구한다 (resume 시 findings 복원용). */
@@ -229,8 +280,16 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     throw new Error(`프로젝트가 없습니다: ${project} (먼저 'harness init ${project}' 실행)`);
   }
 
+  // [B-40] 폐기 잠금은 **fresh run 경로**에서 본다: prior가 killed면 kill 게이트가 없는 다른 workflow로
+  // 돌려서 completed로 덮어쓰는 길이 열려 있었다(그러면 "파이프라인 중단"이 성립하지 않는다).
+  // resume은 아래 status 검사가 이미 killed를 거부하므로 여기서 다시 보지 않는다.
+  if (!args.resume) {
+    const blocked = killedIdeaBlock(loadRunState(project), join(projectPaths(project).root, IDEA_REL));
+    if (blocked) throw new Error(blocked);
+  }
+
   const registry: AgentRegistry = loadAgentRegistry();
-  const workflow = findWorkflow(loadWorkflows(), workflowId);
+  const workflow = findWorkflow(loadWorkflows(args.workflowsPath), workflowId);
   if (!workflow) {
     throw new Error(`알 수 없는 workflow: ${workflowId} ('harness list'로 확인)`);
   }
@@ -547,23 +606,39 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         const remaining = gateBudget.get(i) ?? 0;
         const deciderMd = lastMarkdown.get(decider) ?? "";
 
+        // ── 판정은 구조에서 읽는다 (산문 부분문자열 매칭 아님) ──
+        // decider 출력의 "## Decision" 절에서 정본 토큰 하나를 뽑는다. 산문 매칭은 **누락이 fail open**이라
+        // ('중단한다'·'드롭한다' 같은 폐기 표현이 어떤 키워드 목록에도 안 걸린다) 게이트에 쓸 수 없다.
+        // 절이 없거나 토큰이 애매하면 **진행하지 않고 멈춘다** — 조용히 통과하는 경로를 남기지 않는 것이 요점.
+        const parsed = extractCeoDecision(deciderMd);
+        if ("error" in parsed) {
+          failed_agent = decider; // 실행이 아니라 산출물이 계약 위반 — 기존 gate 오류와 같은 자리에 기록
+          failed_reason = parsed.error === "absent" ? "ceo_decision_absent" : "ceo_decision_ambiguous";
+          failedIndex = i; // resume 시 이 게이트부터: 사람이 decider 문서의 "## Decision"을 고치면 재개된다
+          console.error(
+            `  ✗ 게이트: ${decider} 출력의 "## Decision" 정본 판정을 읽을 수 없음 (${failed_reason}) — ` +
+              `중단. 허용 토큰: ${CEO_DECISION_TOKENS.join(" | ")} 중 정확히 하나`,
+          );
+          endGate(false);
+          break;
+        }
+        const decision: string = parsed.token;
+
         // ── kill 판정은 jump/진행보다 먼저 ─────────────────
-        // 순서가 뒤바뀌면 '폐기'와 '축소'가 같은 판정문에 함께 있을 때 되돌림이 이겨 죽은 아이디어가 계속 돈다.
-        // kill을 앞에 두면 최악이 "사람이 새 run으로 다시 시작"이고, 뒤에 두면 최악이 "미달 아이디어를
-        // 그대로 개발 착수" — 후자가 이 게이트가 존재하는 이유 그 자체다. 그래서 멈추는 쪽으로 fail closed.
-        const killDecision = kill && kill.length > 0 ? extractDecision(deciderMd, kill) : null;
-        if (killDecision) {
-          killed_by = { decider, decision: killDecision };
-          gate_jumps.push({ decider, decision: killDecision, jumped_to: null, killed: true });
-          console.log(`  ⛔ 게이트: ${decider} 판정 '${killDecision}' → run 종료(killed) — 후속 단계 미실행`);
+        // 순서가 뒤바뀌면 되돌림이 이겨 죽은 아이디어가 한 바퀴 더 돈다. kill을 앞에 두면 최악이
+        // "사람이 새 run으로 다시 시작"이고, 뒤에 두면 최악이 "미달 아이디어를 그대로 개발 착수" —
+        // 후자가 이 게이트가 존재하는 이유 그 자체다. 그래서 멈추는 쪽으로 fail closed.
+        if (kill?.includes(decision)) {
+          killed_by = { decider, decision, idea_sha256: ideaDigest(project) };
+          gate_jumps.push({ decider, decision, jumped_to: null, killed: true });
+          console.log(`  ⛔ 게이트: ${decider} 판정 '${decision}' → run 종료(killed) — 후속 단계 미실행`);
           endGate(true); // 게이트 자체는 정상 동작했다 (판정을 내리는 것이 이 step의 일)
           break;
         }
 
-        const decision = extractDecision(deciderMd, Object.keys(on));
-        const jumpTarget = decision ? on[decision] : null;
+        const jumpTarget = on[decision] ?? null;
 
-        if (decision && jumpTarget && remaining > 0) {
+        if (jumpTarget && remaining > 0) {
           const targetIdx = workflow.steps.findIndex((s) => s === jumpTarget);
           if (targetIdx >= 0) {
             gateBudget.set(i, remaining - 1);
