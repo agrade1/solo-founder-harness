@@ -16,14 +16,17 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   ENV_FILE_NAME,
+  ensureEnvFileReady,
   ensureEnvTemplate,
   ensureGitignoreBlock,
   envFilePath,
+  envGitState,
   resolveResearchKey,
 } from "./envFile.js";
 import {
   EVIDENCE_DIGEST_MAX_BYTES,
   EVIDENCE_DIGEST_RECIPIENTS,
+  RESEARCH_ATTEMPT_LOG_REL,
   RESEARCH_DIR_REL,
   RESEARCH_FIRST_PASS_MAX_BYTES,
   RESEARCH_MAX_EVIDENCE_PER_RUN,
@@ -33,6 +36,7 @@ import {
   createSessionBackend,
   parseResearchDeclaration,
   researchModeLines,
+  researchOutcomeLines,
   resolveResearchRuntime,
   writeResearchReceipt,
   type ResearchAttempt,
@@ -48,6 +52,7 @@ import { TAVILY_SECRET_REF, createTavilyBackend } from "../tools/tavilyBackend.j
 import { mockProvider } from "../providers/mockProvider.js";
 import { buildPromptParts } from "../providers/promptParts.js";
 import { approveCheckpoint, nextPipeline, rejectCheckpoint } from "../commands/pipeline.js";
+import { runRun } from "../commands/run.js";
 import type { AgentRunInput, AgentResult, Provider } from "../providers/provider.js";
 
 const FIXED = "2026-01-01T00:00:00.000Z";
@@ -197,6 +202,14 @@ async function quiet<T>(fn: () => Promise<T> | T): Promise<T> {
   return r;
 }
 
+/**
+ * `.env`를 **하네스가 만드는 것과 같은 0600**으로 쓴다. 기본 mode(0644)로 쓰면 A-5의 권한 게이트가
+ * 거부하는 것이 맞고(그것은 전용 테스트가 잰다), 다른 테스트의 fixture는 정상 파일이어야 한다.
+ */
+function writeEnv(root: string, body: string): void {
+  writeFileSync(join(root, ENV_FILE_NAME), body, { encoding: "utf8", mode: 0o600 });
+}
+
 /** git repo 하나를 임시로 만든다 (추적/부정 규칙 판정은 실제 git에 물어야 한다). */
 function tmpGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "c126-git-"));
@@ -239,10 +252,9 @@ test("[C-126/E1] 템플릿은 0600으로 만들어지고, 이미 있으면 **한
 test("[C-126/E2] 리더는 **TAVILY_API_KEY 한 이름만** 읽는다 — 임의 변수는 값도 이름도 읽지 않고 개수만 센다", () => {
   const dir = tmpGitRepo();
   writeFileSync(join(dir, ".gitignore"), ".env\n", "utf8");
-  writeFileSync(
-    join(dir, ENV_FILE_NAME),
+  writeEnv(
+    dir,
     ["# 주석", "", "DATABASE_URL=postgres://user:pw@host/db", "STRIPE_SECRET_KEY=sk_live_XXXX", "TAVILY_API_KEY=k1", "TAVILY_API_KEY_OLD=k-old"].join("\n"),
-    "utf8",
   );
   const r = resolveResearchKey({ root: dir, env: {} });
   assert.equal(r.key, "k1", "대상 이름 하나만 읽는다");
@@ -273,23 +285,24 @@ test("[C-126/E3] BOM · 따옴표 한 쌍 · export 접두사 · 마지막 선�
     ["TAVILY_API_KEY=k#hash\n", "k#hash"], // 인라인 주석을 벗기지 않는다 — `#`은 값이다
   ];
   for (const [body, want] of cases) {
-    writeFileSync(p, body, "utf8");
+    writeEnv(dir, body);
     assert.equal(resolveResearchKey({ root: dir, env: {} }).key, want, `입력 ${JSON.stringify(body)}`);
   }
+  void p;
   rmSync(dir, { recursive: true, force: true });
 });
 
 test("[C-126/E4] 셸이 이긴다 · `process.env`를 **변경하지 않는다**", () => {
   const dir = tmpGitRepo();
   writeFileSync(join(dir, ".gitignore"), ".env\n", "utf8");
-  writeFileSync(join(dir, ENV_FILE_NAME), "TAVILY_API_KEY=from-file\n", "utf8");
+  writeEnv(dir, "TAVILY_API_KEY=from-file\n");
   const r = resolveResearchKey({ root: dir, env: { [TAVILY_SECRET_REF]: "from-shell" } });
   assert.equal(r.key, "from-shell");
   assert.equal(r.source, "shell");
 
   const before = process.env[TAVILY_SECRET_REF];
   resolveResearchKey({ root: dir, env: {} });
-  resolveResearchRuntime({ root: dir, env: {}, skipTemplate: true });
+  resolveResearchRuntime({ root: dir, env: {} });
   assert.equal(process.env[TAVILY_SECRET_REF], before, "리더/런타임 판정이 process.env를 건드렸다");
   rmSync(dir, { recursive: true, force: true });
 });
@@ -303,7 +316,7 @@ test("[C-126/E5] **추적 중인 `.env`면 키를 읽지 않는다** — 회전�
   //   ⓑ **쓸데없이 `.gitignore`를 건드리지 않는다** (추적 파일에 규칙을 더해도 아무 효과가 없다)
   writeFileSync(join(dir, ".gitignore"), "*.local\n", "utf8");
   const giBefore = readFileSync(join(dir, ".gitignore"), "utf8");
-  writeFileSync(join(dir, ENV_FILE_NAME), `TAVILY_API_KEY=${FAKE_KEY}\n`, "utf8");
+  writeEnv(dir, `TAVILY_API_KEY=${FAKE_KEY}\n`);
   execFileSync("git", ["add", "-f", ENV_FILE_NAME], { cwd: dir, stdio: "ignore" });
 
   const r = resolveResearchKey({ root: dir, env: {} });
@@ -317,7 +330,7 @@ test("[C-126/E5] **추적 중인 `.env`면 키를 읽지 않는다** — 회전�
   assert.match(msg, /폐기·재발급/);
   assert.match(msg, /git history를 정리하지 않습니다/, "history 정리를 주장하지 않는다");
   // runtime은 self로 강하하고 안내를 그대로 나른다.
-  const rt = resolveResearchRuntime({ root: dir, env: {}, skipTemplate: true });
+  const rt = resolveResearchRuntime({ root: dir, env: {} });
   assert.equal(rt.kind, "self");
   assert.match(researchModeLines(rt).join("\n"), /추적 중/);
   rmSync(dir, { recursive: true, force: true });
@@ -327,7 +340,7 @@ test("[C-126/E6] 부정 규칙(`!.env`) — managed block을 말미에 append해
   // ⓐ 앞쪽 `!.env`: 말미 append가 이긴다(뒤 규칙 우선) → 재확인 통과 → 키를 읽는다.
   const a = tmpGitRepo();
   writeFileSync(join(a, ".gitignore"), "*.local\n!.env\n", "utf8");
-  writeFileSync(join(a, ENV_FILE_NAME), "TAVILY_API_KEY=k-neg\n", "utf8");
+  writeEnv(a, "TAVILY_API_KEY=k-neg\n");
   const ra = resolveResearchKey({ root: a, env: {} });
   assert.equal(ra.key, "k-neg", "말미 규칙이 앞쪽 부정 규칙을 이긴다");
   assert.match(readFileSync(join(a, ".gitignore"), "utf8"), /harness managed/, "managed block이 append됐다");
@@ -342,7 +355,7 @@ test("[C-126/E6] 부정 규칙(`!.env`) — managed block을 말미에 append해
   // ⓑ 우선순위가 더 높은 자리(하위 .gitignore는 없으니 `.git/info/exclude`보다 강한 하위 경로 규칙 대신
   //    같은 파일 **말미**에 부정 규칙)에 `!.env`가 있으면 append로도 못 이긴다 → **거부**(fail closed).
   const b = tmpGitRepo();
-  writeFileSync(join(b, ENV_FILE_NAME), "TAVILY_API_KEY=k-still\n", "utf8");
+  writeEnv(b, "TAVILY_API_KEY=k-still\n");
   writeFileSync(join(b, ".gitignore"), ".env\n", "utf8");
   // managed block을 미리 넣고 그 **뒤에** 부정 규칙을 둔다 = append 지점보다 뒤 → 우선.
   ensureGitignoreBlock(b);
@@ -356,7 +369,7 @@ test("[C-126/E6] 부정 규칙(`!.env`) — managed block을 말미에 append해
 
 test("[C-126/E7] git repo가 아니면 검사를 건너뛰고 읽는다 (커밋 위험 자체가 없다)", () => {
   const dir = mkdtempSync(join(tmpdir(), "c126-nogit-"));
-  writeFileSync(join(dir, ENV_FILE_NAME), "TAVILY_API_KEY=k-nogit\n", "utf8");
+  writeEnv(dir, "TAVILY_API_KEY=k-nogit\n");
   assert.equal(resolveResearchKey({ root: dir, env: {} }).key, "k-nogit");
   assert.equal(existsSync(join(dir, ".gitignore")), false, "repo가 아니면 .gitignore를 만들지 않는다");
   rmSync(dir, { recursive: true, force: true });
@@ -365,8 +378,8 @@ test("[C-126/E7] git repo가 아니면 검사를 건너뛰고 읽는다 (커밋 
 test("[C-126/E8] **자식 프로세스 env에 키가 없다** — 실제 spawn으로 관측한다", () => {
   const dir = tmpGitRepo();
   writeFileSync(join(dir, ".gitignore"), ".env\n", "utf8");
-  writeFileSync(join(dir, ENV_FILE_NAME), `TAVILY_API_KEY=${FAKE_KEY}\n`, "utf8");
-  const rt = resolveResearchRuntime({ root: dir, env: {}, skipTemplate: true });
+  writeEnv(dir, `TAVILY_API_KEY=${FAKE_KEY}\n`);
+  const rt = resolveResearchRuntime({ root: dir, env: {} });
   assert.equal(rt.kind, "external", "키가 있으면 external이다");
 
   // claude-code/exec/mission/handoff 자식은 `{...process.env}`를 상속한다 — 그 관측을 그대로 한다.
@@ -1254,4 +1267,380 @@ test("[C-126/P0d] `.env`가 없으면 self이고, 그 안내는 **경로를 그�
   assert.match(lines, /자체\(self\)/);
   assert.ok(lines.includes(join(dir, ENV_FILE_NAME)), "어디에 넣으라는지 경로를 그대로 준다");
   rmSync(dir, { recursive: true, force: true });
+});
+
+// ══ 13. Codex 리뷰 A급 7건 · B 3건 · C 1건 ══════════════════════
+
+test("[C-126/A-1] resume 근거는 **receipt+raw와 대조한 뒤에만** 재주입된다 (run_state 변조 → fail closed)", async () => {
+  const name = "_c126_rA1";
+  makeProject(name);
+  await quiet(() =>
+    runWorkflow({
+      workflowId: "research-then-pm",
+      project: name,
+      provider: tap(),
+      workflowsPath: WF,
+      now: () => FIXED,
+      research: externalRuntime(fakeBackend([item(1)])),
+    }),
+  );
+  const root = projectPaths(name).root;
+  const statePath = join(root, "outputs/run_state.json");
+  const clean = readFileSync(statePath, "utf8");
+  /** research는 완료 · pm 앞에서 죽은 것으로 만든다 (resume 진입점). */
+  const asFailed = (mutate: (s: RunState) => void): void => {
+    const s = JSON.parse(clean) as RunState;
+    s.status = "failed";
+    s.resume_from = 1;
+    s.completed_steps = ["research"];
+    mutate(s);
+    writeFileSync(statePath, JSON.stringify(s, null, 2) + "\n", "utf8");
+  };
+  const resumeOnce = () =>
+    runWorkflow({
+      workflowId: "research-then-pm",
+      project: name,
+      provider: tap(),
+      workflowsPath: WF,
+      now: () => FIXED,
+      resume: true,
+      research: externalRuntime(fakeBackend([item(1)])),
+    });
+
+  // ⓐ 손대지 않은 run_state는 통과한다 (대조가 정상 경로를 막지 않는다).
+  asFailed(() => {});
+  const okRun = await quiet(resumeOnce);
+  assert.equal(okRun.state.status, "completed");
+
+  // ⓑ **run_state의 evidence만** 바꾼다 — receipt/raw는 손대지 않는다. 예전 코드는 이 변조된
+  //    summary를 그대로 digest로 만들어 모델에 먹였고, checkpoint는 옛 receipt를 결박했다.
+  asFailed((s) => {
+    s.research!.attempts.at(-1)!.evidence[0].summary = "조작된 근거 — 이 문장은 저장 응답에 없다";
+  });
+  await assert.rejects(resumeOnce, /research_receipt_unverified/, "run_state 변조가 통과했다");
+
+  // ⓒ sha256만 바꿔도 잡힌다 (exact-equal 대조).
+  asFailed((s) => {
+    s.research!.attempts.at(-1)!.evidence[0].sha256 = "0".repeat(64);
+  });
+  await assert.rejects(resumeOnce, /research_receipt_unverified/);
+
+  // ⓓ **raw 파일 1바이트 변조**도 잡힌다 (재해시 대조).
+  asFailed(() => {});
+  const rawRel = (JSON.parse(clean) as RunState).research!.attempts.at(-1)!.raw_paths[0];
+  const rawBytes = readFileSync(join(root, rawRel));
+  writeFileSync(join(root, rawRel), Buffer.concat([rawBytes, Buffer.from("x")]));
+  await assert.rejects(resumeOnce, /research_receipt_unverified/, "raw 변조가 통과했다");
+  writeFileSync(join(root, rawRel), rawBytes);
+
+  // ⓔ receipt 파일 삭제도 잡힌다 (저장본이 정본이므로 없으면 근거가 없다).
+  asFailed(() => {});
+  const receiptRel = (JSON.parse(clean) as RunState).research!.attempts.at(-1)!.receipt_path;
+  const receiptBytes = readFileSync(join(root, receiptRel));
+  rmSync(join(root, receiptRel));
+  await assert.rejects(resumeOnce, /research_receipt_unverified/);
+  writeFileSync(join(root, receiptRel), receiptBytes);
+  rmProject(name);
+});
+
+test("[C-126/A-2] receipt 실패는 **fail closed**이고, seal은 모든 경로에서 정확히 한 번이다", async () => {
+  // ⓐ receipt를 못 쓰는 상태(디렉터리 자리에 파일)를 만들면 성공으로 판정하지 않는다.
+  const name = "_c126_rA2";
+  const root = makeProject(name);
+  // `outputs/research`가 **파일**이면 mkdir이 실패해 receipt를 쓸 수 없다.
+  writeFileSync(join(root, RESEARCH_DIR_REL), "이 자리는 디렉터리여야 한다", "utf8");
+  const r = await quiet(() => runWorkflow({ workflowId: "research-only", project: name, provider: tap(), workflowsPath: WF, now: () => FIXED }));
+  assert.equal(r.state.status, "failed", "영수증을 못 쓰면 그 단계는 성공이 아니다");
+  assert.equal(r.state.failed_agent, "research");
+  assert.equal(r.state.completed_steps.includes("research"), true, "문서는 저장됐다 — 그 사실은 숨기지 않는다");
+  assert.equal(r.state.research, undefined, "봉인되지 않은 attempt는 영수증에 실리지 않는다");
+  rmProject(name);
+
+  // ⓑ **1차 provider throw**도 attempt를 봉인한다 (예전엔 seal 밖이어서 영수증이 없었다).
+  const name2 = "_c126_rA2b";
+  makeProject(name2);
+  const throwing: Provider = {
+    id: "mock",
+    async generate(input) {
+      if (input.agent.agent_id === "research") throw new Error("1차 provider 실패(주입)");
+      return mockProvider.generate(input);
+    },
+  };
+  const r2 = await quiet(() =>
+    runWorkflow({
+      workflowId: "research-only",
+      project: name2,
+      provider: throwing,
+      workflowsPath: WF,
+      now: () => FIXED,
+      research: externalRuntime(fakeBackend([item(1)])),
+    }),
+  );
+  assert.equal(r2.state.status, "failed");
+  const at2 = attemptsOf(r2.state).at(-1);
+  assert.ok(at2, "1차가 죽어도 attempt가 봉인된다");
+  assert.equal(at2!.mode, null);
+  assert.equal(at2!.error_code, "research_step_failed");
+  assert.ok(existsSync(join(projectPaths(name2).root, at2!.receipt_path)), "영수증 파일이 실물로 있다");
+  assert.equal(attemptsOf(r2.state).length, 1, "seal은 정확히 한 번이다 (catch와 정상 경로가 겹쳐도 중복 없음)");
+  rmProject(name2);
+});
+
+test("[C-126/A-3] resume을 4회 넘게 반복해도 run-wide 상한이 다시 열리지 않는다", async () => {
+  const name = "_c126_rA3";
+  makeProject(name);
+  const backend = fakeBackend([item(1)]);
+  const reasons: string[] = [];
+  for (let i = 0; i < MAX_BACKEND_CALLS_PER_RUN + 1; i++) {
+    // 매번 **다른 질의**라 memo가 적중하지 않는다 → attempt당 backend 1회.
+    // 2차를 죽여 status=failed·resume_from=0으로 만들어 다음 resume이 research를 재실행하게 한다.
+    const p = tap({ decl: `RESEARCH_REQUEST query="질의 ${i}" | type=search`, secondFails: true });
+    const r = await quiet(() =>
+      runWorkflow({
+        workflowId: "research-only",
+        project: name,
+        provider: p,
+        workflowsPath: WF,
+        now: () => FIXED,
+        resume: i > 0,
+        research: externalRuntime(backend),
+      }),
+    );
+    reasons.push(r.state.failed_reason ?? "(없음)");
+    // 표시용 attempts는 상한 4로 잘리지만 **totals는 잘리지 않는다** — 그것이 집행 근거다.
+    assert.ok(attemptsOf(r.state).length <= 4, "표시용 attempts는 4개로 잘린다");
+    assert.equal(r.state.research!.totals!.backend_calls, Math.min(i + 1, MAX_BACKEND_CALLS_PER_RUN), `누적 호출 (i=${i})`);
+  }
+  assert.equal(backend.calls.length, MAX_BACKEND_CALLS_PER_RUN, `backend는 상한 ${MAX_BACKEND_CALLS_PER_RUN}회까지만 불렸다 (실제 ${backend.calls.length})`);
+  assert.equal(reasons.at(-1), "research_budget_exceeded", `마지막 resume은 예산 초과로 거부된다 (실제 ${reasons.at(-1)})`);
+  assert.deepEqual(new Set(reasons.slice(0, -1)), new Set(["research_second_pass_failed"]), "그 전까지는 2차 실패였다");
+  rmProject(name);
+});
+
+test("[C-126/A-4] malformed Tavily 항목은 조용히 버려지지 않는다 (빈 배열만 empty)", async () => {
+  const saved = process.env[TAVILY_SECRET_REF];
+  delete process.env[TAVILY_SECRET_REF];
+  const realFetch = globalThis.fetch;
+  const reply = (body: unknown) => {
+    globalThis.fetch = (async () => ({ ok: true, status: 200, json: async () => body })) as unknown as typeof fetch;
+  };
+  try {
+    const backend = createTavilyBackend({ apiKey: FAKE_KEY });
+    // ⓐ 빈 배열 = 정상 empty (실패가 아니다)
+    reply({ results: [] });
+    assert.deepEqual(await backend.search("q"), []);
+    // ⓑ 전부 malformed → 실패 (예전엔 empty로 둔갑했다)
+    reply({ results: [{ nope: 1 }, { url: 123 }] });
+    await rejectsCode(() => backend.search("q"), "backend_malformed", "전부 malformed");
+    // ⓒ 혼합 → 실패 (예전엔 partial 성공으로 둔갑했다)
+    reply({ results: [{ url: "https://a.example.com/1", content: "본문" }, { url: "https://b.example.com/1" }] });
+    await rejectsCode(() => backend.search("q"), "backend_malformed", "혼합");
+    // ⓓ 전부 정상 → 그대로 통과
+    reply({ results: [{ url: "https://a.example.com/1", content: "본문", title: "t" }] });
+    assert.equal((await backend.search("q")).length, 1);
+  } finally {
+    globalThis.fetch = realFetch;
+    if (saved !== undefined) process.env[TAVILY_SECRET_REF] = saved;
+  }
+});
+
+test("[C-126/A-5] `.env`는 **git 안전을 통과한 뒤에만** 만들어진다 · git 판정 불가는 거부 · 0644는 거부", () => {
+  // ⓐ `.gitignore`가 없는 repo(설치된 사용자 workspace의 모양): 파일을 **만들기 전에** 규칙을 넣고,
+  //    그래서 생성된 `.env`가 처음부터 ignored다. 예전엔 template을 먼저 만들어 unignored 창이 있었다.
+  const a = tmpGitRepo();
+  const readyA = ensureEnvFileReady(a);
+  assert.equal(readyA.ok, true, `게이트를 통과해야 한다: ${readyA.ok ? "" : readyA.code}`);
+  assert.equal(readyA.ok && readyA.created, true, "이번 호출이 만들었다");
+  assert.match(readFileSync(join(a, ".gitignore"), "utf8"), /--- harness managed/, "생성 **전에** 규칙이 들어갔다");
+  assert.equal(envGitState(a), "ignored", "만들어진 .env는 처음부터 ignored다");
+  assert.equal(statSync(join(a, ENV_FILE_NAME)).mode & 0o777, 0o600);
+  rmSync(a, { recursive: true, force: true });
+
+  // ⓑ git 판정 불가(PATH에 git이 없다) → **거부**. 예전엔 모든 오류가 "repo 아님"으로 접혀 검사를 건너뛰었다.
+  const b = tmpGitRepo();
+  writeEnv(b, "TAVILY_API_KEY=k-unknown\n");
+  const savedPath = process.env.PATH;
+  process.env.PATH = join(b, "no-such-bin");
+  try {
+    assert.equal(envGitState(b), "unknown", "git을 실행할 수 없으면 판정 불가다 (non-repo가 아니다)");
+    const r = resolveResearchKey({ root: b, env: {} });
+    assert.equal(r.key, null, "판정 불가에서 키를 읽었다");
+    assert.equal(r.refusedCode, "env_git_probe_failed");
+    assert.match(r.notices.join("\n"), /git status/);
+  } finally {
+    process.env.PATH = savedPath;
+  }
+  assert.equal(resolveResearchKey({ root: b, env: {} }).key, "k-unknown", "git이 돌아오면 정상 판정된다");
+  rmSync(b, { recursive: true, force: true });
+
+  // ⓒ 사람이 만든 0644 `.env` → 남이 읽을 수 있으므로 **거부**(조용히 chmod하지 않는다).
+  const c = tmpGitRepo();
+  writeFileSync(join(c, ".gitignore"), ".env\n", "utf8");
+  writeFileSync(join(c, ENV_FILE_NAME), "TAVILY_API_KEY=k-loose\n", { encoding: "utf8", mode: 0o644 });
+  const rc = resolveResearchKey({ root: c, env: {} });
+  assert.equal(rc.key, null, "넓은 권한 파일에서 키를 읽었다");
+  assert.equal(rc.refusedCode, "env_file_permissions");
+  assert.match(rc.notices.join("\n"), /chmod 600/);
+  assert.equal(statSync(join(c, ENV_FILE_NAME)).mode & 0o777, 0o644, "권한을 몰래 바꾸지 않았다");
+  rmSync(c, { recursive: true, force: true });
+});
+
+test("[C-126/A-6] 실행 **전** 문구는 '사용 가능(설정됨)'이고, 실제 mode는 실행 **후** 영수증이 말한다", async () => {
+  const rt = externalRuntime(fakeBackend([item(1)]));
+  const pre = researchModeLines(rt).join("\n");
+  assert.match(pre, /사용 \*\*가능\*\* \(키 설정됨\)/, "설정 상태를 mode로 과대 렌더하지 않는다");
+  assert.ok(!/외부 검색\(Tavily\) 사용 —/.test(pre), "예전의 단정 문구가 남아 있다");
+
+  // attempt가 없으면(리서치 step 없는 workflow) 리서치 이야기를 아예 하지 않는다.
+  assert.deepEqual(researchOutcomeLines(undefined), []);
+  assert.deepEqual(researchOutcomeLines([]), []);
+
+  // 4종 + 실패가 서로 다른 문장으로 나온다.
+  const base = {
+    started_at: FIXED,
+    requests: [],
+    backend_calls: 0,
+    cache_hits: 0,
+    dropped_by_domain: 0,
+    first_pass_sha256: null,
+    evidence: [],
+    receipt_path: "outputs/research/receipt-x.json",
+    raw_paths: [],
+  };
+  const line = (a: Partial<ResearchAttempt>) => researchOutcomeLines([{ ...base, mode: "self", ...a } as ResearchAttempt])[0];
+  assert.match(line({ mode: "self" }), /자체\(self\)/);
+  assert.match(line({ mode: "external_declined" }), /검색 불필요/);
+  assert.match(line({ mode: "external_empty" }), /결과 0건/);
+  assert.match(line({ mode: "external", evidence: [], backend_calls: 2, cache_hits: 1 }), /근거 0건 \(backend 2회 · 캐시 1회\)/);
+  assert.match(line({ mode: null, error_code: "research_backend_error" }), /중단 \(research_backend_error\)/);
+
+  // CLI가 실제로 그 줄을 낸다: `none`을 낸 실행은 "declined"라고 적힌다 (사전 문구와 다르다).
+  const name = "_c126_rA6";
+  makeProject(name);
+  const out = await captureLogs(() =>
+    runRun("research-only", name, "mock", 1, false, undefined, false, 0, true, undefined, false, false, undefined, undefined, undefined, undefined, WF, rt),
+  );
+  assert.match(out, /사용 \*\*가능\*\*/, "사전 문구");
+  assert.match(out, /리서치 결과: 모델이 '검색 불필요'를 선언/, "실행 후 실제 mode 영수증");
+  rmProject(name);
+});
+
+test("[C-126/A-7] 저장·gateway 소스에 '원문'을 **단정하는** 문구가 남아 있지 않다 (전수 grep)", () => {
+  for (const rel of ["src/tools/evidenceStore.ts", "src/tools/researchGateway.ts"]) {
+    const src = readFileSync(join(HERE, "..", "..", rel), "utf8");
+    for (const [n, l] of src.split("\n").entries()) {
+      if (!l.includes("원문")) continue;
+      // 남아 있어도 되는 것은 **강등 문구**(대조)뿐이다: "원문이 아니다" · "원문 검증으로 읽히면 과대주장".
+      assert.ok(
+        /원문이 아니다|원문의 것이 아니다|원문의 해시가 아니다|"원문"이라고 부르지 않는다|"원문 검증"/.test(l),
+        `${rel}:${n + 1} 에 저장물을 원문이라 **단정하는** 문구가 남았다: ${l.trim()}`,
+      );
+    }
+  }
+});
+
+test("[C-126/B-1] `attempts.jsonl`이 같은 사실의 **발생 횟수**를 보존한다 (content-addressed receipt는 못 한다)", async () => {
+  const name = "_c126_rB1";
+  const root = makeProject(name);
+  const bk = fakeBackend([item(1)]);
+  // 게이트가 research로 되돌려 **같은 사실**의 attempt가 두 번 일어난다(고정 시각 + memo 적중).
+  const r = await quiet(() =>
+    runWorkflow({
+      workflowId: "research-gate",
+      project: name,
+      provider: tap({ decisions: ["검증", "진행"] }),
+      workflowsPath: WF,
+      now: () => FIXED,
+      research: externalRuntime(bk),
+    }),
+  );
+  assert.equal(r.state.status, "completed");
+  assert.equal(attemptsOf(r.state).length, 2, "attempt는 두 번 일어났다");
+  const log = readFileSync(join(root, RESEARCH_ATTEMPT_LOG_REL), "utf8")
+    .trim()
+    .split("\n")
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+  // **seal 1회 = 로그 1줄**이 불변식이다 (receipt 파일이 새로 생겼는지와 무관하다).
+  assert.equal(log.length, 2, `발생 2건이 로그에 남는다 (실제 ${log.length})`);
+  assert.ok(log.every((l) => typeof l.receipt_path === "string" && typeof l.receipt_created === "boolean"));
+
+  // ── 여기가 B-1이 지목한 자리다: **사실이 완전히 같은 두 attempt** ──
+  // 위 두 attempt는 `cache_hits`가 달라(0 vs 1) receipt가 갈렸다. 사실까지 같으면 receipt는
+  // **하나를 공유**하고, 그때 다중성을 아는 유일한 방법이 이 로그다.
+  const same = attemptsOf(r.state)[0];
+  const before = receiptFiles(root).length;
+  const rel = writeResearchReceipt(root, same);
+  assert.equal(rel, same.receipt_path, "같은 사실 → 같은 content-addressed 경로");
+  assert.equal(receiptFiles(root).length, before, "파일은 늘지 않는다 (내용이 곧 이름이다)");
+  const log2 = readFileSync(join(root, RESEARCH_ATTEMPT_LOG_REL), "utf8").trim().split("\n");
+  assert.equal(log2.length, log.length + 1, "그래도 발생은 한 건 더 기록된다 — 이것이 다중성 보존이다");
+  assert.equal(JSON.parse(log2.at(-1)!).receipt_created, false, "재사용이었다는 사실까지 적힌다");
+  rmProject(name);
+});
+
+test("[C-126/B-2] 2차 실패가 **안정 사유 코드**로 durable하게 남고 복구 안내가 그것을 본다", async () => {
+  const name = "_c126_rB2";
+  makeProject(name);
+  const out = await captureLogs(() =>
+    nextPipeline({
+      project: name,
+      providerOverride: tap({ secondFails: true }),
+      now: () => FIXED,
+      researchRuntimeOverride: externalRuntime(fakeBackend([item(1)])),
+    }),
+  );
+  const st = loadRunState(name)!;
+  assert.equal(st.failed_reason, "research_second_pass_failed", "failed_reason이 예외 메시지로 덮이지 않았다");
+  assert.equal(attemptsOf(st).at(-1)!.error_code, "research_second_pass_failed");
+  assert.match(out, /ⓐ 원인/, "복구 안내가 이 실패를 본다 (research_ 접두사)");
+  assert.match(out, /ⓑ 외부 검색 없이 진행/);
+  rmProject(name);
+});
+
+test("[C-126/B-3] 같은 질의 두 줄이면 `cache_hits`가 gateway 적중까지 센다", async () => {
+  const name = "_c126_rB3";
+  makeProject(name);
+  const bk = fakeBackend([item(1)]);
+  const r = await quiet(() =>
+    runWorkflow({
+      workflowId: "research-only",
+      project: name,
+      provider: tap({ decl: 'RESEARCH_REQUEST query="같은 질의" | type=search\nRESEARCH_REQUEST query="같은 질의" | type=search' }),
+      workflowsPath: WF,
+      now: () => FIXED,
+      research: externalRuntime(bk),
+    }),
+  );
+  assert.equal(r.state.status, "completed");
+  assert.equal(bk.calls.length, 1, "backend는 한 번만 불렸다");
+  const at = attemptsOf(r.state).at(-1)!;
+  assert.equal(at.backend_calls, 1);
+  assert.equal(at.cache_hits, 1, `gateway 적중이 영수증에 남는다 (실제 ${at.cache_hits})`);
+  // 영수증 파일도 같은 값을 증언한다 (run_state만의 사실이 아니다).
+  assert.equal((JSON.parse(readFileSync(join(projectPaths(name).root, at.receipt_path), "utf8")) as ResearchAttempt).cache_hits, 1);
+  rmProject(name);
+});
+
+test("[C-126/C-1] digest 예산 초과 workflow는 **조건부가 아니라** 반드시 실패한다 (LLM 1회)", async () => {
+  const name = "_c126_rC1";
+  makeProject(name);
+  // 3-byte 문자로 title·summary를 상한까지 채운 항목 12건(run 상한) → digest 총량이 16,384B를 넘는다.
+  // 항목당 대략: title 200자×3B + summary 400자×3B + 고정 필드 ≈ 2,000B → 12건 ≈ 24,000B.
+  const big = (n: number): BackendResult => ({ source: `https://ex${n}.example.com/a`, title: "제".repeat(200), raw: "가".repeat(500) });
+  const bk = fakeBackend([0, 1, 2, 3, 4, 5].map(big), { results2: [6, 7, 8, 9, 10, 11].map(big) });
+  const p = tap({ decl: 'RESEARCH_REQUEST query="q1" | type=search\nRESEARCH_REQUEST query="q2" | type=search' });
+  const r = await quiet(() =>
+    runWorkflow({ workflowId: "research-only", project: name, provider: p, workflowsPath: WF, now: () => FIXED, research: externalRuntime(bk) }),
+  );
+  // **선행 단정**: 조건 분기 없이 실패여야 한다 (fixture가 예산 아래면 여기서 red).
+  assert.equal(r.state.status, "failed");
+  assert.equal(r.state.failed_reason, "research_budget_exceeded");
+  assert.equal(p.byAgent.get("research"), 1, "2차를 태우지 않았다 (예산은 호출 전에 판정)");
+  const at = attemptsOf(r.state).at(-1)!;
+  assert.equal(at.evidence.length, 12, "run 상한까지 저장됐다");
+  const d = buildEvidenceDigest(at.evidence);
+  assert.equal(d.ok, false, "저장된 근거의 digest가 실제로 예산을 넘는다");
+  assert.ok(!d.ok && d.bytes > EVIDENCE_DIGEST_MAX_BYTES);
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/01_RESEARCH.md")), false, "실패면 미저장");
+  rmProject(name);
 });
