@@ -43,7 +43,8 @@
     {
       "decider": "founder_ceo",
       "decision": "진행",
-      "jumped_to": null
+      "jumped_to": null,
+      "outcome": "proceed"
     }
   ],
   "spawned_agents": [],

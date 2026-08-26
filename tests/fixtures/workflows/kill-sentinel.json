@@ -11,6 +11,24 @@
       ]
     },
     {
+      "workflow_id": "kill-badtarget",
+      "description": "테스트 전용: on 되돌림 대상이 이 workflow의 step에 없다 (정의 오류) · 예산 1. gate_jump_target_missing 재는 fixture.",
+      "steps": [
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "축소": "research" }, "kill": ["폐기"], "max_jumps": 1 } },
+        "chief_of_staff"
+      ]
+    },
+    {
+      "workflow_id": "kill-badtarget-nobudget",
+      "description": "테스트 전용: 같은 정의 오류인데 예산 0 — 예산 소진 코드로 오배정되지 않는지 재는 대조군.",
+      "steps": [
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "축소": "research" }, "kill": ["폐기"], "max_jumps": 0 } },
+        "chief_of_staff"
+      ]
+    },
+    {
       "workflow_id": "kill-overlap",
       "description": "테스트 전용: 같은 토큰이 on과 kill에 둘 다 있다 — kill이 먼저 판정되는지 재는 fixture. (정상 workflow는 이렇게 쓰지 않는다)",
       "steps": [

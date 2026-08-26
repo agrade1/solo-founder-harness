@@ -493,7 +493,10 @@ test("[B-40] killed run(폐기 판정)도 handoff 거부(not_completed), spawn �
     project: name,
     provider: "mock",
     status: "killed",
-    killed_by: { decider: "founder_ceo", decision: "폐기" },
+    killed_by: { decider: "founder_ceo", decision: "폐기", idea_sha256: "a".repeat(64) },
+    // [B-40/A-3] killed는 반드시 kill_history를 남긴다 — 없는 state는 구조 손상으로 거부된다.
+    kill_history: [{ decider: "founder_ceo", decision: "폐기", idea_sha256: "a".repeat(64), at: FIXED }],
+    cleared_idea_sha256: null,
     resume_from: null,
   };
   writeFileSync(join(paths.outputs, "run_state.json"), JSON.stringify(killedState, null, 2) + "\n", "utf8");

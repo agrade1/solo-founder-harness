@@ -14,7 +14,7 @@ import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { runWorkflow, loadRunState, ideaDigest, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { runWorkflow, loadRunState, snapshotProjectIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
 import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds } from "./registry.js";
 import { extractCeoDecision, CEO_DECISION_TOKENS, validateAgentOutput } from "./validate.js";
 import { buildPromptParts } from "../providers/promptParts.js";
@@ -243,14 +243,14 @@ test("[B-40] gate kill → status=killed · killed_by(+idea digest) · 게이트
   assert.equal(s.status, "killed", "kill 토큰 → terminal 상태 killed (failed 아님)");
   assert.deepEqual(
     s.killed_by,
-    { decider: "founder_ceo", decision: "폐기", idea_sha256: ideaDigest(name) },
+    { decider: "founder_ceo", decision: "폐기", idea_sha256: snapshotProjectIdea(name).sha256 },
     "누가 무슨 판정으로 죽였는지 + 그 시점 아이디어 digest",
   );
   assert.equal(s.failed_agent, null, "폐기는 agent 실패가 아니다");
   assert.equal(s.failed_reason, null, "kill 사유는 failed_reason에 넣지 않는다");
   assert.equal(s.resume_from, null, "killed는 재개 불가 → resume_from null");
   assert.equal(s.loop_state, null);
-  assert.deepEqual(s.gate_jumps, [{ decider: "founder_ceo", decision: "폐기", jumped_to: null, killed: true }]);
+  assert.deepEqual(s.gate_jumps, [{ decider: "founder_ceo", decision: "폐기", jumped_to: null, outcome: "kill" }]);
   // **B-5의 핵심**: 게이트 뒤에 실제로 step이 있는 fixture에서 그 step이 돌지 않았다.
   assert.equal(p.calls.get(SENTINEL) ?? 0, 0, "게이트 뒤 sentinel step의 provider 호출 0회");
   assert.equal(s.completed_steps.includes(SENTINEL), false, "sentinel이 완료 목록에 없다");
@@ -279,7 +279,7 @@ test("[B-40] 같은 토큰이 on과 kill에 둘 다 있으면 kill이 이긴다 
   assert.equal(s.status, "killed", "kill이 jump보다 먼저 판정된다");
   assert.equal(s.gate_jumps.length, 1, "게이트 1회 — 되돌림으로 다시 오지 않았다");
   assert.equal(s.gate_jumps[0].jumped_to, null, "kill이면 되돌림 대상 없음");
-  assert.equal(s.gate_jumps[0].killed, true);
+  assert.equal(s.gate_jumps[0].outcome, "kill");
   assert.equal(p.calls.get("founder_ceo"), 1, "decider가 되돌림으로 재실행되지 않았다");
   assert.equal(p.calls.get(SENTINEL) ?? 0, 0, "게이트 뒤 sentinel step 미실행");
   assert.equal(events.some((e) => e.type === "gate_jump"), false, "gate_jump 이벤트 미방출");
@@ -300,7 +300,7 @@ test("[B-40] 대조군: '진행' 토큰이면 게이트를 통과해 뒤 step이
   assert.equal(r.state.status, "completed");
   assert.equal(r.state.killed_by, null);
   assert.equal(p.calls.get(SENTINEL), 1, "게이트가 통과도 시킨다 (kill 단정이 공허하지 않다)");
-  assert.deepEqual(r.state.gate_jumps, [{ decider: "founder_ceo", decision: "진행", jumped_to: null }]);
+  assert.deepEqual(r.state.gate_jumps, [{ decider: "founder_ceo", decision: "진행", jumped_to: null, outcome: "proceed" }]);
   rmProject(name);
 });
 
@@ -323,7 +323,7 @@ test("[B-40] '축소'는 되돌림 1회 후 예산 소진 → 진행이 아니�
   assert.equal(s.killed_by, null);
   assert.equal(s.cleared_idea_sha256, null, "'진행'이 아니면 해제 증거를 발급하지 않는다");
   assert.equal(s.gate_jumps.length, 2, "되돌림 1회 + 예산 소진 판정 1회");
-  assert.deepEqual(s.gate_jumps[0], { decider: "founder_ceo", decision: "축소", jumped_to: "pm" });
+  assert.deepEqual(s.gate_jumps[0], { decider: "founder_ceo", decision: "축소", jumped_to: "pm", outcome: "jump" });
   assert.equal(timingsFor(s, "pm"), 2, "pm이 되돌림으로 1회 재실행 (되돌림 자체는 그대로 동작)");
   rmProject(name);
 });
@@ -429,7 +429,7 @@ test("[B-40/A-3] 해제 증거는 kill 게이트만 발급한다 — 게이트 �
     provider: ceoDeciding("- 진행"),
     now: () => FIXED,
   });
-  assert.equal(withGate.state.cleared_idea_sha256, ideaDigest(name), "kill 게이트 '진행' → 발급");
+  assert.equal(withGate.state.cleared_idea_sha256, snapshotProjectIdea(name).sha256, "kill 게이트 '진행' → 발급");
   rmProject(name);
 });
 
@@ -446,14 +446,14 @@ test("[B-40/A-3] 잠금 해제는 재평가 run의 '진행' 판정뿐 — kill_h
     now: () => FIXED,
   });
   assert.equal(reeval.state.status, "completed");
-  assert.equal(reeval.state.cleared_idea_sha256, ideaDigest(name), "'진행' 판정이 해제 digest를 발급");
+  assert.equal(reeval.state.cleared_idea_sha256, snapshotProjectIdea(name).sha256, "'진행' 판정이 해제 digest를 발급");
   assert.equal(reeval.state.kill_history.length, 1, "폐기 이력은 지워지지 않는다 (carry forward)");
 
   // 해제 후에는 잠금 없는 경로가 열린다.
   const after = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED });
   assert.equal(after.state.status, "completed");
   assert.equal(after.state.kill_history.length, 1, "그 뒤 run도 폐기 이력을 이어받는다");
-  assert.equal(after.state.cleared_idea_sha256, ideaDigest(name), "해제 증거도 이어받는다");
+  assert.equal(after.state.cleared_idea_sha256, snapshotProjectIdea(name).sha256, "해제 증거도 이어받는다");
   assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "해제 후 지시문 생성 가능");
 
   // 아이디어를 다시 고치면 해제 증거가 현재 digest와 어긋나 → 다시 잠긴다 (재평가 필요).
@@ -643,6 +643,171 @@ test("[B-40/A-4] summary·vault·handoff가 killed를 완료/진행으로 적지
     rmSync(vault, { recursive: true, force: true });
   }
   rmProject(name);
+});
+
+// ── A-1: 심사한 바이트와 기록한 digest의 결박 (TOCTOU) ─────────
+test("[B-40/A-1] 해제 digest는 CEO가 실제로 본 바이트의 것이다 (판정 후 파일이 바뀌어도)", async () => {
+  const name = "_b40_toctou";
+  // 잠금이 살아 있는 상태에서 재평가한다 — 그래야 "무엇이 해제됐나"가 하류에서 관측된다.
+  await killedProject(name, "심사 대상 아이디어");
+  const seenIdeas: string[] = [];
+  const beforeDigest = snapshotProjectIdea(name).sha256;
+
+  // founder_ceo가 판정을 낸 **직후** 아이디어 파일을 바꾼다 (게이트가 파일을 다시 읽으면 이것이 해제된다).
+  const provider: Provider = {
+    id: "mock",
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      seenIdeas.push(input.ideaContent);
+      const r = await mockProvider.generate(input);
+      if (input.agent.agent_id !== "founder_ceo") return r;
+      editIdea(name, "게이트 뒤에 몰래 바뀐 아이디어");
+      return { ...r, markdown: r.markdown.replace("## Decision\n\n- 진행\n", "## Decision\n\n- 진행\n") };
+    },
+  };
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider, now: () => FIXED });
+
+  assert.equal(r.state.status, "completed");
+  assert.equal(r.state.cleared_idea_sha256, beforeDigest, "CEO가 심사한 바이트가 해제된다");
+  assert.notEqual(r.state.cleared_idea_sha256, snapshotProjectIdea(name).sha256, "바뀐 파일은 해제되지 않았다");
+  // run 안의 모든 agent가 같은 snapshot을 봤다 (agent마다 파일을 다시 읽지 않는다).
+  assert.ok(seenIdeas.length >= 5, `agent 호출 ${seenIdeas.length}건`);
+  assert.equal(new Set(seenIdeas).size, 1, "run 안의 모든 프롬프트가 같은 아이디어 바이트를 봤다");
+  assert.match(seenIdeas[0], /심사 대상 아이디어/);
+
+  // ⓑ 그 결과 **현재 파일**(심사받지 않은 바이트)은 해제되지 않았다 → 하류가 거부한다.
+  //   게이트가 나중에 파일을 다시 읽었다면 여기서 통과해버린다.
+  assert.throws(() => buildTaskPrompt(name, "2026-01-01"), /killed_locked/, "심사되지 않은 바이트로는 지시문을 만들 수 없다");
+  rmProject(name);
+});
+
+test("[B-40/A-1] kill digest도 CEO가 본 바이트의 것이다", async () => {
+  const name = "_b40_toctou_kill";
+  makeProject(name, "죽을 아이디어");
+  const beforeDigest = snapshotProjectIdea(name).sha256;
+  const provider: Provider = {
+    id: "mock",
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      const r = await mockProvider.generate(input);
+      if (input.agent.agent_id !== "founder_ceo") return r;
+      const markdown = r.markdown.replace("## Decision\n\n- 진행\n", "## Decision\n\n- 폐기\n");
+      editIdea(name, "판정 뒤 바뀐 아이디어");
+      return { ...r, markdown };
+    },
+  };
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider, now: () => FIXED });
+  assert.equal(r.state.status, "killed");
+  assert.equal(r.state.killed_by?.idea_sha256, beforeDigest, "폐기된 것은 CEO가 본 바이트다");
+  assert.equal(r.state.kill_history[0].idea_sha256, beforeDigest);
+  rmProject(name);
+});
+
+// ── A-2: 게이트 결과가 CLI·vault에서 정직하게 렌더된다 ──────────
+test("[B-40/A-2] 게이트 실패 4종이 CLI·vault에서 '진행'이 아니라 '중단(코드)'로 기록된다", async () => {
+  // 4개 실패 코드 × 2개 소비자(CLI · vault) = 8건. 예전엔 전부 "→ 진행"이었다(durable은 failed인데).
+  const cases: Array<{ wf: string; token: string; code: string; wfPath?: string }> = [
+    { wf: "idea-validation", token: "보류", code: "ceo_decision_hold" },
+    { wf: "mvp-planning", token: "검증", code: "ceo_decision_unmapped" },
+    { wf: "idea-validation", token: "축소", code: "gate_jump_budget_exhausted" },
+    { wf: "kill-badtarget", token: "축소", code: "gate_jump_target_missing", wfPath: SENTINEL_WF },
+  ];
+  for (const c of cases) {
+    const name = `_b40_render_${c.code}`;
+    makeProject(name);
+    const prevExit = process.exitCode;
+    process.exitCode = 0;
+    const vault = join(tmpdir(), `b40-v-${process.pid}-${c.code}`);
+    const out = await captureLogs(() =>
+      runRun(c.wf, name, "mock", 1, false, vault, false, 0, true, undefined, false, false, undefined, undefined, undefined, ceoDeciding(`- ${c.token}`), c.wfPath),
+    );
+    assert.equal(process.exitCode, 1, `${c.code}: agent 실패류는 exit 1`);
+    process.exitCode = prevExit;
+
+    const s = loadRunState(name)!;
+    assert.equal(s.failed_reason, c.code, `${c.code}: durable 사유`);
+    assert.equal(s.gate_jumps.at(-1)?.outcome, "failed", `${c.code}: outcome=failed`);
+    assert.equal(s.gate_jumps.at(-1)?.reason, c.code, `${c.code}: gate_jumps에도 사유`);
+    // CLI
+    assert.match(out, new RegExp(`게이트: founder_ceo 판정 '${c.token}' → 중단\\(${c.code}\\)`), `${c.code}: CLI 렌더`);
+    assert.doesNotMatch(out, new RegExp(`판정 '${c.token}' → 진행`), `${c.code}: CLI가 '진행'이라 적지 않는다`);
+    assert.match(out, new RegExp(`중단 사유: ${c.code}`), `${c.code}: CLI가 사유 코드를 출력한다`);
+    // vault
+    const index = readFileSync(join(vault, name, `${c.wf}_run.md`), "utf8");
+    assert.match(index, new RegExp(`게이트: founder_ceo 판정 '${c.token}' → 중단\\(${c.code}\\)`), `${c.code}: vault 렌더`);
+    assert.doesNotMatch(index, new RegExp(`판정 '${c.token}' → 진행`), `${c.code}: vault가 '진행'이라 적지 않는다`);
+    rmSync(vault, { recursive: true, force: true });
+    rmProject(name);
+  }
+});
+
+// ── A-3: 구조 손상 state도 잠금을 지우지 못한다 ─────────────────
+test("[B-40/A-3] JSON은 되지만 구조가 손상된 state → 거부 · 파일 바이트 불변", async () => {
+  const shapes: Array<{ label: string; json: string }> = [
+    {
+      label: "killed인데 kill_history 없음",
+      json: JSON.stringify({ workflow_id: "idea-validation", status: "killed", killed_by: { decider: "founder_ceo", decision: "폐기" } }),
+    },
+    {
+      label: "kill_history가 배열이 아님",
+      json: JSON.stringify({ workflow_id: "idea-validation", status: "completed", kill_history: { decider: "x" } }),
+    },
+    {
+      label: "kill_history 원소에 idea_sha256 없음",
+      json: JSON.stringify({ workflow_id: "idea-validation", status: "killed", kill_history: [{ decider: "founder_ceo", decision: "폐기" }] }),
+    },
+    {
+      label: "cleared_idea_sha256 타입 오류",
+      json: JSON.stringify({ workflow_id: "idea-validation", status: "completed", kill_history: [], cleared_idea_sha256: 42 }),
+    },
+  ];
+  for (const shape of shapes) {
+    const name = "_b40_shape";
+    makeProject(name);
+    const statePath = join(projectPaths(name).outputs, "run_state.json");
+    writeFileSync(statePath, shape.json, "utf8");
+
+    await assert.rejects(
+      runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 진행"), now: () => FIXED }),
+      /run_state_unreadable/,
+      `${shape.label}: 새 run 거부`,
+    );
+    assert.throws(() => buildTaskPrompt(name, "2026-01-01"), /run_state_unreadable/, `${shape.label}: task-prompt 거부`);
+    assert.equal(readFileSync(statePath, "utf8"), shape.json, `${shape.label}: 파일 바이트 불변`);
+    rmProject(name);
+  }
+});
+
+test("[B-40/A-3] 정상 구버전 state(새 필드 없음)는 그대로 통과한다 — 하위 호환", async () => {
+  const name = "_b40_legacy";
+  makeProject(name);
+  // B-40 이전 형태: kill_history·cleared_idea_sha256가 아예 없는 completed state.
+  writeFileSync(
+    join(projectPaths(name).outputs, "run_state.json"),
+    JSON.stringify({ workflow_id: "idea-validation", project: name, status: "completed", completed_steps: ["founder_ceo"] }),
+    "utf8",
+  );
+  const r = await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, now: () => FIXED });
+  assert.equal(r.state.status, "completed", "구버전 state는 잠금 없음");
+  assert.deepEqual(r.state.kill_history, []);
+  assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/);
+  rmProject(name);
+});
+
+// ── C: target 부재는 예산과 무관하게 자기 코드를 갖는다 ─────────
+test("[B-40/C] gate 되돌림 대상 부재는 예산이 0이든 1이든 gate_jump_target_missing", async () => {
+  for (const wf of ["kill-badtarget", "kill-badtarget-nobudget"]) {
+    const name = `_b40_c_${wf}`;
+    makeProject(name);
+    const r = await runWorkflow({
+      workflowId: wf,
+      workflowsPath: SENTINEL_WF,
+      project: name,
+      provider: ceoDeciding("- 축소"),
+      now: () => FIXED,
+    });
+    assert.equal(r.state.status, "failed", `${wf}: 진행하지 않는다`);
+    assert.equal(r.state.failed_reason, "gate_jump_target_missing", `${wf}: 원인에 맞는 코드 (예산 소진이 아니다)`);
+    rmProject(name);
+  }
 });
 
 // ── registry 로더 ────────────────────────────────────────────
