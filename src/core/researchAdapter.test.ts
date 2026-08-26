@@ -926,6 +926,33 @@ test("[C-126/A9] resume digest는 **마지막 성공 attempt의 evidence snapsho
   st.status = "failed";
   st.resume_from = 1;
   st.completed_steps = ["research"];
+  // **판별용 오염 두 개.** 복원이 attempt에 결박돼 있지 않으면 아래 둘 중 하나가 반드시 섞인다:
+  //  ⓐ `evidence.jsonl`에 붙은 남의 줄 — 시각 창/인덱스 병합 복원이면 이것을 먹는다(jsonl은 비권위다).
+  //  ⓑ **실패 attempt의 partial evidence** — "마지막 성공"이 아니라 "마지막"을 고르면 이것을 먹는다.
+  const FOREIGN = "f".repeat(64);
+  const partial = {
+    source: "https://foreign.example.com/x",
+    sha256: FOREIGN,
+    retrievedAt: FIXED,
+    bytes: 1,
+    rawPath: `raw/${FOREIGN}.txt`,
+    title: "실패 attempt의 partial",
+    summary: "이 근거는 채택된 적이 없다",
+  };
+  appendFileSync(join(root, RESEARCH_DIR_REL, "evidence.jsonl"), JSON.stringify(partial) + "\n", "utf8");
+  st.research!.attempts.push({
+    started_at: FIXED,
+    mode: null,
+    error_code: "research_backend_error",
+    requests: [],
+    backend_calls: 1,
+    cache_hits: 0,
+    dropped_by_domain: 0,
+    first_pass_sha256: null,
+    evidence: [partial],
+    receipt_path: "outputs/research/receipt-failed.json",
+    raw_paths: [],
+  });
   writeFileSync(join(root, "outputs/run_state.json"), JSON.stringify(st, null, 2) + "\n", "utf8");
 
   // resume: research는 재실행되지 않고, pm은 **저장된 attempt의 evidence**로 만든 digest를 받는다.
@@ -947,6 +974,7 @@ test("[C-126/A9] resume digest는 **마지막 성공 attempt의 evidence snapsho
   assert.ok(pmInput.evidenceDigest, "resume 후에도 pm이 근거를 받았다");
   assert.ok(pmInput.evidenceDigest!.includes(okAttempt.evidence[0].sha256), "복원된 digest는 저장된 attempt의 sha256을 담는다");
   assert.ok(!pmInput.evidenceDigest!.includes("다른 응답"), "새 backend 응답이 섞이지 않았다 (재검색 없음)");
+  assert.ok(!pmInput.evidenceDigest!.includes(FOREIGN), "비권위 인덱스(evidence.jsonl)나 **실패 attempt의 partial**이 섞였다");
   // attempts는 carry-forward된다 (앞 run의 영수증이 지워지지 않는다).
   assert.ok(attemptsOf(r2.state).some((a) => a.receipt_path === okAttempt.receipt_path), "앞 attempt가 carry-forward됐다");
   rmProject(name);
