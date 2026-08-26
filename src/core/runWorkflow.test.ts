@@ -548,7 +548,11 @@ test("[B-40] harness run: killed는 exit 0 + 새 run 안내 · handoff 미실행
   process.exitCode = prevExit;
   assert.equal(handoffCalls.length, 0, "폐기된 아이디어를 개발 착수 handoff로 넘기지 않는다");
   assert.match(out, /폐기 판정: founder_ceo가 '폐기' 판정/, "어느 decider가 무슨 판정으로 죽였는지 출력");
-  assert.match(out, /아이디어를 고쳐 새 run으로 시작/);
+  // **안내 문구가 해제 조건을 정확히 말해야 한다**(Codex 4차 검증 A-4 부분 지적): 잠금을 푸는 것은
+  // 아이디어 수정이 아니라 **재평가 run의 '진행' 판정**이다(`ideaGateStatus` — 같은 바이트로도 해제된다).
+  // 이전 단정은 "아이디어를 고쳐 새 run으로 시작"이라는 **틀린 계약을 고정**하고 있었다.
+  assert.match(out, /재평가 run/, "해제 조건(재평가 판정)을 안내한다");
+  assert.match(out, /아이디어를 고치지 않아도 재평가는 돌 수 있고/, "수정이 조건이 아니라는 사실까지 말한다");
   assert.match(out, /게이트: founder_ceo 판정 '폐기' → 폐기 — run 종료/);
   assert.doesNotMatch(out, /--resume$/m, "killed에 resume 안내를 하지 않는다");
   rmProject(name);

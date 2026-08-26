@@ -30,7 +30,9 @@ workflowsPath) {
             process.exitCode = 1;
             return;
         }
-        // killed는 completed와 동급 terminal — 재개 대상이 아니고, 고친 아이디어로 새 run을 시작한다.
+        // killed는 completed와 동급 terminal — 재개 대상이 아니고, **재평가 run**(kill 게이트가 있는
+        // workflow)으로 새로 시작한다. 아이디어 수정은 권장이지만 잠금 해제 조건이 아니다(같은 바이트로도
+        // 재평가에서 '진행'이 나오면 해제된다 — `ideaGateStatus` 계약 · DECISIONS 2026-08-26 항목).
         if (prior.status === "completed" || prior.status === "killed") {
             console.log(`이미 종료된 실행입니다 (${prior.workflow_id}, status=${prior.status}) — 재개할 것이 없습니다. 덮어쓰기 방지.`);
             return;
@@ -127,7 +129,10 @@ workflowsPath) {
         const k = state.killed_by;
         console.log("");
         console.log(`⛔ 폐기 판정: ${k?.decider ?? "(게이트)"}가 '${k?.decision ?? "폐기"}' 판정 — 후속 단계는 실행되지 않았습니다.`);
-        console.log(`재개(--resume)는 불가합니다. 아이디어를 고쳐 새 run으로 시작하세요: harness run ${state.workflow_id} --project ${project}`);
+        // **잠금 해제 조건을 정확히 적는다**: 해제하는 것은 아이디어 수정이 아니라 **재평가 run의 '진행'
+        // 판정**이다(같은 바이트로도 해제된다 — `ideaGateStatus`). 수정은 권장이지 조건이 아니다.
+        console.log(`재개(--resume)는 불가합니다. 아이디어를 검토·수정한 뒤 **재평가 run**으로 다시 판정받으세요: harness run ${state.workflow_id} --project ${project}`);
+        console.log("  (잠금을 푸는 것은 재평가 게이트의 '진행' 판정입니다 — 아이디어를 고치지 않아도 재평가는 돌 수 있고, 고치지 않은 채 통과하면 그 판정이 영수증에 남습니다.)");
         return;
     }
     // 중단(agent 실패 또는 예산 초과)이면 비정상 종료 코드로 신호
