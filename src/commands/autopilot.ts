@@ -1591,6 +1591,18 @@ function resultBody(
 
 // ── CLI 배선 ────────────────────────────────────────────────────────────────
 
+/**
+ * `--json`의 **stdout sink**(적대적 리뷰 A-4). 이벤트 하나 = NDJSON 한 줄이다.
+ *
+ * 왜 함수로 떼어냈나: 진단이 "운영자에게 도달한다"는 성질의 마지막 구간이 여기인데, 콜백 안에
+ * 인라인으로 있으면 **테스트가 물 수 있는 이름이 없다** — `onEvent`까지만 재는 테스트는 이 줄을
+ * 통째로 지워도 통과했다(그 상태로 "도달"을 주장했다).
+ *
+ * 줄 계약: 이벤트 문자열 필드는 `workerDiagnosticOf`가 이미 접었으므로(제어·서식·줄종결자 → 공백)
+ * `JSON.stringify` 결과에 실제 개행이 없고, 여기서 붙이는 `\n` 하나가 레코드 구분자다.
+ */
+export const jsonEventLine = (e: AutopilotEvent): string => `${JSON.stringify(e)}\n`;
+
 export interface AutopilotCliOptions {
   workspace?: string;
   run: string;
@@ -1669,7 +1681,7 @@ export async function runAutopilotCommand(opts: AutopilotCliOptions): Promise<vo
       // 자동 강등 — 새 렌더러·새 의존성 0). `--json`은 **기계 계약**이므로 원본 event를 그대로 흘린다.
       onEvent: opts.json
         ? (e): void => {
-            process.stdout.write(`${JSON.stringify(e)}\n`);
+            process.stdout.write(jsonEventLine(e));
           }
         : autopilotProgressBridge(createProgressReporter()),
     });

@@ -28,7 +28,7 @@ import { __setPublicationSeamsForTest, createOrchestrationRun, openOrchestration
 import { runPaths } from "../exec/orchestrationStore.js";
 import type { OrchestrationKernel, TaskSeed } from "../exec/orchestrationKernel.js";
 import { REQUIRED_BODY_HEADINGS } from "../exec/orchestrationTypes.js";
-import { AutopilotEvent, CODEX_REVIEWER_ROLE_FAMILY, runAutopilot, workerDiagnosticOf } from "./autopilot.js";
+import { AutopilotEvent, CODEX_REVIEWER_ROLE_FAMILY, jsonEventLine, runAutopilot, runAutopilotCommand, workerDiagnosticOf } from "./autopilot.js";
 
 const RUN_ID = "m5c-run";
 const MILESTONE = "m5c";
@@ -120,8 +120,15 @@ interface Fixture {
   clock: () => Date;
 }
 
-/** run + root task + 빈 plan 디렉터리. 계획 파일은 각 테스트가 필요한 것만 넣는다. */
-function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1000, roleId = "tech-lead"): Fixture {
+/**
+ * run + root task + 빈 plan 디렉터리. 계획 파일은 각 테스트가 필요한 것만 넣는다.
+ *
+ * `startMs`는 **run 생성 시각**이다(예산 deadline = `min(생성 + maxElapsedMs, expiresAt)`이고
+ * `maxElapsedMs` 상한은 24h다). 주입 시계로 도는 테스트는 기본값 `T0`이면 되지만, **실시간 시계로
+ * 도는 경로**(`runAutopilotCommand`)를 재려면 run이 지금 만들어져 있어야 한다 — 아니면 예산이
+ * 이미 소진돼 재려던 것 대신 예산 게이트를 재게 된다.
+ */
+function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1000, roleId = "tech-lead", startMs = T0): Fixture {
   const ws = makeDir("m5c-autopilot-ws-");
   const planDir = makeDir("m5c-autopilot-plans-");
   const k = createOrchestrationRun({
@@ -129,10 +136,10 @@ function boot(over: Record<string, unknown> = {}, taskIds = ["root"], stepMs = 1
     runId: RUN_ID,
     milestoneId: MILESTONE,
     manifest: manifestFor(taskIds, over),
-    clock: clockFrom(T0),
+    clock: clockFrom(startMs),
   });
   for (const id of taskIds) k.createRootTask(seed(id, roleId));
-  return { ws, planDir, clock: clockFrom(T0 + 60_000, stepMs) };
+  return { ws, planDir, clock: clockFrom(startMs + 60_000, stepMs) };
 }
 
 /**
@@ -1928,6 +1935,56 @@ test("[C-117/A-1] worker 진단 꼬리가 pause 이벤트로 **운영자에게 �
   assert.ok(paused.diagnostic.includes(`출력 ${prose.length}자`), `출력 길이가 도달하지 않았다 — ${paused.diagnostic}`);
   assert.ok(paused.diagnostic.includes("꼬리-UNIQUETAIL"), `꼬리가 도달하지 않았다 — ${paused.diagnostic}`);
   assert.ok(!paused.diagnostic.includes("\n"), `진단이 한 줄이 아니다 — ${JSON.stringify(paused.diagnostic)}`);
+  // ⓒ **durable에는 들어가지 않는다**(리뷰 C-2 회귀 가드): 화면 채널이 durable 반입 통로가 되면
+  // 이 모듈의 "원문은 중앙으로 가지 않는다"가 조용히 깨진다. 원문 sentinel이 run_state.json에 없어야 한다.
+  assert.ok(!readFileSync(runPaths(f.ws, RUN_ID).stateFile, "utf8").includes("UNIQUETAIL"), "진단 원문이 durable state에 반입됐다");
+});
+
+test("[C-117/A-4] `--json` 명령이 그 진단을 **stdout NDJSON 한 줄**로 낸다", async () => {
+  // **A-4**: 위 테스트는 `onEvent` 콜백까지만 본다 — 명령의 stdout 배선을 통째로 지워도 통과했다.
+  // 여기서 마지막 구간(sink)을 문다. ⓐ sink 함수의 줄 계약 · ⓑ 명령이 실제로 그 함수를 쓴다.
+  const hostile = workerDiagnosticOf(new OrchestrationError("worker_plan_absent", "\uc55e\u2028\ub4a4\u009b\ub05d"))!;
+  const line = jsonEventLine({ kind: "task_paused", taskId: "t", marker: "worker_failed", detail: "worker_plan_absent", diagnostic: hostile });
+  assert.equal(line.split("\n").length, 2, `이벤트 하나가 여러 줄로 쪼개졌다 — ${JSON.stringify(line)}`);
+  assert.ok(line.endsWith("\n"), "NDJSON 레코드 구분자가 없다");
+  assert.equal((JSON.parse(line) as AutopilotEvent).diagnostic, hostile, "진단이 직렬화에서 사라졌다");
+  // 마지막 개행 하나는 **레코드 구분자**다 — 본문(그 앞)에는 제어·서식 문자가 남으면 안 된다.
+  const body = line.slice(0, -1);
+  for (const c of ["\u2028", "\u009b", "\n"]) assert.ok(!body.includes(c), `제어문자가 stdout 줄에 살아남았다: U+${c.codePointAt(0)!.toString(16)}`);
+
+  // ⓑ **명령을 실제로 돌린다**(실시간 시계 — 그래서 run을 지금 만든다). stdout을 가로채 줄을 읽는다.
+  const bin = fakeWorkerBin(PLAN_EMITTER(`설명만 적는다. ${"길게 ".repeat(80)}꼬리-CMDTAIL`));
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin, claudeHome: fakeClaudeHome() } }, ["root"], 1000, "tech-lead", Date.now() - 60_000);
+  const written: string[] = [];
+  const realWrite = process.stdout.write.bind(process.stdout);
+  const realExitCode = process.exitCode;
+  // **삼키지 않고 곁가지로 받는다**: 이 창에서는 test 러너의 리포터도 같은 stdout에 쓴다. 가로채기만
+  // 하면 그 줄이 사라져 **러너 집계에서 테스트 하나가 통째로 없어진다**(실측: 65개 중 64개만 보고됐다) —
+  // 실패 줄이 그렇게 사라지면 red를 못 본다. 원래 write로 그대로 흘려보내고 사본만 모은다.
+  process.stdout.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    written.push(typeof chunk === "string" ? chunk : Buffer.from(chunk).toString("utf8"));
+    return (realWrite as (...a: unknown[]) => boolean)(chunk, ...rest);
+  }) as typeof process.stdout.write;
+  try {
+    await runAutopilotCommand({ workspace: f.ws, run: RUN_ID, milestone: MILESTONE, workerBackend: "claude-plan", maxIterations: "1", json: true });
+  } finally {
+    process.stdout.write = realWrite;
+    process.exitCode = realExitCode;
+  }
+  // **chunk 단위로 읽는다**: 같은 프로세스의 test 러너 리포터도 이 창에서 stdout에 쓰므로(그것도
+  // spy에 잡힌다) 전체를 이어붙여 줄로 자르면 남의 바이트와 붙는다. sink는 **이벤트 하나당 write
+  // 한 번**이라 chunk 하나가 곧 NDJSON 한 줄이다 — 그 성질을 여기서 같이 문다.
+  const events = written.flatMap((chunk) => {
+    try {
+      return [JSON.parse(chunk) as AutopilotEvent];
+    } catch {
+      return [];
+    }
+  });
+  const pausedLine = events.find((e) => e.kind === "task_paused");
+  assert.ok(pausedLine !== undefined, `stdout에 task_paused 줄이 없다: ${written.join("")}`);
+  assert.equal(pausedLine.detail, "worker_plan_absent", JSON.stringify(pausedLine));
+  assert.ok(pausedLine.diagnostic?.includes("꼬리-CMDTAIL"), `진단이 stdout까지 오지 않았다 — ${JSON.stringify(pausedLine)}`);
 });
 
 test("[C-117/A-1] 진단은 400자 bounded 한 줄이고 OrchestrationError가 아니면 붙지 않는다", () => {
