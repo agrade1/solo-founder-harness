@@ -599,13 +599,29 @@ for STAGE in mvp-planning dev-preflight dev-handoff; do
   [ "$RC" -eq 0 ];                                     check "approve($STAGE) exit 0" $?
 done
 grep -q '"status": "completed"' "$PS";                 check "4단계 승인 후 completed" $?
+# [Codex A-2] 선언된 사이드카(design agent의 docs/tokens.json)도 승인 영수증에 결박된다.
+node -e "const s=require('./$PS');const p=s.checkpoints.flatMap(c=>c.artifacts.map(a=>a.path));process.exit(p.includes('docs/tokens.json')?0:1)"
+check "사이드카(docs/tokens.json)가 영수증에 결박된다" $?
 $HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1; RC=$?
 [ "$RC" -eq 0 ];                                       check "완료 후에는 task-prompt가 열린다" $?
 
-# ⑥ 완료 후 승인 문서를 바꾸면 하류가 다시 닫힌다
+# ⑤b [결정 1] 지시문은 멱등하다 — 재생성해도 바이트가 같아서 자기 게이트를 오염시키지 않는다
+TP2="$PPDIR/outputs/claude_code_task_prompt.md"
+cp "$TP2" "$PPDIR/outputs/_tp.bak"
+$HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1
+cmp -s "$TP2" "$PPDIR/outputs/_tp.bak";                check "지시문 재생성이 바이트 동일(멱등)" $?
+$HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1; RC=$?
+[ "$RC" -eq 0 ];                                       check "재생성 후에도 task-prompt가 열린다(자기 오염 없음)" $?
+
+# ⑥ 완료 후 승인 문서를 바꾸면 하류가 다시 닫히고, **status·--print가 그 사실을 말한다**
 printf '\n변조\n' >> "$PPDIR/docs/06_CEO_DECISION.md"
 $HARNESS task-prompt --project "$PPROJ" >/dev/null 2>&1; RC=$?
 [ "$RC" -eq 2 ];                                       check "완료 후 문서 교체 → task-prompt 거부(exit 2)" $?
+OUT="$($HARNESS pipeline status --project "$PPROJ" 2>&1)"
+echo "$OUT" | grep -q "하류가 막혀 있습니다";            check "[결정2] status가 하류 막힘을 표시한다" $?
+OUT="$($HARNESS handoff --project "$PPROJ" --cwd . --print 2>&1)"
+echo "$OUT" | grep -q "거부됩니다";                      check "[결정2] --print가 거부 상태를 함께 알린다" $?
+echo "$OUT" | grep -q "harness handoff --project";       check "[결정2] --print는 안내 명령을 그대로 출력한다" $?
 
 # ⑦ lock: mutating 명령은 거부되고 status는 읽힌다 · 살아 있는 owner의 lock은 회수하지 않는다
 printf '{"pid": %s, "nonce": "aaaaaaaaaaaaaaaa", "at": "2026-01-01T00:00:00.000Z"}' "$$" > "$PPDIR/outputs/pipeline.lock"
