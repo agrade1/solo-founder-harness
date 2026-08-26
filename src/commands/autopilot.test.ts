@@ -28,7 +28,7 @@ import { __setPublicationSeamsForTest, createOrchestrationRun, openOrchestration
 import { runPaths } from "../exec/orchestrationStore.js";
 import type { OrchestrationKernel, TaskSeed } from "../exec/orchestrationKernel.js";
 import { REQUIRED_BODY_HEADINGS } from "../exec/orchestrationTypes.js";
-import { AutopilotEvent, CODEX_REVIEWER_ROLE_FAMILY, runAutopilot } from "./autopilot.js";
+import { AutopilotEvent, CODEX_REVIEWER_ROLE_FAMILY, runAutopilot, workerDiagnosticOf } from "./autopilot.js";
 
 const RUN_ID = "m5c-run";
 const MILESTONE = "m5c";
@@ -1897,6 +1897,50 @@ test("[M10-T3] 계획 계약 밖 출력은 산출물로 승격되지 않는다 (
     assert.equal(k.getState().messages.filter((m) => m.type === "result").length, 0, `${label}: 결과가 발행됐다`);
     assert.equal(existsSync("/etc/hosts.harness-test"), false);
   }
+});
+
+test("[C-117/A-1] worker 진단 꼬리가 pause 이벤트로 **운영자에게 도달한다**(detail은 그대로 코드다)", async () => {
+  // **A-1**: 이전 판은 worker가 만든 꼬리를 catch에서 버려 어디에도 출력되지 않았다 = 죽은 진단.
+  // 여기서 재는 것은 "도달"이다 — 꼬리를 만드는 쪽(`livePlanWorker`)은 자기 테스트가 따로 문다.
+  const prose = `머리-UNIQUEHEAD ${"계획 없이 설명만 길게 적는다. ".repeat(20)}꼬리-UNIQUETAIL`;
+  assert.ok(prose.length > 200, `fixture가 200자를 넘지 않으면 꼬리 경로가 공허하다(${prose.length})`);
+  const bin = fakeWorkerBin(PLAN_EMITTER(prose));
+  const f = boot({ executionAuthority: { ...EXECUTION_AUTHORITY, claude: bin, claudeHome: fakeClaudeHome() } });
+  const events: AutopilotEvent[] = [];
+  const report = await runAutopilot({
+    workspaceRoot: f.ws,
+    runId: RUN_ID,
+    milestoneId: MILESTONE,
+    planDir: f.planDir,
+    clock: f.clock,
+    workerBackend: "claude-plan",
+    maxIterations: 1,
+    onEvent: (e) => events.push(e),
+  });
+  assert.equal(report.tasks[0]?.state, "paused", JSON.stringify(report.tasks));
+  const paused = events.find((e) => e.kind === "task_paused");
+  assert.ok(paused !== undefined, `task_paused가 없다: ${JSON.stringify(events.map((e) => e.kind))}`);
+  // ⓐ **`detail`은 바이트 하나도 바뀌지 않는다** — 안정 코드 계약이다(진단은 별도 필드로만 간다).
+  assert.equal(paused.detail, "worker_plan_absent", JSON.stringify(paused));
+  assert.equal(paused.marker, "worker_failed", JSON.stringify(paused));
+  // ⓑ 진단이 실제로 도달한다: 길이와 꼬리 둘 다(코드만으로는 절단/산문거부가 구분되지 않는다).
+  assert.ok(paused.diagnostic !== undefined, `진단이 이벤트에 도달하지 않았다: ${JSON.stringify(paused)}`);
+  assert.ok(paused.diagnostic.includes(`출력 ${prose.length}자`), `출력 길이가 도달하지 않았다 — ${paused.diagnostic}`);
+  assert.ok(paused.diagnostic.includes("꼬리-UNIQUETAIL"), `꼬리가 도달하지 않았다 — ${paused.diagnostic}`);
+  assert.ok(!paused.diagnostic.includes("\n"), `진단이 한 줄이 아니다 — ${JSON.stringify(paused.diagnostic)}`);
+});
+
+test("[C-117/A-1] 진단은 400자 bounded 한 줄이고 OrchestrationError가 아니면 붙지 않는다", () => {
+  // **상한을 여기서 직접 잰다**: live 경로로 오는 메시지는 worker가 이미 200자로 접어서 통합
+  // 테스트만으로는 400자 단정이 공허하다. 이 catch는 모든 층의 예외를 받으므로 상한이 실제 계약이다.
+  const long = workerDiagnosticOf(new OrchestrationError("plan_invalid", `${"가".repeat(600)}끝`));
+  assert.equal(long?.length, 400, `상한이 걸리지 않았다(${long?.length})`);
+  assert.ok(!long?.includes("끝"), "상한을 넘긴 꼬리가 살아남았다");
+  // 제어문자는 공백으로 접힌다(한 줄 계약 — `--json` 이벤트 스트림이 줄 단위 JSON이다).
+  // `OrchestrationError.message`가 `<code>: <본문>`이므로 코드 접두사가 함께 실린다(실측 형태 그대로).
+  assert.equal(workerDiagnosticOf(new OrchestrationError("plan_invalid", "앞\n뒤\t끝")), "plan_invalid: 앞 뒤 끝");
+  // 내부 버그의 임의 런타임 문자열은 이 채널로 흘리지 않는다.
+  assert.equal(workerDiagnosticOf(new Error("스택이 딸린 내부 예외")), null);
 });
 
 test("[M10-T3] live worker 세션이 상한을 넘기면 죽이고 turn을 완료로 만들지 않는다", async () => {

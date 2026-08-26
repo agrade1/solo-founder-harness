@@ -263,8 +263,14 @@ function workerError(code: (typeof LIVE_WORKER_CODES)[number], what: string): Or
  *
  * 이것은 골격 주석의 "원문 durable 반입 없음"에 대한 **예외가 아니다** — `worker_exit_nonzero`가
  * `errText.trim().slice(0, 200)`로 stderr 꼬리를 남기는 것과 **같은 규율**이다(코드와 짧은 꼬리만).
- * durable로 가는 것은 여전히 안정 코드 하나뿐이고(`workerMarker`/pause detail은 `err.code`만 읽는다)
- * 꼬리는 운영자가 보는 오류 메시지에만 실린다.
+ * durable로 가는 것은 여전히 안정 코드 하나뿐이다(`workerMarker`/pause `detail`은 `err.code`만 읽는다).
+ *
+ * **도달 경로**(C-117 적대적 리뷰 A-1에서 정정): 꼬리는 `runAutopilot`의 turn catch가 `err.message`를
+ * 400자로 접어 `task_paused` 이벤트의 `diagnostic` 필드에 실어 올리고, 그 이벤트는 `--json`으로
+ * **stdout**에 나간다. 그 배선이 없던 동안 이 꼬리는 catch에서 버려져 **어디에도 출력되지 않았다**
+ * (같은 이유로 `worker_exit_nonzero`의 stderr 꼬리도 도달 불가였다 — 선례가 아니라 같은 결함이었고
+ * 지금 함께 고쳐졌다). 사람용 진행 렌더러는 marker·detail만 보여 주며 이 필드를 읽지 않는다.
+ * **오류 메시지에 적는 것만으로는 진단이 살지 않는다**는 것이 이 축의 교훈이다.
  *
  * 왜 길이까지 함께 적나: C-117에서 계획 추출이 깨졌을 때 **원인을 가르는 것이 길이**였다. 거대한 길이 +
  * 닫히지 않은 중괄호 = 출력 절단, 짧은 길이 = 모델이 산문으로 거부. 코드만으로는 둘이 구분되지 않아
