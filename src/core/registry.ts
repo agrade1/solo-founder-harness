@@ -30,6 +30,12 @@ export interface GateDef {
   decider: string; // 판정하는 agent (예: founder_ceo, 게이트 전에 이미 실행돼 있어야 함)
   on: Record<string, string>; // 판정 키워드 → 되돌아갈 agent id (예: {"축소":"pm","검증":"research"})
   max_jumps: number; // 되돌림 상한 (무한루프 방지)
+  /**
+   * 아이디어 kill 키워드 (예: ["폐기"]). 매칭되면 run은 terminal 상태 "killed"로 끝난다 — 되돌림도 진행도 없다.
+   * on보다 먼저 판정한다 (runWorkflow의 게이트 분기 주석 참조: fail closed).
+   * 미지정이면 kill 판정 자체가 없다 (기존 워크플로 동작 불변).
+   */
+  kill?: string[];
 }
 
 /** 동적 분화: planner가 선언한 하위 전문 에이전트를 (승인 시) 런타임 생성·실행. */
@@ -86,8 +92,8 @@ export interface WorkflowsFile {
 const AGENT_REGISTRY_PATH = "registry/agent_registry.json";
 const WORKFLOWS_PATH = "registry/workflows.json";
 
-function readJson<T>(relPath: string): T {
-  const abs = fromPackage(relPath);
+function readJson<T>(relPath: string, absOverride?: string): T {
+  const abs = absOverride ?? fromPackage(relPath);
   if (!existsSync(abs)) {
     throw new Error(`registry 파일을 찾을 수 없습니다: ${relPath}`);
   }
@@ -103,9 +109,9 @@ export function loadAgentRegistry(): AgentRegistry {
   return readJson<AgentRegistry>(AGENT_REGISTRY_PATH);
 }
 
-/** registry/workflows.json 로드 */
-export function loadWorkflows(): WorkflowDef[] {
-  return readJson<WorkflowsFile>(WORKFLOWS_PATH).workflows;
+/** registry/workflows.json 로드. absPath를 주면 그 파일에서 읽는다(테스트 fixture용 — loadToolProfiles와 같은 seam). */
+export function loadWorkflows(absPath?: string): WorkflowDef[] {
+  return readJson<WorkflowsFile>(WORKFLOWS_PATH, absPath).workflows;
 }
 
 /** common prompt 파일이 실제로 존재하는지 확인 */
@@ -116,6 +122,19 @@ export function commonPromptExists(reg: AgentRegistry): boolean {
 /** agent_id로 agent 정의를 찾는다. 없으면 undefined. */
 export function findAgent(reg: AgentRegistry, agentId: string): AgentDef | undefined {
   return reg.agents.find((a) => a.agent_id === agentId);
+}
+
+/**
+ * [B-40] 이 workflow가 kill 게이트를 가졌는가 = **폐기 재평가를 돌릴 수 있는 workflow**인가.
+ * 폐기 잠금 상태에서 유일하게 허용되는 실행이 이것이라, run 커맨드와 runWorkflow가 같은 판정을 써야 한다.
+ */
+export function hasKillGate(wf: WorkflowDef): boolean {
+  return wf.steps.some((s) => isGate(s) && (s.gate.kill ?? []).length > 0);
+}
+
+/** [B-40] kill 게이트를 가진 workflow id 목록 (거부 메시지에 "무엇을 돌려라"를 적기 위해). */
+export function reevaluationWorkflowIds(absPath?: string): string[] {
+  return loadWorkflows(absPath).filter(hasKillGate).map((w) => w.workflow_id);
 }
 
 /** workflow_id로 workflow 정의를 찾는다. 없으면 undefined. */

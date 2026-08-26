@@ -85,7 +85,8 @@
       "name": "Founder CEO Agent",
       "role": "최종 사업 판단, 진행/축소/검증/보류/폐기 결정",
       "prompt_path": "agents/founder_ceo_agent.md",
-      "default_output": "docs/06_CEO_DECISION.md"
+      "default_output": "docs/06_CEO_DECISION.md",
+      "required_headers": ["Decision"]
     }
   ]
 }

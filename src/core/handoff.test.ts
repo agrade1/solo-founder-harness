@@ -482,6 +482,37 @@ test("[M3b.2] run이 completed 아니면 handoff 거부(not_completed), spawn �
   rmSync(paths.root, { recursive: true, force: true });
 });
 
+test("[B-40] killed run(폐기 판정)도 handoff 거부(not_completed), spawn 없음 — 기존 completed 검사 그대로", async () => {
+  const name = "_h_killed";
+  const paths = projectPaths(name);
+  rmSync(paths.root, { recursive: true, force: true });
+  mkdirSync(paths.outputs, { recursive: true });
+  mkdirSync(paths.docs, { recursive: true });
+  const killedState = {
+    workflow_id: "idea-validation",
+    project: name,
+    provider: "mock",
+    status: "killed",
+    killed_by: { decider: "founder_ceo", decision: "폐기", idea_sha256: "a".repeat(64) },
+    // [B-40/A-3] killed는 반드시 kill_history를 남긴다 — 없는 state는 구조 손상으로 거부된다.
+    kill_history: [{ decider: "founder_ceo", decision: "폐기", idea_sha256: "a".repeat(64), at: FIXED }],
+    cleared_idea_sha256: null,
+    resume_from: null,
+  };
+  writeFileSync(join(paths.outputs, "run_state.json"), JSON.stringify(killedState, null, 2) + "\n", "utf8");
+  const sp = captureSpawn();
+  const res = await runHandoff(baseOpts(name, { spawnInteractive: sp.fn }));
+  assert.equal(res.action, "not_completed", "폐기된 아이디어를 개발 착수로 넘기지 않는다");
+  const reason = res.action === "not_completed" ? res.reason : "";
+  assert.match(reason, /status=killed/);
+  assert.match(reason, /founder_ceo가 '폐기' 판정/, "누가 무슨 판정으로 죽였는지");
+  // [B-40/A-4] killed에 --resume을 지시하면 불가능한 안내다 (resume은 status=failed만 받는다).
+  assert.doesNotMatch(reason, /--resume'로 마저 완료/, "killed에 재개 안내를 하지 않는다");
+  assert.match(reason, /00_IDEA\.md를 고쳐/);
+  assert.equal(sp.calls.length, 0);
+  rmSync(paths.root, { recursive: true, force: true });
+});
+
 test("[M3b.2] prompt 128KB 경계 초과 → 절대경로 읽기 지시로 대체", async () => {
   const name = "_h_128k";
   await completedProject(name);

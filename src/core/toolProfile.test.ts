@@ -68,6 +68,10 @@ test("회귀: mock idea-validation run_state가 golden과 일치 (가변 메타 
   assert.equal(actual.status, "completed");
   assert.deepEqual(actual.completed_steps, ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]);
   assert.equal(actual.provider, "mock");
+  // [B-40] mock CEO는 '진행' 판정을 내므로 kill 게이트가 통과시키고 해제 digest가 발급된다.
+  // 고정 아이디어 문서의 sha256이라 결정적이다 — golden이 이 값을 그대로 들고 있어야 한다.
+  assert.deepEqual(actual.kill_history, [], "폐기 없음");
+  assert.equal(actual.cleared_idea_sha256?.length, 64, "'진행' 판정 → 해제 digest 발급");
 
   assert.ok(existsSync(GOLDEN), `golden 스냅샷이 없습니다: ${GOLDEN} (생성 후 커밋 필요)`);
   const golden = JSON.parse(readFileSync(GOLDEN, "utf8")) as RunState;

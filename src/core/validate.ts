@@ -139,7 +139,16 @@ function sectionText(markdown: string, headerPattern: RegExp): string {
 }
 
 /**
- * decider 출력에서 판정 키워드를 찾는다 (CEO 게이트 분기용).
+ * @deprecated [B-40] **게이트 판정에 쓰지 마라.** 산문 부분문자열 매칭이라 표현이 목록에 없으면
+ * 조용히 null이 되고(= 호출자가 진행), 그 fail open이 kill 게이트를 무력화했다. 게이트는
+ * `extractCeoDecision`(구조화 `## Decision` 절)을 쓴다.
+ *
+ * **정정**: B-40 첫 커밋 메시지에 "다른 호출부가 있어 보존"이라고 적었는데 **사실이 아니다** —
+ * `src/` 안 호출부는 **0건**이다(테스트에도 없다). 실제 보존 이유는 ⓐ 이 함수가 published 패키지의
+ * export 표면이고(`package.json.files`에 `dist` 포함) ⓑ `docs/DECISIONS.md`·`docs/WORKLOG.md`의
+ * 과거 기록이 이 동작을 설명한다 — 이므로 지우는 대신 deprecated로 못 박았다. 확인 없이 계약을
+ * 적은 사례로 남긴다(CLAUDE.md의 같은 교훈).
+ *
  * 판정이 실제로 담기는 Main Judgment + Decisions 섹션만 검색한다.
  * (문서 전체 검색은 Input Summary의 역할 설명 등 boilerplate를 오탐하므로 쓰지 않는다.)
  */
@@ -148,6 +157,76 @@ export function extractDecision(markdown: string, keywords: string[]): string | 
     sectionText(markdown, /^##\s+Main Judgment\s*$/) + "\n" + sectionText(markdown, /^##\s+Decisions\s*$/);
   for (const kw of keywords) if (haystack.includes(kw)) return kw;
   return null;
+}
+
+/**
+ * [B-40] CEO 정본 판정 토큰 — **이 파서의 allowlist**다.
+ *
+ * 어휘가 여기 하나에만 있다고 말할 수는 없다(정정): 같은 낱말이 `agents/founder_ceo_agent.md`의
+ * 출력 계약과 `registry/workflows.json`의 gate `on`/`kill` 키에 **수기로 중복**된다 — 프롬프트도
+ * JSON도 TypeScript 상수를 import할 수 없다. 그래서 이 상수는 "단일 출처"가 아니라
+ * **파서 allowlist + registry 회귀 대조의 기준**이고, workflows.json의 키가 이 목록에서 벗어나면
+ * 로더 테스트가 red가 된다(프롬프트 쪽 어긋남은 코드로 못 잡는다 — 그것이 남는 위험이다).
+ * 등급 순서는 CEO 프롬프트 §8의 A~E와 같다.
+ */
+export const CEO_DECISION_TOKENS = ["진행", "축소", "검증", "보류", "폐기"] as const;
+export type CeoDecisionToken = (typeof CEO_DECISION_TOKENS)[number];
+
+/**
+ * 코드펜스(``` / ~~~) 안에 있는 줄에 false를 채운 마스크. 여는 펜스 문자와 무관하게 다음 펜스 줄에서
+ * 닫는 **단순 토글**이다.
+ *
+ * ponytail: 단순 토글 — 여는 펜스보다 긴 닫는 펜스, 서로 다른 펜스 문자의 중첩, 리스트 안 들여쓴
+ * 4-space 코드블록은 구분하지 않는다. CommonMark 완전 구현이 필요해지면(예: 산출물이 중첩 펜스를
+ * 실제로 쓰기 시작하면) 그때 파서를 올린다. 지금 막는 것은 "펜스 안의 가짜 판정 절"이고, 토글이
+ * 틀리는 방향은 펜스 밖을 펜스 안으로 오인하는 쪽 — 즉 절을 못 찾아 absent/ambiguous(fail closed)다.
+ */
+function fenceMask(lines: string[]): boolean[] {
+  let inFence = false;
+  return lines.map((l) => {
+    if (/^\s{0,3}(```|~~~)/.test(l)) {
+      inFence = !inFence;
+      return false; // 펜스 줄 자체도 본문이 아니다
+    }
+    return !inFence;
+  });
+}
+
+/**
+ * [B-40] "## Decision" 절에서 **정본 판정 토큰 하나**를 뽑는다. 산문 판정(Main Judgment)은 읽지 않는다.
+ *
+ * 왜 산문 부분문자열 매칭(`extractDecision`)을 게이트에서 쓰지 않는가: 오탐("폐기하지 않는다" → kill)은
+ * fail closed라 참을 수 있지만 **누락은 fail open**이다 — "중단한다"·"드롭한다"·"더 이상 시간을 쓰지 않는다"
+ * (CEO 프롬프트 §8-E의 실제 표현)는 폐기인데 어떤 키워드 목록에도 걸리지 않아 그대로 진행한다.
+ * 동의어를 열거해서는 닫히지 않는다(자연어는 무한하다). 그래서 판정을 **구조로** 받는다.
+ *
+ * 구조를 받는다면 **고를 수 없어야** 한다. 절이 여러 개면 첫 절이 이기고, 본문을 부분문자열로 보면
+ * 펜스 안의 예시나 "진행성" 같은 낱말이 판정이 된다 — 판정을 심을 자리가 남는 것이다. 그래서:
+ *
+ * - 코드펜스 안의 헤더·본문은 전부 무시한다 (예시 블록이 판정을 만들지 못한다).
+ * - 펜스 밖 `## Decision` 절이 **정확히 1개**여야 한다 (0 → absent, 2+ → ambiguous).
+ * - 그 절 본문의 **비공백 줄이 정확히 1줄**이고, bullet 마커를 떼면 그 줄이 토큰과 **완전 일치**해야
+ *   한다 (부분문자열 아님 → "진행성"·"축소 후 진행" 모두 ambiguous).
+ *
+ * 어긋남은 전부 error다 — 호출자가 조용히 진행하지 않고 멈추는 것이 이 함수의 존재 이유다.
+ */
+export function extractCeoDecision(markdown: string): { token: CeoDecisionToken } | { error: "absent" | "ambiguous" } {
+  const lines = markdown.split("\n");
+  const live = fenceMask(lines);
+  // top-level 헤더만 본다: 인용(`> ## Decision`)이나 들여쓴 헤더는 `^##`에 걸리지 않는다.
+  const heads = lines.map((l, i) => (live[i] && /^##\s+Decision\s*$/.test(l) ? i : -1)).filter((i) => i >= 0);
+  if (heads.length === 0) return { error: "absent" };
+  if (heads.length > 1) return { error: "ambiguous" }; // 판정 절이 둘이면 어느 것도 정본이 아니다
+
+  const body: string[] = [];
+  for (let i = heads[0] + 1; i < lines.length; i++) {
+    if (live[i] && /^##\s/.test(lines[i])) break; // 다음 top-level 섹션
+    if (live[i] && lines[i].trim().length > 0) body.push(lines[i].trim());
+  }
+  if (body.length !== 1) return { error: "ambiguous" };
+  const value = body[0].replace(/^([-*+]|\d+\.)\s+/, "").trim();
+  const token = CEO_DECISION_TOKENS.find((t) => t === value);
+  return token ? { token } : { error: "ambiguous" };
 }
 
 /**

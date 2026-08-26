@@ -13,6 +13,11 @@ export const mockProvider = {
         const nextAgentLine = nextAgentId
             ? `- ${nextAgentId}`
             : "- (없음 — 이 workflow의 마지막 단계)";
+        // [B-40] gate decider(founder_ceo)는 "## Decision" 정본 판정 절을 반드시 낸다 —
+        // 게이트가 이 절을 못 찾으면 fail closed로 멈추기 때문에, 기본값이 없으면 mock 기반
+        // acceptance/golden 전부가 ceo_decision_absent로 죽는다(만족 불가능한 계약).
+        // 기본은 '진행' — 무과금 회귀 경로가 완주해야 한다. kill/jump 경로는 테스트 fixture가 토큰을 바꾼다.
+        const decisionBlock = agent.agent_id === "founder_ceo" ? "## Decision\n\n- 진행\n\n" : "";
         const markdown = `# Agent Output
 
 ## Metadata
@@ -32,7 +37,7 @@ export const mockProvider = {
 - 이전 판단 요약:
 ${priorBlock}
 
-## Main Judgment
+${decisionBlock}## Main Judgment
 
 - [MOCK] ${agent.name}의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다.
 

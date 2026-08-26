@@ -274,6 +274,16 @@ export async function runHandoff(opts) {
         return { action: "not_completed", reason: `run_state가 없습니다: ${project} (먼저 'harness run <workflow> --project ${project}' 실행)` };
     }
     if (state.status !== "completed") {
+        // [B-40] killed에 --resume을 지시하면 불가능한 안내가 된다(resume은 status=failed만 받는다).
+        // 폐기는 "마저 완료"할 수 있는 상태가 아니므로 별도 문구로 갈라 적는다.
+        if (state.status === "killed") {
+            const k = state.killed_by;
+            return {
+                action: "not_completed",
+                reason: `run이 폐기(status=killed)됐습니다 — ${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}' 판정. ` +
+                    `재개(--resume)는 불가하고 handoff도 하지 않습니다. docs/00_IDEA.md를 고쳐 새 run으로 다시 평가하세요.`,
+            };
+        }
         return {
             action: "not_completed",
             reason: `run이 완료(completed) 상태가 아닙니다 (status=${state.status}). 'harness run ${state.workflow_id} --project ${project} --resume'로 마저 완료한 뒤 handoff 하세요.`,

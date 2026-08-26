@@ -1,5 +1,34 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-26 밤 — **`B-40` closed: 아이디어 kill 게이트 — CEO '폐기'가 처음으로 집행된다**)
+
+- **구현 = Opus 5 · 비평 = Codex**(사용자 지시 2026-08-26 저녁 · 세션 모델도 Opus 5로 전환).
+  Codex 모델 둘 다 실측 사용 가능: `gpt-5.6-sol`(무거운 계약·안전 리뷰) · `gpt-5.5`(값싼 리뷰).
+  주의: macOS엔 `timeout`이 없어 codex 호출을 감싸면 exit 127로 "모델 id 오류" 오진이 난다.
+- **`B-40` closed(판정 ⑪)**: ⓐ CEO 판정을 **구조에서 읽는다**(`## Decision` 절 · 펜스 밖 정확히 1개 ·
+  토큰 완전 일치 · 부재/모호는 fail closed) ⓑ **통과는 `진행` 하나뿐**(보류·미매핑·jump 예산 소진은
+  각각 다른 사유 코드로 멈춘다) ⓒ kill은 **terminal `killed`**(resume 불가·handoff 거부·exit 0)
+  ⓓ **폐기가 우회로 풀리지 않는다**: `kill_history`(carry forward) + `cleared_idea_sha256`(kill 게이트가
+  '진행' 낸 순간만 발급) + 단일 판정 함수를 run·task-prompt·plan-dag가 공유 ⓔ 손상 `run_state.json`은
+  absent가 아니라 **unreadable로 fail closed**(파일 바이트 불변).
+- **Codex 4라운드 + 좁은 검증 1회가 A 13건을 냈고 전부 수용**: killed가 새 run으로 덮어써짐 · killed 산출물로 지시문/DAG
+  생성 · **거짓 영수증**(CLI=폐기 / summary=완료 / vault=진행) · 산문 매칭 fail open · `보류`가 통과 ·
+  펜스·중복 절로 **판정 선택 가능** · 아이디어 1바이트 변경이 곧 해제 · 손상 state 덮어쓰기 ·
+  **문서 과대주장 7건** · **TOCTOU**(CEO가 심사한 바이트 ≠ 발급된 digest — 게이트가 파일을 다시 읽었다) ·
+  **게이트 실패가 CLI·vault에서 "진행"으로 렌더**(killed에서 고친 거짓 영수증의 재발) ·
+  **구조 손상 state**(killed인데 kill_history 없음)가 잠금을 지움. 교훈 = **안전 게이트는 판정을 읽는
+  자리가 아니라 판정이 흐르는 모든 경로를 닫아야 한다.**
+- **실측**: `npm test` exit 0 · **649/649** · **536/536**(+31) · acceptance **224/0** · mutation 15종
+  (오케스트레이터 독립 재현 3 — TOCTOU 재도입 포함) · CLI 스모크 6시나리오(아이디어 수정 후에도 잠김 → 재평가 '진행' →
+  해제 → 손상 state는 재평가조차 거부).
+- **닫은 범위를 정확히**: 프로젝트 스코프 경로(`run`·`task-prompt`·`plan-dag`)뿐. `autopilot-create`
+  직접(`B-43`) · run_state 직접 삭제/아이디어 fork(`C-131`) · `exec`/`mission`(`C-132`)은 미차단.
+- **신규**: `B-42`(live `## Decision` 준수율 미실측) · `B-43` · `C-130`~`C-133`.
+  **열린 항목**: A **0** · B **10** · C **96** · id **106**(자기 검증 106 실측).
+- **다음**: `B-41`(단계 체크포인트 — 지금 1순위) → `C-126`(리서치 API + `.env`).
+
+---
+
 ## 최신 (2026-08-26 밤 — **전체 감사(Codex): 목표 대비 갭 판정 · README A급 3곳 즉시 수정 · B-40/B-41·C-125~129 등재**)
 
 - **목표 명확화(사용자)**: 완전 자동이 아니라 **"단계 완료 → 사용자 확인 요청 → 승인 대기 → 다음

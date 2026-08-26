@@ -21,11 +21,12 @@ live가 **실제 산출물을 만들고**(판정 ⑦) 아이디어에서 **DAG �
 
 | 항목 | 값 |
 |---|---|
-| `main` | 판정 ⑩까지 머지(C-117 slice 포함 — 착수 전 `git log`로 실측하라) |
-| suite | `test:exec` 649 · `test:core` 505 · acceptance 224 — 전부 green |
-| 열린 대장 | A **0** · 등급 B **7** · 등급 C **87** · id **94** |
-| 판정 정본 | 로드맵 `M11 진행 판정 ⑩` (새 판정은 그 **위에** 삽입하고 "현행" 문구를 갱신하라) |
-| live 실측 | 판정 ⑦(단일 task 산출물) · ⑧(12-task DAG 초안) · ⑨(multi-task 부분 — 1/4) · ⑩(**문서 단계 4종 완성** · 진단 꼬리 실전 2회 · `C-123` consumes 경계 발견) |
+| `main` | 판정 ⑪까지(B-40 kill 게이트 — 착수 전 `git log`로 실측하라) |
+| suite | `test:exec` 649 · `test:core` 536 · acceptance 224 — 전부 green |
+| 열린 대장 | A **0** · 등급 B **10** · 등급 C **96** · id **106** |
+| 판정 정본 | 로드맵 `M12 진행 판정 ⑪` (새 판정은 그 **위에** 삽입하고 "현행" 문구를 갱신하라) |
+| live 실측 | 판정 ⑦(단일 task 산출물) · ⑧(12-task DAG 초안) · ⑨(multi-task 부분) · ⑩(**문서 단계 4종 완성**) · ⑪(kill 게이트 — v1 층이라 mock로 충분 · live 0회) |
+| 작업 방식 | 구현 **Opus 5** · 비평 **Codex**(`-m gpt-5.6-sol` 무거운 계약·안전 / `gpt-5.5` 값싼 리뷰). Codex finding은 오케스트레이터가 **실물 검증 후** 리비전 발행 |
 
 **사용자의 목표**: 새 레포에 아이디어 문서를 두면 기획→리서치→검증→디자인→개발까지 도는 하네스.
 Opus 5가 개발, Fable(+Codex)이 비평 루프. MVP부터 그 뒤까지.
@@ -40,11 +41,15 @@ Opus 5가 개발, Fable(+Codex)이 비평 루프. MVP부터 그 뒤까지.
    4종 산출물 완성 · ⓑ는 `C-122`로 유예).
 2. **1순위 = 값싼 CLI slice**: `C-118`(resumeTask CLI — 두 세션 연속 스크립트로 때움) ·
    `C-120`(validate-approval에 audit 배선) · `C-124`(diagnostic을 사람용 렌더러에 노출) 묶음.
-3. **전체 감사(2026-08-26 밤 · Codex) 이후 우선순위가 재정렬됐다** — 명확화된 목표(단계별 사용자
-   확인 게이트 · kill 게이트 · 리서치 API fallback)의 최소 골격: ① `B-40`(아이디어 kill 게이트 —
-   사용자 요구 1순위) ② `B-41`(단계 체크포인트 오케스트레이션) ③ `C-126`(research adapter
-   production 배선 + `.env`). 그 다음 `C-127`(v1 검증 차단) · `C-125`(아이디어 개정 루프) ·
-   `C-123`(consumes 계약 결정). 기존 후보(L5b · `C-93` · `B-10`)는 그 뒤.
+3. **명확화된 목표(2026-08-26)의 최소 골격 3개 중 첫째가 닫혔다** — ~~`B-40` kill 게이트~~ →
+   **closed(판정 ⑪)**. 남은 순서: ① **`B-41`(단계 체크포인트 — 지금 1순위)**: "단계 완료 → 사용자에게
+   문서 확인 요청 → 승인 대기 → 다음 단계 자동 준비". 설계 방향(오케스트레이터 확정): v1 안의
+   `approval` step을 층간으로 확장 · durable 상태는 `projects/<name>/outputs/pipeline_state.json` ·
+   **승인 행위는 별도 명령 호출**(비대화 환경에서도 감사 가능) · killed면 파이프라인 종료 ·
+   개발 단계는 `mission`/`exec` 명령을 **준비만** 한다(자동 실행 금지) ② `C-126`(research adapter
+   production 배선 + `.env` — `tavilyBackend`/`researchGateway`는 이미 완성형이라 배선만) ③ `C-127`
+   (v1 검증 차단) · `C-125`(아이디어 개정 루프) · `C-123`(consumes 계약). 기존 후보(L5b · `C-93` ·
+   `B-10`)는 그 뒤.
 4. live 재실측 시 workspace·승인 생성기는 **세션 scratchpad에 새로 만든다**(세션 종료 시 소멸 —
    실물 예시는 판정 ⑦·⑧·⑩ 시퀀스와 `scripts/m12-l2b-offline-acceptance.mjs`가 정본).
 
@@ -84,8 +89,12 @@ mutation red 아니면 결함·미증명은 오케스트레이터가 닫기)은 
 ## 5. 대장 정본 읽는 법
 
 `grep -E '\| open \|'`로 **세지 마라**(스냅샷 중복). 정본은 §9.1 **`현행 열린 항목 — 정본`** 절이고
-자기 검증 명령이 그 절 안에 있다. 등급 B 7: `B-10` `B-13` `B-34` `B-35` `B-36` `B-37` `B-39` —
-전부 트리거 미도래. `C-116`은 구현 프롬프트마다 반영(§4-9 · 판정 ⑩까지 mutation 13종이 이 형식으로 red).
+자기 검증 명령이 그 절 안에 있다. 등급 B **10**: `B-10` `B-13` `B-34` `B-35` `B-36` `B-37` `B-39`
+`B-41` `B-42` `B-43` — 전부 트리거 미도래(`B-41`은 **지금 1순위**). `C-116`은 구현 프롬프트마다
+반영(§4-9 · 판정 ⑪까지 mutation 15종이 이 형식으로 red).
+
+**닫힌 id를 정본 절 표에 남기지 마라**: 자기 검증 명령이 그것을 열린 것으로 센다(판정 ⑪에서 실측 —
+`B-40` 행이 남아 106이 107로 나왔다). 등재 이력은 판정 절과 git이 갖는다(§4-7).
 
 ## 6. 착수 명령
 
@@ -95,7 +104,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
   docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md \
   | grep -oE '^\| `[BC]-[0-9]+`|^C-[0-9]+|[[:space:]]C-[0-9]+' | tr -d '|` ' | sort -u | wc -l
 sed -n '1,40p' docs/CONTEXT_SUMMARY.md            # 최신 블록
-grep -n '^##### \*\*M11 진행 판정' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | head -1
+grep -n '^##### \*\*M1[12] 진행 판정' docs/backlog/V3_AUTONOMOUS_ORCHESTRATION_ROADMAP.md | head -1
 ```
 
 ## 7. 서브에이전트 프롬프트 뼈대

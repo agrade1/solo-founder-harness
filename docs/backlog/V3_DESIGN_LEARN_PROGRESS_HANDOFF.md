@@ -289,7 +289,8 @@ step_timings: StepTiming[];
 FIELD_NOTES 불편 2·3번도 여기서 같이 최소 해소:
 - **되돌림 가시성**: gate_jumps 발생 시 덮어쓰기 전 산출물을 `docs/archive/<n>_*.pass1.md`로
   보존 (파일 복사 한 줄). run_state `gate_jumps[].evidence`에 판정 근거 문장
-  (extractDecision이 매칭한 줄 전체)을 함께 기록.
+  (`extractCeoDecision`이 읽은 `## Decision` 절 본문 — B-40에서 게이트가 구조화 판정으로 바뀌었다.
+  `extractDecision`은 deprecated이며 게이트 근거로 쓰지 않는다)을 함께 기록.
 
 ### F2.4 claude-code 스트리밍 패스스루 (선택, 후순위)
 

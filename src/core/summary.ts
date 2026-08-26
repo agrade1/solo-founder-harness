@@ -27,14 +27,38 @@ function nextActions(state: RunState | null, project: string): string[] {
     return ["아직 workflow 미실행 — `harness run <workflow> --project <name>` 실행."];
   }
   const actions: string[] = [];
-  if (state.failed_agent) {
-    const reason = state.failed_reason ? ` (${state.failed_reason})` : "";
-    actions.push(
-      `\`${state.failed_agent}\`에서 중단됨${reason} — 원인 확인 후 ` +
-        `\`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`,
-    );
-  } else {
-    actions.push(`workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
+  // status로 분기한다 (failed_agent 유무가 아니라): killed는 failed_agent가 없어서 예전 분기로는
+  // "완료 — task-prompt로 진행"이 나왔다. 같은 run이 CLI에서는 폐기, 여기서는 완료가 되는 거짓 영수증이었다.
+  // switch + never로 닫아 다음에 상태가 늘면 컴파일이 잡는다.
+  switch (state.status) {
+    case "killed": {
+      const k = state.killed_by;
+      actions.push(
+        `**폐기 판정** — ${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}' 판정으로 ` +
+          `\`${state.workflow_id}\`를 종료했다. 이 아이디어로는 작업 지시문·DAG를 만들 수 없다.`,
+      );
+      actions.push("`docs/00_IDEA.md`를 고쳐 다시 평가하거나, 다른 아이디어로 넘어간다 (재개(--resume)는 불가).");
+      break;
+    }
+    case "failed":
+      actions.push(
+        `\`${state.failed_agent ?? "(알 수 없음)"}\`에서 중단됨${state.failed_reason ? ` (${state.failed_reason})` : ""} — 원인 확인 후 ` +
+          `\`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`,
+      );
+      break;
+    case "completed":
+      actions.push(`workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
+      break;
+    default: {
+      // status가 없는 옛 run_state(필드 도입 전)는 failed_agent로 판단한다 — 기존 동작 보존.
+      const legacy: never = state.status;
+      void legacy;
+      actions.push(
+        state.failed_agent
+          ? `\`${state.failed_agent}\`에서 중단됨 — \`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`
+          : `workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`,
+      );
+    }
   }
   if (state.warnings.length > 0) {
     actions.push(`필수 섹션 누락 경고 ${state.warnings.length}건 — 해당 결과 문서 보완 권장.`);

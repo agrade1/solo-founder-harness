@@ -737,7 +737,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 
 ```text
 리터럴 상태-칸 패턴 → 행 79 · 고유 id 76   ← **전수 재판정 시점**(`C-104` 닫기 전 · `C-105` 등록 전)
-정본(이 절)      →  id 101  ← 최신 변동(2026-08-26 전체 감사): `B-40`·`B-41`·`C-125`~`C-129` 신규(+7 · 아래 감사 등재 절). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
+정본(이 절)      →  id 106  ← 최신 변동(판정 ⑪): `B-40` closed(−1) · `B-42`·`B-43`·`C-130`~`C-133` 신규(+6). 그 이전 변동은 각 판정 절이 기록한다 — 이 줄에 이력을 쌓지 않는다
 
 정본 − 리터럴 = { B-1, B-2 }   상태 칸이 `open (nonblocking)`이라 리터럴 패턴이 못 잡는다
 리터럴 − 정본 = ∅              **닫혔는데 열린 채로 남은 행은 하나도 없다**
@@ -747,9 +747,10 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 101건 (A 0 · **등급 B 9** · 등급 C 92)
+##### 열린 항목 — id 106건 (A 0 · **등급 B 10** · 등급 C 96)
 
-**등급 B (9) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed — live가 실제 산출물을 만들었다.)
+**등급 B (10) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed · **`B-40`은 판정 ⑪에서 closed** —
+CEO '폐기'가 처음으로 집행된다.)
 
 | id | 한 줄 | 기한/트리거 | 어디를 읽나 |
 |---|---|---|---|
@@ -760,8 +761,9 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-36` | 그룹을 **탈출한 자손을 탐지할 커널 능력이 없다**(`B-18`에서 분리) | **linux(cgroup)** 또는 sandbox/컨테이너 채택 | §9.1 `M11① 대장 처리` 표 |
 | `B-37` | 닫힌 action 집합으로 **회복 불가한 worktree 잔재** 두 모양(`B-31`에서 분리) | **현장에서 실제로 관측될 때만** | §9.1 `M11① 대장 처리` 표 |
 | `B-39` | codex plan backend는 계획 추출 실패에 **진단 꼬리가 없다**(`worker_plan_missing`뿐 — claude backend와 비대칭) | **codex backend live 재시도 전** | `M11 진행 판정 ⑩` ⓔ 표 |
-| `B-40` | **아이디어 kill 게이트 부재** — CEO '폐기' 판정이 상태 전이가 아니다(gate 매핑에 축소·검증뿐 → 미매칭은 진행). 사용자 요구 확정(2026-08-26) | **기획 파이프라인 실사용 전 필수** — 다음 기능 slice 1순위 | 아래 `2026-08-26 전체 감사` 표 |
-| `B-41` | **단계 체크포인트 오케스트레이션 부재** — "단계 완료 → 사용자에게 문서 확인 요청 → 승인 대기 → 다음 단계 자동 준비"가 층 사이(v1↔exec/mission↔v3)에 없다(사용자가 완전 자동 대신 이 형태를 지시 · 2026-08-26) | `B-40` 뒤 — 기획 파이프라인 실사용 전 | 아래 `2026-08-26 전체 감사` 표 |
+| `B-41` | **단계 체크포인트 오케스트레이션 부재** — "단계 완료 → 사용자에게 문서 확인 요청 → 승인 대기 → 다음 단계 자동 준비"가 층 사이(v1↔exec/mission↔v3)에 없다(사용자가 완전 자동 대신 이 형태를 지시 · 2026-08-26) | **지금 1순위**(`B-40` closed) | 아래 `2026-08-26 전체 감사` 표 |
+| `B-42` | live provider의 **`## Decision` 준수율 미실측** — 안 내면 세 CEO workflow가 `ceo_decision_absent`로 정지한다 | 기획 파이프라인 **live 첫 투입 시** | `M12 진행 판정 ⑪` ⓔ 표 |
+| `B-43` | **`autopilot-create` 직접 호출에 kill 잠금이 닿지 않는다** — 손으로 쓴 DAG 경로(아이디어 연결 신호 없음) | B-40 종결을 v3 경로까지 주장하기 전 | `M12 진행 판정 ⑪` ⓔ 표 |
 
 **`B-` 번호이지만 등급 C — nonblocking (2).**
 
@@ -770,7 +772,7 @@ M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 �
 | `B-1` | 조용한 호스트에서 **부하(stress) acceptance 재실행** | **release 준비 시점** — 마일스톤 게이트 아님 | 707 |
 | `B-2` | **live runner 재실행**과 evidence 재생성 | **release 준비 시점** — 마일스톤 게이트 아님 | 708 |
 
-**등급 C (90).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
+**등급 C (94).** — 각 id의 **마지막 등재 행**이 현행 서술이다.
 
 ```text
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
@@ -780,6 +782,7 @@ C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
 C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
 C-120 C-121 C-122 C-123 C-124 C-125 C-126 C-127 C-128 C-129
+C-130 C-131 C-132 C-133
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -795,9 +798,12 @@ C-120 C-121 C-122 C-123 C-124 C-125 C-126 C-127 C-128 C-129
 감사. **README 과대주장 3곳은 A급으로 즉시 수정했다**(외부 전송 서술 · v3 상태 · go/no-go 표기 —
 같은 커밋). `C-123`(consumes 비가시)은 감사가 P1로 재확인했다(기등재). 신규 등재:
 
+> **`B-40`(아이디어 kill 게이트)도 이 감사에서 등재됐고 `M12 진행 판정 ⑪`에서 closed다.** 이 표에서
+> 그 행을 뺀 이유는 **정본 절의 자기 검증 명령이 닫힌 id를 열린 것으로 세지 않게** 하기 위함이다
+> (킥오프 §4-7: 한 id의 상태는 가장 늦은 **판정 절**이 정한다). 등재 당시 서술은 판정 ⑪ ⓔ와 git 이력에 있다.
+
 | id | 분류 | 항목 | 기한/트리거 | 상태 |
 |---|---|---|---|---|
-| `B-40` | B | **아이디어 kill 게이트** — CEO 프롬프트는 '폐기'를 말하지만 gate 매핑(`축소`·`검증`)에 없어 폐기 판정이 "미매칭 → 진행"이 된다(`runWorkflow.ts` gate 분기 · `workflows.json`). 최소 수정: CEO 판정을 구조화(`kill` 포함)하고 kill → terminal 상태 전이(후속 단계 생성 거부) | 기획 파이프라인 실사용 전 — **다음 기능 slice 1순위(사용자 요구)** | open |
 | `B-41` | B | **단계 체크포인트 오케스트레이션** — 단계 완료 시 사용자에게 산출물 확인을 요청하고 승인 대기, 승인 후 다음 단계를 자동 준비하는 층간(v1→exec/mission→v3) 연결이 없다. v1 안의 `approval` step이 원형(설계 재사용 후보) | `B-40` 뒤 | open |
 | `C-125` | C (P1) | **아이디어 자체의 비평→개정 루프 부재** — `critique_loop`의 수정 대상이 `tech_lead`뿐. 최소 수정: versioned venture brief + PM↔RedTeam bounded loop(원본 `00_IDEA.md` 비파괴) | 기획 파이프라인 고도화 slice | open |
 | `C-126` | C (P1) | **research adapter의 production 미배선** — `tavilyBackend`·`researchGateway`는 구현돼 있으나 호출부가 benchmark 스크립트뿐. 사용자 설계(2026-08-26): 하네스가 `.env`를 생성하고 키가 있으면 Tavily, 없으면 자체 리서치 fallback · evidence digest(URL·hash·시각)를 PRD/CEO 입력에 첨부 | `B-40`/`B-41`과 같은 묶음 후보 | open |
@@ -1925,7 +1931,99 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M11 진행 판정 ⑩ — `C-117` closed(결정 ⓐ · live 검증) · 문서 단계 4종 산출물 완성 · 진단 꼬리가 실전에서 두 번 값했다** (2026-08-26 · **이 절이 현행이며 아래 ⑨보다 최신이다**)
+##### **M12 진행 판정 ⑪ — `B-40` 아이디어 kill 게이트: CEO '폐기'가 처음으로 집행된다(Codex 4라운드 · A 13건 수용)** (2026-08-26 · **이 절이 현행이며 아래 ⑩보다 최신이다**)
+
+### ⓐ 무엇이 닫혔나 — 목표의 첫 조각
+
+사용자가 명확화한 목표(2026-08-26) 중 **"시장성·사업성이 현저히 떨어지면 아이디어를 죽인다"** 를
+구현했다. 이전 상태: CEO 에이전트는 '폐기'를 판정할 수 있었는데 gate 매핑(`축소`·`검증`)에 없어
+**미매칭 → 진행**이었다(fail open). 지금:
+
+- **판정을 산문이 아니라 구조에서 읽는다**: CEO 출력 계약에 `## Decision` 절(본문 = `진행`|`축소`|
+  `검증`|`보류`|`폐기` 중 정확히 한 토큰) · 새 파서 `extractCeoDecision`이 **펜스 밖 절 정확히 1개 ·
+  비공백 1줄 · 토큰 완전 일치**만 받는다. 절 부재·중복·모호는 `failed`(fail closed) — 조용한 진행 없음.
+- **게이트 통과는 `진행` 하나뿐**: `보류`·매핑 없는 토큰·jump 예산 소진·jump 대상 부재는 각각
+  **다른 안정 사유 코드**로 멈춘다(`C-96` 부류 오배정 회피 — 원인과 코드를 맞춘다).
+- **kill은 terminal 상태 전이**: `status: "killed"` + `killed_by` · resume 불가 · handoff 거부 ·
+  exit 0(판정 자체는 성공한 작업이다).
+- **폐기가 우회로 풀리지 않는다**: `kill_history`(carry forward — 뒤 run이 지우지 못한다) +
+  `cleared_idea_sha256`(**kill 게이트가 '진행'을 낸 순간만** 발급). 잠긴 동안 허용되는 것은
+  **kill 게이트가 있는 workflow의 재평가 run 하나뿐**이고, `task-prompt`·`plan-dag`·kill 게이트 없는
+  workflow(`dev-preflight` 등)는 계속 거부된다. 판정 함수는 **하나**(`ideaGateStatus`)이고 세 소비자가
+  그것만 쓴다(규칙이 세 벌이면 한쪽만 정직해진다).
+- **손상된 `run_state.json`은 "없음"이 아니다**: `absent`/`unreadable`/`ok`를 구분하고 unreadable은
+  전 경로 fail closed(system of record를 덮어쓰지 않는다). **JSON은 유효하나 구조가 손상된 것**
+  (killed인데 `kill_history` 없음 · 새 필드 타입 오류)도 `unreadable`이다(`lockFieldsProblem`) —
+  단 새 필드가 없는 **정상 구버전 state는 그대로 통과**한다(하위 호환).
+- **심사한 바이트와 발급한 digest가 결박된다**(TOCTOU): run 시작에 아이디어를 **한 번** snapshot하고
+  (`snapshotIdea`) 모든 agent 프롬프트·kill/clear 기록이 그 하나만 쓴다. `runAgent`에서 파일을 읽는
+  코드를 **삭제**했다(재읽기 API를 남기면 다음 사람이 그것을 쓴다 — `ideaContent` 필수 인자화).
+  `task-prompt`·`plan-dag`도 검사한 그 바이트를 그대로 쓴다.
+- **게이트 결과를 추론하지 않고 읽는다**: `GateJumpEntry.outcome`(+`reason`)을 기록하고 CLI·vault가
+  **공유 렌더러 하나**(`gateOutcomeLabel`)를 쓴다. 이전에는 "killed도 아니고 jump도 아니면 진행"으로
+  **추론**해서, `보류`로 멈춘 run이 화면·vault에 "진행"으로 남았다(거짓 영수증).
+
+### ⓑ 비평 — Codex 3라운드가 A 9건을 냈고 전부 수용했다 (사용자 지시: 비평 루프 = Codex)
+
+| 라운드 | 결과 |
+|---|---|
+| 1차(오케스트레이터 Fable) | mutation 독립 재현(kill 우선순위 역전 치환) · **"acceptance 사전 존재 실패" 주장 반박**(통합 체크아웃 224/0 — 원인은 구현 worktree의 `node_modules` 부재) |
+| 2차(Codex 5.6-sol) | **A 4건**: killed가 새 run으로 덮어써짐(kill 게이트 없는 workflow 우회) · killed 산출물로 `task-prompt`/`plan-dag` 생성 가능 · **거짓 영수증**(같은 run이 CLI=폐기 / summary=완료 / vault=진행) · 산문 매칭 fail open |
+| 3차(Codex 5.6-sol) | **A 5건**: 비진행 토큰 암묵 진행(`보류`가 통과) · 펜스·중복 절로 **판정을 고를 수 있음** · 아이디어 바이트 1회 변경이 곧 해제 · 손상 state를 absent로 접기 · **문서 과대주장**(DECISIONS의 "조용히 진행하는 경로를 없앴다"·"유일한 신호"·"단일 출처", `extractDecision` 호출부 0건인데 "다른 호출부가 있어 보존") |
+| 4차(Codex 5.6-sol) | **A 4건 + C 1건**: **TOCTOU** — CEO가 심사한 아이디어 바이트와 발급된 `cleared_idea_sha256`가 결박되지 않는다(게이트가 파일을 다시 읽는다) · **게이트 실패가 CLI·vault에서 여전히 "진행"으로 렌더**(killed에서 고친 거짓 영수증의 재발) · JSON은 유효하나 **구조가 손상된** state(killed인데 `kill_history` 없음)가 잠금을 지운다 · 과대주장 3건(DECISIONS "헤더 강제 안 함"인데 `required_headers` 추가됨 · CEO 프롬프트 "아이디어를 고쳐야 재시작"인데 구현은 같은 바이트 재평가 허용 · 커밋의 "clearance가 폐기와 경쟁"은 불가능) · 사유 코드 오배정(budget 0에서 target 부재가 예산 소진으로) |
+| 5차 검증(Codex 5.5 · 좁은 범위) | 위 5건 **닫힘 4 · 부분 1** — 남은 것은 `run.ts` 안내 문구가 "아이디어를 고쳐 새 run"이라 말하는 것뿐(구현은 같은 바이트 재평가를 허용한다). **오케스트레이터가 직접 정정**했고, 그 문구를 물던 기존 단정이 **틀린 계약을 고정하고 있었으므로** 재평가 안내 + "수정이 조건이 아님"의 두 단정으로 강화했다 |
+
+**교훈**: 안전 게이트는 "판정을 읽는 자리"가 아니라 **"판정이 흐르는 모든 경로"** 를 닫아야 한다 —
+자물쇠(게이트)를 달아도 창문(다른 명령·다른 workflow·깨진 상태 파일)이 열려 있으면 목표는 불성립이다.
+구현 세션이 mutation ④로 **자기 테스트 공백**(게이트 밖 해제 증거 발급이 처음엔 green)을 찾아 보완한 것도
+이 판정이 기대는 근거다.
+
+### ⓒ 오케스트레이터 실측 (CLI 표면 · 파이프 없이 exit 측정)
+
+| 시나리오 | 결과 |
+|---|---|
+| kill 게이트 없는 `dev-preflight`로 우회 | **exit 2 차단** |
+| `task-prompt`(개발 지시문) | **exit 1 차단** |
+| `plan-dag --idea`(v3 실행 DAG) | **exit 2 차단 · durable 잔재 0**(run 디렉터리 미생성) |
+| **아이디어만 수정한 뒤** task-prompt | **exit 1 — 여전히 잠김**(재평가 workflow 이름을 안내한다) |
+| 재평가 `run idea-validation` → task-prompt | **exit 0 → exit 0** · `kill_history` 1건 **보존** · `cleared`가 현재 digest로 발급 |
+| 손상 `run_state.json` | 재평가 workflow조차 **exit 2** · **파일 바이트 불변** |
+
+mutation 독립 재현 2종: kill 우선순위 역전(red 1) · `kill_history` carry forward 제거(red 2).
+
+### ⓓ 실측 총계
+
+`npm test` exit 0 · **649/649** · **536/536**(+31) · acceptance **224/0** · typecheck·build exit 0 ·
+mutation **15종**(C-116 형식 · 오케스트레이터 **독립 재현 3**: kill 우선순위 역전 · `kill_history`
+carry forward 제거 · **TOCTOU 재도입**) · live 0회(v1 층 · mock provider로 충분).
+
+**미증명(같은 무게로)**: **live provider가 `## Decision`을 실제로 내는지 미확인** — 3중 배선
+(`promptParts` 최종 지시 · CEO §15 예시 · `required_headers` 재생성 피드백)을 했지만 준수율은 실측이
+필요하다(안 내면 `ceo_decision_absent`로 멈춘다 — fail closed 방향이지만 실사용 마찰 · `B-42`) ·
+`required_headers` 추가가 재생성 비용을 얼마나 늘리는지 미측정 · 토큰 어휘가 코드·프롬프트·registry
+**3곳에 수기 중복**이고 프롬프트 쪽 어긋남은 코드가 잡지 못한다(`C-130`).
+
+**닫은 범위를 정확히 적는다**: B-40이 닫은 것은 **프로젝트 스코프 경로**(`run`·`task-prompt`·
+`plan-dag`)뿐이다. `autopilot-create` 직접 호출 · `run_state.json` 직접 삭제 · 아이디어만 새 프로젝트로
+복사 · `exec`/`mission`은 **닫히지 않았다**(아래 대장).
+
+### ⓔ 대장 처리 (closed 1 · 신규 B 2 · 신규 C 4)
+
+| id | 분류 | 항목 | 기한/트리거 | 상태 |
+|---|---|---|---|---|
+| `B-40` | B | 아이디어 kill 게이트 — 구조화 판정 · terminal `killed` · 이력 잠금 · 세 소비자 차단. **범위: 프로젝트 스코프 경로만** | — | **closed (판정 ⑪)** |
+| `B-42` | B | **live provider의 `## Decision` 준수율 미실측** — 안 내면 세 CEO workflow가 `ceo_decision_absent`로 정지한다(fail closed지만 실사용 마찰) | **기획 파이프라인 live 첫 투입 시** | open |
+| `B-43` | B | **`autopilot-create` 직접 호출은 kill 잠금이 닿지 않는다**(손으로 쓴 DAG 경로 · 아이디어와의 연결 신호가 없다) | B-40 종결을 v3 경로까지 주장하기 전 | open |
+| `C-130` | C (P2) | 판정 토큰 어휘가 **TS 상수·CEO 프롬프트·workflows.json 3곳 수기 중복** — `workflows.json` 키만 로더 테스트가 잡고 프롬프트 어긋남은 코드가 못 잡는다 | 어휘를 늘릴 때 | open |
+| `C-131` | C (P3) | `run_state.json` **직접 삭제**로 잠금 근거 소멸(파일시스템 권한 밖) · **아이디어만 새 프로젝트로 복사**하면 폐기 기록이 없다(명시적 fork로 판단 — 글로벌 blacklist는 범위 밖) | 아이디어 단위 정본이 필요해질 때 | open |
+| `C-132` | C (P3) | `exec`/`mission`은 project/run_state 개념이 없어 kill 잠금이 닿지 않는다 | 개발 단계를 파이프라인에 묶을 때(`B-41` 연계) | open |
+| `C-133` | C (P3) | 펜스 파서가 **단순 토글**(중첩·펜스 길이 규칙·4-space 코드블록 미구현 · `ponytail:` 주석 표시). 틀리는 방향은 fail closed | 판정 문서가 복잡한 마크다운을 담게 될 때 | open |
+
+`C-127`(v1 필수 섹션 warning-only)은 이번에 **부분적으로** 다뤄졌다 — CEO `Decision`은
+`required_headers`에 들어가 재생성 피드백을 받지만, 재생성 후에도 깨진 산출물이 completed가 되는
+일반 문제는 그대로다(open 유지).
+
+##### **M11 진행 판정 ⑩ — `C-117` closed(결정 ⓐ · live 검증) · 문서 단계 4종 산출물 완성 · 진단 꼬리가 실전에서 두 번 값했다** (2026-08-26 · 아래 ⑨보다 최신이다 — **현행은 위 판정 ⑪이다**)
 
 ### ⓐ 설계 결정 — C-117은 계획층에서 푼다 (ⓑ는 유예)
 

@@ -41,6 +41,9 @@ function doc(input: AgentRunInput, o: { critical?: boolean; decision?: string })
     ? `- [scripted] 판정: 이 방향은 '${o.decision}'(으)로 처리한다.`
     : `- [scripted] ${input.agent.name} 판단`;
   const extra = EXTRA_HEADERS.map((h) => `## ${h}\n\n- [scripted] ${h}\n`).join("\n");
+  // [B-40] gate decider의 **정본 판정 절**. 게이트는 이 절만 읽는다(산문 판정은 읽지 않는다).
+  // 없으면 게이트가 ceo_decision_absent로 fail closed하므로 fixture도 계약을 지켜야 한다.
+  const decision = input.agent.agent_id === "founder_ceo" ? `## Decision\n\n- ${o.decision ?? "진행"}\n\n` : "";
   return `# Agent Output
 
 ## Metadata
@@ -51,7 +54,7 @@ function doc(input: AgentRunInput, o: { critical?: boolean; decision?: string })
 
 - scripted
 
-## Main Judgment
+${decision}## Main Judgment
 
 ${judgment}
 
@@ -123,26 +126,27 @@ test("이벤트 순서: 순차 workflow는 run_start → (step_start/end)×N →
   assert.equal(events[events.length - 1].type, "run_end");
   const first = events[0] as Extract<RunEvent, { type: "run_start" }>;
   assert.equal(first.workflow, "idea-validation");
-  assert.equal(first.totalSteps, 5);
+  assert.equal(first.totalSteps, 6); // [B-40] 5 agent + 마지막 kill 게이트
   assert.equal(first.resumeFrom, undefined, "fresh run은 resumeFrom 없음");
 
   const last = events[events.length - 1] as Extract<RunEvent, { type: "run_end" }>;
   assert.equal(last.status, "completed");
 
-  const order = starts(events).map((e) => e.agentId);
+  const order = starts(events).filter((e) => e.kind === "agent").map((e) => e.agentId);
   assert.deepEqual(order, ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]);
-  assert.ok(starts(events).every((e) => e.kind === "agent"), "모두 agent kind");
+  // [B-40] 게이트는 agent가 아니라 gate kind로 방출된다 (마지막 step)
+  assert.deepEqual(starts(events).map((e) => e.kind), ["agent", "agent", "agent", "agent", "agent", "gate"]);
   // index는 1-based, total 고정
-  assert.deepEqual(starts(events).map((e) => e.index), [1, 2, 3, 4, 5]);
-  assert.ok(starts(events).every((e) => e.total === 5));
+  assert.deepEqual(starts(events).map((e) => e.index), [1, 2, 3, 4, 5, 6]);
+  assert.ok(starts(events).every((e) => e.total === 6));
   // 각 step_start 뒤에 같은 agent의 step_end(ok)
-  assert.equal(ends(events).length, 5);
+  assert.equal(ends(events).length, 6);
   assert.ok(ends(events).every((e) => e.ok === true));
 
   // step_timings 저장 (agent_id/kind/started_at/elapsed_ms/ok)
-  assert.equal(r.state.step_timings.length, 5);
+  assert.equal(r.state.step_timings.length, 6);
+  assert.deepEqual(r.state.step_timings.map((t) => t.kind), ["agent", "agent", "agent", "agent", "agent", "gate"]);
   for (const t of r.state.step_timings) {
-    assert.equal(t.kind, "agent");
     assert.equal(t.ok, true);
     assert.equal(typeof t.started_at, "string");
     assert.equal(typeof t.elapsed_ms, "number");
@@ -172,7 +176,7 @@ test("이벤트: critique_loop은 critic/revise kind와 round를 구분한다", 
   // approval step 이벤트 존재
   assert.ok(starts(events).some((e) => e.kind === "approval"), "approval step_start");
   assert.ok(ends(events).some((e) => e.kind === "approval"), "approval step_end");
-  // gate_jump 없음 (mvp-planning엔 gate 없음)
+  // gate_jump 없음 ([B-40] mvp-planning 끝에 kill 게이트가 있지만 scripted 판정이 폐기/축소가 아니라 진행)
   assert.ok(!events.some((e) => e.type === "gate_jump"));
   assert.equal((events[events.length - 1] as Extract<RunEvent, { type: "run_end" }>).status, "completed");
 
@@ -200,7 +204,12 @@ test("이벤트: 실제 jump가 발생할 때만 gate_jump를 방출한다", asy
   // gate step도 step_start/end를 가진다 (kind gate)
   assert.ok(starts(events).some((e) => e.kind === "gate"), "gate step_start");
   assert.ok(ends(events).some((e) => e.kind === "gate"), "gate step_end");
-  assert.equal((events[events.length - 1] as Extract<RunEvent, { type: "run_end" }>).status, "completed");
+  // [B-40/A-1] 되돌림 예산이 소진됐는데 판정이 그대로 '축소'면 **진행하지 않고 멈춘다**.
+  // (예전 계약은 여기서 completed였다 — 같은 비진행 판정이 예산 소진만으로 통과로 바뀌는
+  //  거짓 성공 영수증이었다. 계약을 강화한 것이고 약화가 아니다.)
+  assert.equal((events[events.length - 1] as Extract<RunEvent, { type: "run_end" }>).status, "failed");
+  assert.equal(r.state.status, "failed");
+  assert.equal(r.state.failed_reason, "gate_jump_budget_exhausted");
   assert.ok(r.state.step_timings.some((t) => t.kind === "gate"));
 });
 
@@ -246,7 +255,7 @@ test("이벤트: provider 예외 → step_end{ok:false} + run_end{failed}, resum
   assert.equal((e2[e2.length - 1] as Extract<RunEvent, { type: "run_end" }>).status, "completed");
   assert.equal(run2.state.status, "completed");
   // 재개는 완료 step(chief/research)을 재실행하지 않는다
-  const rerun = starts(e2).map((e) => e.agentId);
+  const rerun = starts(e2).filter((e) => e.kind === "agent").map((e) => e.agentId); // [B-40] 끝의 gate step 제외
   assert.ok(!rerun.includes("chief_of_staff") && !rerun.includes("research"), "완료 step 재실행 없음");
   assert.deepEqual(rerun, ["pm", "red_team", "founder_ceo"]);
   // 완료 step 타이밍이 보존되고 중복 기록되지 않음 (chief/research 각 1회)
