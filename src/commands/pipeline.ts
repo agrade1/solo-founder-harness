@@ -32,6 +32,7 @@ import {
   currentStage,
   digestArtifacts,
   driftProblem,
+  effectiveDigests,
   newPipelineState,
   pipelineGateStatus,
   pipelineStatePath,
@@ -222,7 +223,15 @@ export async function nextPipeline(o: NextPipelineOptions): Promise<PipelineComm
   const lock = acquireLock(root, now);
   if (!lock.ok) return reject("pipeline_locked", lock.message, 2);
   try {
-    return await nextLocked(o, { project, root, now, read, nonce: lock.nonce });
+    // [Codex A-7] **lock 획득 직후 재독·재검증**하고 그 snapshot만 mutation에 쓴다. ①의 read는
+    // lock 밖에서 찍힌 것이라, 그 사이 다른 프로세스가 전이를 끝냈으면 stale snapshot으로 덮어쓴다
+    // (승인 하나가 조용히 사라지는 부류다). 두 번 읽는 값이 여기서 결정적으로 다르다.
+    const fresh = readPipelineStateAt(pipelineStatePath(root));
+    if (fresh.kind === "unreadable") {
+      const gate = pipelineGateStatus(fresh, root, "run");
+      return reject("pipeline_state_unreadable", gate.ok ? "" : gate.message, 2);
+    }
+    return await nextLocked(o, { project, root, now, read: fresh, nonce: lock.nonce });
   } finally {
     lock.release();
   }
@@ -473,7 +482,13 @@ function openDecision(o: { project: string; stage: string; checkpointId: string 
     lock.release();
     return { ok: false, res: reject(code, message, exit) };
   };
-  const state = read.state;
+  // [Codex A-7] lock 밖 snapshot으로 판정하면 그 사이 끝난 전이를 덮어쓴다 — 재독·재검증한 것만 쓴다.
+  const fresh = readPipelineStateAt(pipelineStatePath(root));
+  if (fresh.kind !== "ok") {
+    const gate = pipelineGateStatus(fresh, root, "run");
+    return fail(fresh.kind === "absent" ? "pipeline_absent" : "pipeline_state_unreadable", gate.ok ? "파이프라인이 사라졌습니다" : gate.message, 2);
+  }
+  const state = fresh.state;
   if (state.status === "killed") {
     return fail("pipeline_killed", `폐기 판정으로 종료된 파이프라인입니다 — ${verb}할 체크포인트가 없습니다.`, 1);
   }
@@ -512,9 +527,11 @@ export function approveCheckpoint(o: { project: string; stage: string; checkpoin
   if (!opened.ok) return opened.res;
   const { root, state, pending, stage } = opened;
   try {
-    // ② 승인 직전 **재검증**: 파일이 실제로 있고 정규 파일이며 size·sha256이 그대로여야 한다.
-    //    (사람이 확인한 화면과 지금 디스크가 같다는 것을 승인 순간에 다시 확인한다.)
-    const problem = driftProblem(root, pending.artifacts);
+    // ② 승인 직전 **전수 재검증**: pending 산출물 + **앞 단계 승인 바이트 전부**(A-6).
+    //    pending만 보면 "마지막 체크포인트 대기 중에 앞 단계 문서를 바꾸고 마지막만 승인" →
+    //    '전체 완료' 영수증이 나온다. pending이 같은 경로를 다시 담으면 그 경로 기준은 pending이다
+    //    (정당한 재작성을 drift로 잡지 않는다 — effectiveDigests가 그 우선순위를 표현한다).
+    const problem = driftProblem(root, effectiveDigests(state, pending.artifacts).values());
     if (problem) {
       return reject(
         "pipeline_artifact_drift",
@@ -617,13 +634,16 @@ export function restartPipeline(o: { project: string; now?: () => string }): Pip
   const now = o.now ?? (() => new Date().toISOString());
   const root = projectPaths(o.project).root;
   const abs = pipelineStatePath(root);
-  const read = readPipelineStateAt(abs);
-  if (read.kind === "absent") {
+  if (readPipelineStateAt(abs).kind === "absent") {
     return reject("pipeline_absent", `파이프라인이 없습니다 (${o.project}) — 'harness pipeline next'로 시작하세요.`, 1);
   }
   const lock = acquireLock(root, now);
   if (!lock.ok) return reject("pipeline_locked", lock.message, 2);
   try {
+    // [Codex A-7] lock 획득 후 재독 — 그 사이 owner가 상태를 바꿨을 수 있다(진행 중 파이프라인을
+    // archive해 버리는 것이 이 경로의 최악이다).
+    const read = readPipelineStateAt(abs);
+    if (read.kind === "absent") return reject("pipeline_absent", `파이프라인이 사라졌습니다 (${o.project}).`, 1);
     if (read.kind === "ok" && read.state.status !== "killed" && read.state.status !== "completed") {
       return reject(
         "pipeline_active",

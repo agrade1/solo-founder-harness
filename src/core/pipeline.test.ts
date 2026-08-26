@@ -45,11 +45,31 @@ function makeProject(name: string): string {
   return p.root;
 }
 
-/** 승인 checkpoint 하나를 가진 completed state (게이트·drift 단정용). */
+/**
+ * stage 0..n-1을 **실제로 승인한** replay 정합 state.
+ *
+ * [Codex A-1] 예전 fixture는 `current_index: 4` + 승인 영수증 1개였다 — 그것이 통과한다는 사실이
+ * 곧 "승인 두 개를 건너뛴 파이프라인이 정상"이라는 계약이었고, 이 테스트가 그 결함을 정당화하고
+ * 있었다. 지금은 index를 손으로 적지 않고 **영수증을 쌓아서** 만든다(계약 정정 · 약화 아님).
+ */
+function approvedThrough(project: string, n: number, artifacts: Array<{ path: string; size: number; sha256: string }>): PipelineState {
+  const checkpoints: PipelineCheckpoint[] = [];
+  for (let i = 0; i < n; i++) {
+    const st = DEFAULT_PIPELINE[i];
+    const base = { stage: st.id, workflow_id: st.kind === "workflow" ? st.workflowId : null, run_finished_at: AT, artifacts, seeds: [] };
+    checkpoints.push({ ...base, checkpoint_id: checkpointIdFor(base), decision: "approved", decided_at: AT, note: null });
+  }
+  return {
+    ...newPipelineState(project, AT),
+    current_index: n,
+    status: n === DEFAULT_PIPELINE.length ? "completed" : "awaiting_run",
+    checkpoints,
+  };
+}
+
+/** 4단계 전부 승인된 completed state. */
 function completedState(project: string, artifacts: Array<{ path: string; size: number; sha256: string }>): PipelineState {
-  const base = { stage: "idea-validation", workflow_id: "idea-validation", run_finished_at: AT, artifacts, seeds: [] };
-  const cp: PipelineCheckpoint = { ...base, checkpoint_id: checkpointIdFor(base), decision: "approved", decided_at: AT, note: null };
-  return { ...newPipelineState(project, AT), current_index: DEFAULT_PIPELINE.length, status: "completed", checkpoints: [cp] };
+  return approvedThrough(project, DEFAULT_PIPELINE.length, artifacts);
 }
 
 // ── 단계 정의 ──────────────────────────────────────────────────
@@ -169,6 +189,89 @@ test("[B-41/§3.3] semantic 위반은 전부 unreadable — 위조 id·빈 artif
   rmSync(root, { recursive: true, force: true });
 });
 
+// ── 승인 이력 replay (Codex A-1) ──────────────────────────────
+test("[B-41/A-1] current_index는 **영수증이 만든 것**이어야 한다 — 위조 index·순서·terminal 위반은 unreadable", () => {
+  const name = "_b41c_replay";
+  const root = makeProject(name);
+  writeFileSync(join(root, "docs", "02_PRD.md"), "PRD", "utf8");
+  const digest = digestArtifacts(root, ["docs/02_PRD.md"]);
+  const abs = pipelineStatePath(root);
+  const good = approvedThrough(name, 1, digest);
+
+  writePipelineState(root, good);
+  assert.equal(readPipelineStateAt(abs).kind, "ok", "대조군: 승인 1건 + index 1은 정합이다");
+
+  const bad: Array<{ label: string; state: unknown; expect: RegExp }> = [
+    {
+      // **A-1이 지목한 그 state**: 1단계 승인 하나로 dev-handoff(index 3)에 앉는다.
+      label: "승인 1건인데 index 3 (승인 두 개 건너뛰기)",
+      state: { ...good, current_index: 3 },
+      expect: /current_index\(3\)가 승인 이력 replay 결과\(1\)와 다르다/,
+    },
+    {
+      label: "승인 이력 없이 completed",
+      state: { ...approvedThrough(name, 0, []), current_index: DEFAULT_PIPELINE.length, status: "completed", checkpoints: [] },
+      expect: /replay 결과\(0\)와 다르다/,
+    },
+    {
+      label: "영수증 순서가 파이프라인 순서와 다름",
+      state: (() => {
+        const s = approvedThrough(name, 2, digest);
+        return { ...s, checkpoints: [s.checkpoints[1], s.checkpoints[0]] };
+      })(),
+      expect: /승인 순서상 'idea-validation' 차례다/,
+    },
+    {
+      label: "kill 영수증 뒤에 영수증이 더 있다",
+      state: (() => {
+        const s = approvedThrough(name, 1, digest);
+        return { ...s, status: "killed", checkpoints: [{ ...s.checkpoints[0], decision: "killed" }, s.checkpoints[0]] };
+      })(),
+      expect: /폐기는 terminal이다/,
+    },
+    {
+      label: "kill 영수증인데 status가 killed가 아니다",
+      state: (() => {
+        const s = approvedThrough(name, 0, []);
+        const c = approvedThrough(name, 1, digest).checkpoints[0];
+        return { ...s, checkpoints: [{ ...c, decision: "killed" }] };
+      })(),
+      expect: /kill 영수증이 있는데 status가 'awaiting_run'다/,
+    },
+    {
+      label: "status killed인데 kill 영수증이 없다",
+      state: { ...good, status: "killed" },
+      expect: /kill 영수증이 없다/,
+    },
+    {
+      label: "dev-handoff 영수증에 workflow_id가 있다",
+      state: (() => {
+        const s = approvedThrough(name, DEFAULT_PIPELINE.length, digest);
+        const last = { ...s.checkpoints[3], workflow_id: "dev-preflight" };
+        return { ...s, checkpoints: [...s.checkpoints.slice(0, 3), { ...last, checkpoint_id: checkpointIdFor(last) }] };
+      })(),
+      expect: /단계 'dev-handoff'는 workflow 단계가 아니다/,
+    },
+    {
+      label: "last_failure가 현 단계가 아니다",
+      state: { ...good, last_failure: { stage: "idea-validation", workflow_id: "idea-validation", at: AT, written: [] } },
+      expect: /last_failure.stage가 'idea-validation'인데 현 단계는 'mvp-planning'다/,
+    },
+  ];
+  for (const c of bad) {
+    const json = JSON.stringify(c.state, null, 2);
+    writeFileSync(abs, json, "utf8");
+    const read = readPipelineStateAt(abs);
+    assert.equal(read.kind, "unreadable", `${c.label}: unreadable이어야 한다`);
+    assert.match(read.kind === "unreadable" ? read.detail : "", c.expect, `${c.label}: 사유`);
+    // 위조 index가 열려 있었다면 dev-handoff의 task-prompt가 열린다 — 지금은 fail closed다.
+    const g = pipelineGateStatus(read, root, "task-prompt");
+    assert.equal(g.ok === false ? g.code : "ok", "pipeline_state_unreadable", `${c.label}: 하류도 닫힌다`);
+    assert.equal(readFileSync(abs, "utf8"), json, `${c.label}: 파일 바이트 불변`);
+  }
+  rmSync(root, { recursive: true, force: true });
+});
+
 // ── 게이트 판정 표 (§2.3) ─────────────────────────────────────
 test("[B-41/§2.3] action × 상태 판정 표 전수 — run은 활성에서 전면 거부, killed에서만 재평가용으로 열린다", () => {
   const name = "_b41c_gate";
@@ -181,12 +284,12 @@ test("[B-41/§2.3] action × 상태 판정 표 전수 — run은 활성에서 �
     { label: "absent", state: null, want: { run: "ok", "task-prompt": "ok", handoff: "ok", "plan-dag": "ok" } },
     {
       label: "awaiting_run(1단계)",
-      state: { ...withApproved, current_index: 0, status: "awaiting_run", checkpoints: [] },
+      state: approvedThrough(name, 0, []),
       want: { run: "pipeline_run_reserved", "task-prompt": "pipeline_stage_incomplete", handoff: "pipeline_stage_incomplete", "plan-dag": "pipeline_stage_incomplete" },
     },
     {
       label: "awaiting_run(dev-handoff)",
-      state: { ...withApproved, current_index: 3, status: "awaiting_run" },
+      state: approvedThrough(name, 3, digest),
       want: { run: "pipeline_run_reserved", "task-prompt": "ok", handoff: "pipeline_stage_incomplete", "plan-dag": "pipeline_stage_incomplete" },
     },
     {
@@ -200,7 +303,15 @@ test("[B-41/§2.3] action × 상태 판정 표 전수 — run은 활성에서 �
     { label: "completed", state: withApproved, want: { run: "ok", "task-prompt": "ok", handoff: "ok", "plan-dag": "ok" } },
     {
       label: "killed",
-      state: { ...withApproved, current_index: 0, status: "killed" },
+      // killed는 **kill 영수증**이 있어야 정합이다(A-1: 근거 없는 killed state는 unreadable).
+      state: (() => {
+        const base = { stage: "idea-validation", workflow_id: "idea-validation", run_finished_at: AT, artifacts: digest, seeds: [] };
+        return {
+          ...approvedThrough(name, 0, []),
+          status: "killed" as const,
+          checkpoints: [{ ...base, checkpoint_id: checkpointIdFor(base), decision: "killed" as const, decided_at: AT, note: "founder_ceo가 '폐기' 판정" }],
+        };
+      })(),
       // run만 열려 있다 — B-40 재평가 경로 보존(kill 잠금 자체는 ideaGateStatus가 집행한다).
       want: { run: "ok", "task-prompt": "pipeline_killed", handoff: "pipeline_killed", "plan-dag": "pipeline_killed" },
     },
@@ -225,7 +336,16 @@ test("[B-41/§2.3] action × 상태 판정 표 전수 — run은 활성에서 �
     const g = pipelineGateStatus(drifted, root, action);
     assert.equal(g.ok === false ? g.code : "ok", "pipeline_artifact_drift", `${action}: 승인 후 교체 탐지`);
   }
-  assert.equal(pipelineGateStatus(drifted, root, "run").ok, true, "run은 drift로 막지 않는다(그 자리는 pipeline next가 본다)");
+  // [Codex A-6] completed의 `run`도 drift면 닫힌다. 예전엔 무조건 ok였고, 그래서 "승인 문서를 바꾼 뒤
+  // 새 run으로 그 위에 계속 쌓기"가 게이트 없이 열려 있었다(하류 소비자만 막혀 있었다).
+  const runAtDrift = pipelineGateStatus(drifted, root, "run");
+  assert.equal(runAtDrift.ok === false ? runAtDrift.code : "ok", "pipeline_artifact_drift", "completed + drift → run도 거부");
+  // 단, **killed의 run은 계속 열려 있다** — B-40 재평가 경로가 그 통로다(drift가 있어도).
+  const killedDrift = { ...withApproved, status: "killed" as const, current_index: 0, checkpoints: [{ ...withApproved.checkpoints[0], decision: "killed" as const }] };
+  writePipelineState(root, killedDrift);
+  const killedRead = readPipelineStateAt(pipelineStatePath(root));
+  assert.equal(killedRead.kind, "ok", "killed fixture도 replay 정합이어야 한다");
+  assert.equal(pipelineGateStatus(killedRead, root, "run").ok, true, "killed에서 run은 열려 있다 (재평가 경로)");
   // 파일이 사라진 경우도 drift다 (부재를 통과로 접지 않는다).
   rmSync(join(root, "docs", "02_PRD.md"));
   assert.match(driftProblem(root, digest) ?? "", /없어졌습니다/);
@@ -236,7 +356,7 @@ test("[B-41/§2.3] action × 상태 판정 표 전수 — run은 활성에서 �
 test("[B-41/§2.4] lease는 nonce·현 단계 workflow·awaiting_run **세 사실**에 결박된다", () => {
   const name = "_b41c_lease";
   const root = makeProject(name);
-  const state: PipelineState = { ...newPipelineState(name, AT), current_index: 1, status: "awaiting_run" };
+  const state: PipelineState = approvedThrough(name, 1, [{ path: "docs/01_RESEARCH.md", size: 1, sha256: A64 }]);
   writePipelineState(root, state);
   const read = readPipelineStateAt(pipelineStatePath(root));
   const nonce = "0123456789abcdef";

@@ -19,9 +19,16 @@
  * 4. **seed는 durable 저장본에서만**: 승인 문서의 한 줄 요약은 영수증에 저장되고, 다음 단계는
  *    **파일을 다시 읽지 않는다** — 검증한 바이트와 소비한 바이트가 갈리는 창을 구조적으로 없앤다.
  *
+ * ## 닫힌 범위 (정확히 이것뿐 — 종결 주장 금지)
+ *
+ * 이 파이프라인이 게이트하는 것은 **프로젝트 스코프 v1 경로 4개**다: `run` · `task-prompt` ·
+ * `handoff` · `plan-dag`. `exec` · `mission` · `autopilot` · `autopilot-create`는 **게이트하지
+ * 않는다** — 그 층의 durable run에는 project 신원이 없어서(`C-132`) 이 상태기가 붙을 자리가 아직
+ * 없다. 체크포인트 대기 중에도 그 명령들은 그대로 돈다. 별도 슬라이스 몫이다.
+ *
  * ## 정직한 한계 (닫지 않은 것 — 다음 사람이 닫힌 것으로 믿지 않게)
  *
- * - `exec`/`mission`은 **배선하지 않았다**(project 개념 부재 — `C-132`). 체크포인트 대기 중에도 돈다.
+ * - `exec`/`mission`/`autopilot*`은 **배선하지 않았다**(위 "닫힌 범위" 참조).
  * - state·lock·문서 파일의 **직접 수정/삭제**는 막지 못한다(로컬 fs 권한 밖 · 서명/actor 신원 없음 —
  *   `C-7`·`C-131` 부류). lease nonce도 로컬 코드가 lock 파일에서 읽으면 위조할 수 있다. lease가
  *   실제로 집행하는 불변식은 "단일 writer(lock 보유자)와 현 단계 실행의 결합"이다.
@@ -239,6 +246,45 @@ function receiptProblem(label: string, v: unknown, allowEmptyArtifacts: boolean)
 }
 
 /**
+ * [Codex A-1] **승인 이력 replay.** `current_index`를 "범위 안"으로만 검사하면
+ * `current_index:3` + 1단계 승인 하나뿐인 state가 정상으로 통과하고 dev-handoff의 `task-prompt`가
+ * 열린다 — 승인 두 개를 건너뛴 파이프라인이 정상 영수증을 갖는 것이다. index는 **영수증이 만든
+ * 것**이어야 하므로 처음부터 다시 세워 대조한다(형식 검증만으로는 위조 index를 잡을 수 없다).
+ *
+ * 함께 못 박는 관계: 영수증의 stage 순서 · 각 영수증의 workflow_id ↔ 단계 종류 · killed의 terminal성
+ * (kill 영수증 뒤에 영수증이 없고, kill 영수증 ⟺ status killed) · pending/last_failure의 stage 결박.
+ */
+function replayProblem(s: PipelineState): string | null {
+  let idx = 0;
+  let killedAt = -1;
+  for (const [i, c] of s.checkpoints.entries()) {
+    if (killedAt >= 0) return `checkpoints[${i}]: kill 영수증(#${killedAt}) 뒤에 영수증이 더 있다 (폐기는 terminal이다)`;
+    const stage = DEFAULT_PIPELINE[idx];
+    if (!stage) return `checkpoints[${i}]: 승인이 파이프라인 단계 수(${DEFAULT_PIPELINE.length})보다 많다`;
+    if (c.stage !== stage.id) return `checkpoints[${i}].stage가 '${c.stage}'인데 승인 순서상 '${stage.id}' 차례다`;
+    const wantWf = stage.kind === "workflow" ? stage.workflowId : null;
+    if (c.workflow_id !== wantWf) {
+      return `checkpoints[${i}].workflow_id가 '${String(c.workflow_id)}'인데 단계 '${stage.id}'는 ${wantWf === null ? "workflow 단계가 아니다" : `'${wantWf}'다`}`;
+    }
+    if (c.decision === "approved") idx++;
+    else if (c.decision === "killed") killedAt = i;
+  }
+  if (killedAt >= 0 && s.status !== "killed") return `kill 영수증이 있는데 status가 '${s.status}'다`;
+  if (s.status === "killed" && killedAt < 0) return "status가 killed인데 kill 영수증이 없다 (폐기 근거 소실)";
+  if (idx !== s.current_index) return `current_index(${s.current_index})가 승인 이력 replay 결과(${idx})와 다르다`;
+  const stage = DEFAULT_PIPELINE[s.current_index];
+  const wantWf = stage === undefined ? undefined : stage.kind === "workflow" ? stage.workflowId : null;
+  if (s.pending && s.pending.workflow_id !== wantWf) {
+    return `pending.workflow_id가 '${String(s.pending.workflow_id)}'인데 현 단계는 ${wantWf === null ? "workflow 단계가 아니다" : `'${String(wantWf)}'다`}`;
+  }
+  if (s.last_failure) {
+    if (s.last_failure.stage !== stage?.id) return `last_failure.stage가 '${s.last_failure.stage}'인데 현 단계는 '${stage?.id ?? "(범위 밖)"}'다`;
+    if (s.last_failure.workflow_id !== wantWf) return `last_failure.workflow_id가 현 단계와 다르다`;
+  }
+  return null;
+}
+
+/**
  * semantic 검증 — parse 성공 후의 위반은 **전부 unreadable**이다(바이트 불변 · exit 2).
  * 여기 있는 규칙 하나하나가 "그 모양의 state가 관측됐을 때 무엇을 못 하게 하는가"다:
  * `awaiting_approval`+`pending:null`은 승인 없이 전진, 가짜 12-hex는 위조 승인, `artifacts:[]`는
@@ -301,7 +347,8 @@ function stateProblem(raw: unknown, expectProject: string): string | null {
     const p = receiptProblem(label, c, e.decision === "killed");
     if (p) return p;
   }
-  return null;
+  // 형식이 다 맞은 뒤에 **의미**를 본다: index는 영수증이 만든 것이어야 한다(A-1).
+  return replayProblem(raw as PipelineState);
 }
 
 /** 지정 절대경로의 pipeline_state.json을 읽는다 (부재/손상/정상 구분). 손상은 침묵이 아니라 fail closed다. */
@@ -587,6 +634,20 @@ export function approvedDigests(state: PipelineState): Map<string, ArtifactEntry
 }
 
 /**
+ * [Codex A-6] 승인 digest에 **이번에 승인하려는 pending의 것을 얹은** 최종 기대치.
+ *
+ * pending이 같은 경로를 다시 담고 있으면(mvp-planning이 `docs/02_PRD.md`를 다시 쓰는 것처럼)
+ * 그 경로의 기준은 pending 쪽이다 — 그러지 않으면 정당한 재작성이 전부 drift로 잡힌다.
+ * 나머지 경로는 앞 단계 승인 바이트 그대로여야 한다: 그래서 "마지막 단계만 승인해 완료 영수증을
+ * 받아내고 앞 단계 문서는 바꿔치기"가 막힌다.
+ */
+export function effectiveDigests(state: PipelineState, latest: readonly ArtifactEntry[] = []): Map<string, ArtifactEntry> {
+  const m = approvedDigests(state);
+  for (const a of latest) m.set(a.path, a);
+  return m;
+}
+
+/**
  * 기대 digest와 현재 바이트를 대조한다. 첫 불일치의 사람이 읽는 이유를 반환(일치하면 null).
  * **이 함수에 제외 규칙은 없다** — 제외는 resume 전용이고 호출자가 목록에서 빼서 넘긴다(§4.3).
  */
@@ -653,7 +714,16 @@ export function pipelineGateStatus(read: PipelineStateRead, projectRoot: string,
   const active = st.status === "awaiting_run" || st.status === "awaiting_approval";
 
   if (action === "run") {
-    if (!active) return { ok: true }; // completed는 drift가 하류를 지키고, killed는 재평가 run을 남긴다
+    // killed는 **열어둔다**: B-40 재평가 경로(kill 게이트가 있는 workflow의 새 run)가 잠금을 푸는
+    // 유일한 통로이고, 그 잠금 자체는 `ideaGateStatus`가 집행한다.
+    if (st.status === "killed") return { ok: true };
+    if (!active) {
+      // [Codex A-6] completed에서도 **승인 바이트가 그대로일 때만** 연다. 예전엔 무조건 ok였고,
+      // 그래서 "승인 문서를 바꾼 뒤 새 run으로 그 위에 계속 쌓기"가 게이트 없이 가능했다
+      // (하류 소비자만 막혀 있었다). 탈출구는 문서 복원 또는 restart다.
+      const p = driftProblem(projectRoot, approvedDigests(st).values());
+      return p === null ? { ok: true } : { ok: false, code: "pipeline_artifact_drift", message: driftMessage(p, st.project) };
+    }
     return {
       ok: false,
       code: "pipeline_run_reserved",
@@ -698,17 +768,17 @@ export function pipelineGateStatus(read: PipelineStateRead, projectRoot: string,
 
   // completed(또는 dev-handoff 실행 대기) — 승인 바이트가 그대로인지 **전수** 대조한다.
   const problem = driftProblem(projectRoot, approvedDigests(st).values());
-  if (problem) {
-    return {
-      ok: false,
-      code: "pipeline_artifact_drift",
-      message:
-        `pipeline_artifact_drift: ${problem}\n` +
-        `승인 후 문서가 바뀌었습니다 — 사람이 확인한 내용이 아니므로 진행하지 않습니다. 파일을 복원하거나 ` +
-        `'harness pipeline restart --project ${st.project}'로 다시 심사하세요.`,
-    };
-  }
+  if (problem) return { ok: false, code: "pipeline_artifact_drift", message: driftMessage(problem, st.project) };
   return { ok: true };
+}
+
+/** drift 거부 문장은 한 곳에서 만든다 (같은 상황 = 같은 안내). */
+function driftMessage(problem: string, project: string): string {
+  return (
+    `pipeline_artifact_drift: ${problem}\n` +
+    `승인 후 문서가 바뀌었습니다 — 사람이 확인한 내용이 아니므로 진행하지 않습니다. 파일을 복원하거나 ` +
+    `'harness pipeline restart --project ${project}'로 다시 심사하세요.`
+  );
 }
 
 /** 프로젝트 이름으로 게이트를 묻는 편의 함수 (workspace의 projects/<P> 기준). */

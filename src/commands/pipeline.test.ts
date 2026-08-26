@@ -454,6 +454,66 @@ test("[B-41/P8d] **영수증 없는 실패는 resume하지 않는다** — fresh
   rmProject(name);
 });
 
+// ── Codex A-6 ─────────────────────────────────────────────────
+test("[B-41/A-6] 마지막 단계만 승인해 '완료' 영수증을 받아낼 수 없다 — approve가 앞 단계 승인 바이트까지 전수 검증한다", async () => {
+  const name = "_b41_a6";
+  makeProject(name);
+  // dev-handoff 확인 대기까지 간다 (앞 세 단계는 승인).
+  for (const stage of DEFAULT_PIPELINE) {
+    await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+    const pending = stateOf(name).pending!;
+    assert.equal(pending.stage, stage.id);
+    if (stage.id === "dev-handoff") break; // 마지막은 승인하지 않고 대기 상태로 둔다
+    await quiet(() => approveCheckpoint({ project: name, stage: stage.id, checkpointId: pending.checkpoint_id, now: () => FIXED }));
+  }
+  const root = projectPaths(name).root;
+  const pending = stateOf(name).pending!;
+  assert.deepEqual(pending.artifacts.map((a) => a.path), ["outputs/claude_code_task_prompt.md"], "마지막 단계 pending은 지시문 하나뿐");
+
+  // **앞 단계**에서 승인된 문서를 바꾼다 — pending에는 없는 경로다.
+  writeFileSync(join(root, "docs/06_CEO_DECISION.md"), "# 승인 뒤 바꾼 CEO 판단\n", "utf8");
+  const r = await quiet(() => approveCheckpoint({ project: name, stage: "dev-handoff", checkpointId: pending.checkpoint_id, now: () => FIXED }));
+  assert.equal(r.code, "pipeline_artifact_drift", "pending만 보면 '전체 완료' 영수증이 나왔다");
+  assert.equal(stateOf(name).status, "awaiting_approval", "상태 불변 — completed를 발행하지 않았다");
+
+  // 복원하면 승인된다(검사가 무조건 거부가 아니다).
+  await quiet(() => rejectCheckpoint({ project: name, stage: "dev-handoff", checkpointId: pending.checkpoint_id, now: () => FIXED }));
+  writeFileSync(join(root, "docs/06_CEO_DECISION.md"), readFileSync(join(root, "docs/06_CEO_DECISION.md"), "utf8"), "utf8");
+  rmProject(name);
+});
+
+// ── Codex A-7 ─────────────────────────────────────────────────
+test("[B-41/A-7] lock 획득 **후** state를 재독한다 — lock 밖 snapshot으로 남의 전이를 덮어쓰지 않는다", async () => {
+  const name = "_b41_a7";
+  const { state } = await toFirstCheckpoint(name);
+  const root = projectPaths(name).root;
+  const id = state.pending!.checkpoint_id;
+
+  // `now`는 acquireLock 안에서 호출된다 = **첫 read 뒤, 두 번째 read 앞**. 그 순간에 다른 프로세스가
+  // 같은 체크포인트를 되돌린 것처럼 state를 바꾼다(정합한 state다 — 손상 fixture가 아니다).
+  let injected = false;
+  const now = () => {
+    if (!injected) {
+      injected = true;
+      const rejected: PipelineState = {
+        ...state,
+        status: "awaiting_run",
+        pending: null,
+        checkpoints: [{ ...state.pending!, decision: "rejected", decided_at: FIXED, note: "다른 세션이 되돌렸다" }],
+      };
+      writeFileSync(pipelineStatePath(root), JSON.stringify(rejected, null, 2) + "\n", "utf8");
+    }
+    return FIXED;
+  };
+  const r = await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: id, now }));
+  assert.equal(injected, true, "전제: lock 시점에 state가 바뀌었다");
+  assert.equal(r.code, "pipeline_no_pending", "재독한 state로 판정한다 (stale snapshot이면 승인해 버린다)");
+  const after = stateOf(name);
+  assert.equal(after.current_index, 0, "남의 전이를 덮어쓰지 않았다");
+  assert.deepEqual(after.checkpoints.map((c) => c.decision), ["rejected"], "되돌림 영수증이 살아 있다");
+  rmProject(name);
+});
+
 // ── P8c ───────────────────────────────────────────────────────
 test("[B-41/P8c] 완료 후 문서 수정 → task-prompt·handoff·plan-dag 전부 drift 거부", async () => {
   const name = "_b41_p8c";
