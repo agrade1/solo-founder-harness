@@ -12,7 +12,7 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { OrchestrationError } from "./orchestrationTypes.js";
-import { extractPlanJson, LIVE_WORKER_ARGS, LIVE_WORKER_ENV, readReportedUsage, startLivePlanTurn } from "./livePlanWorker.js";
+import { extractPlanJson, foldDiagnosticText, LIVE_WORKER_ARGS, LIVE_WORKER_ENV, readReportedUsage, startLivePlanTurn } from "./livePlanWorker.js";
 import { isApprovedModelString } from "./approvalManifest.js";
 
 const dirs: string[] = [];
@@ -65,6 +65,18 @@ async function drain(executable: string, timeoutMs = 30_000): Promise<string> {
   }
 }
 
+/** 오류 **메시지**를 재는 변형(`drain`은 코드만 본다). 진단 꼬리 계약(C-117)이 이것으로 고정된다. */
+async function drainMessage(executable: string): Promise<string> {
+  try {
+    const cfg = configDir();
+    const stream = startLivePlanTurn({ executable, configDir: cfg, configDirIdentity: identityOf(cfg), model: null, prompt: "x", binding: { ...BINDING }, timeoutMs: 30_000 });
+    for await (const _ of stream) { /* 소진 */ }
+    return "(통과 — 거부되지 않았다)";
+  } catch (e) {
+    return e instanceof OrchestrationError ? e.message : `non-orchestration:${String(e)}`;
+  }
+}
+
 const EMIT = (result: string, usage = "null"): string =>
   `import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stdout.write(JSON.stringify({ result: ${JSON.stringify(result)}, usage: ${usage} }));\n`;
 
@@ -92,6 +104,73 @@ test("[M10-T3] 비정상 종료·계약 밖 출력은 각각 닫힌 코드로 �
   const notExec = bin("");
   writeFileSync(notExec, "not an executable\n", { mode: 0o700 });
   assert.equal(await drain(notExec), "!worker_spawn_failed");
+});
+
+/**
+ * 꼬리 fixture: **마지막 200자를 정확히 아는** 문자열을 만든다(리뷰 C-1).
+ * `tailFolded`는 구현을 부르지 않고 **손으로 적은** 기대값이다 — `foldDiagnosticText`로 계산하면
+ * 접기 규칙을 완화해도 양변이 같이 움직여 mutation이 GREEN으로 살아남는다.
+ */
+const FILLER = "가".repeat(186);
+const TAIL_200 = `꼬리-UNIQUETAIL\n${FILLER}`; // 14 + 186 = 200자 · 개행 1개로 접기 경로를 지난다
+const TAIL_FOLDED = `꼬리-UNIQUETAIL ${FILLER}`;
+/** 꼬리 바로 **앞** 문자들 — 상한이 201자 이상으로 늘어나면 진단에 나타난다. */
+const CANARY_201 = "★201번째-CANARY";
+
+test("[C-117] 계획 추출 실패는 출력 길이 + **정확히 마지막 200자**를 진단으로 싣는다", async () => {
+  // C-117: live 실패 2건이 `worker_plan_absent` 코드 하나만 남겨서 "출력이 잘렸다"와 "모델이 산문으로
+  // 거부했다"를 구분할 수 없었다(transcript는 설계상 미저장).
+  assert.equal(TAIL_200.length, 200, "꼬리 fixture가 정확히 200자가 아니면 아래 정확비교가 무의미하다");
+  const prose = `머리-UNIQUEHEAD ${"설명만 적는다 ".repeat(20)}${CANARY_201}${TAIL_200}`;
+  assert.equal(prose.slice(-200), TAIL_200, "fixture 구성이 깨졌다");
+  const absent = await drainMessage(bin(EMIT(prose)));
+  assert.ok(absent.includes(`출력 ${prose.length}자`), `출력 길이가 진단에 없다 — ${absent}`);
+  // **정확 비교**(C-1): `includes("꼬리 마커")`만으로는 `slice(-250)`으로 바꿔도 통과한다.
+  assert.ok(absent.endsWith(`꼬리 200자: ${TAIL_FOLDED})`), `꼬리가 정확히 마지막 200자가 아니다 — ${absent}`);
+  assert.ok(!absent.includes(CANARY_201), `201번째 문자가 진단에 실렸다(상한이 200자가 아니다) — ${absent}`);
+  assert.ok(!absent.includes("UNIQUEHEAD"), `머리까지 실렸다 — ${absent}`);
+  assert.ok(!absent.includes("\n"), `진단이 한 줄로 접히지 않았다 — ${JSON.stringify(absent)}`);
+
+  // 같은 규율이 unparsable 갈래에도 적용된다: 후보는 뽑혔지만(`"result"` 포함·균형 잡힌 블록)
+  // `[,]`가 JSON이 아니다. **여기 꼬리에는 C0 밖 제어문자를 심는다**(리뷰 A-1): U+009B(C1 CSI) ·
+  // U+202E(bidi override) · U+2028(JS 줄 종결자 — `JSON.stringify`가 escape하지 않는다).
+  const hostile = "\u009b31m\u202e\u2028";
+  const bad = `{"result": {"summary": "머리-UNIQUEHEAD ${"길게 적는다 ".repeat(40)}\n꼬리-UNIQUETAIL${hostile}", "outputs": [,]}}`;
+  assert.ok(bad.length > 200, `fixture가 200자를 넘지 않으면 이 테스트는 공허하다(${bad.length})`);
+  const unparsable = await drainMessage(bin(EMIT(bad)));
+  assert.ok(unparsable.includes(`후보 ${bad.length}자`), `후보 길이가 진단에 없다 — ${unparsable}`);
+  assert.ok(unparsable.includes("꼬리-UNIQUETAIL"), `꼬리가 진단에 없다 — ${unparsable}`);
+  assert.ok(!unparsable.includes("UNIQUEHEAD"), `머리까지 실렸다 — ${unparsable}`);
+  for (const c of ["\n", "\u009b", "\u202e", "\u2028"]) {
+    assert.ok(!unparsable.includes(c), `제어·서식 문자가 진단에 살아남았다: U+${c.codePointAt(0)!.toString(16).toUpperCase()}`);
+  }
+});
+
+test("[C-117/A-1] foldDiagnosticText는 C0 밖 제어·서식·줄종결자까지 접는다", () => {
+  // `[ -]`(이전 판)로는 아래 문자들이 전부 살아남았다 — 그리고 이 문자열의 도착지는
+  // 운영자 stdout이다(터미널 escape · bidi spoofing · `JSON.stringify`가 escape하지 않는 줄 쪼개기).
+  assert.equal(foldDiagnosticText("a\u0000\u001f\u007fb"), "a   b", "C0+DEL");
+  assert.equal(foldDiagnosticText("a\u0085\u009bb"), "a  b", "C1(NEL · CSI)");
+  assert.equal(foldDiagnosticText("a\u2028\u2029b"), "a  b", "줄 종결자");
+  assert.equal(foldDiagnosticText("a\u202e\u200fb"), "a  b", "bidi 제어문자");
+  assert.equal(foldDiagnosticText("정상 문자열 · 汉字 · emoji 🙂"), "정상 문자열 · 汉字 · emoji 🙂", "무해한 문자를 건드렸다");
+  // 길이 1:1 보존 — slice 상한 계산이 접기 순서에 흔들리지 않는다는 성질.
+  const s = "\u009b\u2028가나다";
+  assert.equal(foldDiagnosticText(s).length, s.length);
+});
+
+test("[C-117/A-3] 비정상 종료 진단은 stderr의 **꼬리**다(머리가 아니다)", async () => {
+  // `slice(0, 200)`은 **머리** 200자였는데 주석은 줄곧 "꼬리"라고 불렀다(리뷰 A-3). 실패 원인은 보통
+  // stderr 끝에 있으므로 진단 가치도 반대였다. `process.exitCode`로 끝내 stderr flush를 보장한다
+  // (`process.exit()`는 pipe에서 잘릴 수 있다).
+  const noise = `머리-STDERRHEAD ${"stderr 잡음 ".repeat(40)}꼬리-STDERRTAIL`;
+  assert.ok(noise.length > 200, `fixture가 200자를 넘지 않으면 head/tail 구분이 공허하다(${noise.length})`);
+  const msg = await drainMessage(
+    bin(`import { readFileSync } from "node:fs";\nreadFileSync(0, "utf8");\nprocess.stderr.write(${JSON.stringify(noise)});\nprocess.exitCode = 3;\n`),
+  );
+  assert.ok(msg.includes("종료코드 3"), `종료코드가 진단에 없다 — ${msg}`);
+  assert.ok(msg.includes("꼬리-STDERRTAIL"), `stderr 꼬리가 진단에 없다 — ${msg}`);
+  assert.ok(!msg.includes("STDERRHEAD"), `stderr 머리가 실렸다(꼬리가 아니다) — ${msg}`);
 });
 
 test("[M10-T3] extractPlanJson: 중첩·본문 중괄호·여러 후보 중 마지막을 고른다", () => {
