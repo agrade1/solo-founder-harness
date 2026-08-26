@@ -1,5 +1,28 @@
 # CONTEXT_SUMMARY.md
 
+## 최신 (2026-08-26 — **V3 M11⑨: L2b `draft-approval` 착지 · multi-task live 부분 성공(경계 2 발견)**)
+
+- **`draft-approval`/`validate-approval`**: DAG에서 ownership·write 권위를 파생하고 **권위-의미
+  36자리를 sentinel로** 남긴다. mint 방지는 집행이다 — 초안이 검증기를 통과하면 **파일을 쓰지 않고
+  `draft_would_be_executable`로 던진다**(mutation 1b 실증). PATH 자동 발견 없음. `writableRoots`는
+  파생하지 않는다(접두사 압축 = 사람이 승인한 적 없는 루트를 하네스가 짓는 것). 판정 정본 **판정 ⑨**.
+- **실전 첫 투입**: L2a의 실제 12-task 초안 → 문서 단계 4개로 자름 → draft-approval → sentinel 채움 →
+  operations 배선 → validate-approval → `autopilot-create` 4건. fail closed가 운영자 실수 2건을 잡았다
+  (마이크로초 timestamp · 파이프 뒤 exit 측정).
+- **multi-task live(claude 4회) — 부분 성공이 가장 값진 산출물**: `market-scan`(1-file) **completed**
+  (17,969B 문서 생성) · **`prd`(2-file)가 `worker_plan_absent` ×2로 attempts 소진** · 하류 2 task 미도달.
+  경계 ① 문서 전문 여러 개를 계획 JSON 하나에 담는 계약의 한계(가설 — transcript 미저장 · `C-117` ·
+  **다음 세션 1순위**) ② `resumeTask` CLI 배선 없음(`C-118`).
+- **C-116이 첫 slice부터 값을 했다**: 구현 세션이 그 형식을 지켰고 "처음 GREEN이었던 mutation을
+  단정 강화 후 red로 만들었다"까지 스스로 보고했다.
+- **실측**: `npm test` exit 0 · 646/646 · 501/501 · acceptance 224/0(Test 27) · L2b 38/38 ·
+  mutation 5종 + 1a 독립 재현 · live 4회(성공 2턴·실패 2턴).
+- **신규**: `C-117`~`C-121`. **열린 항목**: A **0** · 등급 B **6** · 등급 C **85** · id **91**.
+- **다음 세션**: `docs/handoff/M12_ORCHESTRATION_KICKOFF.md`를 먼저 읽어라. 1순위 = `C-117`
+  (multi-task live 재시도 — planner 지침 "task당 provides 1개" 또는 turn 분할 발행 중 설계 결정).
+
+---
+
 ## 최신 (2026-08-25 — **V3 M11⑧ L2a: `plan-dag` — 하네스가 아이디어에서 12-task DAG 초안을 만들었다(live 첫 시도 통과)**)
 
 - **`harness plan-dag` + `validate-dag`**: 아이디어 문서 + 사람이 쓴 승인 → planner run 구성 →
