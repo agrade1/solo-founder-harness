@@ -125,5 +125,21 @@
     ]
   },
   "started_at": "2026-01-01T00:00:00.000Z",
-  "finished_at": "2026-01-01T00:00:00.000Z"
+  "finished_at": "2026-01-01T00:00:00.000Z",
+  "research": {
+    "attempts": [
+      {
+        "started_at": "2026-01-01T00:00:00.000Z",
+        "mode": "self",
+        "requests": [],
+        "backend_calls": 0,
+        "cache_hits": 0,
+        "dropped_by_domain": 0,
+        "first_pass_sha256": null,
+        "evidence": [],
+        "receipt_path": "outputs/research/receipt-a24a88a4abae0feb540a97a14dbb418e45d78903b7f8738afdf76edb90c1334d.json",
+        "raw_paths": []
+      }
+    ]
+  }
 }

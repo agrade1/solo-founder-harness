@@ -1,0 +1,29 @@
+{
+  "_why": "[C-126] 격리 fixture. 리서치 배선을 재려면 **research step만 도는 workflow**가 필요하다: registry/workflows.json의 idea-validation은 5 agent + 게이트라 리서치 1건을 재는 데 LLM 호출 6회 이상이 섞이고, '1차 usage가 살아 있다' 같은 단정을 다른 step의 usage와 구분할 수 없다. research-gate는 게이트가 research로 되돌리는 재진입(run 수명 호출 예산·digest 소거)을 재는 fixture다 — 실제 idea-validation의 '검증' 되돌림과 같은 모양이고 step 수만 최소다.",
+  "workflows": [
+    {
+      "workflow_id": "research-only",
+      "description": "테스트 전용: research step 하나. 리서치 배선(1차→검색→2차)만 격리해 잰다.",
+      "steps": ["research"]
+    },
+    {
+      "workflow_id": "research-then-pm",
+      "description": "테스트 전용: research 뒤에 digest 수신자(pm)와 비수신자(ux_ui)가 있다. 수신자 allowlist를 잰다.",
+      "steps": ["research", "pm", "ux_ui"]
+    },
+    {
+      "workflow_id": "research-gate",
+      "description": "테스트 전용: 게이트가 '검증' 판정에서 research로 되돌린다 — 리서치 재진입(attempt 2개·digest 소거·run 수명 예산)을 잰다.",
+      "steps": [
+        "research",
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "검증": "research" }, "kill": ["폐기"], "max_jumps": 1 } }
+      ]
+    },
+    {
+      "workflow_id": "research-critic",
+      "description": "테스트 전용: research 뒤 red_team 비평 루프 — critic(conclusion_only)에는 digest가 주입되지 않는지 잰다.",
+      "steps": ["research", { "critique_loop": { "target": "research", "critic": "red_team", "max_rounds": 1 } }]
+    }
+  ]
+}

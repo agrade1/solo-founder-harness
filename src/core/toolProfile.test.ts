@@ -73,6 +73,10 @@ test("회귀: mock idea-validation run_state가 golden과 일치 (가변 메타 
   assert.deepEqual(actual.kill_history, [], "폐기 없음");
   assert.equal(actual.cleared_idea_sha256?.length, 64, "'진행' 판정 → 해제 digest 발급");
 
+  // [C-126] golden에 `research.attempts` 한 건(mode: "self")이 **의도적으로** 추가됐다:
+  // 리서치 agent가 도는 workflow는 키가 없어도 attempt와 receipt를 남긴다(설계 §6.1 — 승인자가
+  // "이 문서가 어떤 리서치 모드에서 나왔나"를 승인 바이트 안에서 본다). `receipt_path`는 attempt
+  // 내용의 sha256이라 고정 시각·mock 출력에서 결정적이다 — 그 값이 바뀌면 attempt 내용이 바뀐 것이다.
   assert.ok(existsSync(GOLDEN), `golden 스냅샷이 없습니다: ${GOLDEN} (생성 후 커밋 필요)`);
   const golden = JSON.parse(readFileSync(GOLDEN, "utf8")) as RunState;
   assert.deepEqual(actual, golden, "정규화된 run_state가 golden과 동일 (M2 변경이 mock 출력을 바꾸지 않음)");
