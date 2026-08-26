@@ -92,9 +92,14 @@ function nextActions(state: RunState | null, project: string, pipelineOwns = fal
       break;
     }
     case "failed":
+      // [C-126/A-5] 파이프라인이 소유한 상태에서는 **`--resume`을 안내하지 않는다.** 활성 파이프라인의
+      // 직접 run/resume은 `pipeline_run_reserved`로 전면 거부되므로(B-41), 그 안내는 반드시 실패하는
+      // 명령을 사람에게 시키는 것이었다. 탈출구는 같은 workflow를 자동 resume하는 `pipeline next`다.
       actions.push(
         `\`${state.failed_agent ?? "(알 수 없음)"}\`에서 중단됨${state.failed_reason ? ` (${state.failed_reason})` : ""} — 원인 확인 후 ` +
-          `\`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`,
+          (pipelineOwns
+            ? `\`harness pipeline next --project ${project}\`로 같은 단계를 resume (직접 run/resume은 거부된다).`
+            : `\`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`),
       );
       break;
     case "completed":

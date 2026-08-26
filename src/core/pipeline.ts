@@ -696,6 +696,21 @@ export function runStateSources(state: RunState): ManifestSource[] {
     const sp = (state.spawned_agents ?? []).find((s) => `spawn_${s.id}` === id && s.output);
     if (sp?.output) out.push({ agent_id: id, path: sp.output });
   }
+  // [C-126/A-3] **리서치 영수증 결박.** 승인 대상은 "어떤 근거에서 나온 문서인가"까지다 —
+  // 문서 바이트만 결박하면 승인 후 근거 파일을 바꿔치기해도 탐지되지 않는다.
+  //
+  // 담는 것: **마지막 성공 attempt의 receipt**(write-once)와 그것이 참조한 **content-addressed raw**.
+  // 담지 않는 것: `outputs/research/evidence.jsonl`. append-only 인덱스라 결박하면 승인 후 정당한
+  // append 하나가 전수 검증(approve의 effectiveDigests · completed/fresh-run 게이트)에서 **전부
+  // drift**가 된다 — 권위는 receipt+raw에 있고 jsonl은 사람용 비권위 인덱스다(§9-15 기각 대안).
+  //
+  // seed:false인 이유: 판단 문서가 아니므로 요약할 것이 없다(억지로 넣으면 "(Main Judgment 없음)"이
+  // 다음 단계 프롬프트에 실린다 — design의 tokens.json 사이드카와 같은 규율).
+  const lastResearch = [...(state.research?.attempts ?? [])].reverse().find((a) => a.mode !== null && a.receipt_path);
+  if (lastResearch) {
+    out.push({ agent_id: "research", path: lastResearch.receipt_path, seed: false });
+    for (const raw of lastResearch.raw_paths ?? []) out.push({ agent_id: "research", path: raw, seed: false });
+  }
   return out;
 }
 
