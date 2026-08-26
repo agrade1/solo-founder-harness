@@ -513,6 +513,38 @@ test("[B-41/A-2] 선언된 사이드카(docs/tokens.json)도 영수증에 결박
   rmProject(name);
 });
 
+test("[B-41/A-10] 다른 workflow의 폐기를 현 단계 영수증으로 적지 않는다 (provenance 대조 · 무기록)", async () => {
+  // 이 테스트는 mutation n10(provenance 대조 제거)이 **테스트 층에서 GREEN**이었을 때 추가했다
+  // (컴파일은 잡았지만 어떤 단정도 red가 되지 않았다 — 컴파일에만 의존하는 계약은 다음 리팩터에서
+  // 조용히 사라진다).
+  const name = "_b41_a10b";
+  const { state } = await toFirstCheckpoint(name);
+  await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+  const root = projectPaths(name).root;
+  assert.equal(stateOf(name).current_index, 1, "현 단계 = mvp-planning");
+
+  // run_state를 **다른 workflow의 폐기**로 만든다(크래시·다른 경로에서 생길 수 있는 조합).
+  // B-40 구조 검증을 통과하는 정상 형태다: killed면 kill_history가 있어야 한다.
+  const killedElsewhere = {
+    ...loadRunState(name)!,
+    workflow_id: "full-predev",
+    status: "killed" as const,
+    killed_by: { decider: "founder_ceo", decision: "폐기", idea_sha256: null },
+    kill_history: [{ decider: "founder_ceo", decision: "폐기", idea_sha256: null, at: FIXED }],
+  };
+  writeFileSync(join(root, "outputs/run_state.json"), JSON.stringify(killedElsewhere, null, 2) + "\n", "utf8");
+  const before = bytesOf(pipelineStatePath(root));
+
+  const guard = counting();
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_killed_elsewhere");
+  assert.equal(r.exit, 1);
+  assert.equal(guard.calls, 0, "모델 호출 0");
+  assert.equal(bytesOf(pipelineStatePath(root)), before, "**아무것도 쓰지 않았다** — 거짓 영수증을 만들지 않는다");
+  assert.equal(stateOf(name).checkpoints.filter((c) => c.decision === "killed").length, 0, "kill 영수증이 만들어지지 않았다");
+  rmProject(name);
+});
+
 // ── Codex A-9 ─────────────────────────────────────────────────
 test("[B-41/A-9] 승인 산출물이 프로젝트 밖을 가리키는 symlink로 바뀌면 거부된다 (realpath containment)", async () => {
   const name = "_b41_a9";
