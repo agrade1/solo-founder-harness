@@ -16,6 +16,7 @@ import {
   PIPELINE_VERSION,
   SEED_MAX_BYTES,
   SEED_MAX_CHARS,
+  SEED_MAX_ITEMS,
   checkpointIdFor,
   digestArtifacts,
   driftProblem,
@@ -456,9 +457,22 @@ test("[B-41/§5] seed: 승인 영수증에서만 오고, 뒤 단계가 승계하
     ],
   };
   const bounded = seedFindingsFrom(many);
-  assert.equal(bounded.length, 20, "항목을 조용히 버리지 않는다");
-  assert.ok(Buffer.byteLength(bounded.join(""), "utf8") <= SEED_MAX_BYTES + 200, `총량 상한 근처로 억제된다 (실측 ${Buffer.byteLength(bounded.join(""), "utf8")}B)`);
-  assert.ok(bounded.some((s) => s.includes("요약 상한 초과")), "상한을 넘긴 지점부터 경로 참조로 대체");
+  // [Codex A-8] 상한을 **정확히** 단정한다(예전 테스트는 `+200` 여유를 허용해 코드가 상한을 지키지
+  // 않는다는 사실을 덮고 있었다). 넘치는 항목은 조용히 버려지지 않고 **marker 한 줄**로 합쳐진다.
+  assert.ok(bounded.length <= SEED_MAX_ITEMS, `항목 수 ≤ ${SEED_MAX_ITEMS} (실측 ${bounded.length})`);
+  const serialized = Buffer.byteLength(bounded.join("\n"), "utf8");
+  assert.ok(serialized <= SEED_MAX_BYTES, `직렬화 byteLength ≤ ${SEED_MAX_BYTES} (실측 ${serialized})`);
+  assert.match(bounded.at(-1)!, /^\(seed 상한 — 남은 \d+건은 승인 영수증 outputs\/pipeline_state\.json에서 확인하라\)$/, "남은 건수를 말하는 marker");
+  assert.ok(bounded.length >= 2, "들어갈 수 있는 만큼은 실제로 실린다 (marker만 남지 않는다)");
+
+  // 항목 수 상한: 짧은 seed 30건 → 정확히 24개(마지막은 marker)로 억제된다.
+  const short = {
+    ...state,
+    checkpoints: [mk("idea-validation", Array.from({ length: 30 }, (_, i) => ({ agent_id: `a${i}`, line: `a${i}: 짧은 판단` })), "approved")],
+  };
+  const capped30 = seedFindingsFrom(short);
+  assert.equal(capped30.length, SEED_MAX_ITEMS, "항목 수는 정확히 상한까지");
+  assert.match(capped30.at(-1)!, /^\(seed 상한 — 남은 7건/, "24번째 자리는 나머지 7건의 marker다");
   rmSync(root, { recursive: true, force: true });
 });
 

@@ -18,7 +18,7 @@
  * 자동 승인하며, **checkpoint 전이 함수에는 approver·boolean 인자가 아예 없다** — 그래서 그 플래그가
  * 체크포인트에 닿으려면 시그니처를 바꿔야 하고, 컴파일이 월경을 먼저 막는다(의도).
  */
-import { existsSync, renameSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_PIPELINE,
@@ -253,6 +253,22 @@ async function nextLocked(
     const wf = first.kind === "workflow" ? findWorkflow(loadWorkflows(), first.workflowId) : undefined;
     const ideaGate = ideaGateStatus(readRunState(project), snapshotProjectIdea(project), wf ? hasKillGate(wf) : false);
     if (!ideaGate.ok) return reject(ideaGate.code, ideaGate.message, 2);
+    // [Codex A-10] run_state가 이미 폐기 판정이면 **파이프라인을 만들지 않는다.**
+    // 예전엔 만들고 나서 곧바로 화해로 죽였고(write 2회), 더 나쁘게 그 kill 영수증은 "현재 단계"를
+    // 적어서 **거짓말**을 했다: 파이프라인 밖에서 mvp-planning이 폐기됐는데 영수증은
+    // "idea-validation이 폐기됐다"고 증언했다. 폐기를 푸는 것은 사람이 직접 돌리는 재평가 run이므로
+    // 여기서 만들 것이 없다.
+    const rsBefore = readRunStateAt(join(root, RUN_STATE_REL));
+    if (rsBefore.kind === "ok" && rsBefore.state.status === "killed") {
+      const k = rsBefore.state.killed_by;
+      return reject(
+        "run_state_killed",
+        `이 프로젝트의 마지막 run이 폐기 판정입니다 (workflow '${rsBefore.state.workflow_id}' · ` +
+          `${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}') — 파이프라인을 만들지 않았습니다.\n` +
+          `먼저 재평가를 직접 돌려 '진행' 판정을 받으세요: harness run <kill 게이트 workflow> --project ${project}`,
+        2,
+      );
+    }
     state = newPipelineState(project, now());
     writePipelineState(root, state); // 전이: 파이프라인 생성 (원자 쓰기 1회)
     console.log(`파이프라인 시작: ${PIPELINE_ID} · ${DEFAULT_PIPELINE.map((s) => s.id).join(" → ")}`);
@@ -296,6 +312,20 @@ async function nextLocked(
     );
   }
   if (rsRead.kind === "ok" && rsRead.state.status === "killed") {
+    // [Codex A-10] **provenance 대조**: 그 폐기가 **이 단계의 workflow**에서 나온 것일 때만
+    // 현 단계 영수증으로 기록한다. 다른 workflow가 죽은 것을 현 단계 이름으로 적으면 영수증이
+    // 거짓말을 한다(그리고 그 거짓 영수증이 checkpoint 이력의 정본이 된다).
+    const rsWf = rsRead.state.workflow_id;
+    if (stage.kind !== "workflow" || rsWf !== stage.workflowId) {
+      return reject(
+        "pipeline_killed_elsewhere",
+        `run_state가 폐기 판정인데 그 workflow('${rsWf}')는 현 단계('${stage.id}')가 아닙니다 — ` +
+          `현 단계 영수증으로 적으면 거짓 기록이 되므로 아무것도 쓰지 않았습니다.\n` +
+          `재평가를 직접 돌려 '진행' 판정을 받은 뒤(harness run <kill 게이트 workflow> --project ${project}) 다시 시도하거나, ` +
+          `'harness pipeline restart --project ${project}'로 파이프라인을 다시 세우세요.`,
+        1,
+      );
+    }
     const next = reconcileKilled(root, state, stage, rsRead.state, now());
     writePipelineState(root, next);
     console.log(`⛔ 폐기 판정을 파이프라인에 반영했습니다 (killed) — ${next.checkpoints.at(-1)?.note}. 후속 단계는 실행하지 않았습니다.`);
@@ -599,6 +629,14 @@ export function approveCheckpoint(o: { project: string; stage: string; checkpoin
       }
       const rs = rsRead.state;
       if (rs.status === "killed") {
+        // [A-10] provenance: 이 단계의 workflow가 죽은 것이 아니면 영수증을 만들지 않는다.
+        if (rs.workflow_id !== stage.workflowId) {
+          return reject(
+            "pipeline_killed_elsewhere",
+            `run_state가 폐기 판정인데 그 workflow('${rs.workflow_id}')는 이 단계('${stage.id}')가 아닙니다 — 승인하지 않았고 아무것도 쓰지 않았습니다.`,
+            1,
+          );
+        }
         const next = reconcileKilled(root, state, stage, rs, now());
         writePipelineState(root, next);
         return reject("pipeline_killed_reconciled", `run이 폐기(killed) 판정입니다 — 승인하지 않고 파이프라인을 종료했습니다 (${next.checkpoints.at(-1)?.note}).`, 1);
@@ -703,8 +741,23 @@ export function restartPipeline(o: { project: string; now?: () => string }): Pip
       );
     }
     const at = now();
-    const archive = join(root, PIPELINE_STATE_REL.replace(/\.json$/, `.${at.replace(/[-:.]/g, "").replace(/Z$/, "")}.json`));
-    renameSync(abs, archive); // **삭제 없음** — 기존 영수증은 그대로 보관된다
+    // [Codex A-11] `renameSync`는 **destination을 교체한다** — 같은 시각 이름이 이미 있으면 앞 archive가
+    // 사라지고 "삭제 없음·exact bytes 보존"이 거짓이 된다. 그래서 이름을 **exclusive-create로 예약**
+    // (`flag:"wx"`)한 뒤 그 자리에만 rename한다: 우리가 방금 만든 빈 파일만 덮는다.
+    const stamp = at.replace(/[-:.]/g, "").replace(/Z$/, "");
+    let archive = "";
+    for (let n = 1; n <= 100; n++) {
+      const cand = join(root, PIPELINE_STATE_REL.replace(/\.json$/, `.${stamp}${n === 1 ? "" : `-${n}`}.json`));
+      try {
+        closeSync(openSync(cand, "wx")); // 이미 있으면 throw → 다음 이름
+        archive = cand;
+        break;
+      } catch {
+        continue;
+      }
+    }
+    if (!archive) return reject("pipeline_archive_name_exhausted", `archive 이름을 예약할 수 없습니다 (${stamp} 계열 100개 사용 중)`, 1);
+    renameSync(abs, archive); // **삭제 없음** — 기존 영수증은 예약한 자리로 그대로 보관된다
     const fresh = newPipelineState(o.project, at);
     writePipelineState(root, fresh);
     console.log(`파이프라인을 다시 시작했습니다 — 기존 state는 보관: ${archive.slice(root.length + 1)}`);

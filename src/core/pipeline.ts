@@ -39,7 +39,7 @@
  * - 직접 `run`과의 경합에서 주장하는 것은 "**오염된 상태로 승인이 나가지 않는다**"까지다.
  *   산출물 파일 자체는 섞일 수 있다(같은 docs/·run_state.json의 두 writer는 직렬화되지 않는다).
  */
-import { existsSync, readFileSync, writeFileSync, unlinkSync, renameSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, writeFileSync, unlinkSync, realpathSync, renameSync, statSync } from "node:fs";
 import { createHash, randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { findAgent, loadAgentRegistry } from "./registry.js";
@@ -141,9 +141,13 @@ const HEX12 = /^[0-9a-f]{12}$/;
 const HEX16 = /^[0-9a-f]{16}$/;
 
 /**
- * 영수증에 실릴 수 있는 경로 = **프로젝트 루트 기준 정규 상대경로**뿐이다.
- * 절대경로·`..`·backslash·비정규 표기(`./x`, `a//b`)를 전부 거부하므로 containment는 구조적으로 성립한다
- * (경로를 붙여 본 뒤 루트 밖인지 검사하는 방식은 symlink·표기 변형에서 한 번씩 뚫린다).
+ * 영수증에 실릴 수 있는 **표기**: 프로젝트 루트 기준 정규 상대경로뿐이다(절대경로·`..`·backslash·
+ * `./x`·`a//b` 거부).
+ *
+ * [Codex A-9 정정] 이것은 **표기 검증이고 containment 보장이 아니다** — 예전 주석은 "구조적으로
+ * 성립한다"고 적었는데 거짓이었다: `docs/x.md`가 프로젝트 밖을 가리키는 symlink면 `readFileSync`·
+ * `statSync`가 그것을 따라간다. 실제 containment는 사용 시점에 `containmentProblem()`이 **realpath로**
+ * 확인한다. symlink 정책: 허용하되 **realpath가 프로젝트 루트 안**이어야 한다.
  */
 function safeRelPath(p: unknown): p is string {
   if (typeof p !== "string" || p.length === 0) return false;
@@ -154,6 +158,35 @@ function safeRelPath(p: unknown): p is string {
 
 function isSafeInt(n: unknown): n is number {
   return typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+}
+
+/**
+ * [Codex A-9] 사용 시점 containment: realpath가 프로젝트 루트 **안**의 **정규 파일**이어야 한다.
+ *
+ * symlink는 금지하지 않는다(정상적인 작업 방식일 수 있다) — 대신 **가리키는 실체가 루트 안**임을
+ * 요구한다. 루트 밖을 가리키면 그 바이트는 이 프로젝트의 산출물이 아니므로 승인 대상이 될 수 없다.
+ * 정직한 한계: 이 확인과 뒤이은 read 사이의 창은 남는다(§8의 race — TOCTOU를 없애려면 fd 기반
+ * 열기·재확인이 필요하고 그것은 별도 슬라이스다).
+ *
+ * @returns 문제가 있으면 사람이 읽는 이유, 없으면 null.
+ */
+function containmentProblem(projectRoot: string, rel: string): string | null {
+  let realRoot: string;
+  try {
+    realRoot = realpathSync(projectRoot);
+  } catch {
+    return `프로젝트 루트를 해석할 수 없습니다: ${projectRoot}`;
+  }
+  let real: string;
+  try {
+    real = realpathSync(join(projectRoot, rel));
+  } catch {
+    return null; // 부재는 호출자가 별도 코드로 다룬다 (여기서는 경로 위치만 본다)
+  }
+  if (real !== realRoot && !real.startsWith(realRoot + sep)) {
+    return `프로젝트 루트 밖을 가리킵니다 (symlink?): ${rel} → ${real}`;
+  }
+  return null;
 }
 
 // ── checkpoint_id ───────────────────────────────────────────────
@@ -578,6 +611,12 @@ export function lockPipeline(projectRoot: string, now: () => string): { ok: true
 export interface ManifestSource {
   agent_id: string;
   path: string; // 프로젝트 상대경로
+  /**
+   * 이 산출물에서 seed 한 줄을 뽑을지. 기본 true.
+   * 사이드카(`docs/tokens.json` 같은 비-판단 파일)는 false — 판단 문서가 아니므로 요약할 것이 없고,
+   * 억지로 넣으면 "(Main Judgment 없음)"이 다음 단계 프롬프트에 실린다.
+   */
+  seed?: boolean;
 }
 
 /**
@@ -599,6 +638,9 @@ export function buildManifest(
   for (const src of sources) {
     if (!safeRelPath(src.path)) throw new PipelineError("pipeline_artifact_path_rejected", `영수증에 담을 수 없는 경로: ${src.path}`);
     if (seenPath.has(src.path)) continue; // 같은 경로는 한 번만 (path 유일 semantic 규칙)
+    // [A-9] 표기가 맞아도 **실체가 루트 밖**이면 담지 않는다 (symlink는 realpath로 판정).
+    const contain = containmentProblem(projectRoot, src.path);
+    if (contain) throw new PipelineError("pipeline_artifact_path_rejected", contain);
     const abs = join(projectRoot, src.path);
     let st;
     try {
@@ -614,7 +656,7 @@ export function buildManifest(
     const bytes = readFileSync(abs);
     seenPath.add(src.path);
     artifacts.push({ path: src.path, size: bytes.length, sha256: createHash("sha256").update(bytes).digest("hex") });
-    seeds.push({ agent_id: src.agent_id, line: `${src.agent_id}: ${extractMainJudgment(bytes.toString("utf8"))}` });
+    if (src.seed !== false) seeds.push({ agent_id: src.agent_id, line: `${src.agent_id}: ${extractMainJudgment(bytes.toString("utf8"))}` });
   }
   return { artifacts, seeds };
 }
@@ -626,7 +668,7 @@ export function buildManifest(
 export function digestArtifacts(projectRoot: string, relPaths: string[], opts: { skipMissing?: boolean } = {}): ArtifactEntry[] {
   return buildManifest(
     projectRoot,
-    relPaths.map((path) => ({ agent_id: "", path })),
+    relPaths.map((path) => ({ agent_id: "", path, seed: false })),
     opts,
   ).artifacts;
 }
@@ -643,6 +685,11 @@ export function runStateSources(state: RunState): ManifestSource[] {
     const agent = findAgent(registry, id);
     if (agent) {
       out.push({ agent_id: id, path: agent.default_output });
+      // [Codex A-2] **선언된 사이드카 산출물도 결박한다**(design agent의 `docs/tokens.json`).
+      // 예전엔 `default_output`만 모아서, 작업 지시문이 "구현은 tokens.json을 따르라"고 안내하는
+      // 그 파일이 어떤 checkpoint에도 없었다 = 승인 후 교체가 탐지되지 않았다.
+      // 부재는 fail closed다(`buildManifest`) — 사이드카를 못 낸 단계는 승인 대기로 넘어가지 않는다.
+      if (agent.token_output) out.push({ agent_id: id, path: agent.token_output, seed: false });
       continue;
     }
     // 동적 분화된 하위 에이전트(spawn_<id>)는 registry에 없다 — run 기록에서 경로를 찾는다.
@@ -675,17 +722,35 @@ export function seedFindingsFrom(state: PipelineState): string[] {
     if (c.decision !== "approved") continue; // 거부·폐기 영수증은 입력이 아니다
     for (const s of c.seeds) byAgent.set(s.agent_id, s.line);
   }
+  // [Codex A-8] 상한을 **코드가 실제로 지킨다.** 예전 판은 24개 이후에도 항목(경로 참조)을 계속
+  // 밀어넣고, 총량 초과 후 대체한 참조의 크기를 다시 재지 않았다 — 그래서 "≤24개 · ≤16KB"는
+  // 검증되지 않은 문장이었다(테스트도 `+200` 여유를 허용해 그 사실을 덮고 있었다).
+  // 지금 규칙: 들어갈 수 있는 만큼만 넣고, 남은 것은 **bounded marker 한 줄**로 합친다
+  // (조용히 버리지 않는다 — 몇 건이 어디에 있는지 말한다).
+  const entries = [...byAgent.entries()];
   const out: string[] = [];
   let bytes = 0;
-  let i = 0;
-  for (const [agentId, line] of byAgent) {
-    const item = line.length > SEED_MAX_CHARS || i >= SEED_MAX_ITEMS ? seedRef(agentId) : line;
-    const size = Buffer.byteLength(item, "utf8");
-    // 총량을 넘기는 항목부터는 **나머지 전부** 경로 참조로 대체한다(조용히 버리지 않는다).
-    const finalItem = bytes + size > SEED_MAX_BYTES ? seedRef(agentId) : item;
-    out.push(finalItem);
-    bytes += Buffer.byteLength(finalItem, "utf8");
-    i++;
+  const fits = (s: string): boolean => out.length + 1 <= SEED_MAX_ITEMS && bytes + Buffer.byteLength(s, "utf8") + 1 <= SEED_MAX_BYTES;
+  for (let i = 0; i < entries.length; i++) {
+    const [agentId, line] = entries[i];
+    // 항목 상한 초과는 **자르지 않고** 통째로 경로 참조로 대체한다(silent truncation 금지).
+    const item = line.length > SEED_MAX_CHARS ? seedRef(agentId) : line;
+    if (fits(item)) {
+      out.push(item);
+      bytes += Buffer.byteLength(item, "utf8") + 1;
+      continue;
+    }
+    // 못 들어간다 → 남은 전부를 marker 하나로. marker 자리가 없으면 마지막 항목을 비운다.
+    // 건수는 **자리를 비운 뒤** 다시 센다: out에 실린 것이 곧 표현된 항목이므로
+    // `entries.length - out.length`가 정확한 잔여 수다(pop 전에 세면 그만큼 어긋난다).
+    const mk = (n: number): string => `(seed 상한 — 남은 ${n}건은 승인 영수증 ${PIPELINE_STATE_REL}에서 확인하라)`;
+    let marker = mk(entries.length - out.length);
+    while (out.length > 0 && !fits(marker)) {
+      bytes -= Buffer.byteLength(out.pop() as string, "utf8") + 1;
+      marker = mk(entries.length - out.length);
+    }
+    if (fits(marker)) out.push(marker);
+    break;
   }
   return out;
 }
@@ -722,6 +787,9 @@ export function effectiveDigests(state: PipelineState, latest: readonly Artifact
  */
 export function driftProblem(projectRoot: string, expected: Iterable<ArtifactEntry>): string | null {
   for (const a of expected) {
+    // [A-9] 승인된 파일이 프로젝트 밖을 가리키게 바뀌었으면 그것은 **다른 파일**이다 — drift다.
+    const contain = containmentProblem(projectRoot, a.path);
+    if (contain) return contain;
     const abs = join(projectRoot, a.path);
     let st;
     try {

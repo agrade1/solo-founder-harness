@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -485,6 +485,87 @@ test("[B-41/A-6] 마지막 단계만 승인해 '완료' 영수증을 받아낼 �
   rmProject(name);
 });
 
+// ── Codex A-2 ─────────────────────────────────────────────────
+test("[B-41/A-2] 선언된 사이드카(docs/tokens.json)도 영수증에 결박된다 — 승인 후 교체가 drift로 잡힌다", async () => {
+  const name = "_b41_a2";
+  const { state } = await toFirstCheckpoint(name);
+  await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+  // mvp-planning의 design agent가 docs/DESIGN.md + **docs/tokens.json**(token_output)을 낸다.
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_awaiting_approval");
+  const root = projectPaths(name).root;
+  const pending = stateOf(name).pending!;
+  assert.ok(
+    pending.artifacts.some((a) => a.path === "docs/tokens.json"),
+    `사이드카가 승인 대상에 있다 (실제: ${pending.artifacts.map((a) => a.path).join(", ")})`,
+  );
+  // 사이드카는 판단 문서가 아니므로 **seed는 만들지 않는다**(프롬프트에 "(Main Judgment 없음)"를 싣지 않는다).
+  assert.ok(!pending.seeds.some((s) => s.line.includes("Main Judgment 없음")), "사이드카에서 seed를 뽑지 않는다");
+
+  // 승인한 뒤 사이드카만 바꿔치기 → 작업 지시문은 그 파일을 구현 입력으로 안내한다 → drift로 막힌다.
+  await quiet(() => approveCheckpoint({ project: name, stage: "mvp-planning", checkpointId: pending.checkpoint_id, now: () => FIXED }));
+  writeFileSync(join(root, "docs/tokens.json"), '{"primitive":{"color":{"x":"#ff0000"}}}\n', "utf8");
+  const guard = counting();
+  const blocked = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(blocked.code, "pipeline_artifact_drift", "사이드카 교체도 drift다");
+  assert.equal(guard.calls, 0, "모델 호출 0");
+  rmProject(name);
+});
+
+// ── Codex A-9 ─────────────────────────────────────────────────
+test("[B-41/A-9] 승인 산출물이 프로젝트 밖을 가리키는 symlink로 바뀌면 거부된다 (realpath containment)", async () => {
+  const name = "_b41_a9";
+  const { state } = await toFirstCheckpoint(name);
+  const root = projectPaths(name).root;
+  const outside = join(tmpdir(), `b41-a9-outside-${process.pid}.md`);
+  try {
+    // 승인된 문서를 **프로젝트 밖 파일을 가리키는 symlink**로 바꾼다. 표기(`docs/02_PRD.md`)는
+    // 그대로라 예전 판의 `safeRelPath`만으로는 통과했고, statSync/readFileSync가 링크를 따라갔다.
+    const prd = join(root, "docs/02_PRD.md");
+    writeFileSync(outside, readFileSync(prd, "utf8"), "utf8"); // **바이트는 동일** — digest로는 못 잡는다
+    rmSync(prd);
+    symlinkSync(outside, prd);
+    const r = await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+    assert.equal(r.code, "pipeline_artifact_drift", "루트 밖 실체는 이 프로젝트의 산출물이 아니다");
+    assert.equal(stateOf(name).status, "awaiting_approval", "상태 불변");
+    // 대조군: 프로젝트 **안**을 가리키는 symlink는 허용된다(정책: realpath가 루트 안이면 된다).
+    rmSync(prd);
+    const inside = join(root, "outputs/prd-copy.md");
+    writeFileSync(inside, readFileSync(outside, "utf8"), "utf8");
+    symlinkSync(inside, prd);
+    const ok = await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+    assert.equal(ok.code, "pipeline_approved", "루트 안 symlink는 통과 (무조건 거부가 아니다)");
+  } finally {
+    rmSync(outside, { force: true });
+    rmProject(name);
+  }
+});
+
+// ── Codex A-11 ────────────────────────────────────────────────
+test("[B-41/A-11] restart archive 이름이 충돌해도 앞 archive를 덮지 않는다", async () => {
+  const name = "_b41_a11";
+  const root = projectPaths(name).root;
+  await runToCompletion(name);
+  const first = bytesOf(pipelineStatePath(root));
+  // 같은 시각을 주입해 **이름 충돌**을 강제한다: 예전 판은 renameSync가 앞 archive를 교체했다.
+  await quiet(() => restartPipeline({ project: name, now: () => FIXED }));
+  const afterFirst = readdirSync(join(root, "outputs")).filter((f) => /^pipeline_state\..+\.json$/.test(f));
+  assert.equal(afterFirst.length, 1);
+  // 두 번째 restart (완료 상태를 다시 만들 필요 없이, 새 state를 completed로 손보는 대신 killed를 쓴다)
+  const fresh = stateOf(name);
+  const base = { stage: "idea-validation", workflow_id: "idea-validation", run_finished_at: FIXED, artifacts: [{ path: "docs/02_PRD.md", size: 1, sha256: "a".repeat(64) }], seeds: [] };
+  writeFileSync(
+    pipelineStatePath(root),
+    JSON.stringify({ ...fresh, status: "killed", checkpoints: [{ ...base, checkpoint_id: checkpointIdFor(base), decision: "killed", decided_at: FIXED, note: "테스트" }] }, null, 2) + "\n",
+    "utf8",
+  );
+  await quiet(() => restartPipeline({ project: name, now: () => FIXED }));
+  const archives = readdirSync(join(root, "outputs")).filter((f) => /^pipeline_state\..+\.json$/.test(f));
+  assert.equal(archives.length, 2, `충돌하면 새 이름을 쓴다 (실제: ${archives.join(", ")})`);
+  assert.equal(bytesOf(join(root, "outputs", afterFirst[0])), first, "첫 archive 바이트가 그대로 보존됐다");
+  rmProject(name);
+});
+
 // ── Codex A-5 ─────────────────────────────────────────────────
 test("[B-41/A-5] summary·vault가 '확인 대기'를 '완료'로 적지 않는다", async () => {
   const name = "_b41_a5";
@@ -832,15 +913,15 @@ test("[B-41] 폐기된 아이디어에서는 파이프라인이 전진하지 않
   assert.equal(killed.state.status, "killed", "전제: killed run");
 
   const guard = counting();
+  const root = projectPaths(name).root;
   const r = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED }));
-  // 설계 §4의 두 행이 겹치는 자리다: 1단계 workflow가 kill 게이트를 가졌으므로 `ideaGateStatus`는
-  // "재평가는 허용"으로 통과시키고(allowReevaluation), 그 직후 run_state의 폐기 판정이 **화해**로
-  // 파이프라인을 terminal killed로 내린다 — 파이프라인이 스스로 재평가를 돌리지는 않는다.
-  // 못 박는 것: **모델을 호출하지 않는다**는 것과 하류가 계속 닫혀 있다는 것.
-  assert.equal(r.code, "pipeline_killed_reconciled");
+  // [Codex A-10] **파이프라인을 만들지 않는다.** 예전엔 만들고 곧바로 화해로 죽였고(write 2회),
+  // 그 kill 영수증이 "현재 단계"를 적어서 다른 workflow의 폐기를 idea-validation의 것으로 **거짓
+  // 증언**했다. 지금은 무생성 거부 + 재평가 안내다.
+  assert.equal(r.code, "run_state_killed");
+  assert.equal(r.exit, 2);
   assert.equal(guard.calls, 0, "폐기 상태에서 파이프라인이 모델을 호출하지 않는다");
-  assert.equal(stateOf(name).status, "killed");
-  assert.equal(stateOf(name).checkpoints.at(-1)?.decision, "killed");
+  assert.equal(existsSync(pipelineStatePath(root)), false, "state를 만들지 않았다 (무생성·무접촉)");
   assert.throws(() => buildTaskPrompt(name, "2026-01-01"), /killed_locked|pipeline_killed/, "하류는 닫혀 있다");
   // 탈출구는 **사람이 직접 돌리는 재평가 run**이다(killed 파이프라인에서 run action은 열려 있다).
   const reeval = counting();
