@@ -25,9 +25,17 @@ export const mockProvider = {
         const tokensBlock = agent.token_output
             ? "## Design Tokens\n\n```json\n" +
                 JSON.stringify({
-                    primitive: { color: { "gray-900": "#111827", "blue-500": "#3b82f6" }, space: { "2": "8px" } },
-                    semantic: { color: { text: "{primitive.color.gray-900}", action: "{primitive.color.blue-500}" }, space: { gap: "{primitive.space.2}" } },
-                    component: { button: { bg: "{semantic.color.action}", fg: "{semantic.color.text}", gap: "{semantic.space.gap}" } },
+                    primitive: { color: { "gray-900": "#111827", "blue-500": "#3b82f6", white: "#ffffff" }, space: { "2": "8px" } },
+                    semantic: {
+                        color: { "text-body": "{primitive.color.gray-900}", action: "{primitive.color.blue-500}", surface: "{primitive.color.white}" },
+                        space: { gap: "{primitive.space.2}" },
+                    },
+                    component: { button: { bg: "{semantic.color.action}", fg: "{semantic.color.text-body}", gap: "{semantic.space.gap}" } },
+                    // **최상위 key는 3계층 + `a11y`가 정확히 있어야 하고**(`designContract.ts`의 `tokens_layers`),
+                    // `text-*` semantic 색은 전부 `contrastPairs`의 fg로 선언돼야 한다(`a11y_text_uncovered`).
+                    // 그래서 mock도 그 계약을 만족한다 — test provider가 만족 못 하는 계약은 fixture가 아니라 함정이다.
+                    // gray-900 on white = 대비비 ≈ 17.7 ≥ 4.5.
+                    a11y: { contrastPairs: [{ fg: "semantic.color.text-body", bg: "semantic.color.surface", min: 4.5 }] },
                 }, null, 2) +
                 "\n```\n\n"
             : "";

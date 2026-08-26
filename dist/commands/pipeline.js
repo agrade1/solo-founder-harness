@@ -393,20 +393,32 @@ function exportVault(o, root, runState) {
     if (!vaultPath || !vaultPath.trim())
         return;
     const read = readPipelineStateAt(pipelineStatePath(root));
+    // **손상(`unreadable`)을 부재(`absent`)로 접지 않는다**(Codex 검증 신규 A): 둘 다 `null`로 접으면
+    // vault 노트에 run의 `상태: completed`만 남아 **외부 vault에 거짓 완료 영수증**이 생긴다. 이 export는
+    // 파이프라인 경로에서만 불리므로 state는 있어야 정상이고, 읽히지 않는다는 것 자체가 적어야 할 사실이다.
+    // (`absent`는 파이프라인 밖 run이 아니라 — 그 경로는 이 함수를 부르지 않는다 — 방금 쓴 state가 사라진
+    //  경우이므로 그것도 사실로 남긴다.)
     const st = read.kind === "ok" ? read.state : null;
+    const pipelineNote = st !== null
+        ? {
+            stage: currentStage(st)?.id ?? "(완료)",
+            index: Math.min(st.current_index + 1, DEFAULT_PIPELINE.length),
+            total: DEFAULT_PIPELINE.length,
+            status: st.status,
+            checkpointId: st.pending?.checkpoint_id ?? null,
+        }
+        : {
+            stage: "(파이프라인 상태를 읽을 수 없다)",
+            index: 0,
+            total: DEFAULT_PIPELINE.length,
+            status: read.kind === "unreadable" ? "unreadable — 확인 대기 여부를 알 수 없다" : "absent — 상태 파일이 사라졌다",
+            checkpointId: null,
+        };
     try {
         const ex = exportToVault({
             vault: vaultPath.trim(),
             state: runState,
-            pipeline: st
-                ? {
-                    stage: currentStage(st)?.id ?? "(완료)",
-                    index: Math.min(st.current_index + 1, DEFAULT_PIPELINE.length),
-                    total: DEFAULT_PIPELINE.length,
-                    status: st.status,
-                    checkpointId: st.pending?.checkpoint_id ?? null,
-                }
-                : null,
+            pipeline: pipelineNote,
         });
         console.log(`Obsidian: ${ex.notesWritten}개 노트 → ${ex.folder}`);
     }

@@ -218,7 +218,9 @@ export async function runWorkflow(args) {
         if (!gateStatus.ok)
             throw new Error(`${gateStatus.code}: ${gateStatus.message}`);
     }
-    // [B-41/2단] **활성 파이프라인에서 workflow를 돌릴 수 있는 것은 `pipeline next` 하나뿐이다.**
+    // [B-41/2단] **활성 파이프라인에서 workflow를 돌리려면 lock을 쥔 파이프라인 연산 안이어야 한다.**
+    // (배타 주장을 정정한다 — Codex 검증 A-3: "`pipeline next` 하나뿐"은 거짓이었다. lease는 `lockPipeline`
+    //  의 `runStage` 안에서만 발행되지만, 그 연산을 부르는 것이 `next`뿐이라는 것은 **코드가 보장하지 않는다**.)
     // 여기서 fresh와 resume을 **둘 다** 막는다: resume만 열어두면 "체크포인트 대기 중에 --resume으로
     // 단계를 마저 돌린다"가 그대로 우회 통로가 된다(설계 §6은 fresh 경로를 지목했지만, 같은 게이트를
     // 두 경로에 걸어도 pipeline next는 lease로 통과하므로 잃는 것이 없고 닫히는 것이 하나 늘어난다).
