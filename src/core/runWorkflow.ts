@@ -46,9 +46,11 @@ import {
   redactedQuery,
   secondPassRequest,
   sha256Of,
+  verifyResearchReceipt,
   writeResearchReceipt,
   type ResearchAttempt,
   type ResearchRuntime,
+  type ResearchTotals,
   type SessionBackend,
 } from "./researchRuntime.js";
 import { envFilePath } from "./envFile.js";
@@ -185,11 +187,14 @@ export interface RunState {
    * idea-validation의 리서치 영수증을 지운다.
    *
    * 코드 상한은 `RESEARCH_MAX_ATTEMPTS`(4)이고 **넘으면 오래된 것을 떨군다** — 장기 보존은
-   * receipt 파일이 담당하므로(§4.3) 여기서 잃는 것은 인덱스뿐이다. 다만 4번을 넘게 실패한 뒤에는
-   * "마지막 성공 attempt"가 떨궈져 resume digest 복원이 비게 될 수 있다(그 방향은 근거 없이
-   * 진행하는 것이 아니라 **다시 검색**하는 쪽이다 — 미차단 항목으로 남긴다).
+   * receipt 파일이 담당하고(§4.3) 발생 다중성은 `attempts.jsonl`이 담당한다(B-1). 다만 4번을 넘게
+   * 실패한 뒤에는 "마지막 성공 attempt"가 떨궈져 resume digest 복원이 비게 될 수 있다(그 방향은
+   * 근거 없이 진행하는 것이 아니라 **다시 검색**하는 쪽이다 — 미차단 항목으로 남긴다).
+   *
+   * `totals`는 **단조 증가**하고 절대 잘리지 않는다 — 상한 집행(호출 수·evidence 건수)의 유일한
+   * 근거다. 잘린 `attempts`를 합산해 복원하면 무한 resume으로 예산이 되살아난다(A-3).
    */
-  research?: { attempts: ResearchAttempt[] };
+  research?: { attempts: ResearchAttempt[]; totals?: ResearchTotals };
 }
 
 /**
@@ -596,24 +601,46 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   // 리서치 영수증을 지운다(그리고 checkpoint 결박 대상도 함께 사라진다).
   const researchAttempts: ResearchAttempt[] = [...(priorState?.research?.attempts ?? [])];
   const projectRoot = projectPaths(project).root;
+  /**
+   * [C-126/A-3] **단조 증가 durable 누적치.** `attempts[]`는 4개로 잘리므로 그것을 합산해 상한을
+   * 복원하면 attempt당 1회 호출에서 합계가 4로 고정되고 **무한 resume으로 예산이 되살아난다**.
+   * 구버전 state(필드 없음)는 잘린 배열 합으로 강하한다 — 예전과 같은 수준이고 더 나쁘지 않다.
+   */
+  const priorTotals: ResearchTotals =
+    priorState?.research?.totals ?? {
+      backend_calls: researchAttempts.reduce((s, a) => s + (a.backend_calls ?? 0), 0),
+      results: researchAttempts.reduce((s, a) => s + (a.evidence?.length ?? 0), 0),
+    };
   /** 하류 수신자(EVIDENCE_DIGEST_RECIPIENTS)에게 실리는 digest. **새 attempt 시작 시 소거**된다. */
   let evidenceDigest: string | null = null;
-  // [A-9] resume 재주입은 **시각 창이 아니라 attempt에 결박된 evidence snapshot**에서만 온다.
-  // 마지막 **성공** attempt 하나뿐이다 — 실패 attempt의 partial을 근거로 쓰면 "다 봤다"가 거짓이 된다.
+  // [A-9 + A-1] resume 재주입은 시각 창이 아니라 attempt에 결박된 snapshot에서 오고, **그 snapshot을
+  // 소비 직전에 저장본(receipt+raw)과 대조한다**. run_state 객체를 그대로 믿으면 그 JSON의
+  // summary/source/sha256만 바꿔서 **변조된 근거를 모델에 먹이고 checkpoint는 옛 receipt를 결박**할 수
+  // 있다(모델이 소비한 근거 ≠ 승인된 근거). 정본은 저장본이다 — B-40 snapshotIdea·B-41 durable seed와 같은 규율.
   if (args.resume) {
     const lastOk = [...researchAttempts].reverse().find((a) => a.mode !== null && (a.evidence ?? []).length > 0);
     if (lastOk) {
-      const d = buildEvidenceDigest(lastOk.evidence);
+      const v = verifyResearchReceipt(projectRoot, lastOk);
+      if (!v.ok) {
+        // fail closed. 조용히 "근거 없음"으로 강하하면 변조가 보이지 않는다.
+        throw new Error(
+          `research_receipt_unverified: ${v.detail}\n` +
+            `저장된 리서치 영수증과 run_state가 일치하지 않아 근거를 재주입하지 않고 멈췄습니다 — ` +
+            `${RESEARCH_DIR_REL}/의 파일을 복원하거나 검토 후 outputs/run_state.json을 정리하세요.`,
+        );
+      }
+      const d = buildEvidenceDigest(v.attempt.evidence);
       if (d.ok) evidenceDigest = d.digest;
       else console.warn(`  ⚠ resume: 저장된 근거가 digest 예산(${d.limit}B)을 넘어 재주입하지 않았습니다 (${d.bytes}B)`);
     }
   }
-  // [§6.2] run 수명 sessionBackend가 cache와 호출 예산을 소유한다. resume은 앞 attempt들의
-  // 호출 수를 이어받는다 — **프로세스 간 memo는 소실되므로** 같은 질의는 크레딧을 다시 쓴다(문서화된 한계).
+  // [§6.2 + A-3] run 수명 sessionBackend가 cache와 호출 예산을 소유한다. resume은 **durable 누적치**를
+  // 이어받는다 — **프로세스 간 memo는 소실되므로** 같은 질의는 크레딧을 다시 쓴다(문서화된 한계).
   const sessionBackend: SessionBackend | null =
     research.kind === "external"
       ? createSessionBackend(research.backend, research.scrub, {
-          priorCalls: args.resume ? researchAttempts.reduce((s, a) => s + (a.backend_calls ?? 0), 0) : 0,
+          priorCalls: args.resume ? priorTotals.backend_calls : 0,
+          priorResults: args.resume ? priorTotals.results : 0,
         })
       : null;
 
@@ -863,142 +890,176 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     // 옛 근거가 하류 프롬프트에 남아 있으면 그것이 "이번 판단의 근거"라고 거짓말한다.
     evidenceDigest = null;
     const label = `[${i + 1}/${total}] ${agent.agent_id}`;
+    let sealed = false;
 
-    /** attempt를 봉인한다: receipt write-once → savedFiles → attempts(상한 집행). */
+    /**
+     * [C-126/A-2] attempt를 봉인한다: receipt write-once → savedFiles → attempts(표시 상한).
+     *
+     * **정확히 한 번**이고 **fail closed**다. 예전 판은 `writeResearchReceipt` 예외를 `console.warn`으로
+     * 삼키고 성공 판정을 유지했다 — 그러면 **영수증 없는 completed 문서가 pending으로 가고**, 이전 성공
+     * attempt가 있으면 `runStateSources`가 **현재 문서가 아닌 옛 receipt를 결박**한다(승인 바이트가
+     * 다른 run의 근거를 증언한다). 영수증을 못 쓰면 그 단계는 성공이 아니다.
+     */
     const seal = (mode: ResearchAttempt["mode"], errorCode?: string): void => {
+      if (sealed) return; // 아래 catch/finally와 정상 경로가 겹쳐도 두 번 적히지 않는다
+      sealed = true;
       attempt.mode = mode;
       if (errorCode) attempt.error_code = errorCode;
-      try {
-        attempt.receipt_path = writeResearchReceipt(projectRoot, attempt);
-        // receipt와 raw는 checkpoint 결박 대상이고, 실패 시엔 `last_failure.written`에 잡혀야 한다
-        // (그래서 resume 사전 drift 검증이 partial 저장을 "손댄 것"으로 오해하지 않는다).
-        savedFiles.push(attempt.receipt_path);
-      } catch (err) {
-        // 영수증을 못 써도 run 자체를 다른 사유로 죽이지 않는다 — 사실은 남기고 진행 판정은 유지한다.
-        console.warn(`  ⚠ ${agent.agent_id}: 리서치 영수증 기록 실패 — ${(err as Error).message}`);
-      }
+      // receipt와 raw는 checkpoint 결박 대상이고, 실패 시엔 `last_failure.written`에 잡혀야 한다
+      // (그래서 resume 사전 drift 검증이 partial 저장을 "손댄 것"으로 오해하지 않는다).
+      attempt.receipt_path = writeResearchReceipt(projectRoot, attempt); // 실패는 throw — 삼키지 않는다
+      savedFiles.push(attempt.receipt_path);
       researchAttempts.push(attempt);
       if (researchAttempts.length > RESEARCH_MAX_ATTEMPTS) {
+        // 표시용 상한. **상한 집행 근거는 이 배열이 아니라 durable `totals`다**(A-3).
         researchAttempts.splice(0, researchAttempts.length - RESEARCH_MAX_ATTEMPTS);
       }
     };
+    /** 성공 반환 직전 불변식: **영수증 없는 성공 상태는 없다.** */
+    const requireSealed = (): void => {
+      if (!sealed || !attempt.receipt_path) {
+        throw new ResearchError("research_receipt_missing", "리서치 영수증 없이 성공으로 판정할 수 없다 (결박 대상이 비어 있다)");
+      }
+    };
 
-    // ── self: 키 부재 → 외부 호출 0회 (기존 동작과 같은 1-LLM step) ──
-    if (research.kind !== "external" || sessionBackend === null) {
-      const o = await runStepWithRegen(agent, nextAgentId, { spawnRequest, progressLabel: label, stepIndex: i + 1, kind: "agent" });
-      recordOutcomeTelemetry(agent, o);
-      const saved = persistFinalOutcome(agent, o);
-      seal("self");
-      return { ok: true, saved, elapsedMs: o.elapsedMs, mode: "self" };
-    }
-    const scrub = research.scrub;
-
-    // ── 1차: 선언 지시 주입 · **telemetry만**(미저장) ──
-    const first = await runStepWithRegen(agent, nextAgentId, {
-      spawnRequest,
-      researchRequest: RESEARCH_DECLARATION_INSTRUCTION,
-      progressLabel: `${label} (1차 · 검색 선언)`,
-      stepIndex: i + 1,
-      kind: "agent",
-    });
-    recordOutcomeTelemetry(agent, first);
-    attempt.first_pass_sha256 = sha256Of(first.markdown);
-
-    const decl = parseResearchDeclaration(first.markdown);
-    if (decl.kind === "missing") {
-      seal(null, "research_declaration_missing");
-      return { ok: false, reason: "research_declaration_missing", detail: `문서 말미에 선언도 'RESEARCH_REQUEST none'도 없다` };
-    }
-    if (decl.kind === "invalid") {
-      seal(null, "research_declaration_invalid");
-      return { ok: false, reason: "research_declaration_invalid", detail: scrub(decl.detail) };
-    }
-    if (decl.kind === "none") {
-      // 명시 종결자 — 모델이 "검색 불필요"를 선언했다. 1차가 곧 최종본이다.
-      const saved = persistFinalOutcome(agent, first);
-      seal("external_declined");
-      return { ok: true, saved, elapsedMs: first.elapsedMs, mode: "external_declined" };
-    }
-    attempt.requests = decl.requests.map((r) => ({ redacted_query: redactedQuery(r.query, scrub) }));
-    console.log(`  🔎 ${agent.agent_id}: 검색 선언 ${decl.requests.length}건 — 외부 검색(Tavily)으로 전송합니다`);
-
-    // ── 검색 실행 ──
-    const callsAt = sessionBackend.calls;
-    const hitsAt = sessionBackend.memoHits;
+    // attempt 시작 이후의 **모든** 경로를 감싼다: self/1차 provider throw도 예전에는 seal 밖에서
+    // 났고, 그래서 영수증 없이 문서가 저장될 수 있었다.
     try {
-      const res = await runResearch(decl.requests, {
-        backend: sessionBackend,
-        evidenceDir: join(projectRoot, RESEARCH_DIR_REL),
-        now,
-        // [§5.4] extract 봉인: `null`이면 extract는 **전부 거부**되고 search는 좁혀지지 않는다.
-        allowedDomains: null,
-        // [A-4] partial을 사실대로 적는 유일한 자리 — 뒤 항목이 throw해도 앞 저장은 남는다.
-        onStored: (item, rel) => {
-          attempt.evidence.push(item);
-          const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
-          attempt.raw_paths.push(projRel);
-          savedFiles.push(projRel);
-        },
-      });
-      attempt.dropped_by_domain = res.droppedByDomain;
-    } catch (err) {
-      attempt.backend_calls = sessionBackend.calls - callsAt;
-      attempt.cache_hits = sessionBackend.memoHits - hitsAt;
-      const code = err instanceof ResearchError ? err.code : "research_backend_error";
-      const reason = code.startsWith("research_") ? code : "research_backend_error";
-      seal(null, reason);
-      return { ok: false, reason, detail: scrub((err as Error).message) };
-    }
-    attempt.backend_calls = sessionBackend.calls - callsAt;
-    attempt.cache_hits = sessionBackend.memoHits - hitsAt;
+      // ── self: 키 부재 → 외부 호출 0회 (기존 동작과 같은 1-LLM step) ──
+      if (research.kind !== "external" || sessionBackend === null) {
+        const o = await runStepWithRegen(agent, nextAgentId, { spawnRequest, progressLabel: label, stepIndex: i + 1, kind: "agent" });
+        recordOutcomeTelemetry(agent, o);
+        const saved = persistFinalOutcome(agent, o);
+        seal("self");
+        requireSealed();
+        return { ok: true, saved, elapsedMs: o.elapsedMs, mode: "self" };
+      }
+      const scrub = research.scrub;
 
-    // ── 결과 0건: API는 정상이었고 후보가 없었다 (실패가 아니다) ──
-    if (attempt.evidence.length === 0) {
-      const saved = persistFinalOutcome(agent, first);
-      seal("external_empty");
-      return { ok: true, saved, elapsedMs: first.elapsedMs, mode: "external_empty" };
-    }
-
-    // ── 예산 (§6.3 · byte 단위 · 절단 금지) ──
-    const firstBytes = Buffer.byteLength(first.markdown, "utf8");
-    if (firstBytes > RESEARCH_FIRST_PASS_MAX_BYTES) {
-      seal(null, "research_first_pass_too_large");
-      return {
-        ok: false,
-        reason: "research_first_pass_too_large",
-        detail: `1차 문서가 ${firstBytes}B로 상한 ${RESEARCH_FIRST_PASS_MAX_BYTES}B를 넘는다 (자르지 않는다 — 근거 반영이 무의미해진다)`,
-      };
-    }
-    const digest = buildEvidenceDigest(attempt.evidence);
-    if (!digest.ok) {
-      seal(null, "research_budget_exceeded");
-      return {
-        ok: false,
-        reason: "research_budget_exceeded",
-        detail: `근거 digest가 ${digest.bytes}B로 상한 ${digest.limit}B를 넘는다 (조용히 자르지 않는다)`,
-      };
-    }
-
-    // ── 2차: 1차 전문 + digest → **이것만 저장** ──
-    let second: StepOutcome;
-    try {
-      second = await runStepWithRegen(agent, nextAgentId, {
-        revisionRequest: secondPassRequest(first.markdown, attempt.first_pass_sha256),
-        evidenceDigest: digest.digest,
-        progressLabel: `${label} (2차 · 근거 반영)`,
+      // ── 1차: 선언 지시 주입 · **telemetry만**(미저장) ──
+      const first = await runStepWithRegen(agent, nextAgentId, {
+        spawnRequest,
+        researchRequest: RESEARCH_DECLARATION_INSTRUCTION,
+        progressLabel: `${label} (1차 · 검색 선언)`,
         stepIndex: i + 1,
-        kind: "revise",
+        kind: "agent",
       });
+      recordOutcomeTelemetry(agent, first);
+      attempt.first_pass_sha256 = sha256Of(first.markdown);
+
+      const decl = parseResearchDeclaration(first.markdown);
+      if (decl.kind === "missing") {
+        seal(null, "research_declaration_missing");
+        return { ok: false, reason: "research_declaration_missing", detail: `문서 말미에 선언도 'RESEARCH_REQUEST none'도 없다` };
+      }
+      if (decl.kind === "invalid") {
+        seal(null, "research_declaration_invalid");
+        return { ok: false, reason: "research_declaration_invalid", detail: scrub(decl.detail) };
+      }
+      if (decl.kind === "none") {
+        // 명시 종결자 — 모델이 "검색 불필요"를 선언했다. 1차가 곧 최종본이다.
+        const saved = persistFinalOutcome(agent, first);
+        seal("external_declined");
+        requireSealed();
+        return { ok: true, saved, elapsedMs: first.elapsedMs, mode: "external_declined" };
+      }
+      attempt.requests = decl.requests.map((r) => ({ redacted_query: redactedQuery(r.query, scrub) }));
+      console.log(`  🔎 ${agent.agent_id}: 검색 선언 ${decl.requests.length}건 — 외부 검색(Tavily)으로 전송합니다`);
+
+      // ── 검색 실행 ──
+      const callsAt = sessionBackend.calls;
+      const hitsAt = sessionBackend.memoHits;
+      // [B-3] cache_hits는 **두 계층의 합**이다: sessionBackend memo(attempt 간)와 gateway의
+      // per-call cache(같은 질의 두 줄). memo delta만 적으면 "같은 query 두 줄"에서 0으로 증언한다.
+      const memoDelta = () => sessionBackend.memoHits - hitsAt;
+      try {
+        const res = await runResearch(decl.requests, {
+          backend: sessionBackend,
+          evidenceDir: join(projectRoot, RESEARCH_DIR_REL),
+          now,
+          // [§5.4] extract 봉인: `null`이면 extract는 **전부 거부**되고 search는 좁혀지지 않는다.
+          allowedDomains: null,
+          // [A-4] partial을 사실대로 적는 유일한 자리 — 뒤 항목이 throw해도 앞 저장은 남는다.
+          onStored: (item, rel) => {
+            attempt.evidence.push(item);
+            const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
+            attempt.raw_paths.push(projRel);
+            savedFiles.push(projRel);
+          },
+        });
+        attempt.dropped_by_domain = res.droppedByDomain;
+        attempt.backend_calls = sessionBackend.calls - callsAt;
+        attempt.cache_hits = memoDelta() + res.cacheHits;
+      } catch (err) {
+        attempt.backend_calls = sessionBackend.calls - callsAt;
+        attempt.cache_hits = memoDelta(); // throw 경로에는 gateway 집계가 없다 (memo delta만)
+        const code = err instanceof ResearchError ? err.code : "research_backend_error";
+        const reason = code.startsWith("research_") ? code : "research_backend_error";
+        seal(null, reason);
+        return { ok: false, reason, detail: scrub((err as Error).message) };
+      }
+
+      // ── 결과 0건: API는 정상이었고 후보가 없었다 (실패가 아니다) ──
+      if (attempt.evidence.length === 0) {
+        const saved = persistFinalOutcome(agent, first);
+        seal("external_empty");
+        requireSealed();
+        return { ok: true, saved, elapsedMs: first.elapsedMs, mode: "external_empty" };
+      }
+
+      // ── 예산 (§6.3 · byte 단위 · 절단 금지) ──
+      const firstBytes = Buffer.byteLength(first.markdown, "utf8");
+      if (firstBytes > RESEARCH_FIRST_PASS_MAX_BYTES) {
+        seal(null, "research_first_pass_too_large");
+        return {
+          ok: false,
+          reason: "research_first_pass_too_large",
+          detail: `1차 문서가 ${firstBytes}B로 상한 ${RESEARCH_FIRST_PASS_MAX_BYTES}B를 넘는다 (자르지 않는다 — 근거 반영이 무의미해진다)`,
+        };
+      }
+      const digest = buildEvidenceDigest(attempt.evidence);
+      if (!digest.ok) {
+        seal(null, "research_budget_exceeded");
+        return {
+          ok: false,
+          reason: "research_budget_exceeded",
+          detail: `근거 digest가 ${digest.bytes}B로 상한 ${digest.limit}B를 넘는다 (조용히 자르지 않는다)`,
+        };
+      }
+
+      // ── 2차: 1차 전문 + digest → **이것만 저장** ──
+      let second: StepOutcome;
+      try {
+        second = await runStepWithRegen(agent, nextAgentId, {
+          revisionRequest: secondPassRequest(first.markdown, attempt.first_pass_sha256),
+          evidenceDigest: digest.digest,
+          progressLabel: `${label} (2차 · 근거 반영)`,
+          stepIndex: i + 1,
+          kind: "revise",
+        });
+      } catch (err) {
+        // [B-2] 2차 실패도 **안정 사유 코드로 돌려준다.** 예전엔 원래 예외를 다시 throw해서 outer
+        // catch가 `failed_reason = err.message`로 덮었고, 그러면 복구 안내(`research_` 접두사 검사)가
+        // 이 실패를 못 보고 attempt의 코드만 고립됐다.
+        seal(null, "research_second_pass_failed");
+        return { ok: false, reason: "research_second_pass_failed", detail: scrub((err as Error).message) };
+      }
+      recordOutcomeTelemetry(agent, second);
+      const saved = persistFinalOutcome(agent, second);
+      evidenceDigest = digest.digest; // 하류 수신자(pm·red_team·founder_ceo)에게 전달
+      seal("external");
+      requireSealed();
+      return { ok: true, saved, elapsedMs: second.elapsedMs, mode: "external" };
     } catch (err) {
-      // 2차가 죽으면 1차 비용과 partial evidence는 **이미 사실**이다 — 영수증을 남기고 실패한다.
-      seal(null, "research_second_pass_failed");
-      throw err; // 기존 step 실패 경로(failed_agent/failed_reason)를 그대로 쓴다
+      // provider throw·영수증 실패·예상 밖 예외 — **어떤 경로든 attempt는 봉인된다.**
+      // seal 자체가 실패하면 그 사실을 알리되 원래 실패를 가리지 않는다(둘 다 run을 죽인다).
+      try {
+        seal(null, "research_step_failed");
+      } catch (sealErr) {
+        console.error(`  ✗ ${agent.agent_id}: 리서치 영수증 기록 실패 — ${(sealErr as Error).message}`);
+      }
+      throw err;
     }
-    recordOutcomeTelemetry(agent, second);
-    const saved = persistFinalOutcome(agent, second);
-    evidenceDigest = digest.digest; // 하류 수신자(pm·red_team·founder_ceo)에게 전달
-    seal("external");
-    return { ok: true, saved, elapsedMs: second.elapsedMs, mode: "external" };
   }
 
   // 실행 생명주기: run_start → (step_*)* → run_end. run_end는 예외가 나도 반드시 방출되도록
@@ -1400,7 +1461,18 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     finished_at,
     // [C-126] attempt가 하나도 없으면 필드 자체를 내지 않는다 — 구버전 run_state와 바이트 동일
     // (리서치 agent가 없는 workflow의 run_state.json이 이 슬라이스 때문에 커지지 않는다).
-    ...(researchAttempts.length > 0 ? { research: { attempts: researchAttempts } } : {}),
+    // [A-3] `totals`는 **단조 증가**다: sessionBackend가 있으면 그 누적치(prior 포함)를 그대로 쓰고,
+    // 없으면(self) 이전 값을 내린다 — 어느 경로에서도 줄지 않는다.
+    ...(researchAttempts.length > 0
+      ? {
+          research: {
+            attempts: researchAttempts,
+            totals: sessionBackend
+              ? { backend_calls: sessionBackend.calls, results: sessionBackend.results }
+              : { backend_calls: priorTotals.backend_calls, results: priorTotals.results },
+          },
+        }
+      : {}),
   };
 
   // run_state.json은 성공/실패와 무관하게 항상 기록

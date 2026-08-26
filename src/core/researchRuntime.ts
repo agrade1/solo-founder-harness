@@ -17,9 +17,9 @@
  * - 이 리더는 **CLI 경로(run·pipeline)에서만** 돈다. 스크립트 직접 실행은 기존 셸 env 방식이다.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { ensureEnvTemplate, resolveResearchKey, type ResolveKeyOptions } from "./envFile.js";
+import { resolveResearchKey, type ResolveKeyOptions } from "./envFile.js";
 import { redactSecrets } from "../tools/redact.js";
 import { createTavilyBackend } from "../tools/tavilyBackend.js";
 import {
@@ -80,24 +80,21 @@ export type ResearchRuntime =
     };
 
 export interface ResolveRuntimeOptions extends ResolveKeyOptions {
-  /** 템플릿 생성을 건너뛴다(테스트에서 workspace를 더럽히지 않기 위한 seam). */
-  skipTemplate?: boolean;
   maxResults?: number;
 }
 
 /**
  * 키를 해석해 runtime을 만든다. 키가 있으면 external, 없으면 self다.
  *
- * self 판정 순간에 `.env` 템플릿을 **만들어 둔다**(설계 §2): 사용자에게 "키를 달라"고 하면서
- * 어디에 넣으라는 파일이 없으면 그 안내는 실행 불가능한 지시다. 이미 있으면 손대지 않는다.
+ * `.env` 템플릿 생성은 `resolveResearchKey` → `ensureEnvFileReady`가 **git 안전 검사를 통과한 뒤에만**
+ * 한다(A-5). 예전엔 이 함수가 검사 밖에서 따로 만들었고, 그러면 새 `.env`가 unignored로 남을 수 있었다.
  */
 export function resolveResearchRuntime(opts: ResolveRuntimeOptions = {}): ResearchRuntime {
   const r = resolveResearchKey(opts);
   if (r.key === null) {
     const notices = [...r.notices];
-    if (!opts.skipTemplate) {
-      const t = ensureEnvTemplate(opts.root);
-      if (t.created) notices.push(`리서치 키 파일을 만들었습니다: ${t.path} (값만 채우면 다음 실행부터 외부 검색을 씁니다)`);
+    if (r.created) {
+      notices.push(`리서치 키 파일을 만들었습니다: ${r.envPath} (값만 채우면 다음 실행부터 외부 검색을 씁니다)`);
     }
     if (r.skippedLines > 0) {
       // 내용·이름은 적지 않는다 — 개수만. "왜 내 키를 못 읽나"의 유일한 단서이면서 유출이 아니다.
@@ -115,14 +112,39 @@ export function resolveResearchRuntime(opts: ResolveRuntimeOptions = {}): Resear
 }
 
 /**
- * 리서치 모드 영수증 줄. **`run`과 `pipeline next`가 같은 함수를 쓴다** — 렌더가 두 벌이면 한쪽만
- * 정직해진다(B-40의 `gateOutcomeLabel`이 잡은 부류). 키 값은 어느 경로에도 담지 않는다.
+ * [C-126/A-6] **실행 전 설정 상태** 한 줄. run이 시작되기 전에 아는 것은 "키가 설정됐다"뿐이고
+ * **실제 mode가 아니다** — research step이 없는 workflow도, 모델이 `none`을 낸 실행도, 결과 0건도,
+ * 실패도 모두 이 시점에는 구분되지 않는다. 그래서 문구가 "사용 **가능**(설정됨)"이다.
+ * 실제 mode는 run이 끝난 뒤 `researchOutcomeLines()`가 영수증에서 읽어 출력한다.
  */
 export function researchModeLines(rt: ResearchRuntime): string[] {
   if (rt.kind === "external") {
-    return [`리서치: 외부 검색(Tavily) 사용 — 모델이 만든 검색어가 외부로 전송됩니다. 근거는 ${RESEARCH_DIR_REL}/에 저장됩니다.`];
+    return [`리서치: 외부 검색(Tavily) 사용 **가능** (키 설정됨) — 실제 사용 여부는 실행 후 영수증에 적힙니다. 근거는 ${RESEARCH_DIR_REL}/에 저장됩니다.`];
   }
-  return [`리서치: 자체(self) — 외부 검색 키가 없습니다. 쓰려면 이 파일에 값만 채우세요: ${rt.envPath}`, ...rt.notices];
+  return [`리서치: 외부 검색 키 없음 — 자체(self)로 진행합니다. 쓰려면 이 파일에 값만 채우세요: ${rt.envPath}`, ...rt.notices];
+}
+
+/**
+ * [C-126/A-6] **실행 후 실제 mode 영수증.** `run`과 `pipeline next`가 같은 함수를 쓴다 — 렌더가 두
+ * 벌이면 한쪽만 정직해진다(B-40의 `gateOutcomeLabel`이 잡은 부류). attempt가 없으면 빈 배열이다
+ * (리서치 step이 없는 workflow에서 리서치 이야기를 하지 않는다).
+ */
+export function researchOutcomeLines(attempts: readonly ResearchAttempt[] | undefined): string[] {
+  const a = attempts?.at(-1);
+  if (!a) return [];
+  const tail = ` · 영수증 ${a.receipt_path || "(미기록)"}`;
+  switch (a.mode) {
+    case "external":
+      return [`리서치 결과: 외부 검색 사용 — 근거 ${a.evidence.length}건 (backend ${a.backend_calls}회 · 캐시 ${a.cache_hits}회)${tail}`];
+    case "external_declined":
+      return [`리서치 결과: 모델이 '검색 불필요'를 선언 — 외부 호출 0회${tail}`];
+    case "external_empty":
+      return [`리서치 결과: 외부 검색 결과 0건 (backend ${a.backend_calls}회) — 근거 없이 1차 판단을 채택했습니다${tail}`];
+    case "self":
+      return [`리서치 결과: 자체(self) — 외부 검색을 쓰지 않았습니다${tail}`];
+    default:
+      return [`리서치 결과: 중단 (${a.error_code ?? "사유 미기록"}) — 저장된 근거 ${a.evidence.length}건${tail}`];
+  }
 }
 
 // ── 1차 선언 파싱 ───────────────────────────────────────────────
@@ -241,10 +263,15 @@ export interface SessionBackend extends ResearchBackend {
 
 export interface SessionBackendOptions {
   /**
-   * resume 시 앞 attempt들의 `backend_calls` 합. **프로세스 간 memo는 소실된다** —
-   * 같은 query를 다시 물으면 크레딧이 다시 나간다(설계 §6.2에 적힌 그대로의 한계다).
+   * [A-3] resume 시 이어받는 **단조 증가 durable 누적 호출 수**(`run_state.research.totals`).
+   *
+   * **표시용 `attempts[]`에서 합산하면 안 된다**: 그 배열은 4개로 잘리므로 attempt당 1회 호출이면
+   * 오래된 것이 계속 탈락해 합계가 4로 고정되고 **무한 resume으로 상한이 다시 열린다**(과금 폭주).
+   * **프로세스 간 memo는 소실된다** — 같은 query를 다시 물으면 크레딧이 다시 나간다(§6.2의 한계).
    */
   priorCalls?: number;
+  /** [A-3] 같은 이유로 이어받는 durable 누적 결과 건수(evidence 상한이 resume마다 초기화되지 않게). */
+  priorResults?: number;
 }
 
 /**
@@ -261,7 +288,7 @@ export function createSessionBackend(inner: ResearchBackend, scrub: (s: string) 
   const memo = new Map<string, BackendResult[]>();
   let calls = opts.priorCalls ?? 0;
   let memoHits = 0;
-  let results = 0;
+  let results = opts.priorResults ?? 0;
 
   const clean = (r: BackendResult): BackendResult => {
     if (r.source.length > RESEARCH_MAX_URL_CHARS) {
@@ -327,7 +354,7 @@ export interface ResearchAttempt {
   cache_hits: number;
   dropped_by_domain: number;
   first_pass_sha256: string | null;
-  /** 포인터+발췌만(원문 필드 없음). **resume digest 복원의 유일한 근거**다(시각 창이 아니다). */
+  /** 포인터+발췌만(응답 본문 필드 없음). **resume digest 복원의 유일한 근거**다(시각 창이 아니다). */
   evidence: EvidenceItem[];
   /** 아래 write-once receipt 파일의 **프로젝트 상대경로**. */
   receipt_path: string;
@@ -335,8 +362,32 @@ export interface ResearchAttempt {
   raw_paths: string[];
 }
 
-/** `outputs/research` — evidence·raw·receipt가 모두 여기 산다. */
+/**
+ * [C-126/A-3] **단조 증가 durable 누적치.** `attempts[]`는 표시용이고 4개로 잘리므로 상한 집행의
+ * 근거가 될 수 없다(잘린 배열을 합산하면 resume마다 예산이 되살아난다). 이 두 값은 **절대 줄지 않고**
+ * resume이 그대로 이어받는다.
+ */
+export interface ResearchTotals {
+  backend_calls: number;
+  results: number;
+}
+
+/** `outputs/research` — evidence·raw·receipt·instance log가 모두 여기 산다. */
 export const RESEARCH_DIR_REL = "outputs/research";
+/**
+ * [C-126/B-1] attempt **발생 인스턴스** append-only 로그.
+ *
+ * content-addressed receipt는 "어떤 사실이었나"를 보존하지만 **몇 번 일어났나**를 잃는다(같은 body면
+ * 파일 하나를 공유하고, `run_state`는 다음 workflow가 덮고 `attempts[]`는 4개로 잘린다).
+ * 그래서 seal마다 한 줄을 append한다 — audit이 묻는 것은 다중성이고 그 값은 이 한 줄이 답한다.
+ *
+ * **checkpoint에 결박하지 않는다**(`evidence.jsonl`과 같은 규율): append-only를 결박하면 승인 후
+ * 정당한 append 하나가 전수 검증에서 전부 drift가 된다. 권위는 receipt+raw에 있다.
+ *
+ * ponytail: 파일 한 줄이 가장 싼 형태다. semantic receipt를 instance마다 복제하는 방향은 기각했다 —
+ * checkpoint가 결박할 대상이 매 재실행마다 달라져 B-41 불변식 3이 다시 깨진다.
+ */
+export const RESEARCH_ATTEMPT_LOG_REL = `${RESEARCH_DIR_REL}/attempts.jsonl`;
 
 /**
  * attempt 종결 시 **불변 receipt**를 남긴다(성공·실패 무관).
@@ -359,7 +410,8 @@ export const RESEARCH_DIR_REL = "outputs/research";
  * 승인 후 변경이 drift · 같은 raw 저장 규칙(`evidenceStore`)과 같은 패턴. 그리고 "같은 바이트 →
  * 같은 id"가 살아 있다. 잃는 것 하나: **같은 run 안에서 attempt 두 개의 사실이 완전히 동일하면
  * 같은 파일 하나를 공유한다**(주입된 고정 시각 + memo 적중이 겹칠 때만 — 실제 시계에서는
- * `started_at`이 달라 갈린다). 그때도 내용은 참이고 잃는 것은 파일 개수뿐이다.
+ * `started_at`이 달라 갈린다). **다중성은 `attempts.jsonl`(append-only instance log)이 보존한다**
+ * — 그것이 B-1의 답이고, "잃는 것은 파일 개수뿐"이라는 예전 문장은 audit 관점에서 틀렸다.
  *
  * **drift가 아닌 것**: 게이트 '검증' 재진입·reject 후 재실행은 **승인 전**이다 — 새 attempt는 새
  * receipt를 만들고 새 pending에 결박될 뿐, 이미 approved된 digest와 무관하다.
@@ -368,25 +420,92 @@ export const RESEARCH_DIR_REL = "outputs/research";
 export function writeResearchReceipt(projectRoot: string, attempt: ResearchAttempt): string {
   const dir = join(projectRoot, RESEARCH_DIR_REL);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const body = JSON.stringify({ ...attempt, receipt_path: undefined }, null, 2) + "\n";
+  const body = receiptBody(attempt);
   const rel = `${RESEARCH_DIR_REL}/receipt-${sha256Of(body)}.json`;
   const abs = join(projectRoot, rel);
+  let created = true;
   try {
     writeFileSync(abs, body, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    return rel;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    created = false;
+    // 이미 있다 → **내용이 곧 이름**이므로 같은 바이트여야 한다. 아니면 남의 바이트이고 덮지 않는다
+    // (evidenceStore의 EEXIST 재검증과 같은 규율 — hash 이름을 무조건 정답으로 접지 않는다).
+    if (readFileSync(abs, "utf8") !== body) {
+      throw new ResearchError(
+        "research_receipt_hash_mismatch",
+        `content-addressed receipt 경로에 다른 바이트가 있다: ${rel} — 덮어쓰지 않고 거부한다`,
+      );
+    }
   }
-  // 이미 있다 → **내용이 곧 이름**이므로 같은 바이트여야 한다. 아니면 남의 바이트이고 덮지 않는다
-  // (evidenceStore의 EEXIST 재검증과 같은 규율 — hash 이름을 무조건 정답으로 접지 않는다).
-  const onDisk = readFileSync(abs, "utf8");
-  if (onDisk !== body) {
-    throw new ResearchError(
-      "research_receipt_hash_mismatch",
-      `content-addressed receipt 경로에 다른 바이트가 있다: ${rel} — 덮어쓰지 않고 거부한다`,
-    );
-  }
+  // [B-1] 다중성 보존: seal마다 한 줄. `created:false`(같은 사실의 재발생)가 바로 그 정보다.
+  appendFileSync(
+    join(projectRoot, RESEARCH_ATTEMPT_LOG_REL),
+    JSON.stringify({ sealed_at: attempt.started_at, mode: attempt.mode, error_code: attempt.error_code ?? null, receipt_path: rel, receipt_created: created }) + "\n",
+    { encoding: "utf8", mode: 0o600 },
+  );
   return rel;
+}
+
+/** receipt 파일의 **정확한 바이트**. 쓰기와 검증이 같은 함수를 써야 exact-equal 대조가 성립한다. */
+function receiptBody(attempt: ResearchAttempt): string {
+  return JSON.stringify({ ...attempt, receipt_path: undefined }, null, 2) + "\n";
+}
+
+// ── receipt 재검증 (A-1) ────────────────────────────────────────
+
+export type ReceiptVerification = { ok: true; attempt: ResearchAttempt } | { ok: false; detail: string };
+
+const RECEIPT_NAME_RE = new RegExp(`^${RESEARCH_DIR_REL}/receipt-([0-9a-f]{64})\\.json$`);
+
+/**
+ * [C-126/A-1] **resume 전에 영수증을 다시 검증한다.** `run_state.json`의 attempt 객체를 그대로 믿고
+ * digest를 만들면, run_state의 `summary`/`source`/`sha256`만 바꿔도 **변조된 근거가 모델에 가고
+ * checkpoint는 손대지 않은 옛 receipt/raw를 결박한다** — 모델이 소비한 근거 ≠ 승인된 근거.
+ *
+ * B-40의 `snapshotIdea`·B-41의 durable seed와 같은 규율이다: **정본은 저장본이고, 소비 직전에 그
+ * 바이트를 다시 읽어 대조한다.**
+ *
+ * 검사 넷: ⓐ 경로 형태 ⓑ 파일 sha256 == 파일명 hash(content-addressed 자기 검증) ⓒ 파일 본문 ==
+ * run_state attempt에서 재직렬화한 바이트(**exact-equal**) ⓓ 각 evidence의 raw 파일 **재해시**와
+ * byte 수 대조. 하나라도 어긋나면 digest를 만들지 않는다.
+ */
+export function verifyResearchReceipt(projectRoot: string, attempt: ResearchAttempt): ReceiptVerification {
+  const m = RECEIPT_NAME_RE.exec(attempt.receipt_path);
+  if (!m) return { ok: false, detail: `receipt 경로 형태가 아니다: ${attempt.receipt_path || "(없음)"}` };
+  const abs = join(projectRoot, attempt.receipt_path);
+  let onDisk: string;
+  try {
+    onDisk = readFileSync(abs, "utf8");
+  } catch (err) {
+    return { ok: false, detail: `receipt를 읽을 수 없다: ${attempt.receipt_path} (${(err as Error).message})` };
+  }
+  const actual = sha256Of(onDisk);
+  if (actual !== m[1]) {
+    return { ok: false, detail: `receipt 바이트가 파일명 hash와 다르다: ${attempt.receipt_path} (파일 ${actual})` };
+  }
+  if (onDisk !== receiptBody(attempt)) {
+    return {
+      ok: false,
+      detail: `run_state의 리서치 기록이 저장된 영수증과 다르다: ${attempt.receipt_path} (run_state가 변조됐거나 손상됐다)`,
+    };
+  }
+  // 저장본이 정본이므로 digest는 **receipt에서 파싱한 것**으로 만든다(run_state 객체가 아니다).
+  const fromDisk = JSON.parse(onDisk) as ResearchAttempt;
+  for (const it of fromDisk.evidence ?? []) {
+    const rawAbs = join(projectRoot, RESEARCH_DIR_REL, it.rawPath);
+    let bytes: Buffer;
+    try {
+      bytes = readFileSync(rawAbs);
+    } catch (err) {
+      return { ok: false, detail: `근거 원본 파일을 읽을 수 없다: ${it.rawPath} (${(err as Error).message})` };
+    }
+    const h = createHash("sha256").update(bytes).digest("hex");
+    if (h !== it.sha256 || bytes.length !== it.bytes) {
+      return { ok: false, detail: `근거 파일이 영수증의 digest와 다르다: ${it.rawPath} (파일 ${h} · ${bytes.length}B)` };
+    }
+  }
+  return { ok: true, attempt: { ...fromDisk, receipt_path: attempt.receipt_path } };
 }
 
 /** 문서 바이트의 sha256 — 1차 전문 신원(2차 요청문과 영수증이 같은 값을 쓴다). */
