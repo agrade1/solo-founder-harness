@@ -57,6 +57,13 @@ import { envFilePath } from "./envFile.js";
 
 export type { ProgressReporter } from "./progress.js"; // 하위 호환: 기존 import 경로 유지
 
+/**
+ * [C-127] 재생성 상한 후에도 필수 섹션 계약 미달 — **채택 거부**. step 단위 catch가 이것을 보고
+ * `failed_reason`에 안정 코드(`required_sections_missing`)를 적는다. 새 상태를 만들지 않는 이유는
+ * `failed` + `resume_from`이 이미 이 레포의 "고치고 이어서 하라"이기 때문이다(`user_rejected` 선례).
+ */
+class RequiredSectionsMissing extends Error {}
+
 export interface StepWarning {
   agent_id: string;
   missing: string[];
@@ -838,10 +845,26 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     }
   }
 
-  /** [C-126/A-2] **최종 채택본만** 저장한다 (saveArtifact·token_output·completed_steps·findings). */
+  /**
+   * [C-126/A-2] **최종 채택본만** 저장한다 (saveArtifact·token_output·completed_steps·findings).
+   *
+   * [C-127] 채택(저장→완료 등재→findings)의 **유일한 관문**이라서 필수 섹션 가드가 여기 있다.
+   * 기각한 대안: `runStepWithRegen` 안에서 throw — ⓐ 리서치 **1차**를 과차단한다(1차는 채택본이
+   * 아니고 2차가 교정 기회다) ⓑ 그 throw가 usage 누산 이전에 나가 **1차 LLM 비용이 run_state에서
+   * 사라진다**(C-126/A-2가 막은 바로 그 회귀).
+   */
   function persistFinalOutcome(agent: AgentDef, o: StepOutcome): string {
     const saved = saveArtifact(project, agent.default_output, o.markdown);
     savedFiles.push(saved);
+    // [C-127] 계약 미충족 산출물은 채택하지 않는다. 파일은 검토용으로 남긴다(오늘과 같은 바이트 —
+    // 파이프라인 last_failure.written에 잡혀 resume drift 검증이 오해하지 않는다). token_output은
+    // 뽑지 않는다: 깨진 design 문서가 정상 tokens.json을 덮으면 안 된다.
+    if (!o.validation.ok) {
+      throw new RequiredSectionsMissing(
+        `${agent.agent_id}: 필수 섹션 미충족(${o.validation.missing.join(", ")}) — 재생성 ${maxRegen}회 후에도 계약 미달. ` +
+          `산출물은 ${saved}에 남겼지만 completed로 채택하지 않는다.`,
+      );
+    }
     // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
     if (agent.token_output) {
       const tokens = extractTokensJson(o.markdown);
@@ -1419,7 +1442,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       console.log(`  ⚖ 비평 루프 종료: ${critic}⟲${target} ${round}라운드, ${resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
     } catch (err) {
       failed_agent = currentAgentId || "(unknown)";
-      failed_reason = (err as Error).message;
+      // [C-127] 필수 섹션 미달만 안정 코드로 승격한다. 그 밖의 예외는 기존대로 message 그대로다.
+      failed_reason = err instanceof RequiredSectionsMissing ? "required_sections_missing" : (err as Error).message;
       failedIndex = i;
       console.error(`  ✗ ${failed_agent}: 실행 실패 — ${(err as Error).message} — 중단`);
       break;
