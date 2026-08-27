@@ -130,6 +130,7 @@ export async function runResearch(requests, opts) {
     let backendCalls = 0;
     let cacheHits = 0;
     let droppedByDomain = 0;
+    let droppedByStore = 0;
     const items = [];
     const allowed = (url) => {
         const host = hostOf(url);
@@ -168,8 +169,27 @@ export async function runResearch(requests, opts) {
                 opts.onStored?.(item, item.rawPath);
             }
             catch (e) {
-                if (e instanceof EvidenceError)
+                if (e instanceof EvidenceError) {
+                    /**
+                     * [C-138/①] **search 후보 1건의 데이터 품질이 step 전체를 죽이지 않는다.**
+                     *
+                     * 실측(2026-08-27 live): Tavily가 결과 9건 중 1건으로 `http://`(비-https) URL을 돌려줬고,
+                     * `storeEvidence`의 https 검사가 던진 `EvidenceError`가 여기서 `ResearchError`로 승격돼
+                     * **이미 저장된 8건과 함께** research step 전체가 죽었다.
+                     *
+                     * 경계의 성격이 두 경로에서 다르다:
+                     *  - `narrow === true`(search): 후보를 고른 것은 **벤더**다. 우리가 지목하지 않은 URL의 품질은
+                     *    우리가 통제하는 보안 경계가 아니라 제3자 데이터 품질이다 → 그 1건만 버리고 계속한다
+                     *    (바로 위 `droppedByDomain`과 같은 관용구).
+                     *  - `narrow === false`(extract): URL을 지목한 것은 **우리**다. 다른 곳의 응답이 돌아오는 것은
+                     *    리다이렉트 우회 시도이고 **그것은 진짜 보안 경계다** → 지금처럼 throw를 유지한다.
+                     */
+                    if (narrow) {
+                        droppedByStore++;
+                        continue;
+                    }
                     throw new ResearchError(e.code, e.message);
+                }
                 throw e;
             }
         }
@@ -187,7 +207,7 @@ export async function runResearch(requests, opts) {
             items.push(...(await call(`extract:${url}`, async () => [await opts.backend.extract(url)], false)));
         }
     }
-    return { items, backendCalls, cacheHits, droppedByDomain };
+    return { items, backendCalls, cacheHits, droppedByDomain, droppedByStore };
 }
 // ── T4: 주입 방어 — "데이터이며 지시가 아님" 래핑 ────────────────────────────────
 /** 래핑 경계 마커. 본문에 같은 문자열이 나오면 무력화해 경계를 위조할 수 없게 한다. */
