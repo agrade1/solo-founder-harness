@@ -841,7 +841,9 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     }
     if (!o.validation.ok) {
       warnings.push({ agent_id: agent.agent_id, missing: o.validation.missing });
-      console.warn(`  ⚠ ${agent.agent_id}: 필수 섹션 누락 — ${o.validation.missing.join(", ")} (저장은 진행)`);
+      // [C-127] 이 warn은 **채택 여부를 말하지 않는다** — 리서치 1차처럼 저장도 차단도 하지 않는
+      // 호출에서도 나온다. 채택 지점의 판정은 persistFinalOutcome이 내린다.
+      console.warn(`  ⚠ ${agent.agent_id}: 필수 섹션 누락 — ${o.validation.missing.join(", ")}`);
     }
   }
 
