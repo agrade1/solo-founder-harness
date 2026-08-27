@@ -43,8 +43,23 @@ export const RESEARCH_FIRST_PASS_MAX_BYTES = 32_768;
 export const RESEARCH_MAX_ATTEMPTS = 4;
 /** 1차 문서가 낼 수 있는 선언 수 상한 — 설계 §4.2의 "최대 2줄". */
 export const RESEARCH_MAX_DECLARATIONS = 2;
-/** run 1회가 저장할 evidence 총 건수 상한. */
-export const RESEARCH_MAX_EVIDENCE_PER_RUN = 12;
+/**
+ * run 1회가 저장할 evidence 총 건수 상한.
+ *
+ * [C-138/③] **workflow 자신의 제어 흐름을 담을 수 있어야 한다.** 12였을 때 실측(2026-08-27 live):
+ * research step 1회가 이미 최대 16건(질의 2 × 결과 8)을 쓸 수 있어 **상한이 research 1회도 못 담았고**,
+ * `idea-validation`의 게이트가 '검증' 판정에서 research로 되돌리자(`registry/workflows.json` ·
+ * `max_jumps: 1`) 2차 research가 `research_cap_exceeded`로 죽어 단계가 실패했다.
+ *
+ * 유도 산식:
+ *   RESEARCH_MAX_RESULTS_PER_CALL(8) × RESEARCH_MAX_DECLARATIONS(2, 질의 수 상한)
+ *     × (1 + max_jumps(1), research가 게이트 되돌림으로 다시 도는 횟수) = **32**
+ *
+ * 동적으로 workflow를 읽어 계산하지 않는다 — 상수 하나 + 이 주석이면 근거가 코드에 남고,
+ * 동적 계산은 registry와 런타임 사이에 새 결합을 만든다. 비용 상한이라는 성질은 그대로다(유한하다).
+ * `MAX_BACKEND_CALLS_PER_RUN`(8)과의 정합: 이 흐름이 쓰는 호출은 질의 2 × 실행 2 = **4회**로 그 상한 안이다.
+ */
+export const RESEARCH_MAX_EVIDENCE_PER_RUN = 32;
 /** backend 1회 호출이 돌려줄 수 있는 결과 수 상한. */
 export const RESEARCH_MAX_RESULTS_PER_CALL = 8;
 /** source URL 길이 상한(§A-8). */
@@ -257,8 +272,17 @@ export interface SessionBackend extends ResearchBackend {
   readonly calls: number;
   /** attempt 간 memo 적중 수 — 게이트 재진입이 크레딧을 다시 태우지 않았다는 증거. */
   readonly memoHits: number;
-  /** 이 run에서 돌려준 결과 총 건수(evidence 상한 집행 기준). */
+  /**
+   * 이 run에서 **실제로 저장된** evidence 건수(상한 집행 기준). [C-138/②] 예전엔 backend가 돌려준
+   * 배치 크기를 저장 **전에** 더했다 — 그러면 부분 실패가 예산을 전액 태우고 resume이 그 값을 이어받아
+   * 같은 자리에서 다시 죽는다(실측: 실제 저장 8건인데 totals.results가 10으로 기록됐다).
+   */
   readonly results: number;
+  /**
+   * [C-138/②] gateway가 저장에 성공한 건수를 **저장 직후** 통보한다(`runResearch`의 `onStored` 경로).
+   * 상한 **검사**는 여전히 사전이고(초과할 배치를 받아놓고 나중에 세면 늦다) **누산만** 사후다.
+   */
+  noteStored(n: number): void;
 }
 
 export interface SessionBackendOptions {
@@ -304,7 +328,8 @@ export function createSessionBackend(inner: ResearchBackend, scrub: (s: string) 
     if (results + out.length > RESEARCH_MAX_EVIDENCE_PER_RUN) {
       throw new ResearchError("research_cap_exceeded", `run 1회 evidence 상한 ${RESEARCH_MAX_EVIDENCE_PER_RUN}건을 넘는다`);
     }
-    results += out.length;
+    // [C-138/②] 여기서 `results += out.length`를 하지 않는다 — 누산은 `noteStored`(저장 성공 직후)다.
+    // 검사는 사전(이 배치를 받으면 넘는가), 누산은 사후(실제로 몇 건이 남았나).
     return out;
   };
 
@@ -317,6 +342,9 @@ export function createSessionBackend(inner: ResearchBackend, scrub: (s: string) 
     },
     get results() {
       return results;
+    },
+    noteStored(n: number) {
+      results += n;
     },
     async search(query: string): Promise<BackendResult[]> {
       const key = `search:${query}`;
@@ -353,6 +381,12 @@ export interface ResearchAttempt {
   backend_calls: number;
   cache_hits: number;
   dropped_by_domain: number;
+  /**
+   * [C-138/①] 저장 규칙(https·크기·형식)에 걸려 버린 search 후보 수. **0이면 필드를 쓰지 않는다** —
+   * receipt는 content-addressed(본문 바이트가 곧 파일명)라, 늘 `0`을 실으면 아무것도 버리지 않은
+   * 예전과 같은 사실이 다른 이름의 영수증이 된다. 버린 사실이 있을 때만 나타난다.
+   */
+  dropped_by_store?: number;
   first_pass_sha256: string | null;
   /** 포인터+발췌만(응답 본문 필드 없음). **resume digest 복원의 유일한 근거**다(시각 창이 아니다). */
   evidence: EvidenceItem[];

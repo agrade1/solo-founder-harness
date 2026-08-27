@@ -484,11 +484,19 @@ test("[C-126/S5] 상한 fail closed — 긴 URL · 과다 결과 · run 총 evid
   const many = fakeBackend(Array.from({ length: RESEARCH_MAX_RESULTS_PER_CALL + 1 }, (_, i) => item(i)));
   await rejectsCode(() => createSessionBackend(many, (x) => x).search("q"), "research_cap_exceeded", "과다 결과");
 
-  const s = createSessionBackend(fakeBackend(Array.from({ length: 5 }, (_, i) => item(i))), (x) => x);
-  await s.search("a");
-  await s.search("b");
-  assert.equal(s.results, 10);
-  await rejectsCode(() => s.search("c"), "research_cap_exceeded", `run 총 evidence 상한 ${RESEARCH_MAX_EVIDENCE_PER_RUN}건`);
+  // [C-138/②③] 이 블록은 계약이 바뀌어 갱신됐다(완화가 아니다 — 같은 상한을 더 정확한 기준으로 잰다).
+  //   ② 예산은 **실제 저장분**을 센다 → 누산은 `noteStored`(저장 직후)이지 배치 수신 시점이 아니다.
+  //      옛 assert `s.results === 10`은 "받은 배치를 선차감한다"는 **버그 자체를 고정**하고 있었다.
+  //   ③ 상한이 12 → 32로 올라 도달에 필요한 호출 수가 달라졌다.
+  const per = RESEARCH_MAX_RESULTS_PER_CALL;
+  const s = createSessionBackend(fakeBackend(Array.from({ length: per }, (_, i) => item(i))), (x) => x);
+  const rounds = Math.ceil(RESEARCH_MAX_EVIDENCE_PER_RUN / per); // 32/8 = 4 (MAX_BACKEND_CALLS_PER_RUN=8 안)
+  for (let i = 0; i < rounds; i++) {
+    await s.search(`q${i}`);
+    s.noteStored(per);
+  }
+  assert.equal(s.results, RESEARCH_MAX_EVIDENCE_PER_RUN);
+  await rejectsCode(() => s.search("one-more"), "research_cap_exceeded", `run 총 evidence 상한 ${RESEARCH_MAX_EVIDENCE_PER_RUN}건`);
 });
 
 test("[C-126/S6] extract는 sessionBackend에서도 봉인이다 (도달 불가 경로도 열어두지 않는다)", async () => {
@@ -1643,4 +1651,114 @@ test("[C-126/C-1] digest 예산 초과 workflow는 **조건부가 아니라** �
   assert.ok(!d.ok && d.bytes > EVIDENCE_DIGEST_MAX_BYTES);
   assert.equal(existsSync(join(projectPaths(name).root, "docs/01_RESEARCH.md")), false, "실패면 미저장");
   rmProject(name);
+});
+
+// ══ 13. [C-138] live에서 파이프라인을 죽인 4건 — 회귀 ════════════
+//
+// 전부 fake backend · offline · 무과금이다(이 파일의 규율 그대로). 근거는 2026-08-27 live 실측:
+// Tavily가 결과 9건 중 1건으로 `http://hrpro.kr/...`를 돌려줬고 그 1건이 step 전체를 죽였다.
+
+/** live에서 실제로 온 형태 — https가 아니라 `storeEvidence`가 거부한다. */
+const NON_HTTPS: BackendResult = { source: "http://hrpro.kr/notice", title: "비-https 후보", raw: "본문" };
+
+test("[C-138/①a] search: 비-https 1건은 **버리고** 나머지는 저장된다 — 버린 수가 관측된다", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "c138-drop-"));
+  const res = await runResearch([{ type: "search", query: "q" }], {
+    backend: fakeBackend([item(1), NON_HTTPS, item(2)]),
+    evidenceDir: dir,
+    now: () => FIXED,
+    allowedDomains: null,
+  });
+  assert.equal(res.items.length, 2, "정상 2건이 저장돼야 한다 (1건 때문에 전부 잃지 않는다)");
+  assert.equal(res.droppedByStore, 1, "버린 수가 세어지지 않았다 — 조용한 손실이다");
+  assert.equal(res.droppedByDomain, 0, "도메인 사유와 섞이면 안 된다");
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("[C-138/①b] extract: 저장 규칙 위반은 **여전히 throw**다 (리다이렉트 우회는 진짜 경계)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "c138-ext-"));
+  const backend: ResearchBackend = {
+    async search() {
+      throw new Error("search는 이 테스트에서 불리지 않는다");
+    },
+    // 요청은 https인데 벤더가 같은 host의 http를 돌려준다 = 우리가 지목한 것과 다른 것이 왔다.
+    async extract() {
+      return { source: "http://ok.example.com/1", title: "t", raw: "r" };
+    },
+  };
+  await rejectsCode(
+    () =>
+      runResearch([{ type: "extract", query: "q", urls: ["https://ok.example.com/1"] }], {
+        backend,
+        evidenceDir: dir,
+        now: () => FIXED,
+        allowedDomains: ["ok.example.com"],
+      }),
+    "invalid_source",
+    "extract 경로가 조용히 버리면 봉인 우회 통로가 된다",
+  );
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("[C-138/①c] 전부 버려 0건이면 **새 상태 없이** 기존 external_empty로 수렴한다", async () => {
+  const name = "_c138_empty";
+  makeProject(name);
+  await quiet(() =>
+    nextPipeline({
+      project: name,
+      providerOverride: tap(),
+      now: () => FIXED,
+      researchRuntimeOverride: externalRuntime(fakeBackend([NON_HTTPS])),
+    }),
+  );
+  const a = attemptsOf(loadRunState(name)!).at(-1)!;
+  assert.equal(a.mode, "external_empty", "0건은 실패가 아니라 기존 external_empty다");
+  assert.equal(a.evidence.length, 0);
+  assert.equal(a.dropped_by_store, 1, "버린 사실이 영수증에 없다");
+  rmProject(name);
+});
+
+test("[C-138/②] 부분 저장 뒤 totals.results가 **실제 저장 건수**와 같다 (선차감 금지)", async () => {
+  const name = "_c138_totals";
+  makeProject(name);
+  const out = await captureLogs(() =>
+    nextPipeline({
+      project: name,
+      providerOverride: tap(),
+      now: () => FIXED,
+      // 배치 3건 중 1건은 저장 규칙 위반 → 실제 저장은 2건이다.
+      researchRuntimeOverride: externalRuntime(fakeBackend([item(1), NON_HTTPS, item(2)])),
+    }),
+  );
+  const st = loadRunState(name)!;
+  const a = attemptsOf(st).at(-1)!;
+  assert.equal(a.evidence.length, 2, "저장은 2건이다");
+  assert.equal(st.research?.totals?.results, 2, "예산이 받은 배치(3)를 태웠다 — resume이 그 값을 이어받는다");
+  assert.equal(a.dropped_by_store, 1);
+  assert.match(out, /1건은 저장 규칙/, "버린 수가 콘솔에 없다 — 조용한 손실이다");
+  rmProject(name);
+});
+
+test("[C-138/③] 게이트 되돌림으로 research가 2회 돌아도 상한에 걸리지 않는다", async () => {
+  // 산식 그대로 재현한다: 결과 8 × 질의 2 × (1 + max_jumps 1) = 32.
+  const dir = mkdtempSync(join(tmpdir(), "c138-cap-"));
+  const per = RESEARCH_MAX_RESULTS_PER_CALL;
+  const inner = fakeBackend(Array.from({ length: per }, (_, i) => item(i)));
+  const s = createSessionBackend(inner, (x) => x);
+  for (const round of [1, 2]) {
+    for (const q of ["a", "b"]) {
+      const res = await runResearch([{ type: "search", query: `${round}-${q}` }], {
+        backend: s,
+        evidenceDir: dir,
+        now: () => FIXED,
+        allowedDomains: null,
+        onStored: () => s.noteStored(1),
+      });
+      assert.equal(res.items.length, per);
+    }
+  }
+  assert.equal(s.results, per * 2 * 2, "상한 유도 산식(8×2×2)이 실제 흐름과 어긋난다");
+  assert.ok(s.results <= RESEARCH_MAX_EVIDENCE_PER_RUN, `상한 ${RESEARCH_MAX_EVIDENCE_PER_RUN}이 workflow 제어 흐름을 못 담는다`);
+  assert.ok(inner.calls.length <= MAX_BACKEND_CALLS_PER_RUN, "backend 호출 상한과 어긋난다");
+  rmSync(dir, { recursive: true, force: true });
 });
