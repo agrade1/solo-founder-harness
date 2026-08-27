@@ -269,6 +269,13 @@ Agent output 저장 전 다음을 확인한다.
 v1에서는 경고만 출력해도 된다.  
 v2에서는 schema validation 실패 시 재생성 또는 사용자 확인을 요구할 수 있다.
 
+> **정정 (2026-08-27 · `C-127`)**: 위 "v1에서는 경고만"은 더 이상 구현과 맞지 않는다. 지금은
+> 재생성(`--max-regen`, 기본 1)을 소진하고도 필수 헤더가 없으면 `runWorkflow`가 **채택을 거부**한다 —
+> 문서를 쓰지 않고 run이 `failed` / `failed_reason: "required_sections_missing"`으로 멈추며
+> `resume`으로 그 step부터 다시 돈다. 검증 대상은 공용 4개(Metadata / Main Judgment / Risks /
+> Next Actions)에 더해 `registry/agent_registry.json`의 agent별 `required_headers`다.
+> **여전히 헤더 이름의 존재만 본다** — 내용 품질은 이 검증의 범위가 아니다.
+
 ---
 
 ## 7. 너무 긴 출력 처리

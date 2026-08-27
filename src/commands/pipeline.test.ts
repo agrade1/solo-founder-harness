@@ -1055,3 +1055,62 @@ function _checkpointApiShape(): void {
   restartPipeline({ project: "p", force: true });
 }
 void _checkpointApiShape;
+
+// ── [C-127] 계약 미달 산출물은 checkpoint에 결박되지 않는다 ─────
+//
+// 사용자가 지목한 통점의 직접 회귀 테스트. 예전에는 필수 절이 빠진 PRD도 `completed_steps`에
+// 들어가 `buildManifest`가 그것을 "정상 산출물"로 B-41 체크포인트에 결박했고, 승인 seed까지
+// 다음 단계 프롬프트에 실렸다. **프로덕션 pipeline.ts는 손대지 않았다** — failed 분기가 이미 있다.
+test("[C-127] pipeline: 계약 미달 PRD는 checkpoint에 결박되지 않는다 (재실행하면 승인 대기까지 간다)", async () => {
+  const name = "_c127_pipe";
+  makeProject(name);
+
+  /** pm의 공용 필수 절("## Risks")을 지우는 provider. 재생성분까지 계속 깬다. */
+  const broken = (() => {
+    const p = {
+      id: "mock",
+      byAgent: new Map<string, number>(),
+      async generate(input: AgentRunInput): Promise<AgentResult> {
+        p.byAgent.set(input.agent.agent_id, (p.byAgent.get(input.agent.agent_id) ?? 0) + 1);
+        const r = await mockProvider.generate(input);
+        if (input.agent.agent_id !== "pm") return r;
+        const markdown = r.markdown.replace(/^## Risks\n[\s\S]*?(?=^## )/m, "");
+        assert.notEqual(markdown, r.markdown, "mock pm 출력에서 '## Risks' 절 제거 실패 — 형식이 바뀌었다");
+        return { ...r, markdown };
+      },
+    };
+    return p;
+  })();
+
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: broken, now: () => FIXED }));
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.equal(r.exit, 1);
+
+  const failed = stateOf(name);
+  assert.equal(failed.status, "awaiting_run", "확인 대기로 넘어가지 않는다");
+  assert.equal(failed.pending, null, "깨진 PRD는 체크포인트에 결박되지 않는다");
+  assert.ok(failed.last_failure, "실패 영수증은 남는다");
+  assert.equal(failed.last_failure!.stage, "idea-validation");
+  // [C-127/A-1] 깨진 PRD는 **디스크에 쓰이지도 않았다** — 그래서 `written`에도 없고 drift도 없다.
+  // (초판은 저장 후 차단이라 여기 digest가 잡혔다. 그 순서는 revise가 기존 채택본을 파괴한다.)
+  assert.equal(
+    failed.last_failure!.written.some((w) => w.path === "docs/02_PRD.md"),
+    false,
+    "쓰지 않은 파일은 written에도 없다",
+  );
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/02_PRD.md")), false, "깨진 PRD 파일 자체가 없다");
+  assert.equal(loadRunState(name)!.failed_reason, "required_sections_missing");
+  assert.equal(loadRunState(name)!.completed_steps.includes("pm"), false);
+
+  // 고친 뒤 같은 명령 → 실패 step부터 resume하고 확인 대기까지 간다 (막다른 골목이 아니다).
+  const fixed = counting();
+  const again = await quiet(() => nextPipeline({ project: name, providerOverride: fixed, now: () => FIXED }));
+  assert.equal(again.code, "pipeline_awaiting_approval");
+  const ok = stateOf(name);
+  assert.equal(ok.status, "awaiting_approval");
+  assert.equal(ok.last_failure, null, "성공하면 실패 영수증을 내린다");
+  assert.ok(ok.pending!.artifacts.some((a) => a.path === "docs/02_PRD.md"), "이번엔 PRD가 승인 대상에 들어간다");
+  assert.equal(fixed.byAgent.get("chief_of_staff") ?? 0, 0, "완료 step은 재실행되지 않았다");
+  assert.ok((fixed.byAgent.get("pm") ?? 0) >= 1, "실패한 pm부터 다시 돌았다");
+  rmProject(name);
+});

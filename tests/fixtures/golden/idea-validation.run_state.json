@@ -17,27 +17,8 @@
   "cleared_idea_sha256": "090bfaf26d83d719f8d7c888fbd5ade1f7d886de295c1272a5dc5e4a6a644fb0",
   "resume_from": null,
   "loop_state": null,
-  "warnings": [
-    {
-      "agent_id": "pm",
-      "missing": [
-        "문제 정의",
-        "목표와 성공 지표",
-        "사용자와 시나리오",
-        "기능 요구사항",
-        "비범위 (Out of Scope)",
-        "제약과 가정",
-        "오픈 퀘스천"
-      ]
-    }
-  ],
-  "regenerations": [
-    {
-      "agent_id": "pm",
-      "attempts": 1,
-      "resolved": false
-    }
-  ],
+  "warnings": [],
+  "regenerations": [],
   "critique_rounds": [],
   "gate_jumps": [
     {
@@ -69,7 +50,7 @@
       "kind": "agent",
       "started_at": "2026-01-01T00:00:00.000Z",
       "elapsed_ms": 0,
-      "ok": false
+      "ok": true
     },
     {
       "agent_id": "red_team",

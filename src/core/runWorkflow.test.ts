@@ -11,11 +11,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { runWorkflow, loadRunState, snapshotProjectIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
-import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds } from "./registry.js";
+import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds, type AgentDef } from "./registry.js";
 import { extractCeoDecision, CEO_DECISION_TOKENS, validateAgentOutput } from "./validate.js";
 import { buildPromptParts } from "../providers/promptParts.js";
 import { buildTaskPrompt } from "./taskPrompt.js";
@@ -32,6 +33,8 @@ const FIXED = "2026-01-01T00:00:00.000Z";
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** [B-40] gate 뒤에 sentinel step이 있는 격리 workflow (실제 세 게이트는 모두 마지막 step이다). */
 const SENTINEL_WF = join(HERE, "..", "..", "tests", "fixtures", "workflows", "kill-sentinel.json");
+/** [C-127/A-1] target이 루프 **전에** 채택되는 최소 비평 workflow (revise가 채택본을 덮는 경로). */
+const CRITIQUE_WF = join(HERE, "..", "..", "tests", "fixtures", "workflows", "critique-revise.json");
 /** kill-sentinel/kill-overlap의 gate 뒤 step — 호출 0회를 세는 대상. */
 const SENTINEL = "chief_of_staff";
 
@@ -69,6 +72,32 @@ function ceoDeciding(decisionBody: string): Provider & { calls: Map<string, numb
       const DEFAULT = "## Decision\n\n- 진행\n";
       assert.ok(r.markdown.includes(DEFAULT), "mock founder_ceo 출력에 정본 판정 절이 없다 — mock 형식이 바뀌었다");
       return { ...r, markdown: r.markdown.replace(DEFAULT, `## Decision\n\n${decisionBody}\n`) };
+    },
+  };
+}
+
+/**
+ * founder_ceo의 "## Decision" 절을 **코드펜스 안으로** 넣는 mock 래퍼.
+ *
+ * [C-127] 왜 이 모양인가: 절을 통째로 지우면 이제 `required_sections_missing`으로 **게이트 도달 전에**
+ * 멈춘다(founder_ceo의 `required_headers`가 `["Decision"]`이다). 그러면 "게이트가 판정 부재를 fail closed로
+ * 잡는다"는 B-40/A-1의 방어선이 테스트에서 도달 불가능해진다 — 단정을 약화시키는 대신 fixture를 바꾼다.
+ * 펜스 안 헤더는 `validateAgentOutput`이 마스킹하지 않아 통과하고(`validate.ts`의 정규식은 라인 단위),
+ * `extractCeoDecision`은 fenceMask로 걸러 `absent`를 낸다 — 게이트 방어선만 정확히 겨눈다.
+ */
+function ceoDecisionFencedOnly(): Provider & { calls: Map<string, number> } {
+  const calls = new Map<string, number>();
+  return {
+    id: "mock",
+    calls,
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      calls.set(input.agent.agent_id, (calls.get(input.agent.agent_id) ?? 0) + 1);
+      const r = await mockProvider.generate(input);
+      if (input.agent.agent_id !== "founder_ceo") return r;
+      const markdown = r.markdown.replace("## Decision\n\n- 진행\n\n", "```text\n## Decision\n\n- 진행\n```\n\n");
+      assert.notEqual(markdown, r.markdown, "Decision 절 펜스화 실패 — mock 출력 형식이 바뀌었다");
+      assert.equal(validateAgentOutput(markdown, ["Decision"]).ok, true, "fixture 전제: 필수 섹션 검증은 통과한다");
+      return { ...r, markdown };
     },
   };
 }
@@ -188,7 +217,8 @@ test("[B-40/A-2] extractCeoDecision: 판정을 고를 수 없다 (펜스·중복
 test("[B-40/A-1] 정본 판정 절이 없으면 fail closed — 진행하지 않고 멈춘다 · 후속 step 미실행", async () => {
   const name = "_b40_absent";
   makeProject(name);
-  const p = ceoWithoutDecision();
+  const p = ceoDecisionFencedOnly(); // [C-127] fixture만 교체 — 아래 단정은 한 글자도 바꾸지 않았다
+
   const r = await runWorkflow({
     workflowId: "kill-sentinel",
     workflowsPath: SENTINEL_WF,
@@ -892,4 +922,271 @@ test("[B-40/B] live 경로 최종 출력 계약에 '## Decision'이 실린다 (�
     ).missing,
     [],
   );
+});
+
+// ── [C-127] 필수 섹션 미충족 = 채택 거부 ───────────────────────
+//
+// 구멍: 재생성 상한을 소진하고도 필수 절이 없는 문서가 `completed_steps`에 등재되고 findings로
+// 하류에 실렸다(status는 completed). `persistFinalOutcome`의 가드가 그 채택을 막는다.
+
+/** 지정 agent의 출력에서 `## <header>` 절 하나를 지우는 mock 래퍼. 그 외 agent는 mock 원본. */
+function breakSection(
+  agentId: string,
+  header: string,
+  opts: { healAfter?: number } = {},
+): Provider & { calls: Map<string, number> } {
+  const calls = new Map<string, number>();
+  let broken = 0;
+  return {
+    id: "mock",
+    calls,
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      calls.set(input.agent.agent_id, (calls.get(input.agent.agent_id) ?? 0) + 1);
+      const r = await mockProvider.generate(input);
+      if (input.agent.agent_id !== agentId) return r;
+      // healAfter: n회 깨뜨린 뒤부터는 정상 출력. resume이 실제로 완주 가능한지 재는 데 쓴다
+      // (1회차 run은 최초 호출 + 재생성 1회 = 2회를 쓴다).
+      if (opts.healAfter !== undefined && broken >= opts.healAfter) return r;
+      broken++;
+      const re = new RegExp(`^## ${header}\\n[\\s\\S]*?(?=^## )`, "m");
+      const markdown = r.markdown.replace(re, "");
+      assert.notEqual(markdown, r.markdown, `${agentId}의 "## ${header}" 절 제거 실패 — mock 출력 형식이 바뀌었다`);
+      return { ...r, markdown };
+    },
+  };
+}
+
+test("[C-127] 재생성 상한 후 필수 섹션 미충족 → failed(required_sections_missing) · 채택 없음 · 후속 step 0회", async () => {
+  const name = "_c127_block";
+  makeProject(name);
+  const p = breakSection("pm", "Risks");
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, now: () => FIXED });
+  const s = r.state;
+
+  assert.equal(s.status, "failed", "깨진 산출물이 completed로 채택되지 않는다");
+  assert.equal(s.failed_reason, "required_sections_missing");
+  assert.equal(s.failed_agent, "pm");
+  assert.equal(s.resume_from, 2, "pm step(index 2)부터 재개 — 고치면 이어진다");
+  assert.equal(s.completed_steps.includes("pm"), false, "완료로 세지 않는다");
+  assert.deepEqual(s.completed_steps, ["chief_of_staff", "research"], "앞 step만 완료");
+  assert.equal(p.calls.get("pm"), 2, "재생성 상한(기본 1)까지 쓰고 나서 멈췄다");
+  assert.equal(p.calls.get("red_team") ?? 0, 0, "후속 step 미실행");
+  assert.equal(p.calls.get("founder_ceo") ?? 0, 0, "게이트 decider도 미실행");
+  assert.deepEqual(s.warnings, [{ agent_id: "pm", missing: ["Risks"] }], "누락 헤더는 durable하게 남는다");
+  // [C-127/A-1] 계약 미충족이면 **디스크를 건드리지 않는다**. 운영자에게 필요한 정보(누락 헤더
+  // 이름)는 위 warnings에 이미 있다. 저장 후 차단은 revise가 기존 채택본을 파괴한다(A-1 테스트 참조).
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/02_PRD.md")), false, "깨진 산출물을 쓰지 않는다");
+  rmProject(name);
+});
+
+test("[C-127] resume은 실패 step부터 재실행하고 계약 충족 시 완주한다", async () => {
+  const name = "_c127_resume";
+  makeProject(name);
+  const p = breakSection("pm", "Risks", { healAfter: 2 });
+  const first = await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, now: () => FIXED });
+  assert.equal(first.state.status, "failed", "전제: 1회차는 계약 미달로 멈춘다");
+  assert.equal(first.state.failed_reason, "required_sections_missing", "전제: 다른 이유로 멈춘 것이 아니다");
+  assert.equal(first.state.resume_from, 2);
+
+  const again = await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED });
+  const s = again.state;
+  assert.equal(s.status, "completed", "계약을 만족하면 완주한다 (막다른 골목이 아니다)");
+  assert.equal(s.failed_reason, null);
+  assert.equal(s.resume_from, null);
+  assert.deepEqual(s.completed_steps, ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]);
+  assert.equal(p.calls.get("chief_of_staff"), 1, "완료 step은 재실행하지 않는다 (LLM 재호출 없음)");
+  assert.equal(p.calls.get("pm"), 3, "실패한 pm만 다시 돈다 (1회차 2번 + resume 1번)");
+  rmProject(name);
+});
+
+test("[C-127] Decision 절이 아예 없으면 게이트 전에 required_sections_missing으로 멈춘다", async () => {
+  const name = "_c127_ceo";
+  makeProject(name);
+  const p = ceoWithoutDecision();
+  const r = await runWorkflow({
+    workflowId: "kill-sentinel",
+    workflowsPath: SENTINEL_WF,
+    project: name,
+    provider: p,
+    now: () => FIXED,
+  });
+  const s = r.state;
+  // founder_ceo의 required_headers가 ["Decision"]이라 **게이트에 닿기 전** 채택 단계에서 걸린다.
+  // 게이트의 ceo_decision_absent는 여전히 살아 있다 — 그 방어선은 위 [B-40/A-1] 테스트가 잰다.
+  assert.equal(s.status, "failed");
+  assert.equal(s.failed_reason, "required_sections_missing");
+  assert.equal(s.failed_agent, "founder_ceo");
+  assert.equal(s.completed_steps.includes("founder_ceo"), false, "판정 절 없는 문서는 완료로 세지 않는다");
+  assert.equal(p.calls.get(SENTINEL) ?? 0, 0, "게이트 뒤 sentinel step 미실행");
+  rmProject(name);
+});
+
+// ── [C-127] required_headers를 공용 출력 지시에서도 재강조한다 ──
+//
+// **무엇이 빠져 있었나**: 헤더 이름은 역할 프롬프트에 이미 있었다(`agents/pm_product_strategy_agent.md`
+// §21 등). 없던 것은 **모델이 마지막으로 읽는 공용 출력 지시에서의 재강조**이고, `promptParts`에는
+// founder_ceo의 `["Decision"]`만 문자열로 하드코딩돼 있었다.
+// 근거: live 실측(claude-code · 표본 3 · 전부 수정 전 코드) pm 1차 준수율 **1/3** — 역할 프롬프트만으로는
+// 일관되지 않았다. 그리고 B-40이 `Decision` 하나에 대해 같은 교훈을 이미 남겼다.
+// (수정 후 준수율은 미측정 — 개선을 주장하지 않는다.)
+
+/** required_headers가 없는 agent가 받는 최종 섹션 목록 줄 — C-127 이전 바이트 그대로 동결한다. */
+const NO_REQUIRED_HEADER_LINE = "Input Summary / Main Judgment / Key Findings / Decisions / Assumptions /";
+
+function promptFor(agent: AgentDef): string {
+  return buildPromptParts(
+    {
+      agent,
+      workflowId: "w",
+      project: "p",
+      createdAt: FIXED,
+      commonPrompt: "COMMON",
+      agentPrompt: "ROLE",
+      ideaContent: "idea",
+      priorFindings: [],
+    },
+    "claude-code",
+  ).user;
+}
+
+/** 최종 출력 지시의 "## 섹션" 목록 첫 줄. */
+function sectionListLine(prompt: string): string {
+  const line = prompt.split("\n").find((l) => l.includes("Input Summary / Main Judgment"));
+  assert.ok(line, "최종 섹션 목록 줄을 찾지 못했다 — 프롬프트 구조가 바뀌었다");
+  return line!;
+}
+
+test("[C-127] required_headers가 프롬프트에 실린다 — 검증기와 같은 출처", () => {
+  const registry = loadAgentRegistry();
+  for (const id of ["pm", "design", "tech_lead"]) {
+    const agent = findAgent(registry, id)!;
+    const headers = agent.required_headers ?? [];
+    assert.ok(headers.length > 0, `fixture 전제: ${id}는 required_headers를 갖는다`);
+    const prompt = promptFor(agent);
+    // 문자열 리터럴이 아니라 **레지스트리 배열을 그대로 순회**한다 — 수기 복제면 여기서 갈린다.
+    for (const h of headers) {
+      assert.ok(prompt.includes(`\n## ${h}`) || sectionListLine(prompt).includes(h), `${id} 프롬프트에 "${h}"가 실린다`);
+    }
+    // 검증기가 보는 것과 지시하는 것이 같은 배열인지: 하나라도 빠지면 만족 불가능한 계약이다.
+    assert.equal(
+      validateAgentOutput(`# x\n\n## Metadata\n\n## Main Judgment\n\n## Risks\n\n## Recommended Next Actions\n` + headers.map((h) => `\n## ${h}\n`).join(""), headers).ok,
+      true,
+      `${id}: 프롬프트가 지시하는 헤더 집합만으로 검증을 통과할 수 있어야 한다`,
+    );
+  }
+
+  // **출처 판별**: 레지스트리에 없는 임의 헤더도 실려야 한다. 하드코딩 복제본이면 실리지 않는다.
+  const synthetic: AgentDef = {
+    agent_id: "_synthetic",
+    name: "S",
+    role: "r",
+    prompt_path: "p",
+    default_output: "docs/x.md",
+    required_headers: ["ZZ 임의 헤더 하나", "ZZ 임의 헤더 둘"],
+  };
+  const line = sectionListLine(promptFor(synthetic));
+  assert.ok(line.startsWith("ZZ 임의 헤더 하나 / ZZ 임의 헤더 둘 / Input Summary"), `임의 헤더가 그대로 실린다: ${line}`);
+});
+
+test("[C-127] required_headers가 없는 agent의 프롬프트는 바이트 불변", () => {
+  const registry = loadAgentRegistry();
+  for (const id of ["chief_of_staff", "research", "ux_ui", "red_team"]) {
+    const agent = findAgent(registry, id)!;
+    assert.equal(agent.required_headers, undefined, `fixture 전제: ${id}는 required_headers가 없다`);
+    const prompt = promptFor(agent);
+    // ① 섹션 목록 줄이 C-127 이전 바이트와 정확히 같다 (동결된 리터럴).
+    assert.equal(sectionListLine(prompt), NO_REQUIRED_HEADER_LINE, `${id}: 섹션 목록 줄 불변`);
+    // ② 새 코드 경로가 이들에게는 완전한 no-op이다 — 필드를 지운 사본과 바이트가 같다.
+    assert.equal(prompt, promptFor({ ...agent, required_headers: undefined }), `${id}: 프롬프트 전체 바이트 불변`);
+  }
+});
+
+test("[C-127] founder_ceo의 Decision 지시가 하드코딩 제거 후에도 사라지지 않는다", () => {
+  const ceo = findAgent(loadAgentRegistry(), "founder_ceo")!;
+  const prompt = promptFor(ceo);
+  // 하드코딩 삼항("founder_ceo면 'Decision / '")을 required_headers 일반 주입으로 바꿨다.
+  // 그 결과 이 줄의 바이트는 **이전과 동일**해야 한다 — 게이트 계약이 프롬프트에서 사라지면
+  // live 모델이 절을 빼고 ceo_decision_absent로 멈춘다(만족 불가능한 계약).
+  assert.deepEqual(ceo.required_headers, ["Decision"], "fixture 전제");
+  assert.equal(sectionListLine(prompt), `Decision / ${NO_REQUIRED_HEADER_LINE}`, "Decision이 목록 맨 앞에 그대로 있다");
+  assert.match(prompt, /"## Decision" 절은 필수다/, "판정 절 전용 지시도 그대로다");
+});
+
+// ── [C-127/A-1] 차단이 기존 채택본을 파괴하지 않는다 ────────────
+//
+// C-127 초판은 `saveArtifact` **뒤에서** 차단했다. 최초 채택이면 무해하지만, 비평 루프의 revise는
+// `completed_steps`에 **이미 있는** agent의 문서를 덮는다 — 계약 미달 revise가 정상 바이트를
+// 파괴하고, completed_steps에서는 제거되지 않으므로 resume이 그 깨진 파일을 완료 산출물로
+// 복원하고 최종 manifest가 그것을 결박한다. C-127이 닫으려던 부류를 C-127이 새로 만드는 모양.
+
+function sha256(s: string): string {
+  return createHash("sha256").update(s, "utf8").digest("hex");
+}
+
+test("[C-127/A-1] revise 실패는 이미 채택된 산출물을 덮지 않는다", async () => {
+  const name = "_c127_revise";
+  makeProject(name);
+  const TECH_PLAN = join(projectPaths(name).root, "docs/04_TECH_PLAN.md");
+
+  let adopted = ""; // tech_lead 최초 채택본(정상)
+  let brokenRevises = 0;
+  const calls = new Map<string, number>();
+  const provider: Provider = {
+    id: "mock",
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      calls.set(input.agent.agent_id, (calls.get(input.agent.agent_id) ?? 0) + 1);
+      const r = await mockProvider.generate(input);
+      // critic은 Critical을 낸다 — 안 그러면 루프가 즉시 resolved로 끝나 revise 자체가 안 돈다.
+      if (input.agent.agent_id === "red_team") {
+        const md = r.markdown.replace("### Critical\n\n- (없음)\n", "### Critical\n\n- [MOCK] 치명 리스크\n");
+        assert.notEqual(md, r.markdown, "Critical 주입 실패 — mock 출력 형식이 바뀌었다");
+        return { ...r, markdown: md };
+      }
+      if (input.agent.agent_id !== "tech_lead") return r;
+      if (!input.revisionRequest) {
+        adopted = r.markdown; // 최초 채택본
+        return r;
+      }
+      // revise: 처음 2회(최초 시도 + 재생성 1회)만 계약을 깬다. 그 뒤(resume)는 정상.
+      if (brokenRevises >= 2) return r;
+      brokenRevises++;
+      const md = r.markdown.replace(/^## Risks\n[\s\S]*?(?=^## )/m, "");
+      assert.notEqual(md, r.markdown, "'## Risks' 절 제거 실패 — mock 출력 형식이 바뀌었다");
+      return { ...r, markdown: md };
+    },
+  };
+
+  const first = await runWorkflow({
+    workflowId: "critique-revise",
+    workflowsPath: CRITIQUE_WF,
+    project: name,
+    provider,
+    now: () => FIXED,
+  });
+  assert.equal(first.state.status, "failed", "전제: revise가 계약 미달이라 멈춘다");
+  assert.equal(first.state.failed_reason, "required_sections_missing");
+  assert.equal(first.state.failed_agent, "tech_lead");
+  assert.equal(brokenRevises, 2, "전제: revise가 재생성까지 쓰고 실패했다");
+  assert.ok(adopted.length > 0, "전제: 최초 채택본을 캡처했다");
+  assert.equal(first.state.completed_steps.includes("tech_lead"), true, "최초 채택은 유효하다 — 취소되지 않는다");
+
+  // ── 핵심 단정: 디스크 바이트가 revise 전과 **동일**하다 ──
+  assert.equal(sha256(readFileSync(TECH_PLAN, "utf8")), sha256(adopted), "revise 실패가 채택본을 덮지 않았다");
+  assert.equal(validateAgentOutput(readFileSync(TECH_PLAN, "utf8"), ["리스크와 완화책"]).ok, true, "디스크 문서는 여전히 계약을 만족한다");
+
+  // ── resume: 완주하고 최종 문서도 정상 바이트다 (깨진 파일이 결박되지 않는다) ──
+  const again = await runWorkflow({
+    workflowId: "critique-revise",
+    workflowsPath: CRITIQUE_WF,
+    project: name,
+    provider,
+    resume: true,
+    now: () => FIXED,
+  });
+  assert.equal(again.state.status, "completed");
+  const finalMd = readFileSync(TECH_PLAN, "utf8");
+  const techLead = findAgent(loadAgentRegistry(), "tech_lead")!;
+  assert.equal(validateAgentOutput(finalMd, techLead.required_headers ?? []).ok, true, "최종 채택본이 계약을 만족한다");
+  assert.equal(again.state.completed_steps.includes("tech_lead"), true);
+  rmProject(name);
 });

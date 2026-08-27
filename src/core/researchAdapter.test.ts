@@ -120,6 +120,8 @@ function tap(
     secondFails?: boolean;
     firstPassPadBytes?: number;
     decisions?: string[]; // founder_ceo 판정 순서 (없으면 mock 기본 '진행')
+    /** [C-127] research 출력에서 공용 필수 절("## Risks")을 지운다 — 1차만/2차만 고를 수 있다. */
+    breakRisks?: "first" | "second";
   } = {},
 ): Provider & { inputs: AgentRunInput[]; byAgent: Map<string, number> } {
   const inputs: AgentRunInput[] = [];
@@ -146,6 +148,13 @@ function tap(
       }
       if (input.agent.agent_id === "research" && isSecond && opts.secondFails) {
         throw new Error("2차 provider 실패(주입)");
+      }
+      // [C-127] 필수 절 제거는 **선언 주입 뒤**에 한다 — 선언 줄은 문서 말미라 영향이 없고,
+      // 1차/2차를 따로 겨눠야 "1차는 비차단, 채택 지점만 차단"을 가를 수 있다.
+      if (input.agent.agent_id === "research" && opts.breakRisks === (isSecond ? "second" : "first")) {
+        const stripped = md.replace(/^## Risks\n[\s\S]*?(?=^## )/m, "");
+        assert.notEqual(stripped, md, "mock 출력에서 '## Risks' 절 제거 실패 — 형식이 바뀌었다");
+        md = stripped;
       }
       if (opts.decisions && input.agent.agent_id === "founder_ceo") {
         const d = opts.decisions[Math.min(ceo++, opts.decisions.length - 1)];
@@ -1642,5 +1651,62 @@ test("[C-126/C-1] digest 예산 초과 workflow는 **조건부가 아니라** �
   assert.equal(d.ok, false, "저장된 근거의 digest가 실제로 예산을 넘는다");
   assert.ok(!d.ok && d.bytes > EVIDENCE_DIGEST_MAX_BYTES);
   assert.equal(existsSync(join(projectPaths(name).root, "docs/01_RESEARCH.md")), false, "실패면 미저장");
+  rmProject(name);
+});
+
+// ══ [C-127] 필수 섹션 가드 × 리서치 형태 B ═════════════════════
+//
+// 가드가 `persistFinalOutcome`(채택 지점)에 있고 `runStepWithRegen`(모든 LLM 호출)에 없다는 것을
+// **관측으로** 가른다. 두 테스트는 서로의 대조군이다: 1차는 통과해야 하고 2차는 막혀야 한다.
+
+test("[C-127] 리서치 1차 필수 섹션 미달은 차단하지 않는다 — 2차가 교정하면 완주한다", async () => {
+  const name = "_c127_r_first";
+  makeProject(name);
+  const p = tap({ breakRisks: "first" });
+  const bk = fakeBackend([item(1)]);
+  const r = await quiet(() =>
+    runWorkflow({ workflowId: "research-only", project: name, provider: p, workflowsPath: WF, now: () => FIXED, research: externalRuntime(bk) }),
+  );
+  const s = r.state;
+  // 1차는 **채택본이 아니다**(telemetry만) — 여기서 막으면 2차라는 교정 기회 자체가 사라진다.
+  assert.equal(s.status, "completed", "1차 미달로 run을 죽이지 않는다");
+  assert.equal(s.failed_reason, null);
+  assert.deepEqual(s.completed_steps, ["research"]);
+  assert.deepEqual(s.warnings, [{ agent_id: "research", missing: ["Risks"] }], "1차 미달의 사실은 그대로 남는다");
+  assert.deepEqual(s.regenerations, [{ agent_id: "research", attempts: 1, resolved: false }], "1차는 재생성 상한을 썼다");
+  assert.equal(p.byAgent.get("research"), 3, "1차 2회(최초+재생성) + 2차 1회 — 2차가 실제로 돌았다");
+  assert.equal(bk.calls.length, 1, "외부 검색은 1회 (1차 미달이 검색을 막지 않는다)");
+  assert.equal(attemptsOf(s).at(-1)!.mode, "external");
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/01_RESEARCH.md")), true, "2차 채택본이 저장됐다");
+  rmProject(name);
+});
+
+test("[C-127] 리서치 채택 지점(2차) 미달 → required_sections_missing · attempt는 봉인된다", async () => {
+  const name = "_c127_r_second";
+  makeProject(name);
+  const p = tap({ breakRisks: "second" });
+  const r = await quiet(() =>
+    runWorkflow({
+      workflowId: "research-only",
+      project: name,
+      provider: p,
+      workflowsPath: WF,
+      now: () => FIXED,
+      research: externalRuntime(fakeBackend([item(1)])),
+    }),
+  );
+  const s = r.state;
+  assert.equal(s.status, "failed", "채택 지점에서는 막는다");
+  assert.equal(s.failed_reason, "required_sections_missing");
+  assert.equal(s.failed_agent, "research");
+  assert.equal(s.resume_from, 0, "resumable failed다");
+  assert.equal(s.completed_steps.includes("research"), false, "완료로 세지 않는다");
+  // 영수증 없는 실패는 없다: 최외곽 catch가 attempt를 봉인하고 재throw한다.
+  const at = attemptsOf(s).at(-1)!;
+  assert.equal(at.error_code, "research_step_failed", "attempt는 자기 층의 코드로 봉인된다");
+  assert.equal(at.mode, null);
+  assert.ok(at.receipt_path.length > 0, "receipt 경로가 기록됐다");
+  assert.equal(existsSync(join(projectPaths(name).root, at.receipt_path)), true, "receipt 파일이 실재한다");
+  assert.equal(receiptFiles(projectPaths(name).root).length, 1);
   rmProject(name);
 });

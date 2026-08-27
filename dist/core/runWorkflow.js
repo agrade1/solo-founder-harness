@@ -13,6 +13,13 @@ import { runResearch, ResearchError } from "../tools/researchGateway.js";
 import { EVIDENCE_DIGEST_RECIPIENTS, RESEARCH_DECLARATION_INSTRUCTION, RESEARCH_DIR_REL, RESEARCH_FIRST_PASS_MAX_BYTES, RESEARCH_MAX_ATTEMPTS, buildEvidenceDigest, createSessionBackend, parseResearchDeclaration, redactedQuery, secondPassRequest, sha256Of, verifyResearchReceipt, writeResearchReceipt, } from "./researchRuntime.js";
 import { envFilePath } from "./envFile.js";
 /**
+ * [C-127] 재생성 상한 후에도 필수 섹션 계약 미달 — **채택 거부**. step 단위 catch가 이것을 보고
+ * `failed_reason`에 안정 코드(`required_sections_missing`)를 적는다. 새 상태를 만들지 않는 이유는
+ * `failed` + `resume_from`이 이미 이 레포의 "고치고 이어서 하라"이기 때문이다(`user_rejected` 선례).
+ */
+class RequiredSectionsMissing extends Error {
+}
+/**
  * [B-40/A-2] 게이트 결과를 사람이 읽는 한 줄로. **CLI와 vault가 이 함수 하나를 쓴다** —
  * 렌더가 두 벌이면 한쪽만 정직해진다(실제로 그렇게 killed가 "진행"으로 적히고 있었다).
  * `outcome`이 없는 옛 run_state는 jumped_to로 추론하되 그 사실을 숨기지 않는다.
@@ -513,11 +520,40 @@ export async function runWorkflow(args) {
         }
         if (!o.validation.ok) {
             warnings.push({ agent_id: agent.agent_id, missing: o.validation.missing });
-            console.warn(`  ⚠ ${agent.agent_id}: 필수 섹션 누락 — ${o.validation.missing.join(", ")} (저장은 진행)`);
+            // [C-127] 이 warn은 **채택 여부를 말하지 않는다** — 리서치 1차처럼 저장도 차단도 하지 않는
+            // 호출에서도 나온다. 채택 지점의 판정은 persistFinalOutcome이 내린다.
+            console.warn(`  ⚠ ${agent.agent_id}: 필수 섹션 누락 — ${o.validation.missing.join(", ")}`);
         }
     }
-    /** [C-126/A-2] **최종 채택본만** 저장한다 (saveArtifact·token_output·completed_steps·findings). */
+    /**
+     * [C-126/A-2] **최종 채택본만** 저장한다 (saveArtifact·token_output·completed_steps·findings).
+     *
+     * [C-127] 채택(저장→완료 등재→findings)의 **유일한 관문**이라서 필수 섹션 가드가 여기 있다.
+     * 기각한 대안: `runStepWithRegen` 안에서 throw — ⓐ 리서치 **1차**를 과차단한다(1차는 채택본이
+     * 아니고 2차가 교정 기회다) ⓑ 그 throw가 usage 누산 이전에 나가 **1차 LLM 비용이 run_state에서
+     * 사라진다**(C-126/A-2가 막은 바로 그 회귀).
+     */
     function persistFinalOutcome(agent, o) {
+        // [C-127/A-1] **검증이 저장보다 먼저다.** 계약 미충족이면 디스크를 아예 건드리지 않는다.
+        //
+        // 기각한 대안(C-127 초판이 실제로 이렇게 짰다): `saveArtifact` 뒤에서 차단 —
+        // **이미 채택된 정상 산출물을 깨진 바이트로 파괴한다.** 최초 채택이면 무해하지만
+        // 비평 루프의 revise는 `completed_steps`에 **이미 들어 있는** agent의 문서를 덮는다
+        // (`registry/workflows.json`의 mvp-planning: tech_lead는 critique_loop 진입 전에 completed).
+        // 그 revise가 계약 미달이면 ① 정상 문서가 깨진 바이트로 덮이고 ② tech_lead는
+        // `completed_steps`에서 제거되지 않으므로 ③ resume이 그 깨진 파일을 완료 산출물로
+        // 복원하고(findings 복원 루프) ④ critic이 이번엔 Critical 0을 내면 revise 없이 루프가 끝나
+        // ⑤ 최종 manifest가 **깨진 문서를 결박**한다. C-127이 닫으려던 거짓 영수증을
+        // C-127이 새로 만드는 모양이었다 (Codex 적대적 리뷰 A-1).
+        //
+        // 초판이 "저장은 하고 채택만 막는다"를 택했던 근거 둘은 이 발견으로 뒤집힌다:
+        // ⓐ "운영자가 깨진 문서를 봐야 판단한다" → 실제로 필요한 정보(누락 **헤더 이름**)는
+        //    이미 `warnings[]`와 콘솔 경고에 정확히 있다. 문서 전문은 그 판단에 필요 없다.
+        // ⓑ "`savedFiles` 등재로 파이프라인 drift 정합이 공짜" → 아무것도 안 썼으면 drift가 없다.
+        if (!o.validation.ok) {
+            throw new RequiredSectionsMissing(`${agent.agent_id}: 필수 섹션 미충족(${o.validation.missing.join(", ")}) — 재생성 ${maxRegen}회 후에도 계약 미달. ` +
+                `${agent.default_output}에 쓰지 않고 채택도 하지 않는다 (기존 산출물 보존).`);
+        }
         const saved = saveArtifact(project, agent.default_output, o.markdown);
         savedFiles.push(saved);
         // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
@@ -1075,7 +1111,8 @@ export async function runWorkflow(args) {
             }
             catch (err) {
                 failed_agent = currentAgentId || "(unknown)";
-                failed_reason = err.message;
+                // [C-127] 필수 섹션 미달만 안정 코드로 승격한다. 그 밖의 예외는 기존대로 message 그대로다.
+                failed_reason = err instanceof RequiredSectionsMissing ? "required_sections_missing" : err.message;
                 failedIndex = i;
                 console.error(`  ✗ ${failed_agent}: 실행 실패 — ${err.message} — 중단`);
                 break;

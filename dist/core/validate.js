@@ -1,6 +1,10 @@
 /**
  * agent 결과의 필수 섹션 헤더 검증 (spec 4.4, AGENT_OUTPUT_SCHEMA §6).
- * v1은 경고 수준: 누락 헤더 목록을 반환하고 저장은 계속한다.
+ *
+ * 이 함수는 판정만 낸다(누락 헤더 목록). **집행은 호출자**다 — [C-127] 이후 `runWorkflow`의
+ * `persistFinalOutcome`이 재생성 상한 후에도 `ok:false`인 산출물의 **채택을 거부한다**
+ * (`failed_reason: "required_sections_missing"`). 파일은 검토용으로 남지만 completed로 세지 않는다.
+ * (2026-08-27 이전 주석은 "v1은 경고 수준: 저장은 계속한다"였다 — 가드가 선 뒤로 거짓이다.)
  */
 // 필수 4개: Metadata / Main Judgment / Risks / Next Actions(= Recommended Next Actions)
 const REQUIRED = [

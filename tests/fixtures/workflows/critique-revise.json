@@ -1,0 +1,10 @@
+{
+  "_why": "[C-127/A-1] 격리 fixture. revise가 **이미 채택된** 산출물을 덮는 경로를 재려면 target이 루프 진입 전에 completed여야 한다 — registry의 mvp-planning이 그 모양이지만 approval·design 게이트·tokens 계약이 섞여 있어 '덮었나'를 그것들과 구분할 수 없다. 여기는 target 1개 + 루프 1개가 전부다.",
+  "workflows": [
+    {
+      "workflow_id": "critique-revise",
+      "description": "테스트 전용: tech_lead 채택 → red_team 비평 → revise. 채택본 파괴 여부만 격리해 잰다.",
+      "steps": ["tech_lead", { "critique_loop": { "target": "tech_lead", "critic": "red_team", "max_rounds": 2 } }]
+    }
+  ]
+}
