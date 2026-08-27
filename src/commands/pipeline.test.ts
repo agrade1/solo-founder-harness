@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1037,6 +1037,105 @@ test("[B-41] 폐기된 아이디어에서는 파이프라인이 전진하지 않
   const rr = await runWorkflow({ workflowId: "idea-validation", project: name, provider: reeval, now: () => FIXED });
   assert.equal(rr.state.status, "completed", "재평가 run은 killed 파이프라인에서도 돌 수 있다 (B-40 경로 보존)");
   assert.equal(typeof rr.state.cleared_idea_sha256, "string", "'진행' 판정이 잠금을 풀었다");
+  rmProject(name);
+});
+
+// ── C-135 (동시 실행 실측의 회귀) ──────────────────────────────
+//
+// 정본은 `scripts/c135-concurrency.sh`다: 진짜 두 프로세스 경합·SIGKILL·PID 생존판정은
+// 프로세스가 있어야만 재진다(실측: 동시 next 20회 = RAN 20 / LOCKED 20 · 단계 두 번 실행 0회).
+// 여기 남기는 것은 **그 실측이 확인한 성질 중 in-process로 재현되는 것**이다.
+
+test("[C-135] lock 하나가 mutating 4개를 전부 막는다(exit 2·바이트 불변·모델 0회) · 죽은 owner의 lock도 막는다(자동 회수 없음) · unlock은 무관한 살아있는 pid를 회수하지 않는다", async () => {
+  const name = "_c135_lock";
+  await toFirstCheckpoint(name);
+  const root = projectPaths(name).root;
+  const abs = pipelineStatePath(root);
+  const lockAbs = join(root, PIPELINE_LOCK_REL);
+  const st = stateOf(name);
+  assert.ok(st.pending, "전제: 확인 대기 중인 체크포인트가 있다");
+  const stage = st.pending.stage;
+  const cp = st.pending.checkpoint_id;
+
+  // owner를 **죽은 pid**로 적는다: acquire는 생존을 보지 않으므로 죽은 owner의 lock도 막아야 한다
+  // (자동 회수는 unlock만이 한다 — 그것이 "같은 단계를 두 프로세스가 돌리는 통로"를 막는 지점이다).
+  const corpse = spawnSync(process.execPath, ["-e", "0"]);
+  assert.equal(corpse.status, 0, "자식이 정상 종료했다 (그 pid는 이제 없다)");
+  const deadPid = corpse.pid as number;
+  writeFileSync(lockAbs, JSON.stringify({ pid: deadPid, nonce: "c".repeat(16), at: FIXED }), "utf8");
+
+  const before = bytesOf(abs);
+  const guard = counting();
+  const blocked = [
+    await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED })),
+    await quiet(() => approveCheckpoint({ project: name, stage, checkpointId: cp, now: () => FIXED })),
+    await quiet(() => rejectCheckpoint({ project: name, stage, checkpointId: cp, now: () => FIXED })),
+    await quiet(() => restartPipeline({ project: name, now: () => FIXED })),
+  ];
+  for (const r of blocked) {
+    assert.equal(r.code, "pipeline_locked", `mutating 명령은 lock에 막힌다 (실제 ${r.code})`);
+    assert.equal(r.exit, 2, "거부는 exit 2");
+  }
+  assert.equal(guard.calls, 0, "막힌 next는 모델을 호출하지 않는다");
+  assert.equal(bytesOf(abs), before, "막힌 4개 명령 뒤 pipeline_state 바이트가 그대로다");
+  // 읽기 2개는 lock 없이 돈다 (설계상 의도 — 못 보면 사람은 owner를 죽이는 것 말고 할 일이 없다).
+  assert.equal((await quiet(() => statusPipeline({ project: name }))).exit, 0, "status는 lock 중에도 읽힌다");
+
+  // unlock: **무관한 살아 있는 pid**(PID 재사용)는 회수하지 않는다. 이 프로세스의 부모는
+  // 살아 있으면서 이 lock을 만든 적이 없다 — 죽은 owner의 pid가 재활용된 상황과 같은 모양이다.
+  assert.notEqual(process.ppid, process.pid);
+  writeFileSync(lockAbs, JSON.stringify({ pid: process.ppid, nonce: "d".repeat(16), at: FIXED }), "utf8");
+  const reused = await quiet(() => unlockPipeline({ project: name }));
+  assert.equal(reused.code, "pipeline_lock_owner_alive", "살아 있는 pid면 owner가 아니어도 회수하지 않는다");
+  assert.equal(reused.exit, 1);
+  assert.equal(existsSync(lockAbs), true, "회수하지 않았으므로 lock은 남는다");
+
+  // 죽은 owner로 되돌리면 회수한다.
+  writeFileSync(lockAbs, JSON.stringify({ pid: deadPid, nonce: "c".repeat(16), at: FIXED }), "utf8");
+  assert.equal((await quiet(() => unlockPipeline({ project: name }))).code, "pipeline_unlocked");
+  assert.equal(existsSync(lockAbs), false);
+
+  // 대조군: lock이 없으면 **같은 인자**로 approve가 통과한다 — 위 거부들이 공허하지 않다.
+  const ok = await quiet(() => approveCheckpoint({ project: name, stage, checkpointId: cp, now: () => FIXED }));
+  assert.equal(ok.code, "pipeline_approved", `lock이 없으면 같은 승인이 통과한다 (실제 ${ok.code})`);
+  rmProject(name);
+
+  // **무생성**: 파이프라인이 없는 프로젝트에 남의 lock이 있으면 next는 state를 **만들지도 않는다**.
+  // 위의 "바이트 불변"은 이미 있는 파일에 대한 것이라, 생성이 lock 앞으로 새어 나가는 회귀를
+  // 잡지 못한다 — 그 회귀는 두 프로세스가 같은 파이프라인을 각자 세우는 통로다.
+  const fresh = "_c135_lock_fresh";
+  makeProject(fresh);
+  const freshRoot = projectPaths(fresh).root;
+  writeFileSync(join(freshRoot, PIPELINE_LOCK_REL), JSON.stringify({ pid: deadPid, nonce: "e".repeat(16), at: FIXED }), "utf8");
+  const guard2 = counting();
+  const noCreate = await quiet(() => nextPipeline({ project: fresh, providerOverride: guard2, now: () => FIXED }));
+  assert.equal(noCreate.code, "pipeline_locked");
+  assert.equal(existsSync(pipelineStatePath(freshRoot)), false, "막힌 next는 pipeline_state를 만들지 않는다");
+  assert.equal(guard2.calls, 0);
+  rmProject(fresh);
+});
+
+test("[C-135] run_state.json은 tmp+rename으로 갈린다 — 제자리 truncate면 lock 없는 독자가 찢어진 바이트를 본다", async () => {
+  // 오라클은 **inode**다: rename은 목적지를 새 파일로 바꾸므로 inode가 달라지고, 제자리
+  // writeFileSync는 같은 inode를 O_TRUNC로 비웠다가 채운다(그 창을 `pipeline status` 같은
+  // lock 없는 독자가 실제로 본다 — scripts/c135-concurrency.sh ⓐ에서 102,259회 중 2회 관측).
+  // "찢어짐"을 확률로 재면 flaky한 테스트가 되므로, 찢어짐을 만드는 **쓰기 방식**을 고정한다.
+  const name = "_c135_atomic";
+  await toFirstCheckpoint(name);
+  const rs = join(projectPaths(name).root, "outputs/run_state.json");
+  const first = statSync(rs).ino;
+
+  const st = stateOf(name);
+  assert.ok(st.pending);
+  await quiet(() => rejectCheckpoint({ project: name, stage: st.pending!.stage, checkpointId: st.pending!.checkpoint_id, now: () => FIXED }));
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED }));
+
+  assert.notEqual(statSync(rs).ino, first, "두 번째 run이 run_state를 **새 inode로 갈아끼웠다**(제자리 truncate가 아니다)");
+  assert.equal(
+    readdirSync(join(projectPaths(name).root, "outputs")).filter((f) => f.startsWith("run_state.json.tmp-")).length,
+    0,
+    "임시 파일을 남기지 않는다",
+  );
   rmProject(name);
 });
 
