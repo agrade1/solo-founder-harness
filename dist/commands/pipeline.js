@@ -382,8 +382,16 @@ function commitAfterRun(o, ctx) {
         // pending이 없어 reject도 불가하므로, 이 둘 말고는 탈출구가 없다 — 그래서 여기 적는다.
         // 실패한 external attempt는 **지우지 않는다**(영수증으로 남는다).
         if (reason.startsWith("research_")) {
-            console.error(`리서치 복구 경로 두 개:\n` +
-                `  ⓐ 원인(키 오류·네트워크·크레딧)을 고친 뒤: harness pipeline next --project ${project}\n` +
+            // [C-138/④] **사유별로 갈린다.** `research_cap_exceeded`에서 예전 ⓐ("원인을 고친 뒤 resume")는
+            // 증명 가능하게 거짓이었다: 원인은 키·네트워크·크레딧 어느 것도 아니고, resume은 소진된 예산을
+            // `priorResults`로 그대로 이어받아 **반드시 같은 지점에서 다시 막힌다**(2026-08-27 live 실측).
+            // restart도 탈출구가 아니다 — `restartPipeline`은 awaiting_run을 `pipeline_active`로 거부한다.
+            // 그래서 이 사유에서는 실제로 남은 경로가 ⓑ 하나이고, 그렇게 적는다.
+            const capExhausted = reason === "research_cap_exceeded";
+            console.error((capExhausted ? `리서치 복구 경로 (ⓐ는 막혔습니다 — 남은 것은 ⓑ 하나):\n` : `리서치 복구 경로 두 개:\n`) +
+                (capExhausted
+                    ? `  ⓐ 이 run의 리서치 예산이 소진됐습니다 — 같은 명령으로 resume하면 **같은 지점에서 다시 막힙니다**(소진된 예산을 그대로 이어받습니다). restart도 진행 중 파이프라인에서는 거부됩니다.\n`
+                    : `  ⓐ 원인(키 오류·네트워크·크레딧)을 고친 뒤: harness pipeline next --project ${project}\n`) +
                 `  ⓑ 외부 검색 없이 진행: 셸의 TAVILY_API_KEY를 unset하고 ${ctx.research.kind === "self" ? ctx.research.envPath : "workspace 루트의 .env"}의 값을 비운 뒤 같은 명령 — 키 부재는 **승인된 자체 리서치(self) fallback**입니다.\n` +
                 `  (실패한 external attempt는 삭제하지 않고 outputs/research/의 영수증에 남습니다.)`);
         }

@@ -169,6 +169,11 @@ export interface RunResearchResult {
   cacheHits: number;
   /** allowlist로 좁혀서 버린 search 후보 수(조용히 버리지 않고 센다). */
   droppedByDomain: number;
+  /**
+   * [C-138] 저장 규칙(https·크기·형식)에 걸려 버린 **search 후보** 수. `droppedByDomain`과 같은 규율로
+   * 센다 — 조용히 버리지 않는다. **extract 경로에는 이 카운터가 늘지 않는다**(거기서는 여전히 throw다).
+   */
+  droppedByStore: number;
 }
 
 /**
@@ -180,6 +185,7 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
   let backendCalls = 0;
   let cacheHits = 0;
   let droppedByDomain = 0;
+  let droppedByStore = 0;
   const items: EvidenceItem[] = [];
 
   const allowed = (url: string): boolean => {
@@ -221,7 +227,27 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
         // 저장이 성공한 **그 자리에서** 관찰자에게 알린다 — 뒤 항목이 throw해도 이 사실은 남는다.
         opts.onStored?.(item, item.rawPath);
       } catch (e) {
-        if (e instanceof EvidenceError) throw new ResearchError(e.code, e.message);
+        if (e instanceof EvidenceError) {
+          /**
+           * [C-138/①] **search 후보 1건의 데이터 품질이 step 전체를 죽이지 않는다.**
+           *
+           * 실측(2026-08-27 live): Tavily가 결과 9건 중 1건으로 `http://`(비-https) URL을 돌려줬고,
+           * `storeEvidence`의 https 검사가 던진 `EvidenceError`가 여기서 `ResearchError`로 승격돼
+           * **이미 저장된 8건과 함께** research step 전체가 죽었다.
+           *
+           * 경계의 성격이 두 경로에서 다르다:
+           *  - `narrow === true`(search): 후보를 고른 것은 **벤더**다. 우리가 지목하지 않은 URL의 품질은
+           *    우리가 통제하는 보안 경계가 아니라 제3자 데이터 품질이다 → 그 1건만 버리고 계속한다
+           *    (바로 위 `droppedByDomain`과 같은 관용구).
+           *  - `narrow === false`(extract): URL을 지목한 것은 **우리**다. 다른 곳의 응답이 돌아오는 것은
+           *    리다이렉트 우회 시도이고 **그것은 진짜 보안 경계다** → 지금처럼 throw를 유지한다.
+           */
+          if (narrow) {
+            droppedByStore++;
+            continue;
+          }
+          throw new ResearchError(e.code, e.message);
+        }
         throw e;
       }
     }
@@ -239,7 +265,7 @@ export async function runResearch(requests: ResearchRequest[], opts: RunResearch
       items.push(...(await call(`extract:${url}`, async () => [await opts.backend.extract(url)], false)));
     }
   }
-  return { items, backendCalls, cacheHits, droppedByDomain };
+  return { items, backendCalls, cacheHits, droppedByDomain, droppedByStore };
 }
 
 // ── T4: 주입 방어 — "데이터이며 지시가 아님" 래핑 ────────────────────────────────

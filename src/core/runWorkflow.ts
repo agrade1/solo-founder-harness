@@ -1019,6 +1019,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           allowedDomains: null,
           // [A-4] partial을 사실대로 적는 유일한 자리 — 뒤 항목이 throw해도 앞 저장은 남는다.
           onStored: (item, rel) => {
+            // [C-138/②] 예산 누산은 **저장이 성공한 이 자리**다(배치 수신 시점이 아니다).
+            sessionBackend.noteStored(1);
             attempt.evidence.push(item);
             const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
             attempt.raw_paths.push(projRel);
@@ -1026,6 +1028,11 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           },
         });
         attempt.dropped_by_domain = res.droppedByDomain;
+        if (res.droppedByStore > 0) {
+          // [C-138/①] 버린 사실은 **영수증과 콘솔 양쪽에** 남는다 — 조용한 손실은 만들지 않는다.
+          attempt.dropped_by_store = res.droppedByStore;
+          console.warn(`  ⚠ ${agent.agent_id}: 검색 결과 ${res.droppedByStore}건은 저장 규칙(https URL 등) 위반으로 버렸습니다 (나머지는 그대로 반영)`);
+        }
         attempt.backend_calls = sessionBackend.calls - callsAt;
         attempt.cache_hits = memoDelta() + res.cacheHits;
       } catch (err) {
