@@ -22,8 +22,10 @@ export const mockProvider = {
         // 파이프라인 영수증이 선언된 사이드카까지 결박하는데(승인 후 교체 탐지) mock이 그것을 안 내면
         // 계약을 만족할 수 없는 fixture가 된다 — 그럴 때 고칠 것은 계약이 아니라 **test provider**다.
         // 3계층(primitive→semantic→component)은 token-lint의 tokens.json 규율과 같은 모양이다.
+        // [C-127] 헤더 이름을 `## 디자인 토큰`으로 맞춘다 — design의 `required_headers` 마지막 항목이자
+        // `designContract.DESIGN_REQUIRED_HEADERS`의 이름이다. "Design Tokens"는 어느 계약에도 없는 이름이었다.
         const tokensBlock = agent.token_output
-            ? "## Design Tokens\n\n```json\n" +
+            ? "## 디자인 토큰\n\n```json\n" +
                 JSON.stringify({
                     primitive: { color: { "gray-900": "#111827", "blue-500": "#3b82f6", white: "#ffffff" }, space: { "2": "8px" } },
                     semantic: {
@@ -39,6 +41,17 @@ export const mockProvider = {
                 }, null, 2) +
                 "\n```\n\n"
             : "";
+        // [C-127] agent별 `required_headers`(agent_registry.json)도 mock이 만족한다. 이 계약이 경고에서
+        // **채택 차단**으로 승격된 뒤로는(`persistFinalOutcome`의 가드) mock 산출물이 pm·design·tech_lead에서
+        // 매번 `required_sections_missing`으로 죽는다 — 즉 만족 불가능한 fixture가 된다. B-40의 `## Decision`,
+        // B-41의 tokens.json과 **같은 규율**이다: test provider가 자기가 받은 계약을 만족하지 못하면
+        // 고칠 것은 계약이 아니라 test provider다. (이전 판의 golden run_state는 pm의 누락 7건을
+        // `warnings`에 박아 두고 status는 completed였다 — 그 스냅샷이 곧 이 구멍의 증거였다.)
+        const alreadyEmitted = decisionBlock + tokensBlock;
+        const requiredBlock = (agent.required_headers ?? [])
+            .filter((h) => !alreadyEmitted.includes(`## ${h}\n`))
+            .map((h) => `## ${h}\n\n- [MOCK] ${h} — ${agent.role} 관점의 내용\n\n`)
+            .join("");
         // [C-126] **선언을 요구받았으면 종결자를 낸다.** 리서치 선언(`RESEARCH_REQUEST`)이 프롬프트에
         // 실렸는데 아무 선언도 내지 않으면 계약이 `research_declaration_missing`으로 fail closed다
         // (무선언 ≠ `none` — 그 구분이 "모델이 형식을 어겼다"를 잡는 축이다). mock은 검색어를 지을 수
@@ -66,7 +79,7 @@ export const mockProvider = {
 - 이전 판단 요약:
 ${priorBlock}
 
-${decisionBlock}${tokensBlock}## Main Judgment
+${decisionBlock}${requiredBlock}${tokensBlock}## Main Judgment
 
 - [MOCK] ${agent.name}의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다.
 
