@@ -981,6 +981,7 @@ test("[C-127] resume은 실패 step부터 재실행하고 계약 충족 시 완�
   const p = breakSection("pm", "Risks", { healAfter: 2 });
   const first = await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, now: () => FIXED });
   assert.equal(first.state.status, "failed", "전제: 1회차는 계약 미달로 멈춘다");
+  assert.equal(first.state.failed_reason, "required_sections_missing", "전제: 다른 이유로 멈춘 것이 아니다");
   assert.equal(first.state.resume_from, 2);
 
   const again = await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED });
