@@ -1021,11 +1021,14 @@ test("[C-127] Decision 절이 아예 없으면 게이트 전에 required_section
   rmProject(name);
 });
 
-// ── [C-127] 채점표를 모델에게 준다 (required_headers → 프롬프트) ──
+// ── [C-127] required_headers를 공용 출력 지시에서도 재강조한다 ──
 //
-// 근본 원인: `required_headers`의 프로덕션 사용처가 `validateAgentOutput` 하나뿐이라
-// **모델은 자기가 채점당하는 계약을 통보받은 적이 없었다**. founder_ceo의 `["Decision"]`만
-// promptParts에 문자열로 하드코딩돼 있었고 나머지는 재생성 피드백에서야 처음 들었다.
+// **무엇이 빠져 있었나**: 헤더 이름은 역할 프롬프트에 이미 있었다(`agents/pm_product_strategy_agent.md`
+// §21 등). 없던 것은 **모델이 마지막으로 읽는 공용 출력 지시에서의 재강조**이고, `promptParts`에는
+// founder_ceo의 `["Decision"]`만 문자열로 하드코딩돼 있었다.
+// 근거: live 실측(claude-code · 표본 3 · 전부 수정 전 코드) pm 1차 준수율 **1/3** — 역할 프롬프트만으로는
+// 일관되지 않았다. 그리고 B-40이 `Decision` 하나에 대해 같은 교훈을 이미 남겼다.
+// (수정 후 준수율은 미측정 — 개선을 주장하지 않는다.)
 
 /** required_headers가 없는 agent가 받는 최종 섹션 목록 줄 — C-127 이전 바이트 그대로 동결한다. */
 const NO_REQUIRED_HEADER_LINE = "Input Summary / Main Judgment / Key Findings / Decisions / Assumptions /";
