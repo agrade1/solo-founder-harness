@@ -1762,3 +1762,32 @@ test("[C-138/③] 게이트 되돌림으로 research가 2회 돌아도 상한에
   assert.ok(inner.calls.length <= MAX_BACKEND_CALLS_PER_RUN, "backend 호출 상한과 어긋난다");
   rmSync(dir, { recursive: true, force: true });
 });
+
+test("[C-138/④] `research_cap_exceeded` 안내는 'resume이 다시 막힌다'를 말하고, 다른 사유는 말하지 않는다", async () => {
+  const name = "_c138_guide";
+  makeProject(name);
+  // 상한 초과를 만든다: URL 길이 상한 위반 → sessionBackend가 `research_cap_exceeded`로 fail closed.
+  const longUrl = fakeBackend([{ source: `https://x.example.com/${"a".repeat(RESEARCH_MAX_URL_CHARS)}`, title: "t", raw: "r" }]);
+  const capped = await captureLogs(() =>
+    nextPipeline({ project: name, providerOverride: tap(), now: () => FIXED, researchRuntimeOverride: externalRuntime(longUrl) }),
+  );
+  assert.match(capped, /research_cap_exceeded/);
+  assert.match(capped, /다시 막힙니다/, "예산 소진인데 resume이 통할 것처럼 안내한다");
+  assert.ok(!capped.includes("ⓐ 원인(키 오류"), "원인 셋 중 어느 것도 실제 원인이 아니다 — 거짓 안내다");
+  rmProject(name);
+
+  const name2 = "_c138_guide2";
+  makeProject(name2);
+  const other = await captureLogs(() =>
+    nextPipeline({
+      project: name2,
+      providerOverride: tap({ decl: null }),
+      now: () => FIXED,
+      researchRuntimeOverride: externalRuntime(fakeBackend([item(1)])),
+    }),
+  );
+  assert.match(other, /research_declaration_missing/);
+  assert.match(other, /ⓐ 원인\(키 오류/, "맞는 문구까지 바꾸지 않는다");
+  assert.ok(!other.includes("다시 막힙니다"), "예산 소진이 아닌 사유에 예산 문구가 샜다");
+  rmProject(name2);
+});
