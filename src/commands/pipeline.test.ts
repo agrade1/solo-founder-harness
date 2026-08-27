@@ -1091,12 +1091,14 @@ test("[C-127] pipeline: 계약 미달 PRD는 checkpoint에 결박되지 않는�
   assert.equal(failed.pending, null, "깨진 PRD는 체크포인트에 결박되지 않는다");
   assert.ok(failed.last_failure, "실패 영수증은 남는다");
   assert.equal(failed.last_failure!.stage, "idea-validation");
-  // 깨진 문서의 digest는 `written`에 잡힌다 — 파일은 남기되(운영자 판단 근거) resume의 사전 drift
-  // 검증이 그것을 "사람이 손댄 것"으로 오해하지 않도록.
-  assert.ok(
+  // [C-127/A-1] 깨진 PRD는 **디스크에 쓰이지도 않았다** — 그래서 `written`에도 없고 drift도 없다.
+  // (초판은 저장 후 차단이라 여기 digest가 잡혔다. 그 순서는 revise가 기존 채택본을 파괴한다.)
+  assert.equal(
     failed.last_failure!.written.some((w) => w.path === "docs/02_PRD.md"),
-    "채택되지 않은 PRD도 written에 사실대로 남는다",
+    false,
+    "쓰지 않은 파일은 written에도 없다",
   );
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/02_PRD.md")), false, "깨진 PRD 파일 자체가 없다");
   assert.equal(loadRunState(name)!.failed_reason, "required_sections_missing");
   assert.equal(loadRunState(name)!.completed_steps.includes("pm"), false);
 

@@ -11,6 +11,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -32,6 +33,8 @@ const FIXED = "2026-01-01T00:00:00.000Z";
 const HERE = dirname(fileURLToPath(import.meta.url));
 /** [B-40] gate 뒤에 sentinel step이 있는 격리 workflow (실제 세 게이트는 모두 마지막 step이다). */
 const SENTINEL_WF = join(HERE, "..", "..", "tests", "fixtures", "workflows", "kill-sentinel.json");
+/** [C-127/A-1] target이 루프 **전에** 채택되는 최소 비평 workflow (revise가 채택본을 덮는 경로). */
+const CRITIQUE_WF = join(HERE, "..", "..", "tests", "fixtures", "workflows", "critique-revise.json");
 /** kill-sentinel/kill-overlap의 gate 뒤 step — 호출 0회를 세는 대상. */
 const SENTINEL = "chief_of_staff";
 
@@ -970,8 +973,9 @@ test("[C-127] 재생성 상한 후 필수 섹션 미충족 → failed(required_s
   assert.equal(p.calls.get("red_team") ?? 0, 0, "후속 step 미실행");
   assert.equal(p.calls.get("founder_ceo") ?? 0, 0, "게이트 decider도 미실행");
   assert.deepEqual(s.warnings, [{ agent_id: "pm", missing: ["Risks"] }], "누락 헤더는 durable하게 남는다");
-  // 파일은 검토용으로 남는다 (운영자가 헤더 이름을 눈으로 보고 계약/프롬프트를 고칠 근거).
-  assert.equal(existsSync(join(projectPaths(name).root, "docs/02_PRD.md")), true, "산출물 파일은 남긴다");
+  // [C-127/A-1] 계약 미충족이면 **디스크를 건드리지 않는다**. 운영자에게 필요한 정보(누락 헤더
+  // 이름)는 위 warnings에 이미 있다. 저장 후 차단은 revise가 기존 채택본을 파괴한다(A-1 테스트 참조).
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/02_PRD.md")), false, "깨진 산출물을 쓰지 않는다");
   rmProject(name);
 });
 
@@ -1103,4 +1107,83 @@ test("[C-127] founder_ceo의 Decision 지시가 하드코딩 제거 후에도 �
   assert.deepEqual(ceo.required_headers, ["Decision"], "fixture 전제");
   assert.equal(sectionListLine(prompt), `Decision / ${NO_REQUIRED_HEADER_LINE}`, "Decision이 목록 맨 앞에 그대로 있다");
   assert.match(prompt, /"## Decision" 절은 필수다/, "판정 절 전용 지시도 그대로다");
+});
+
+// ── [C-127/A-1] 차단이 기존 채택본을 파괴하지 않는다 ────────────
+//
+// C-127 초판은 `saveArtifact` **뒤에서** 차단했다. 최초 채택이면 무해하지만, 비평 루프의 revise는
+// `completed_steps`에 **이미 있는** agent의 문서를 덮는다 — 계약 미달 revise가 정상 바이트를
+// 파괴하고, completed_steps에서는 제거되지 않으므로 resume이 그 깨진 파일을 완료 산출물로
+// 복원하고 최종 manifest가 그것을 결박한다. C-127이 닫으려던 부류를 C-127이 새로 만드는 모양.
+
+function sha256(s: string): string {
+  return createHash("sha256").update(s, "utf8").digest("hex");
+}
+
+test("[C-127/A-1] revise 실패는 이미 채택된 산출물을 덮지 않는다", async () => {
+  const name = "_c127_revise";
+  makeProject(name);
+  const TECH_PLAN = join(projectPaths(name).root, "docs/04_TECH_PLAN.md");
+
+  let adopted = ""; // tech_lead 최초 채택본(정상)
+  let brokenRevises = 0;
+  const calls = new Map<string, number>();
+  const provider: Provider = {
+    id: "mock",
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      calls.set(input.agent.agent_id, (calls.get(input.agent.agent_id) ?? 0) + 1);
+      const r = await mockProvider.generate(input);
+      // critic은 Critical을 낸다 — 안 그러면 루프가 즉시 resolved로 끝나 revise 자체가 안 돈다.
+      if (input.agent.agent_id === "red_team") {
+        const md = r.markdown.replace("### Critical\n\n- (없음)\n", "### Critical\n\n- [MOCK] 치명 리스크\n");
+        assert.notEqual(md, r.markdown, "Critical 주입 실패 — mock 출력 형식이 바뀌었다");
+        return { ...r, markdown: md };
+      }
+      if (input.agent.agent_id !== "tech_lead") return r;
+      if (!input.revisionRequest) {
+        adopted = r.markdown; // 최초 채택본
+        return r;
+      }
+      // revise: 처음 2회(최초 시도 + 재생성 1회)만 계약을 깬다. 그 뒤(resume)는 정상.
+      if (brokenRevises >= 2) return r;
+      brokenRevises++;
+      const md = r.markdown.replace(/^## Risks\n[\s\S]*?(?=^## )/m, "");
+      assert.notEqual(md, r.markdown, "'## Risks' 절 제거 실패 — mock 출력 형식이 바뀌었다");
+      return { ...r, markdown: md };
+    },
+  };
+
+  const first = await runWorkflow({
+    workflowId: "critique-revise",
+    workflowsPath: CRITIQUE_WF,
+    project: name,
+    provider,
+    now: () => FIXED,
+  });
+  assert.equal(first.state.status, "failed", "전제: revise가 계약 미달이라 멈춘다");
+  assert.equal(first.state.failed_reason, "required_sections_missing");
+  assert.equal(first.state.failed_agent, "tech_lead");
+  assert.equal(brokenRevises, 2, "전제: revise가 재생성까지 쓰고 실패했다");
+  assert.ok(adopted.length > 0, "전제: 최초 채택본을 캡처했다");
+  assert.equal(first.state.completed_steps.includes("tech_lead"), true, "최초 채택은 유효하다 — 취소되지 않는다");
+
+  // ── 핵심 단정: 디스크 바이트가 revise 전과 **동일**하다 ──
+  assert.equal(sha256(readFileSync(TECH_PLAN, "utf8")), sha256(adopted), "revise 실패가 채택본을 덮지 않았다");
+  assert.equal(validateAgentOutput(readFileSync(TECH_PLAN, "utf8"), ["리스크와 완화책"]).ok, true, "디스크 문서는 여전히 계약을 만족한다");
+
+  // ── resume: 완주하고 최종 문서도 정상 바이트다 (깨진 파일이 결박되지 않는다) ──
+  const again = await runWorkflow({
+    workflowId: "critique-revise",
+    workflowsPath: CRITIQUE_WF,
+    project: name,
+    provider,
+    resume: true,
+    now: () => FIXED,
+  });
+  assert.equal(again.state.status, "completed");
+  const finalMd = readFileSync(TECH_PLAN, "utf8");
+  const techLead = findAgent(loadAgentRegistry(), "tech_lead")!;
+  assert.equal(validateAgentOutput(finalMd, techLead.required_headers ?? []).ok, true, "최종 채택본이 계약을 만족한다");
+  assert.equal(again.state.completed_steps.includes("tech_lead"), true);
+  rmProject(name);
 });

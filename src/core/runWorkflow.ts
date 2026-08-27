@@ -856,17 +856,30 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
    * 사라진다**(C-126/A-2가 막은 바로 그 회귀).
    */
   function persistFinalOutcome(agent: AgentDef, o: StepOutcome): string {
-    const saved = saveArtifact(project, agent.default_output, o.markdown);
-    savedFiles.push(saved);
-    // [C-127] 계약 미충족 산출물은 채택하지 않는다. 파일은 검토용으로 남긴다(오늘과 같은 바이트 —
-    // 파이프라인 last_failure.written에 잡혀 resume drift 검증이 오해하지 않는다). token_output은
-    // 뽑지 않는다: 깨진 design 문서가 정상 tokens.json을 덮으면 안 된다.
+    // [C-127/A-1] **검증이 저장보다 먼저다.** 계약 미충족이면 디스크를 아예 건드리지 않는다.
+    //
+    // 기각한 대안(C-127 초판이 실제로 이렇게 짰다): `saveArtifact` 뒤에서 차단 —
+    // **이미 채택된 정상 산출물을 깨진 바이트로 파괴한다.** 최초 채택이면 무해하지만
+    // 비평 루프의 revise는 `completed_steps`에 **이미 들어 있는** agent의 문서를 덮는다
+    // (`registry/workflows.json`의 mvp-planning: tech_lead는 critique_loop 진입 전에 completed).
+    // 그 revise가 계약 미달이면 ① 정상 문서가 깨진 바이트로 덮이고 ② tech_lead는
+    // `completed_steps`에서 제거되지 않으므로 ③ resume이 그 깨진 파일을 완료 산출물로
+    // 복원하고(findings 복원 루프) ④ critic이 이번엔 Critical 0을 내면 revise 없이 루프가 끝나
+    // ⑤ 최종 manifest가 **깨진 문서를 결박**한다. C-127이 닫으려던 거짓 영수증을
+    // C-127이 새로 만드는 모양이었다 (Codex 적대적 리뷰 A-1).
+    //
+    // 초판이 "저장은 하고 채택만 막는다"를 택했던 근거 둘은 이 발견으로 뒤집힌다:
+    // ⓐ "운영자가 깨진 문서를 봐야 판단한다" → 실제로 필요한 정보(누락 **헤더 이름**)는
+    //    이미 `warnings[]`와 콘솔 경고에 정확히 있다. 문서 전문은 그 판단에 필요 없다.
+    // ⓑ "`savedFiles` 등재로 파이프라인 drift 정합이 공짜" → 아무것도 안 썼으면 drift가 없다.
     if (!o.validation.ok) {
       throw new RequiredSectionsMissing(
         `${agent.agent_id}: 필수 섹션 미충족(${o.validation.missing.join(", ")}) — 재생성 ${maxRegen}회 후에도 계약 미달. ` +
-          `산출물은 ${saved}에 남겼지만 completed로 채택하지 않는다.`,
+          `${agent.default_output}에 쓰지 않고 채택도 하지 않는다 (기존 산출물 보존).`,
       );
     }
+    const saved = saveArtifact(project, agent.default_output, o.markdown);
+    savedFiles.push(saved);
     // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
     if (agent.token_output) {
       const tokens = extractTokensJson(o.markdown);
