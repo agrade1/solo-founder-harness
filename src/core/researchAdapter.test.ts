@@ -38,6 +38,7 @@ import {
   researchModeLines,
   researchOutcomeLines,
   resolveResearchRuntime,
+  verifyResearchReceipt,
   writeResearchReceipt,
   type ResearchAttempt,
   type ResearchRuntime,
@@ -1736,6 +1737,8 @@ test("[C-138/②] 부분 저장 뒤 totals.results가 **실제 저장 건수**�
   assert.equal(st.research?.totals?.results, 2, "예산이 받은 배치(3)를 태웠다 — resume이 그 값을 이어받는다");
   assert.equal(a.dropped_by_store, 1);
   assert.match(out, /1건은 저장 규칙/, "버린 수가 콘솔에 없다 — 조용한 손실이다");
+  // 새 optional 필드가 실려도 **resume 사전 검증**(receipt 바이트 == run_state 재직렬화)이 통과한다.
+  assert.equal(verifyResearchReceipt(projectPaths(name).root, a).ok, true, "dropped_by_store가 실리면 resume이 막힌다");
   rmProject(name);
 });
 
