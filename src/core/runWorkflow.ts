@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, sep } from "node:path";
 import {
@@ -1475,9 +1475,21 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       : {}),
   };
 
-  // run_state.json은 성공/실패와 무관하게 항상 기록
+  // run_state.json은 성공/실패와 무관하게 항상 기록. **tmp + rename(원자)** 으로 쓴다.
+  //
+  // [C-135] 왜 직접 writeFileSync가 아닌가 — 실측 근거: `pipeline status`는 **설계상 lock 없이**
+  // 이 파일을 읽는다(commands/pipeline.ts 머리 주석). 직접 쓰기는 O_TRUNC와 write(2) 사이에
+  // 0바이트 창을 남기고, 그 창을 lock 없는 독자가 실제로 본다 —
+  // 동시 `pipeline next` 20회분 창에서 **run_state 2/102,259 파싱 실패**, 같은 창에서 이미
+  // tmp+rename으로 쓰던 pipeline_state는 **0/106,064**였다(scripts/c135-concurrency.sh ⓐ).
+  // 찢어진 바이트를 본 독자는 `status`면 폐기 경고를 조용히 빠뜨리고, `next`면
+  // `run_state_unreadable`로 exit 2를 내며 사람에게 파일 복구를 시킨다.
+  // 같은 레포의 writePipelineState(core/pipeline.ts)·orchestrationStore가 쓰는 그 패턴 그대로다
+  // (공용 헬퍼를 새로 만들지 않았다 — 세 번째 사용처이고, 모듈을 새로 얽으면 순환이 생긴다).
   const runStateAbs = join(projectPaths(project).root, RUN_STATE_REL);
-  writeFileSync(runStateAbs, JSON.stringify(state, null, 2) + "\n", "utf8");
+  const runStateTmp = `${runStateAbs}.tmp-${process.pid}`;
+  writeFileSync(runStateTmp, JSON.stringify(state, null, 2) + "\n", "utf8");
+  renameSync(runStateTmp, runStateAbs);
 
   return { state, savedFiles, runStatePath: RUN_STATE_REL };
   } finally {
