@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { runWorkflow, loadRunState, snapshotProjectIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
-import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds } from "./registry.js";
+import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds, type AgentDef } from "./registry.js";
 import { extractCeoDecision, CEO_DECISION_TOKENS, validateAgentOutput } from "./validate.js";
 import { buildPromptParts } from "../providers/promptParts.js";
 import { buildTaskPrompt } from "./taskPrompt.js";
@@ -1015,4 +1015,92 @@ test("[C-127] Decision 절이 아예 없으면 게이트 전에 required_section
   assert.equal(s.completed_steps.includes("founder_ceo"), false, "판정 절 없는 문서는 완료로 세지 않는다");
   assert.equal(p.calls.get(SENTINEL) ?? 0, 0, "게이트 뒤 sentinel step 미실행");
   rmProject(name);
+});
+
+// ── [C-127] 채점표를 모델에게 준다 (required_headers → 프롬프트) ──
+//
+// 근본 원인: `required_headers`의 프로덕션 사용처가 `validateAgentOutput` 하나뿐이라
+// **모델은 자기가 채점당하는 계약을 통보받은 적이 없었다**. founder_ceo의 `["Decision"]`만
+// promptParts에 문자열로 하드코딩돼 있었고 나머지는 재생성 피드백에서야 처음 들었다.
+
+/** required_headers가 없는 agent가 받는 최종 섹션 목록 줄 — C-127 이전 바이트 그대로 동결한다. */
+const NO_REQUIRED_HEADER_LINE = "Input Summary / Main Judgment / Key Findings / Decisions / Assumptions /";
+
+function promptFor(agent: AgentDef): string {
+  return buildPromptParts(
+    {
+      agent,
+      workflowId: "w",
+      project: "p",
+      createdAt: FIXED,
+      commonPrompt: "COMMON",
+      agentPrompt: "ROLE",
+      ideaContent: "idea",
+      priorFindings: [],
+    },
+    "claude-code",
+  ).user;
+}
+
+/** 최종 출력 지시의 "## 섹션" 목록 첫 줄. */
+function sectionListLine(prompt: string): string {
+  const line = prompt.split("\n").find((l) => l.includes("Input Summary / Main Judgment"));
+  assert.ok(line, "최종 섹션 목록 줄을 찾지 못했다 — 프롬프트 구조가 바뀌었다");
+  return line!;
+}
+
+test("[C-127] required_headers가 프롬프트에 실린다 — 검증기와 같은 출처", () => {
+  const registry = loadAgentRegistry();
+  for (const id of ["pm", "design", "tech_lead"]) {
+    const agent = findAgent(registry, id)!;
+    const headers = agent.required_headers ?? [];
+    assert.ok(headers.length > 0, `fixture 전제: ${id}는 required_headers를 갖는다`);
+    const prompt = promptFor(agent);
+    // 문자열 리터럴이 아니라 **레지스트리 배열을 그대로 순회**한다 — 수기 복제면 여기서 갈린다.
+    for (const h of headers) {
+      assert.ok(prompt.includes(`\n## ${h}`) || sectionListLine(prompt).includes(h), `${id} 프롬프트에 "${h}"가 실린다`);
+    }
+    // 검증기가 보는 것과 지시하는 것이 같은 배열인지: 하나라도 빠지면 만족 불가능한 계약이다.
+    assert.equal(
+      validateAgentOutput(`# x\n\n## Metadata\n\n## Main Judgment\n\n## Risks\n\n## Recommended Next Actions\n` + headers.map((h) => `\n## ${h}\n`).join(""), headers).ok,
+      true,
+      `${id}: 프롬프트가 지시하는 헤더 집합만으로 검증을 통과할 수 있어야 한다`,
+    );
+  }
+
+  // **출처 판별**: 레지스트리에 없는 임의 헤더도 실려야 한다. 하드코딩 복제본이면 실리지 않는다.
+  const synthetic: AgentDef = {
+    agent_id: "_synthetic",
+    name: "S",
+    role: "r",
+    prompt_path: "p",
+    default_output: "docs/x.md",
+    required_headers: ["ZZ 임의 헤더 하나", "ZZ 임의 헤더 둘"],
+  };
+  const line = sectionListLine(promptFor(synthetic));
+  assert.ok(line.startsWith("ZZ 임의 헤더 하나 / ZZ 임의 헤더 둘 / Input Summary"), `임의 헤더가 그대로 실린다: ${line}`);
+});
+
+test("[C-127] required_headers가 없는 agent의 프롬프트는 바이트 불변", () => {
+  const registry = loadAgentRegistry();
+  for (const id of ["chief_of_staff", "research", "ux_ui", "red_team"]) {
+    const agent = findAgent(registry, id)!;
+    assert.equal(agent.required_headers, undefined, `fixture 전제: ${id}는 required_headers가 없다`);
+    const prompt = promptFor(agent);
+    // ① 섹션 목록 줄이 C-127 이전 바이트와 정확히 같다 (동결된 리터럴).
+    assert.equal(sectionListLine(prompt), NO_REQUIRED_HEADER_LINE, `${id}: 섹션 목록 줄 불변`);
+    // ② 새 코드 경로가 이들에게는 완전한 no-op이다 — 필드를 지운 사본과 바이트가 같다.
+    assert.equal(prompt, promptFor({ ...agent, required_headers: undefined }), `${id}: 프롬프트 전체 바이트 불변`);
+  }
+});
+
+test("[C-127] founder_ceo의 Decision 지시가 하드코딩 제거 후에도 사라지지 않는다", () => {
+  const ceo = findAgent(loadAgentRegistry(), "founder_ceo")!;
+  const prompt = promptFor(ceo);
+  // 하드코딩 삼항("founder_ceo면 'Decision / '")을 required_headers 일반 주입으로 바꿨다.
+  // 그 결과 이 줄의 바이트는 **이전과 동일**해야 한다 — 게이트 계약이 프롬프트에서 사라지면
+  // live 모델이 절을 빼고 ceo_decision_absent로 멈춘다(만족 불가능한 계약).
+  assert.deepEqual(ceo.required_headers, ["Decision"], "fixture 전제");
+  assert.equal(sectionListLine(prompt), `Decision / ${NO_REQUIRED_HEADER_LINE}`, "Decision이 목록 맨 앞에 그대로 있다");
+  assert.match(prompt, /"## Decision" 절은 필수다/, "판정 절 전용 지시도 그대로다");
 });
