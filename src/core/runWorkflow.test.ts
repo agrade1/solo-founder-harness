@@ -15,7 +15,7 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { runWorkflow, loadRunState, snapshotProjectIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { runWorkflow, loadRunState, snapshotProjectIdea, gateOutcomeLabel, IDEA_REL, type RunState } from "./runWorkflow.js";
 import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds, type AgentDef } from "./registry.js";
 import { extractCeoDecision, CEO_DECISION_TOKENS, validateAgentOutput } from "./validate.js";
 import { buildPromptParts } from "../providers/promptParts.js";
@@ -355,6 +355,132 @@ test("[B-40] '축소'는 되돌림 1회 후 예산 소진 → 진행이 아니�
   assert.equal(s.gate_jumps.length, 2, "되돌림 1회 + 예산 소진 판정 1회");
   assert.deepEqual(s.gate_jumps[0], { decider: "founder_ceo", decision: "축소", jumped_to: "pm", outcome: "jump" });
   assert.equal(timingsFor(s, "pm"), 2, "pm이 되돌림으로 1회 재실행 (되돌림 자체는 그대로 동작)");
+  rmProject(name);
+});
+
+// ── [B-49] 되돌림 예산의 durable화 ─────────────────────────────
+// 예산은 지역 Map이 아니라 gate_jumps 영수증에서 파생한다. 아래 네 테스트가 재는 것은 하나다:
+// **소진된 예산이 resume으로 되살아나지 않는다** (=live run#3에서 replay lap이 무한히 반복되던 경로).
+
+const totalCalls = (p: { calls: Map<string, number> }): number => [...p.calls.values()].reduce((a, b) => a + b, 0);
+const CEO_DOC = findAgent(loadAgentRegistry(), "founder_ceo")!.default_output;
+
+/** [B-49] idea-validation을 '검증' 판정으로 예산 소진(failed)까지 돌린다 — resume 테스트들의 공통 전제. */
+async function exhaustedProject(name: string): Promise<void> {
+  makeProject(name);
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 검증"), now: () => FIXED });
+  assert.equal(r.state.failed_reason, "gate_jump_budget_exhausted", "전제: 되돌림 1회 후 예산 소진으로 실패");
+  assert.equal(r.state.gate_jumps.length, 2, "전제: jump 1 + failed 1");
+}
+
+test("[B-49] 예산 소진 실패에서 resume해도 되돌림이 부활하지 않는다 (모델 호출 0회)", async () => {
+  // red: 파생(remainingJumps)을 지역 gateBudget Map으로 되돌리면 resume이 remaining=1을 새로 받아
+  // research부터 한 lap을 통째로 재실행한다 → 모델 호출 > 0, gate_jumps가 +2(jump+failed).
+  const name = "_b49_resume";
+  await exhaustedProject(name);
+
+  const p = ceoDeciding("- 검증");
+  const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
+
+  assert.equal(totalCalls(p), 0, "게이트만 재판정한다 — 모델 호출 0회");
+  assert.equal(s.status, "failed");
+  assert.equal(s.failed_reason, "gate_jump_budget_exhausted", "같은 자리에서 다시 막힌다");
+  assert.equal(s.gate_jumps.length, 3, "실패 영수증 한 줄만 늘었다 (재점프 없음)");
+  assert.equal(s.gate_jumps.filter((g) => g.outcome === "jump").length, 1, "되돌림은 여전히 1회뿐");
+  assert.equal(s.gate_jumps.at(-1)?.decision_source, "restored_artifact", "복원 바이트로 판정했다는 사실이 남는다");
+  rmProject(name);
+});
+
+test("[B-49] 사람이 Decision을 고치면 resume이 모델 호출 0회로 종결하고 판정 출처가 영수증에 남는다", async () => {
+  // red: 게이트 push의 `...src`(decision_source 기록)를 지우면 마지막 entry 단정이 빨감 —
+  //      사람이 고친 문서로 발급된 해제가 모델 판정과 구분되지 않는 현행 상태로 회귀한다.
+  const name = "_b49_human";
+  await exhaustedProject(name);
+
+  // 사람의 레버: decider 산출 문서의 정본 판정 절을 종결 판정으로 고친다 (ceo_decision_absent 복구 경로와 같은 레버).
+  const doc = join(projectPaths(name).root, CEO_DOC);
+  const before = readFileSync(doc, "utf8");
+  const after = before.replace("## Decision\n\n- 검증", "## Decision\n\n- 진행");
+  assert.notEqual(after, before, "전제: 저장된 decider 문서에 '검증' 판정 절이 있다");
+  writeFileSync(doc, after, "utf8");
+
+  const p = ceoDeciding("- 검증"); // 모델이 다시 돌면 여전히 '검증'을 낸다 — 종결이 복원 바이트 덕임을 고정한다
+  const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
+
+  assert.equal(totalCalls(p), 0, "복원 문서를 읽어 판정한다 — 모델 호출 0회");
+  assert.equal(s.status, "completed");
+  assert.deepEqual(s.gate_jumps.at(-1), {
+    decider: "founder_ceo",
+    decision: "진행",
+    jumped_to: null,
+    outcome: "proceed",
+    decision_source: "restored_artifact",
+  });
+  assert.equal(s.cleared_idea_sha256, snapshotProjectIdea(name).sha256, "'진행'이면 해제 증거를 발급한다 (레버를 막지 않는다)");
+  assert.equal(s.gate_jumps[0].decision_source, undefined, "[additive] 이번 invocation에서 실행된 decider의 판정엔 필드가 없다");
+  assert.match(gateOutcomeLabel(s.gate_jumps.at(-1)!), /판정 출처: 복원 문서/, "CLI·vault가 쓰는 단일 렌더에도 나온다");
+  rmProject(name);
+});
+
+test("[B-49/R1-C] outcome 필드가 없는 레거시 jump 영수증도 소진으로 센다", async () => {
+  // red: isJump에서 레거시 항(outcome === undefined && jumped_to !== null)을 빼면 spent=0으로 읽혀
+  //      비싼 lap 하나가 조용히 다시 열린다 → 모델 호출 > 0.
+  // 타입상 outcome은 필수지만 **타입은 런타임 검증이 아니다** — 그 필드가 생기기 전에 쓰인
+  // 디스크 바이트를 resume하는 경로가 실재하고, lockFieldsProblem도 gate_jumps를 보지 않는다.
+  const name = "_b49_legacy";
+  await exhaustedProject(name);
+
+  const sp = join(projectPaths(name).root, "outputs/run_state.json");
+  const raw = JSON.parse(readFileSync(sp, "utf8")) as { gate_jumps: Record<string, unknown>[] };
+  for (const g of raw.gate_jumps) delete g.outcome; // outcome 도입 이전 형태를 재현
+  writeFileSync(sp, JSON.stringify(raw, null, 2), "utf8");
+  assert.equal(loadRunState(name)?.gate_jumps[0].jumped_to, "research", "전제: 레거시 entry도 읽히고 jumped_to만 남았다");
+
+  const p = ceoDeciding("- 검증");
+  const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
+
+  assert.equal(totalCalls(p), 0, "레거시 영수증도 되돌림 1회로 세어 예산이 소진된 채로 남는다");
+  assert.equal(s.failed_reason, "gate_jump_budget_exhausted");
+  rmProject(name);
+});
+
+test("[B-49] 같은 decider의 게이트가 2개인 workflow는 실행 전에 거부한다 (run_start 방출 전 · 모델 호출 0회)", async () => {
+  // red: guard를 지우면 두 게이트가 서로의 jump를 자기 예산에서 차감해(파생이 decider 단위) 조용히
+  //      과소 예산으로 돌고, 원인이 보이지 않는 gate_jump_budget_exhausted로 멈춘다.
+  const name = "_b49_dup";
+  makeProject(name);
+  const { events, reporter } = collectingReporter();
+  const p = ceoDeciding("- 축소");
+
+  await assert.rejects(
+    runWorkflow({ workflowId: "gate-dup-decider", workflowsPath: SENTINEL_WF, project: name, provider: p, now: () => FIXED, reporter }),
+    /gate_duplicate_decider/,
+  );
+  assert.equal(totalCalls(p), 0, "과금 전에 거부한다");
+  assert.deepEqual(events, [], "run_start 이전에 던진다 — progress renderer의 spinner/stderr가 새지 않는다");
+  assert.equal(loadRunState(name), null, "run_state를 만들지 않는다");
+  rmProject(name);
+});
+
+test("[B-49] harness run: 예산 소진 실패엔 사유별 안내가 붙는다 (무차별 재개 안내가 아니다)", async () => {
+  // red: run.ts의 gate_jump_budget_exhausted 분기를 지우면 "재개: ... --resume" 한 줄만 남아,
+  //      아무것도 고치지 않은 resume이 진행할 것처럼 읽힌다(거짓 안내).
+  const name = "_b49_cli";
+  makeProject(name);
+  const prevExit = process.exitCode;
+  const out = await captureLogs(() =>
+    runRun(
+      "idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false,
+      false, undefined, undefined, undefined,
+      ceoDeciding("- 검증"),
+    ),
+  );
+  process.exitCode = prevExit; // failed는 exit 1 — 테스트 프로세스의 종료 코드를 오염시키지 않는다
+
+  assert.match(out, /중단 사유: gate_jump_budget_exhausted/);
+  assert.match(out, /되살아나지 않습니다/, "예산이 resume으로 부활하지 않는다는 사실을 말한다");
+  assert.match(out, /모델 호출 없이 같은 자리에서 다시 막히고/, "무편집 resume의 실제 결과를 말한다");
+  assert.ok(out.includes(`${CEO_DOC}의 "## Decision"`), "고칠 파일을 이름으로 말한다");
   rmProject(name);
 });
 

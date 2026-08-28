@@ -1,5 +1,5 @@
 import { runWorkflow, loadRunState, readRunState, ideaGateStatus, snapshotProjectIdea, gateOutcomeLabel } from "../core/runWorkflow.js";
-import { loadWorkflows, findWorkflow, hasKillGate } from "../core/registry.js";
+import { loadWorkflows, findWorkflow, hasKillGate, loadAgentRegistry, findAgent } from "../core/registry.js";
 import { projectPipelineGate } from "../core/pipeline.js";
 import { exportToVault } from "../core/obsidianExport.js";
 import { getProvider, DEFAULT_PROVIDER_ID } from "../providers/index.js";
@@ -95,6 +95,22 @@ researchOverride) {
             console.log(`중단 사유: ${state.failed_reason}`);
         }
         console.log(`재개: harness run ${state.workflow_id} --project ${project} --resume`);
+        // [B-49] 예산 소진만 사유별로 갈린다. 무차별 "재개" 한 줄은 이 사유에서 **거짓에 가깝다** —
+        // 아무것도 안 고친 resume은 진행하지 못하고 같은 자리에서 즉시 다시 막힌다.
+        // 여기 적는 문장은 전부 코드로 확인한 실동작이다(C-138/④ 규율): 예산은 gate_jumps 파생이라
+        // resume이 되살리지 못하고(runWorkflow의 remainingJumps), 게이트 인덱스부터의 resume은
+        // 복원 문서를 읽어 판정하므로 게이트까지 모델 호출이 0회다(resume_from = 게이트 인덱스).
+        // 파이프라인 경로는 다루지 않는다 — 활성 파이프라인에서 이 명령은 위에서 이미 exit 2로 거부되고,
+        // 그 경로의 복구는 `pipeline_artifact_drift`(B-47)와 얽혀 있어 여기서 참인 안내를 쓸 수 없다.
+        if (state.failed_reason === "gate_jump_budget_exhausted") {
+            const deciderDoc = (state.failed_agent && findAgent(loadAgentRegistry(), state.failed_agent)?.default_output) || "(decider 산출 문서)";
+            console.log(`  ↳ 되돌림 예산이 소진됐습니다 — 예산은 gate_jumps 영수증에서 파생하므로 --resume으로 되살아나지 않습니다.\n` +
+                `    아무것도 고치지 않은 --resume은 모델 호출 없이 같은 자리에서 다시 막히고 실패 영수증 한 줄만 늡니다.\n` +
+                `    ⓐ 사람이 판정을 대체: ${deciderDoc}의 "## Decision"을 고친 뒤 --resume — 게이트가 그 문서를 다시 읽어 재판정합니다\n` +
+                `       (게이트 재판정 자체는 모델 호출 0회). '진행'이면 통과, '폐기'면 killed 종료, '보류'면 ceo_decision_hold로 중단.\n` +
+                `       어느 쪽이든 영수증에 "판정 출처: 복원 문서"가 남습니다.\n` +
+                `    ⓑ 처음부터 재평가: --resume 없이 새 run — 새 run은 영수증을 이어받지 않아 예산이 새로 시작합니다(전체 재실행 비용).`);
+        }
     }
     for (const c of state.critique_rounds) {
         console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);

@@ -29,6 +29,16 @@
       ]
     },
     {
+      "workflow_id": "gate-dup-decider",
+      "description": "[B-49] 테스트 전용: 같은 decider의 게이트가 2개 — 되돌림 예산(gate_jumps 파생)이 decider 단위라 실행 전에 거부되는지 재는 fixture. 정상 workflow는 이렇게 쓰지 않는다.",
+      "steps": [
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "축소": "founder_ceo" }, "kill": ["폐기"], "max_jumps": 1 } },
+        "chief_of_staff",
+        { "gate": { "decider": "founder_ceo", "on": { "검증": "founder_ceo" }, "kill": ["폐기"], "max_jumps": 1 } }
+      ]
+    },
+    {
       "workflow_id": "kill-overlap",
       "description": "테스트 전용: 같은 토큰이 on과 kill에 둘 다 있다 — kill이 먼저 판정되는지 재는 fixture. (정상 workflow는 이렇게 쓰지 않는다)",
       "steps": [
