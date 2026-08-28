@@ -747,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 111건 (A 0 · **등급 B 10** · 등급 C 101)
+##### 열린 항목 — id 116건 (A 0 · **등급 B 12** · 등급 C 102 · nonblocking `B-1`/`B-2` 2)
 
-**등급 B (14).** (`B-49`는 **트리거 도래** — live에서 실제로 막혔다.) (M13: **`B-42`는 판정 ⑭에서 closed** — live 3 run에서 `## Decision` 준수율 **3/3** 실측 · `B-45`~`B-48` 신규.)
+**등급 B (13).** (M14: **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
 
 **(옛 머리말)** **등급 B (10) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed · **`B-40`은 판정 ⑪에서 closed** —
 CEO '폐기'가 처음으로 집행된다.)
@@ -766,10 +766,9 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-44` | **`autopilot`이 체크포인트를 우회한다** — 파이프라인 시작 전 만든 durable run은 확인 대기 중에도 전진한다(project 신원 결박 없음 · `B-43`과 같은 부류) | v3 실행을 파이프라인에 묶을 때 | `M12 진행 판정 ⑫` ⓕ 표 |
 | `B-43` | **`autopilot-create` 직접 호출에 kill 잠금이 닿지 않는다** — 손으로 쓴 DAG 경로(아이디어 연결 신호 없음) | B-40 종결을 v3 경로까지 주장하기 전 | `M12 진행 판정 ⑪` ⓔ 표 |
 | `B-45` | **`token_output` 추출 실패가 여전히 warning-only** — `tokens.json` 없이 채택이 진행된다(v3는 manifest 사이드카 결박이 막지만 v1 `run`은 통과). `C-127`과 **같은 모양의 구멍이 한 층 아래** | v1 design 산출물 **완결성을 주장하기 전** | `M13 진행 판정 ⑭` ⓕ 표 |
-| `B-46` | **claude-code provider가 input 토큰을 기록하지 않는다** — live 3 run 실측 `input 16·26·36` vs `output 61k~133k`. `--max-tokens` 예산이 **사실상 output 전용**이라 절반만 센다 | 토큰 예산 상한을 **실제로 신뢰해야 할 때** | `M13 진행 판정 ⑭` ⓔ 표 |
 | `B-47` | **`pipeline_artifact_drift` 막다른 길** — 2단계 이후 `pm`이 1단계에서 승인된 `docs/02_PRD.md`를 다시 써서, `reject` 후 재실행도 SIGKILL 후 재개도 drift(exit 1)로 막히고 탈출구가 `restart`뿐이다(정상 실패만 `last_failure.written`으로 예외를 받는다) | 파이프라인 **실사용 전** | `M13 진행 판정 ⑭` ⓖ 표 |
-| `B-48` | **critique_loop 내부에 토큰 예산 검사가 없다** — 예산 검사는 top-level step 시작 전에만 있고 critic/revise/critic 연속 호출 사이에는 없다. C-125를 배선하면 idea-validation 최악 호출이 5→7(점프 포함 9→13 · `maxRegen=1` 감안 최대 30)로 는다 | **C-125 머지 전** | `M13 진행 판정 ⑭` ⓗ 표 |
-| `B-49` | **게이트가 '검증'을 반복하면 단계가 끝나지 않는다** — live run#3 실측: CEO가 '검증'을 두 번 내자 `max_jumps`(1) 소진으로 `gate_jump_budget_exhausted` **exit 1 · 산출물 미채택**(30.2분 · out 105,355 소모). 탈출구는 resume뿐인데 `gateBudget`이 지역 Map(`runWorkflow.ts:575`)이라 **resume이 예산을 초기화**한다 → 유일한 탈출구가 동시에 **무한 비용 구멍**이고 종료 보장이 없다. **죽일 아이디어는 kill로 깔끔히 끝나는데 살릴 만한 아이디어가 끝나지 않는다** | 기획 파이프라인 **실사용 전(1순위)** | `M13 진행 판정 ⑭` ⓒ 표 |
+| `B-48` | **critique_loop 내부에 토큰 예산 검사가 없다** — 예산 검사는 top-level step 시작 전에만 있고 critic/revise/critic 연속 호출 사이에는 없다. **`C-125`가 M14에서 머지되어 트리거가 도래했다** — `idea-validation` 최악 호출이 점프 포함 13(external 15 · `maxRegen=1`이면 30)이다. `B-49`가 resume 무한 증식 항은 없앴으나 **run 내부 상한은 그대로다** | **도래 — 다음 하드닝 slice(1순위 후보)** | `M13 진행 판정 ⑭` ⓗ 표 · `M14 진행 판정 ⑮` ⓒ |
+| `B-50` | **게이트 종결 통지를 이번에 넣지 않았다(의도적 유예)** — 예산 소진 lap의 CEO는 lap 1과 **구분되는 입력을 하나도 받지 않는다**(gate_jumps는 프롬프트에 없다). 그것이 live run#3에서 같은 '검증'이 반복된 메커니즘이다. `revisionRequest` seam으로 통지하는 안은 설계·배선까지 끝냈으나, 통지가 "'검증'이면 run이 멈춘다"는 결과를 알려 **`cleared_idea_sha256`을 발급하는 '진행' 쪽으로 압력**을 줄 수 있고 **중립이라는 증거가 offline으로는 만들어지지 않는다**. 심각도 B · 확률 중(미측정) · 영향 반경 = 게이트 판정 분포 · 유예 비용 = 살릴 아이디어가 사람 개입 없이는 안 끝난다 · 수정 공수 작음(~20줄, 문안 확정 포함) | **다음 live run에서 lap 2 판정 분포를 잰 뒤** 결정 | `M14 진행 판정 ⑮` ⓐ · `docs/handoff/B49_DESIGN.md` R1-G |
 
 **`B-` 번호이지만 등급 C — nonblocking (2).**
 
@@ -778,7 +777,7 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-1` | 조용한 호스트에서 **부하(stress) acceptance 재실행** | **release 준비 시점** — 마일스톤 게이트 아님 | 707 |
 | `B-2` | **live runner 재실행**과 evidence 재생성 | **release 준비 시점** — 마일스톤 게이트 아님 | 708 |
 
-**등급 C (102).** — 각 id의 **마지막 등재 행**이 현행 서술이다. (M13: **`C-127`·`C-135` closed** · `C-141`~`C-143`·`C-145`·`C-146` 신규(`C-144`는 live 증거로 **`B-49`로 승격**).)
+**등급 C (102).** — 각 id의 **마지막 등재 행**이 현행 서술이다. (M14: **`C-125`·`C-140` closed** · `C-147`·`C-148` 신규 — 순증 0.) (M13: **`C-127`·`C-135` closed** · `C-141`~`C-143`·`C-145`·`C-146` 신규(`C-144`는 live 증거로 **`B-49`로 승격**).)
 
 ```text
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
@@ -787,8 +786,8 @@ C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-
 C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
 C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
-C-120 C-121 C-122 C-123 C-124 C-125 C-128 C-129
-C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-140 C-141 C-142 C-143 C-145 C-146
+C-120 C-121 C-122 C-123 C-124 C-128 C-129
+C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-141 C-142 C-143 C-145 C-146 C-147 C-148
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -810,7 +809,6 @@ C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-140 C-141 C-142 C-143 C-145 C-
 
 | id | 분류 | 항목 | 기한/트리거 | 상태 |
 |---|---|---|---|---|
-| `C-125` | C (P1) | **아이디어 자체의 비평→개정 루프 부재** — `critique_loop`의 수정 대상이 `tech_lead`뿐. 최소 수정: versioned venture brief + PM↔RedTeam bounded loop(원본 `00_IDEA.md` 비파괴) | 기획 파이프라인 고도화 slice | open |
 | `C-128` | C (P2) | **디자인 시안 산출 단계 부재** — DESIGN.md/tokens.json까지만이고 시안 생성·검증은 전부 사람(설계상 명시). 시안 artifact(HTML/React prototype) task는 별도 결정 | 사용자가 시안 자동화를 원할 때 | open |
 | `C-129` | C (P2) | **exec/mission의 파일 ownership이 기계적으로 강제되지 않는다** — permission compiler가 "향후 훅에서 강제"로 명시(프롬프트 규칙뿐). 최소 수정: PreToolUse write gate 또는 commit-diff ownership 검사 | edit 가능 provider 실사용 확대 전(`B-10`과 연계) | open |
 
@@ -1934,7 +1932,116 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
 
-##### **M13 진행 판정 ⑭ — `C-127` v1 문서 검증 차단 + `C-135` 동시성 실증 + **live 4단계 시도 3회**(Codex 계획/diff 리뷰 3회 · A 6건 수용) (2026-08-27 · **이 절이 현행이며 아래 ⑬보다 최신이다**)
+##### **M14 진행 판정 ⑮ — `B-49` 게이트 교착 종결 + `C-125` 아이디어 비평 루프 + `B-46` 토큰 회계 + `C-140`(Codex 계획 리뷰 A 6건 수용 · diff 리뷰 1회) (2026-08-27 · **이 절이 현행이며 아래 ⑭보다 최신이다**)
+
+### ⓐ `B-49` closed — 살릴 아이디어가 끝난다 (E2E 실측)
+
+**고친 것**: 되돌림 예산을 지역 `Map`에서 **`gate_jumps` 영수증 파생**으로 바꿨다(`runWorkflow.ts`
+`isJump`/`remainingJumps`). **새 durable 필드 0 · 지역 Map 삭제 1.** `gate_jumps`는 resume에서
+carry-forward되고 잘리지 않으므로 예산이 되살아나지 않는다 — `C-126` `totals`와 같은 단조 규율.
+
+**실 registry E2E 실측**(`idea-validation` = `C-125` critique_loop 포함, CEO '검증' 고정):
+
+| | 수정 전(지역 Map 재현) | 수정 후 |
+|---|---|---|
+| ① 최초 run | failed `gate_jump_budget_exhausted` · 9호출 | **동일**(9호출 — run 내 동작 불변) |
+| ② **무편집 resume** | **4호출**(한 lap 재실행 · 반복 상한 없음) | **0호출** · 즉시 재실패 |
+| ③ 사람이 `## Decision`을 '진행'으로 고친 뒤 resume | 0호출 | **0호출**(변화 없음) + 영수증에 `decision_source: "restored_artifact"` · `cleared_idea_sha256` 발급 |
+
+**주장을 좁혀 적는다(설계 초판은 여기서 과대주장했고 Codex가 잡았다)**: B-49가 **사람 레버를 싸게
+만든 것이 아니다 — 그 레버는 이미 0호출이었다.** B-49가 없앤 것은 **무편집 resume이 예산을 부활시켜
+replay lap을 무한히 반복할 수 있던 것** 하나다. 그것이 "종료 보장이 없다"의 실체였다.
+
+**live run#3 수치의 정정**: `30.2분 · output 105,355`는 **lap당이 아니라 2-lap run 전체**다
+(`projects/commrep/outputs/run_state.json`의 `step_timings` 직접 확인 — replay lap 1개는
+06:12:38~06:26:39 = **14.0분 · 4호출**). 로드맵·CONTEXT_SUMMARY의 기존 수치는 run 전체를 말한
+것이므로 **그쪽은 정확하다**; 틀렸던 것은 설계의 lap 귀속이다.
+
+**Codex 적대적 계획 리뷰가 "승인 불가"를 냈고 A급 6건을 전부 실물 검증해 수용했다.** 특히 두 건은
+**거짓 안내를 출하할 뻔한 것**이다: ⓐ "폐기 후 `pipeline restart`로 재평가"는 `pipeline.test.ts:311`
+(`[B-41/P6]`)이 **정반대를 고정**한다(restart 후 killed run_state 화해 · 모델 0회) ⓑ 사람의 Decision
+수정 레버는 **2단계 이후 `pipeline_artifact_drift`로 막힌다**(`06_CEO_DECISION.md`가 1단계에서 승인된
+산출물이고, 무편집 resume은 `savedFiles=[]`라 `last_failure.written`을 빈 배열로 덮는다 = `B-47`).
+**둘 다 이 설계가 스스로 인용한 `C-138`/④(거짓 안내)와 같은 부류였다** — 계획 리뷰가 없었으면 반복했다.
+그래서 **pipeline 안내 분기를 통째로 뺐다**(검증할 수 없는 경로에 안내를 쓰지 않는다).
+
+**Codex가 부분적으로 틀린 것 1건(기록)**: "구버전 entry를 명시적으로 지원한다"는 부정확하다 —
+`GateJumpEntry.outcome`은 **필수 필드**다. 그러나 결론은 맞다(타입은 런타임 검증이 아니고
+`lockFieldsProblem`은 `gate_jumps`를 안 본다) → `outcome` 부재 항을 판별자에 넣고 레거시 회귀
+테스트를 추가했다. **구현자가 R1-C 스니펫이 TS2367로 컴파일 안 된다는 것을 찾아 근거와 함께
+보고했고**(필수 리터럴 union과 `undefined` 비교), 넓힌 지역 주석으로 캐스트 없이 해결했다.
+
+**유예 1건(`B-50`)**: 예산 소진 lap의 CEO에게 "이번이 종결"을 알리는 통지를 **설계·배선까지 끝내고
+뺐다.** 배선은 안전하다(Codex 확인: 미주입 경로 프롬프트 바이트 불변 · mock 미소비 · golden 불변).
+뺀 이유는 **중립이라는 증거가 offline으로 만들어지지 않기 때문**이다 — 통지는 "'검증'이면 멈춘다"는
+결과를 알리고 `'진행'`은 곧 `cleared_idea_sha256` 발급이다. 종료 보장은 통지 없이 성립하므로
+**대장 `B-50`으로 등재하고 다음 live에서 lap 2 판정 분포를 잰 뒤 결정**한다. 설계의 관찰 자체
+("lap 2 CEO는 lap 1과 구분되는 입력을 하나도 안 받는다")는 참이고 기각하지 않는다.
+
+### ⓑ `B-46` closed — 토큰 회계가 두 겹으로 틀려 있었다
+
+**실측으로 원인을 잡았다**(추정 아님 — 실제 `claude -p --output-format json` 응답):
+1. `usage.input_tokens`는 **캐시되지 않은 나머지**다. 실측 `input_tokens: 2` /
+   `cache_creation_input_tokens: 33,178`. 공식 문서도 동일 계약(`총 입력 = input + cache_creation + cache_read`).
+2. **최상위 `usage`는 서브에이전트 토큰을 뺀다.** 같은 호출에서 `usage` 입력 합 **69,297** vs
+   `modelUsage` 입력 합 **91,036**(차 21,739). 서브에이전트가 없으면 정확히 같다(33,903 = 33,903).
+
+→ `modelUsage`(whole-tree) 우선, 없으면 `usage` 3필드 합산으로 강하. **`usage.iterations[]` 합산은
+기각** — `num_turns: 2`인 호출에서 원소가 **1개**뿐이고 수치가 최상위와도 안 맞았다(실측).
+**이 provider의 usage 파싱을 단정하는 테스트가 그동안 하나도 없었다** — 그래서 live 3 run 내내
+안 보였다. 4건 추가(전부 mutation red 확인).
+
+**예산 의미 변경(사용자 결정 필요)**: `--max-tokens`는 이제 입력을 정직하게 센다 → 같은 예산이
+훨씬 빨리 소진된다. 기본값은 여전히 `0`(무제한)이라 미지정 경로는 불변(`cli.ts:72,106` Codex 확인).
+
+### ⓒ `C-125` closed · `C-140` closed · `B-48` 트리거 도래
+
+`C-125`: `idea-validation`의 평문 `red_team` → `critique_loop{target: pm, critic: red_team, max_rounds: 2}`
+1행 교체 + 라운드 예산 durable화(`loop_state.critique_round`, R1-A 힌트 1회 소비). 소스 **34줄**.
+**구현자가 계약 오류 2건을 근거와 함께 보고했다**: ⓐ 설계가 지정한 "R2 revise에서 throw"는 **불가능**
+(`round >= maxRounds` break가 revise 앞에 있다) → R2 critic으로 구현 ⓑ 설계 전수 표가
+`progress.test.ts`의 **resume 테스트를 빠뜨렸다**(R1-D가 잡은 golden과 같은 부류) → 약화하지 않고
+`critic` kind 단정을 **추가**해 더 강하게 고정.
+
+`C-140`: `claude -p` 기본 타임아웃 **300초 → 900초**. 300초는 live에서 **정당한 리서치 호출을 죽였고**
+900초로 성공했다(self 337초 · external 148초). 관측 단일 호출 분포 93~233초 + 상한 337.5·352.6초.
+`B-48`(critique_loop 내부 예산 미검사)은 `C-125` 머지로 **트리거가 도래**했다 — 열어 둔 채 기한만 갱신.
+
+### ⓓ 신규 대장
+
+| id | 등급 | 한 줄 | 트리거 | 상태 |
+|---|---|---|---|---|
+| `B-50` | B | **게이트 종결 통지 유예** — 위 ⓐ 참조. 중립 증거가 offline으로 안 만들어진다 | 다음 live run의 lap 2 판정 분포 측정 후 | open |
+| `C-147` | C (P2) | **`decision_source`는 판정 저자를 증명하지 않는다** — 증언하는 것은 "이번 invocation이 decider를 실행하지 않고 디스크 바이트로 판정했다"까지다. 사람 편집·스크립트·모델 원본 출력을 구분하지 못하고, 무편집 resume에도 똑같이 붙는다. 차단하면 `ceo_decision_absent` 복구 경로가 죽으므로 표시만 한다 | 영수증으로 **판정 저자를 주장해야 할 때** | open |
+| `C-148` | C (P3) | **workflow 정의가 실패~resume 사이 바뀌면 decider 기반 파생 예산이 깨진다** — resume은 `workflow_id`만 대조한다. 같은 id에서 decider 이름이 바뀌면 옛 jump가 안 보여 예산이 부활하고, 다른 게이트가 그 이름을 얻으면 옛 예산을 잘못 부담한다(전 step 공통 한계의 한 갈래) | gate 정의 변경·migration 전 | open |
+
+**파이프라인 경로의 게이트 소진 복구는 `B-47`과 같은 슬라이스에서 다룬다** — 위 ⓐ의 거짓 안내 2건이
+전부 그 경로에 있었다.
+
+### ⓔ 검증 (오케스트레이터가 직접 잰 것)
+
+- **통합 스택**: typecheck exit 0 · `test:exec` **649/649** · `test:core` **665/665**(652 → +4 `C-125`
+  +4 `B-46` +5 `B-49`) · acceptance **272/272**.
+- **E2E 통합 확인 1건**(두 서브에이전트 모두 재지 않은 조합 — 실 registry + `C-125`·`B-49` 동시):
+  위 ⓐ 표. 반사실(counterfactual)까지 실측했다 — 파생을 지역 Map으로 되돌리면 ②가 **0 → 4호출**.
+- **mutation**: `C-125` 5종 · `B-49` 5종 · `B-46` 3종. **처음부터 green이었던 것 1건을 구현자가
+  스스로 보고했다** — `C-125` 신규 테스트 3은 **부재 단정**이라 기능을 통째로 지워도 green이다
+  (지키는 것은 additive 하위호환이지 기능이 아니다). 그것을 확인하려 계약에 없던 mutation을 추가로 돌렸다.
+- **Codex 적대적 리뷰 2회**(B-49 계획 1 · B-46/C-140 diff 1) — A 6건 + B 3건 수용, **부분 반박 1건**.
+- **미머지 브랜치 4개는 이미 머지돼 있었다**(킥오프 §2.1-1은 낡은 정보 — `a0e5dbd`에 PR #102~#105 포함).
+
+### ⓕ 미증명 (정직하게)
+
+- **이 세션의 live run 0회.** `B-49`·`C-125`·`B-46`·`C-140` 전부 **offline 실측**이다.
+  `M13`이 리서치 어댑터 4건을 offline으로만 증명한 것과 **같은 부채가 하나 더 쌓였다.**
+- **live 4단계 완주는 여전히 0회.** 2·3·4단계 산출물 품질·seed 상한 도달·총 비용 전부 미증명.
+- `C-125`의 revise 경로를 **acceptance 272가 증명하지 않는다**(mock `red_team`은 Critical을 안 낸다) —
+  fixture provider 테스트만 덮는다. "272 통과"를 `C-125` 근거로 쓰면 과대주장이다.
+- `B-46` 수정 후 **실제 live 예산 수치는 미측정** — 다음 live run에서 input이 몇 자릿수로 나오는지 재라.
+- 중복 decider guard는 **거부만 증명**했다(두 번째 게이트가 실행되는 모습은 재지 않았다 — guard가 먼저 막는다).
+- `decision_source`가 사람 편집과 무편집 resume을 구분하지 못한다(`C-147`).
+
+##### **M13 진행 판정 ⑭ — `C-127` v1 문서 검증 차단 + `C-135` 동시성 실증 + **live 4단계 시도 3회**(Codex 계획/diff 리뷰 3회 · A 6건 수용) (2026-08-27 · **현행은 위 판정 ⑮이다**)
 
 > **이 세션의 한 줄**: 축 A(기능 잔여)보다 **축 B(먼저 재고 그 다음 고친다)가 더 많은 A급을 찾았다.**
 > mock suite 1,283건이 전부 green인 상태에서 live 3 run이 **A급 5건**을 드러냈다.
