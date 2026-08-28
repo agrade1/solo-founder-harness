@@ -41,6 +41,11 @@ export const anthropicProvider = {
             messages: [{ role: "user", content: user }],
         });
         const markdown = extractText(resp.content);
+        // [B-46] 여기서는 캐시 필드를 더하지 않는다 — 이 호출은 `cache_control`을 걸지 않으므로
+        // `cache_creation_input_tokens`/`cache_read_input_tokens`가 **항상 0**이고, 더해봐야 죽은 산술이다.
+        // claude-code provider는 CLI가 캐시를 걸기 때문에 세 필드를 합산한다(claudeCodeProvider.ts).
+        // **이 호출에 프롬프트 캐싱을 붙이면 여기도 합산해야 한다** — 안 그러면 같은 과소계상이 생긴다
+        // (`input_tokens`는 캐시되지 않은 나머지일 뿐이다).
         const usage = {
             inputTokens: resp.usage.input_tokens,
             outputTokens: resp.usage.output_tokens,
