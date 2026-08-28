@@ -1,0 +1,20 @@
+{
+  "_why": "[C-125] 격리 fixture. 라운드 예산의 durable화를 재려면 ⓐ target이 루프 **앞**에 채택돼 있고 ⓑ 루프 실패~resume 사이에 다른 agent 호출이 섞이지 않아야 한다 — 관측 수단이 critic 호출 수라서 chief_of_staff·research가 함께 도는 registry의 idea-validation에서는 신호가 흐려진다. `critique-resume-gate`는 여기에 되돌림 게이트를 더해 R1-A(게이트 재진입이 resume 힌트를 재사용하지 않는다)를 잰다 — registry의 idea-validation은 게이트 점프 대상이 pm이라 같은 모양이지만 여분 step 때문에 라운드 수열을 세기 어렵다.",
+  "workflows": [
+    {
+      "workflow_id": "critique-resume",
+      "description": "테스트 전용: pm 채택 → red_team 비평 루프(max 2). 루프 중 실패 → resume이 남은 라운드만 도는지 잰다.",
+      "steps": ["pm", { "critique_loop": { "target": "pm", "critic": "red_team", "max_rounds": 2 } }]
+    },
+    {
+      "workflow_id": "critique-resume-gate",
+      "description": "테스트 전용: 같은 루프 뒤에 '축소' 되돌림 게이트. 게이트가 같은 루프 인덱스를 다시 밟을 때 resume 힌트가 살아 있지 않은지 잰다 (R1-A).",
+      "steps": [
+        "pm",
+        { "critique_loop": { "target": "pm", "critic": "red_team", "max_rounds": 2 } },
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "축소": "pm" }, "kill": ["폐기"], "max_jumps": 1 } }
+      ]
+    }
+  ]
+}

@@ -297,6 +297,8 @@ export async function runWorkflow(args) {
     let failedIndex = null;
     let budgetStopped = false;
     let rejected = false;
+    // [C-125] 실행 중인 비평 라운드 (루프 밖에서는 0). 루프 중 실패 시 durable 힌트로 나간다.
+    let activeCritiqueRound = 0;
     let killed_by = null;
     // [B-40/A-3] **carry forward.** 폐기 기록과 해제 증거는 이전 state에서 이어받는다 — resume이든
     // 새 run이든. 이어받지 않으면 kill 뒤 아무 run 하나가 증거를 지우고 잠금 전체가 무의미해진다.
@@ -402,6 +404,11 @@ export async function runWorkflow(args) {
         }
         console.log(`  ↩ resume: step ${startIndex}부터 재개 (완료 ${completed_steps.length}개 복원)`);
     }
+    // [C-125/R1-A] resume 힌트는 **한 번만** 쓴다. 게이트 되돌림(:1276의 `i = targetIdx - 1; continue`)이
+    // 같은 critique_loop 인덱스를 다시 밟으므로, 힌트를 상시 참조하면 새 pass가 옛 실패의 라운드를
+    // 이어받아 R1을 건너뛴다. (기각한 대안: pass id를 만들어 힌트에 결박 — 새 식별자 축이 늘고
+    // durable 필드가 하나 더 생긴다.)
+    let critiqueResumeHint = args.resume ? (prior?.loop_state ?? null) : null;
     const started_at = prior ? prior.started_at : now();
     const findingsList = () => Array.from(findings.values());
     // 한 step 실행의 step_start/step_end 이벤트를 방출하고 타이밍을 기록한다.
@@ -1070,10 +1077,15 @@ export async function runWorkflow(args) {
                     break;
                 }
                 const maxRounds = Math.max(1, max_rounds ?? 1);
-                let round = 0;
+                // [C-125] resume은 라운드 예산을 다시 열지 않는다 — 실패한 라운드 하나만 재시도한다
+                // (C-126 totals와 같은 규율: 재시도 호출은 다시 쓰되 누적 예산은 단조).
+                const priorRound = critiqueResumeHint?.step_index === i ? (critiqueResumeHint.critique_round ?? 0) : 0;
+                critiqueResumeHint = null; // 소비 — 위 [R1-A] 참조
+                let round = priorRound > 0 ? priorRound - 1 : 0;
                 let resolved = false;
                 while (round < maxRounds) {
                     round++;
+                    activeCritiqueRound = round;
                     // 1) critic 실행 — 편향 분리: critic은 비평 대상(target)의 결론만 보고 판단한다.
                     //    전체 findings 체인을 넘기면 앞선 에이전트 합의에 anchoring될 수 있어 target 결론만 격리.
                     const targetFinding = findings.get(target);
@@ -1113,6 +1125,7 @@ export async function runWorkflow(args) {
                     const targetSaved = persistFinalOutcome(targetAgent, to);
                     console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved} (${fmtElapsed(to.elapsedMs)})`);
                 }
+                activeCritiqueRound = 0; // 루프 완주 — 이후 실패는 라운드에 결박되지 않는다
                 critique_rounds.push({ target, critic, rounds: round, resolved });
                 console.log(`  ⚖ 비평 루프 종료: ${critic}⟲${target} ${round}라운드, ${resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
             }
@@ -1147,7 +1160,9 @@ export async function runWorkflow(args) {
             kill_history,
             cleared_idea_sha256,
             resume_from: stopped ? failedIndex : null,
-            loop_state: stopped && failedIndex !== null ? { step_index: failedIndex } : null,
+            loop_state: stopped && failedIndex !== null
+                ? { step_index: failedIndex, ...(activeCritiqueRound > 0 ? { critique_round: activeCritiqueRound } : {}) }
+                : null,
             warnings,
             regenerations,
             critique_rounds,

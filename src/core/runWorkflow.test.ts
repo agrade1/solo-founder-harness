@@ -1190,3 +1190,169 @@ test("[C-127/A-1] revise 실패는 이미 채택된 산출물을 덮지 않는�
   assert.equal(again.state.completed_steps.includes("tech_lead"), true);
   rmProject(name);
 });
+
+// ── [C-125] 아이디어 비평→개정 루프 · 라운드 예산 durable화 ────────────
+//
+// idea-validation의 평문 `red_team`이 pm을 겨눈 critique_loop으로 교체됐다. 비평이 보고서로만 남지 않고
+// **아이디어의 하네스 해석본(docs/02_PRD.md)을 실제로 고친다.** 원본 `00_IDEA.md`는 여전히 사람 소유다 —
+// 하네스에 그 파일을 쓰는 경로가 없다는 것을 이 테스트가 바이트로 못박는다(B-40).
+//
+// 관측 수단은 **critic 호출 수**다: `critique_rounds.rounds`는 재개 여부와 무관하게 2로 같아서
+// "예산이 다시 열렸나"를 구분하지 못한다.
+
+/** [C-125] fixture workflow: pm 채택 → red_team 루프(±되돌림 게이트). */
+const CRITIQUE_RESUME_WF = join(HERE, "..", "..", "tests", "fixtures", "workflows", "critique-resume.json");
+
+/**
+ * [C-125] red_team이 **항상** Critical을 내는 mock 래퍼 — 안 그러면 루프가 R1에서 조기 종료해
+ * revise도 라운드 예산도 관측되지 않는다. revise 산출물에는 마커를 심어 "채택된 바이트가 개정본인가"를
+ * 파일에서 직접 읽는다.
+ *
+ * - `throwOnCriticCall`: n번째 critic 호출에서 throw (루프 **중간** 실패를 만드는 유일한 수단 —
+ *   max_rounds=2에서는 R2 revise가 없으므로 R2 critic이 그 자리다).
+ * - `ceoDecisions`: founder_ceo 호출 순서대로 정본 판정을 갈아끼운다 (게이트 되돌림 유도).
+ */
+function critiqueProvider(opts: { throwOnCriticCall?: number; ceoDecisions?: string[] } = {}): Provider & {
+  calls: Map<string, number>;
+  criticCalls: () => number;
+  reviseCalls: () => number;
+} {
+  const calls = new Map<string, number>();
+  let criticCalls = 0;
+  let reviseCalls = 0;
+  let ceoCalls = 0;
+  return {
+    id: "mock",
+    calls,
+    criticCalls: () => criticCalls,
+    reviseCalls: () => reviseCalls,
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      const id = input.agent.agent_id;
+      calls.set(id, (calls.get(id) ?? 0) + 1);
+      if (id === "red_team") {
+        criticCalls++;
+        if (opts.throwOnCriticCall === criticCalls) throw new Error(`강제 실패(critic R${criticCalls})`);
+      }
+      if (input.revisionRequest) reviseCalls++;
+      const r = await mockProvider.generate(input);
+      if (id === "red_team") {
+        const md = r.markdown.replace("### Critical\n\n- (없음)\n", "### Critical\n\n- [MOCK] 치명 리스크\n");
+        assert.notEqual(md, r.markdown, "Critical 주입 실패 — mock 출력 형식이 바뀌었다");
+        return { ...r, markdown: md };
+      }
+      if (id === "founder_ceo" && opts.ceoDecisions) {
+        const decision = opts.ceoDecisions[Math.min(ceoCalls, opts.ceoDecisions.length - 1)];
+        ceoCalls++;
+        const DEFAULT = "## Decision\n\n- 진행\n";
+        assert.ok(r.markdown.includes(DEFAULT), "mock founder_ceo 출력에 정본 판정 절이 없다 — mock 형식이 바뀌었다");
+        return { ...r, markdown: r.markdown.replace(DEFAULT, `## Decision\n\n- ${decision}\n`) };
+      }
+      if (input.revisionRequest) {
+        const md = r.markdown.replace("## Main Judgment\n", "## Main Judgment\n\n- [C125-REVISED] 비평 반영본\n");
+        assert.notEqual(md, r.markdown, "revise 마커 주입 실패 — mock 출력 형식이 바뀌었다");
+        return { ...r, markdown: md };
+      }
+      return r;
+    },
+  };
+}
+
+test("[C-125] idea-validation: red_team Critical → pm 문서 revise · 00_IDEA.md 바이트 불변", async () => {
+  const name = "_c125_idea";
+  makeProject(name);
+  const ideaPath = join(projectPaths(name).root, IDEA_REL);
+  const ideaBefore = sha256(readFileSync(ideaPath, "utf8"));
+
+  const p = critiqueProvider();
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, now: () => FIXED });
+  assert.equal(r.state.status, "completed");
+
+  // ── 비평이 문서를 고쳤다 (보고서로만 남지 않는다) ──
+  const prd = readFileSync(join(projectPaths(name).root, "docs/02_PRD.md"), "utf8");
+  assert.match(prd, /\[C125-REVISED\]/, "채택된 PRD가 비평 반영본이다");
+  assert.equal(p.reviseCalls(), 1, "R1에서 정확히 한 번 revise (R2는 라운드 소진이라 revise 없음)");
+  assert.deepEqual(r.state.critique_rounds, [{ target: "pm", critic: "red_team", rounds: 2, resolved: false }]);
+
+  // ── [B-40] 원본 아이디어는 하네스가 쓰지 않는다 ──
+  assert.equal(sha256(readFileSync(ideaPath, "utf8")), ideaBefore, "00_IDEA.md 바이트 불변");
+  assert.equal(r.state.cleared_idea_sha256, ideaBefore, "해제 digest는 run 시작 snapshot의 digest 그대로");
+
+  // ── 완료 집합·순서는 평문 red_team 때와 동일 (checkpoint artifacts/seeds 집합 불변) ──
+  assert.deepEqual(r.state.completed_steps, ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]);
+  rmProject(name);
+});
+
+test("[C-125] 라운드 예산 durable: 루프 중 실패 → critique_round 기록 · resume은 남은 라운드만 돈다", async () => {
+  const name = "_c125_resume";
+  makeProject(name);
+  const wf = { workflowId: "critique-resume", workflowsPath: CRITIQUE_RESUME_WF, project: name, now: () => FIXED };
+
+  // run 1: R1 critic→revise 뒤 R2 critic에서 실패
+  const p1 = critiqueProvider({ throwOnCriticCall: 2 });
+  const first = await runWorkflow({ ...wf, provider: p1 });
+  assert.equal(first.state.status, "failed");
+  assert.equal(first.state.failed_agent, "red_team");
+  assert.equal(p1.criticCalls(), 2, "전제: R2 critic 자리에서 죽었다");
+  assert.deepEqual(first.state.loop_state, { step_index: 1, critique_round: 2 }, "실패한 라운드가 durable로 남는다");
+  assert.deepEqual(first.state.critique_rounds, [], "루프 미완주 — 영수증 없음(기존 계약)");
+
+  // run 2: resume — 예산이 0부터 다시 열리지 않는다
+  const p2 = critiqueProvider();
+  const again = await runWorkflow({ ...wf, provider: p2, resume: true });
+  assert.equal(again.state.status, "completed");
+  assert.equal(p2.criticCalls(), 1, "실패한 R2 하나만 재시도 (R1 재개방 없음)");
+  assert.equal(p2.reviseCalls(), 0, "R2는 라운드 소진이라 revise가 없다");
+  assert.deepEqual(again.state.critique_rounds, [{ target: "pm", critic: "red_team", rounds: 2, resolved: false }]);
+  assert.equal(again.state.loop_state, null, "완주하면 힌트는 남지 않는다");
+  rmProject(name);
+});
+
+test("[C-125] 루프 밖 실패에서는 critique_round가 없다 (additive · 구버전 run_state와 바이트 동일)", async () => {
+  const name = "_c125_plain";
+  makeProject(name);
+  const provider: Provider = {
+    id: "mock",
+    async generate(input: AgentRunInput): Promise<AgentResult> {
+      if (input.agent.agent_id === "pm") throw new Error("강제 실패(pm)");
+      return mockProvider.generate(input);
+    },
+  };
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider, now: () => FIXED });
+  assert.equal(r.state.status, "failed");
+  assert.deepEqual(r.state.loop_state, { step_index: 2 }, "평문 step 실패 — 라운드 필드 자체가 없다");
+  assert.equal("critique_round" in (r.state.loop_state as object), false);
+  const raw = readFileSync(join(projectPaths(name).root, "outputs/run_state.json"), "utf8");
+  assert.equal(raw.includes('"critique_round"'), false, "디스크 바이트에도 새 키가 없다 (복수형 critique_rounds와 구분)");
+  rmProject(name);
+});
+
+test("[C-125/R1-A] 게이트 재진입은 resume 힌트를 재사용하지 않는다", async () => {
+  const name = "_c125_gate";
+  makeProject(name);
+  const wf = { workflowId: "critique-resume-gate", workflowsPath: CRITIQUE_RESUME_WF, project: name, now: () => FIXED };
+
+  // run 1: R2 critic 실패 → 힌트 critique_round=2가 durable로 남는다
+  const first = await runWorkflow({ ...wf, provider: critiqueProvider({ throwOnCriticCall: 2 }) });
+  assert.equal(first.state.status, "failed");
+  assert.deepEqual(first.state.loop_state, { step_index: 1, critique_round: 2 }, "전제: 철 지난 힌트가 존재한다");
+
+  // run 2: resume → 루프 완주(R2만) → CEO '축소' → pm 되돌림 → **같은 루프 인덱스 재진입**
+  const rounds: number[] = [];
+  const reporter = {
+    emit(e: RunEvent): void {
+      if (e.type === "step_start" && e.kind === "critic") rounds.push(e.round ?? 0);
+    },
+  };
+  const again = await runWorkflow({
+    ...wf,
+    provider: critiqueProvider({ ceoDecisions: ["축소", "진행"] }),
+    resume: true,
+    reporter,
+  });
+  assert.equal(again.state.status, "completed");
+  assert.deepEqual(again.state.gate_jumps.map((g) => g.outcome), ["jump", "proceed"], "전제: 게이트가 실제로 되돌렸다");
+  // 힌트를 소비하지 않으면 재진입 pass가 옛 실패 라운드를 이어받아 [2, 2]가 된다 — R1이 사라진다.
+  assert.deepEqual(rounds, [2, 1, 2], "resume pass는 남은 R2만, 재진입 pass는 R1부터");
+  assert.deepEqual(again.state.critique_rounds.map((c) => c.rounds), [2, 2], "pass마다 영수증 한 건");
+  rmProject(name);
+});
