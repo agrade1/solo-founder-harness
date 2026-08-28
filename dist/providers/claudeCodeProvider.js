@@ -9,12 +9,21 @@ import { redactSecrets, collectSecretValues } from "../tools/redact.js";
  * 환경변수:
  *   HARNESS_CLAUDE_BIN        claude 실행 파일 경로 (기본 "claude")
  *   HARNESS_CLAUDE_MODEL      --model 값 (기본: 구독 기본 모델)
- *   HARNESS_CLAUDE_TIMEOUT_MS 호출 타임아웃 ms (기본 300000)
+ *   HARNESS_CLAUDE_TIMEOUT_MS 호출 타임아웃 ms (기본 900000 — [C-140])
  */
 // 실행 파일/타임아웃은 호출 시점에 읽는다 (스텁 주입·테스트 가능성 확보. 기본값은 동일).
 const claudeBin = () => process.env.HARNESS_CLAUDE_BIN ?? "claude";
 const CLAUDE_MODEL = process.env.HARNESS_CLAUDE_MODEL;
-const timeoutMs = () => Number(process.env.HARNESS_CLAUDE_TIMEOUT_MS ?? 300_000);
+/**
+ * [C-140] 기본 900초. 예전 기본 300초는 **live에서 실제로 정당한 호출을 죽였다** — 리서치 계약이
+ * 붙은 프롬프트에서 1차 호출이 타임아웃했고, 900초로 늘리자 self 337초 · external 148초로 성공했다
+ * (2026-08-27). 이후 관측된 단일 호출 분포는 93~233초에 몰려 있고 상한 2건이 337.5초·352.6초다 —
+ * 300초는 그 꼬리를 자르고 900초는 관측 최대의 2.5배 여유를 둔다.
+ * 무제한이 아닌 이유: 멈춘 호출은 여전히 끝나야 하고, 죽이지 않으면 run 전체가 영원히 매달린다.
+ * (기각한 대안: step 종류별 상한 — 지금 근거는 "리서치가 길다" 하나뿐이고, 축을 하나 더 만들면
+ *  registry·CLI·문서에 어휘가 번진다. 분포가 step별로 갈린다는 실측이 나오면 그때 쪼갠다.)
+ */
+const timeoutMs = () => Number(process.env.HARNESS_CLAUDE_TIMEOUT_MS ?? 900_000);
 /** 공유 빌더로 system+user를 만들어 claude -p용 단일 프롬프트로 합친다. */
 function buildPrompt(input) {
     const { system, user } = buildPromptParts(input, "claude-code");
@@ -83,9 +92,29 @@ export const claudeCodeProvider = {
             const obj = JSON.parse(raw);
             if (typeof obj.result === "string")
                 markdown = obj.result;
-            if (obj.usage) {
+            // [B-46] `modelUsage`(whole-tree)를 **우선**한다. 없으면 `usage`로 강하한다 —
+            // 구버전 CLI·다른 스텁에서도 예전과 같은 값이 나오고 더 나빠지지 않는다.
+            // (기각한 대안: `usage.iterations[]`를 합산 — num_turns 2인 호출에서 iterations 원소가 **1개**뿐이고
+            //  그 안의 수치가 최상위와도 안 맞았다(실측). 총계로 쓸 수 없는 배열이다.)
+            const mu = obj.modelUsage && Object.values(obj.modelUsage);
+            if (mu && mu.length > 0) {
                 usage = {
-                    inputTokens: obj.usage.input_tokens ?? 0,
+                    inputTokens: mu.reduce((s, m) => s + (m.inputTokens ?? 0) + (m.cacheCreationInputTokens ?? 0) + (m.cacheReadInputTokens ?? 0), 0),
+                    outputTokens: mu.reduce((s, m) => s + (m.outputTokens ?? 0), 0),
+                };
+            }
+            else if (obj.usage) {
+                // [B-46] **세 입력 필드를 전부 더한다.** 예전엔 `input_tokens`만 읽어서 캐시로 간 입력이
+                // 통째로 사라졌다 — live 3 run의 `usage.input_tokens`가 16·26·36인데 output은 61k~133k였고,
+                // 그래서 `--max-tokens`("누적 토큰(input+output) 상한" — runWorkflow.ts:245)가 **사실상
+                // output 전용**으로 동작했다. 캐시 읽기는 과금이 싸지만 **컨텍스트 창은 똑같이 차지한다** —
+                // 이 예산이 지키려는 것이 그 쪽이므로 할인 가중치를 두지 않고 그대로 센다.
+                // (기각한 대안: `total_cost_usd`를 예산 축으로 삼기 — 토큰 상한과 다른 축이고 CLI 표면·
+                //  provider 계약·기존 테스트를 전부 갈아야 한다. 필요해지면 별도 슬라이스.)
+                usage = {
+                    inputTokens: (obj.usage.input_tokens ?? 0) +
+                        (obj.usage.cache_creation_input_tokens ?? 0) +
+                        (obj.usage.cache_read_input_tokens ?? 0),
                     outputTokens: obj.usage.output_tokens ?? 0,
                 };
             }
