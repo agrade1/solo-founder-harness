@@ -25,18 +25,23 @@ class RequiredSectionsMissing extends Error {
  * `outcome`이 없는 옛 run_state는 jumped_to로 추론하되 그 사실을 숨기지 않는다.
  */
 export function gateOutcomeLabel(g) {
-    switch (g.outcome) {
-        case "kill":
-            return "폐기 — run 종료";
-        case "jump":
-            return `${g.jumped_to} 되돌림`;
-        case "proceed":
-            return "진행";
-        case "failed":
-            return `중단(${g.reason ?? "사유 미기록"})`;
-        default:
-            return g.jumped_to ? `${g.jumped_to} 되돌림` : "결과 미기록(구버전 run_state)";
-    }
+    const base = (() => {
+        switch (g.outcome) {
+            case "kill":
+                return "폐기 — run 종료";
+            case "jump":
+                return `${g.jumped_to} 되돌림`;
+            case "proceed":
+                return "진행";
+            case "failed":
+                return `중단(${g.reason ?? "사유 미기록"})`;
+            default:
+                return g.jumped_to ? `${g.jumped_to} 되돌림` : "결과 미기록(구버전 run_state)";
+        }
+    })();
+    // [B-49] 출처 표시도 이 한 함수에만 있다 (위 B-40/A-2와 같은 이유). 필드가 없는 entry의
+    // 라벨 바이트는 그대로다 — 기존 단정·vault 출력 불변.
+    return g.decision_source === "restored_artifact" ? `${base} · 판정 출처: 복원 문서(이번 invocation에서 decider 미실행)` : base;
 }
 const RUN_STATE_REL = "outputs/run_state.json";
 /** ms를 사람이 읽는 경과시간으로. 60초 미만은 "12s", 이상은 "1:23". */
@@ -248,6 +253,19 @@ export async function runWorkflow(args) {
     // 자동 승인"이었다(아래 approval 분기의 `: true`) — 사람 확인을 존재 이유로 삼는 step이
     // programmatic 호출에서 조용히 통과했고, 비TTY에서는 대화형 응답자가 매달렸다.
     // 판정을 **첫 모델 호출 전에** 낸다: 과금하고 나서 "물어볼 사람이 없다"를 발견하지 않는다.
+    // [B-49] **같은 decider의 게이트가 둘 이상인 workflow는 실행 전에 거부한다.**
+    // 되돌림 예산은 gate_jumps에서 파생하는데 entry에 step index가 없다 — 게이트 둘이 같은 decider면
+    // 서로의 jump를 자기 예산에서 차감한다(과소 예산: fail closed 방향이지만 원인이 보이지 않는 정지).
+    // 정의 오류는 첫 모델 호출 전에 낸다: 과금하고 나서 "예산이 왜 없지"를 발견하지 않는다.
+    // **위치가 계약이다** — run_start 방출 전이어야 progress renderer의 spinner/stderr가 새지 않는다
+    // (main 루프 직전은 run_end를 보장하는 try/finally 바깥이다).
+    // 현행 registry는 workflow당 게이트 1개라 걸리지 않는다.
+    // (기각한 대안: entry에 step_index 추가 — durable 형태 변경 + 구버전 entry fallback 이중화 + golden 재생성.)
+    const gateDeciders = workflow.steps.filter(isGate).map((s) => s.gate.decider);
+    if (new Set(gateDeciders).size !== gateDeciders.length) {
+        throw new Error(`gate_duplicate_decider: workflow '${workflowId}'에 같은 decider의 게이트가 2개 이상 있습니다 (${gateDeciders.join(", ")}) — ` +
+            `되돌림 예산이 gate_jumps 영수증에서 decider 단위로 파생되므로 지원하지 않습니다. (모델 호출 0회)`);
+    }
     if (!args.approve && workflow.steps.some(isApproval)) {
         throw new Error(`approval_approver_missing: workflow '${workflowId}'에 내부 승인 게이트가 있는데 응답자가 없습니다 — ` +
             `CLI는 --yes(비대화 승인) 또는 대화형 터미널로 실행하고, programmatic 호출은 approve를 넘기세요. ` +
@@ -285,7 +303,29 @@ export async function runWorkflow(args) {
     const usagePerAgent = [];
     const findings = new Map(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
     const lastMarkdown = new Map(); // agentId → 마지막 출력 원문 (게이트 판정 추출용)
-    const gateBudget = new Map(); // gate step index → 남은 되돌림 횟수
+    // [B-49] 되돌림 예산은 **gate_jumps 영수증에서 파생한다** (지역 Map 삭제).
+    //
+    // 지역 Map은 run 지역이라 resume마다 예산을 되살렸다: 소진으로 실패한 게이트에서 resume하면
+    // 복원된 '검증' 판정이 remaining=1을 다시 받아 jump 분기를 타고 한 lap을 통째로 재실행했고,
+    // 입력이 바뀌지 않았으니 같은 판정이 나와 **반복 상한이 없었다**
+    // (2026-08-27 live run#3: run 전체 30.2분 · output 105k, replay lap 1개 14.0분).
+    // 영수증은 resume에서 carry-forward되고(아래 `gate_jumps.push(...prior.gate_jumps)`) 잘리지
+    // 않으므로 파생값은 어느 경로에서도 되살아나지 않는다 — C-126 totals와 같은 단조 규율.
+    // run 안에서는 현행과 값이 같다(첫 도착 spent=0 · jump 후 재도착 spent=1)라 기존 게이트 동작 불변.
+    // **새 run(비resume)은 영수증을 이어받지 않으므로 예산이 새로 시작한다** — "전체 재실행 비용을
+    // 내면 한 바퀴 더"가 의도된 탈출구다.
+    //
+    // 기각한 대안: 새 durable 필드(gate_budget_spent) — 파생 가능한 값의 중복 상태는 언젠가 어긋난다.
+    const isJump = (g) => {
+        // 타입은 런타임 검증이 아니다: `outcome`이 생기기 **전에 쓰인 디스크 상의 run_state**를
+        // resume하면 필드가 없다(lockFieldsProblem도 gate_jumps를 보지 않는다). 그때 jump를 0으로
+        // 세면 비싼 lap 하나가 조용히 다시 열린다 — gateOutcomeLabel의 default case와 같은 fallback.
+        const outcome = g.outcome;
+        return outcome === "jump" || (outcome === undefined && g.jumped_to !== null);
+    };
+    const remainingJumps = (gate) => Math.max(0, (gate.max_jumps ?? 0) - gate_jumps.filter((g) => isJump(g) && g.decider === gate.decider).length);
+    /** [B-49] 이번 invocation에서 실행되지 않고 디스크에서 복원된 step id (판정 출처 영수증용). */
+    const restoredIds = new Set();
     const maxRegen = Math.max(0, args.maxRegenerations ?? 1);
     const allowSpawn = args.allowSpawn ?? false;
     const maxTokens = Math.max(0, args.maxTokens ?? 0);
@@ -401,6 +441,7 @@ export async function runWorkflow(args) {
             const md = readFileSync(abs, "utf8");
             findings.set(id, `${id}: ${extractMainJudgment(md)}`);
             lastMarkdown.set(id, md);
+            restoredIds.add(id); // [B-49] 이 바이트는 이번 invocation의 모델 출력이 아니다
         }
         console.log(`  ↩ resume: step ${startIndex}부터 재개 (완료 ${completed_steps.length}개 복원)`);
     }
@@ -579,6 +620,9 @@ export async function runWorkflow(args) {
             completed_steps.push(agent.agent_id);
         findings.set(agent.agent_id, `${agent.agent_id}: ${extractMainJudgment(o.markdown)}`);
         lastMarkdown.set(agent.agent_id, o.markdown);
+        // [B-49] 복원 바이트가 이번 invocation의 실제 출력으로 덮였다 — 게이트 되돌림 재실행 ·
+        // 더 앞 step부터의 resume · critique revise 덮어쓰기 세 경우 모두 여기를 지난다.
+        restoredIds.delete(agent.agent_id);
         return saved;
     }
     /**
@@ -860,7 +904,7 @@ export async function runWorkflow(args) {
                 }
                 if (isGate(step)) {
                     // ── CEO 게이트 분기 ────────────────────────────
-                    const { decider, on, max_jumps, kill } = step.gate;
+                    const { decider, on, kill } = step.gate; // [B-49] max_jumps는 remainingJumps가 step.gate에서 직접 읽는다
                     const gateStartIso = now();
                     const gateT0 = Date.now();
                     reporter?.emit({ type: "step_start", index: i + 1, total, agentId: decider, kind: "gate" });
@@ -877,9 +921,7 @@ export async function runWorkflow(args) {
                         endGate(false);
                         break;
                     }
-                    if (!gateBudget.has(i))
-                        gateBudget.set(i, Math.max(0, max_jumps ?? 0));
-                    const remaining = gateBudget.get(i) ?? 0;
+                    const remaining = remainingJumps(step.gate); // [B-49] 영수증 파생 — resume에서 되살아나지 않는다
                     const deciderMd = lastMarkdown.get(decider) ?? "";
                     // ── 판정은 구조에서 읽는다 (산문 부분문자열 매칭 아님) ──
                     // decider 출력의 "## Decision" 절에서 정본 토큰 하나를 뽑는다. 산문 매칭은 **누락이 fail open**이라
@@ -896,6 +938,9 @@ export async function runWorkflow(args) {
                         break;
                     }
                     const decision = parsed.token;
+                    // [B-49] 판정 출처. decider가 이번 invocation에서 실행되지 않았다면(=게이트가 복원 문서의
+                    // 바이트를 읽었다면) 그 사실만 entry에 남긴다 — 저자를 증명하지는 않는다(타입 주석 참조).
+                    const src = restoredIds.has(decider) ? { decision_source: "restored_artifact" } : {};
                     // ── kill 판정은 jump/진행보다 먼저 ─────────────────
                     // 순서가 뒤바뀌면 되돌림이 이겨 죽은 아이디어가 한 바퀴 더 돈다. kill을 앞에 두면 최악이
                     // "사람이 새 run으로 다시 시작"이고, 뒤에 두면 최악이 "미달 아이디어를 그대로 개발 착수" —
@@ -905,7 +950,7 @@ export async function runWorkflow(args) {
                         killed_by = { decider, decision, idea_sha256 };
                         kill_history.push({ decider, decision, idea_sha256, at: now() });
                         cleared_idea_sha256 = null; // 폐기는 이전 해제를 무효화한다 (다시 재평가를 받아야 한다)
-                        gate_jumps.push({ decider, decision, jumped_to: null, outcome: "kill" });
+                        gate_jumps.push({ decider, decision, jumped_to: null, outcome: "kill", ...src });
                         console.log(`  ⛔ 게이트: ${decider} 판정 '${decision}' → run 종료(killed) — 후속 단계 미실행`);
                         endGate(true); // 게이트 자체는 정상 동작했다 (판정을 내리는 것이 이 step의 일)
                         break;
@@ -917,8 +962,8 @@ export async function runWorkflow(args) {
                     const targetIdx = jumpTarget === null ? -1 : workflow.steps.findIndex((s) => s === jumpTarget);
                     const targetMissing = jumpTarget !== null && targetIdx < 0;
                     if (jumpTarget !== null && !targetMissing && remaining > 0) {
-                        gateBudget.set(i, remaining - 1);
-                        gate_jumps.push({ decider, decision, jumped_to: jumpTarget, outcome: "jump" });
+                        // [B-49] 차감 없음: 직후 push되는 이 jump entry가 곧 차감이다 (예산은 영수증 파생).
+                        gate_jumps.push({ decider, decision, jumped_to: jumpTarget, outcome: "jump", ...src });
                         reporter?.emit({ type: "gate_jump", decider, decision, target: jumpTarget }); // 실제 jump일 때만
                         console.log(`  ⤴ 게이트: ${decider} 판정 '${decision}' → ${jumpTarget} 되돌림 (남은 되돌림 ${remaining - 1})`);
                         endGate(true);
@@ -932,7 +977,7 @@ export async function runWorkflow(args) {
                     // 통과 조건을 화이트리스트로 뒤집고, 그 밖은 **원인별로 다른 코드**로 멈춘다
                     // (원인과 다른 코드를 적는 것은 이 레포가 C-96으로 잡은 부류다).
                     if (decision === "진행") {
-                        gate_jumps.push({ decider, decision, jumped_to: null, outcome: "proceed" });
+                        gate_jumps.push({ decider, decision, jumped_to: null, outcome: "proceed", ...src });
                         console.log(`  ⤴ 게이트: ${decider} 판정 '진행' → 진행`);
                         // [A-3] 폐기 잠금 해제 증거는 **이 자리에서만** 발급한다: kill 게이트가 있는 게이트가
                         // '진행'을 낸 순간. 다른 경로에서 적으면 그 경로가 곧 우회 통로가 된다.
@@ -952,7 +997,7 @@ export async function runWorkflow(args) {
                                 : "ceo_decision_unmapped" // 이 workflow에 해당 판정의 되돌림 대상이 없다
                             : "gate_jump_budget_exhausted"; // 되돌려 봤는데 판정이 그대로다
                     failedIndex = i;
-                    gate_jumps.push({ decider, decision, jumped_to: null, outcome: "failed", reason: failed_reason });
+                    gate_jumps.push({ decider, decision, jumped_to: null, outcome: "failed", reason: failed_reason, ...src });
                     // 문구를 렌더러(gateOutcomeLabel)와 같은 형태로 맞춘다: "→ 진행하지 않고 중단"은
                     // "판정 X → 진행"을 부분문자열로 포함해 로그 grep·단정을 오염시킨다.
                     console.error(`  ✗ 게이트: ${decider} 판정 '${decision}' → 중단(${failed_reason})`);
