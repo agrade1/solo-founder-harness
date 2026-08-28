@@ -170,7 +170,7 @@ test("[B-41/1단] seedFindings 지정 = 첫 프롬프트부터 실린다 · 같�
   const p = counting();
   const seed = "research: [SEED] 앞 단계에서 승인된 판단 한 줄";
   const r = await runWorkflow({
-    workflowId: "idea-validation", // chief_of_staff → research → pm → red_team → founder_ceo
+    workflowId: "idea-validation", // chief_of_staff → research → pm → [C-125] ↻[red_team⟲pm×2] → founder_ceo
     project: name,
     provider: p,
     now: () => FIXED,

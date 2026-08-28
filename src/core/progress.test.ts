@@ -5,7 +5,7 @@
  * 모듈 로드 시점에 읽히므로(paths.ts) 스크립트 레벨에서 설정해야 정적 import가 안전하다.
  *
  * 동작별로 fixture(workflow)를 분리한다:
- *  - 기본 순차: idea-validation
+ *  - 기본 순차: idea-validation ([C-125] pm을 겨눈 critique_loop 포함)
  *  - critique/revise: mvp-planning (red_team이 Critical 방출)
  *  - 실제 gate jump: full-predev (founder_ceo가 '축소' 판정)
  *  - 실패 Provider / resume: idea-validation + 예외 provider
@@ -133,9 +133,14 @@ test("이벤트 순서: 순차 workflow는 run_start → (step_start/end)×N →
   assert.equal(last.status, "completed");
 
   const order = starts(events).filter((e) => e.kind === "agent").map((e) => e.agentId);
-  assert.deepEqual(order, ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]);
+  assert.deepEqual(order, ["chief_of_staff", "research", "pm", "founder_ceo"]);
   // [B-40] 게이트는 agent가 아니라 gate kind로 방출된다 (마지막 step)
-  assert.deepEqual(starts(events).map((e) => e.kind), ["agent", "agent", "agent", "agent", "agent", "gate"]);
+  // [C-125] red_team은 이제 평문 step이 아니라 pm을 겨눈 critique_loop의 critic이다 (kind=critic).
+  assert.deepEqual(starts(events).map((e) => e.kind), ["agent", "agent", "agent", "critic", "agent", "gate"]);
+  const critic = starts(events).find((e) => e.kind === "critic")!;
+  assert.equal(critic.agentId, "red_team");
+  assert.equal(critic.round, 1, "Critical 0건이라 R1에서 조기 종료");
+  assert.deepEqual(r.state.critique_rounds, [{ target: "pm", critic: "red_team", rounds: 1, resolved: true }]);
   // index는 1-based, total 고정
   assert.deepEqual(starts(events).map((e) => e.index), [1, 2, 3, 4, 5, 6]);
   assert.ok(starts(events).every((e) => e.total === 6));
@@ -145,7 +150,7 @@ test("이벤트 순서: 순차 workflow는 run_start → (step_start/end)×N →
 
   // step_timings 저장 (agent_id/kind/started_at/elapsed_ms/ok)
   assert.equal(r.state.step_timings.length, 6);
-  assert.deepEqual(r.state.step_timings.map((t) => t.kind), ["agent", "agent", "agent", "agent", "agent", "gate"]);
+  assert.deepEqual(r.state.step_timings.map((t) => t.kind), ["agent", "agent", "agent", "critic", "agent", "gate"]);
   for (const t of r.state.step_timings) {
     assert.equal(t.ok, true);
     assert.equal(typeof t.started_at, "string");
@@ -257,7 +262,9 @@ test("이벤트: provider 예외 → step_end{ok:false} + run_end{failed}, resum
   // 재개는 완료 step(chief/research)을 재실행하지 않는다
   const rerun = starts(e2).filter((e) => e.kind === "agent").map((e) => e.agentId); // [B-40] 끝의 gate step 제외
   assert.ok(!rerun.includes("chief_of_staff") && !rerun.includes("research"), "완료 step 재실행 없음");
-  assert.deepEqual(rerun, ["pm", "red_team", "founder_ceo"]);
+  assert.deepEqual(rerun, ["pm", "founder_ceo"]);
+  // [C-125] red_team은 critic kind로 재개 구간에서 정확히 한 번 돈다 (루프 밖 실패라 라운드 예산 온전).
+  assert.deepEqual(starts(e2).filter((e) => e.kind === "critic").map((e) => e.agentId), ["red_team"]);
   // 완료 step 타이밍이 보존되고 중복 기록되지 않음 (chief/research 각 1회)
   assert.equal(run2.state.step_timings.filter((t) => t.agent_id === "chief_of_staff").length, 1);
   assert.equal(run2.state.step_timings.filter((t) => t.agent_id === "research").length, 1);

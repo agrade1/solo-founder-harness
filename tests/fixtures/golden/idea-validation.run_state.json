@@ -19,7 +19,14 @@
   "loop_state": null,
   "warnings": [],
   "regenerations": [],
-  "critique_rounds": [],
+  "critique_rounds": [
+    {
+      "target": "pm",
+      "critic": "red_team",
+      "rounds": 1,
+      "resolved": true
+    }
+  ],
   "gate_jumps": [
     {
       "decider": "founder_ceo",
@@ -54,7 +61,7 @@
     },
     {
       "agent_id": "red_team",
-      "kind": "agent",
+      "kind": "critic",
       "started_at": "2026-01-01T00:00:00.000Z",
       "elapsed_ms": 0,
       "ok": true

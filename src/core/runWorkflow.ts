@@ -75,6 +75,11 @@ export interface RegenEntry {
   resolved: boolean; // 재생성 후 최종적으로 스키마 통과했는가
 }
 
+/**
+ * [C-125/R1-B] **이것은 라운드 이력 로그이지 최종 바이트의 증명이 아니다. 최종 바이트를 결박하는 것은
+ * B-41 checkpoint의 sha256뿐이다.** (게이트 되돌림이 target을 평문으로 재실행하면 revise본이 다시
+ * 덮이는데 이 영수증은 그것을 모른다 — hash/pass 필드 추가는 새 durable 필드 + 소비자 전수라 기각.)
+ */
 export interface CritiqueRoundEntry {
   target: string;
   critic: string;
@@ -143,7 +148,13 @@ export interface UsageSummary {
   per_agent: UsageEntry[];
 }
 
-/** 루프(critique_loop) 중간 실패 시 재개 지점 힌트. 현재는 step 단위 재개라 정보성. */
+/**
+ * 루프(critique_loop) 중간 실패 시 재개 지점 힌트.
+ *
+ * [C-125] `critique_round`는 이제 **집행에 쓰인다**: resume이 라운드 예산을 0부터 다시 열지 않도록
+ * 실패한 라운드 하나만 재시도시킨다(:1437). optional이라 구버전 run_state는 `?? 0` → 전체 재시작으로
+ * 그대로 동작한다(하위 호환).
+ */
 export interface LoopState {
   step_index: number;
   critique_round?: number;
@@ -591,6 +602,8 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   let failedIndex: number | null = null;
   let budgetStopped = false;
   let rejected = false;
+  // [C-125] 실행 중인 비평 라운드 (루프 밖에서는 0). 루프 중 실패 시 durable 힌트로 나간다.
+  let activeCritiqueRound = 0;
   let killed_by: RunState["killed_by"] = null;
   // [B-40/A-3] **carry forward.** 폐기 기록과 해제 증거는 이전 state에서 이어받는다 — resume이든
   // 새 run이든. 이어받지 않으면 kill 뒤 아무 run 하나가 증거를 지우고 잠금 전체가 무의미해진다.
@@ -700,6 +713,12 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     }
     console.log(`  ↩ resume: step ${startIndex}부터 재개 (완료 ${completed_steps.length}개 복원)`);
   }
+
+  // [C-125/R1-A] resume 힌트는 **한 번만** 쓴다. 게이트 되돌림(:1276의 `i = targetIdx - 1; continue`)이
+  // 같은 critique_loop 인덱스를 다시 밟으므로, 힌트를 상시 참조하면 새 pass가 옛 실패의 라운드를
+  // 이어받아 R1을 건너뛴다. (기각한 대안: pass id를 만들어 힌트에 결박 — 새 식별자 축이 늘고
+  // durable 필드가 하나 더 생긴다.)
+  let critiqueResumeHint: LoopState | null = args.resume ? (prior?.loop_state ?? null) : null;
 
   const started_at = prior ? prior.started_at : now();
 
@@ -1413,11 +1432,16 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       }
 
       const maxRounds = Math.max(1, max_rounds ?? 1);
-      let round = 0;
+      // [C-125] resume은 라운드 예산을 다시 열지 않는다 — 실패한 라운드 하나만 재시도한다
+      // (C-126 totals와 같은 규율: 재시도 호출은 다시 쓰되 누적 예산은 단조).
+      const priorRound = critiqueResumeHint?.step_index === i ? (critiqueResumeHint.critique_round ?? 0) : 0;
+      critiqueResumeHint = null; // 소비 — 위 [R1-A] 참조
+      let round = priorRound > 0 ? priorRound - 1 : 0;
       let resolved = false;
 
       while (round < maxRounds) {
         round++;
+        activeCritiqueRound = round;
         // 1) critic 실행 — 편향 분리: critic은 비평 대상(target)의 결론만 보고 판단한다.
         //    전체 findings 체인을 넘기면 앞선 에이전트 합의에 anchoring될 수 있어 target 결론만 격리.
         const targetFinding = findings.get(target);
@@ -1460,6 +1484,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         console.log(`  ✎ ${target} 라운드 ${round}: 비평 반영 수정 → ${targetSaved} (${fmtElapsed(to.elapsedMs)})`);
       }
 
+      activeCritiqueRound = 0; // 루프 완주 — 이후 실패는 라운드에 결박되지 않는다
       critique_rounds.push({ target, critic, rounds: round, resolved });
       console.log(`  ⚖ 비평 루프 종료: ${critic}⟲${target} ${round}라운드, ${resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
     } catch (err) {
@@ -1494,7 +1519,10 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
     kill_history,
     cleared_idea_sha256,
     resume_from: stopped ? failedIndex : null,
-    loop_state: stopped && failedIndex !== null ? { step_index: failedIndex } : null,
+    loop_state:
+      stopped && failedIndex !== null
+        ? { step_index: failedIndex, ...(activeCritiqueRound > 0 ? { critique_round: activeCritiqueRound } : {}) }
+        : null,
     warnings,
     regenerations,
     critique_rounds,

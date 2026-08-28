@@ -68,6 +68,14 @@ test("회귀: mock idea-validation run_state가 golden과 일치 (가변 메타 
   assert.equal(actual.status, "completed");
   assert.deepEqual(actual.completed_steps, ["chief_of_staff", "research", "pm", "red_team", "founder_ceo"]);
   assert.equal(actual.provider, "mock");
+  // [C-125] red_team이 평문 step에서 pm을 겨눈 critique_loop의 critic이 됐다. **완료 집합·순서는 불변**이고
+  // (critic 산출물이 같은 자리에 채택된다) 달라지는 것은 timing의 kind와 라운드 영수증뿐이다.
+  // mock red_team은 Critical을 내지 않으므로 R1에서 조기 종료한다 — revise 경로는 여기서 안 돈다(R1-E).
+  assert.deepEqual(actual.critique_rounds, [{ target: "pm", critic: "red_team", rounds: 1, resolved: true }]);
+  assert.deepEqual(
+    actual.step_timings.map((t) => t.kind),
+    ["agent", "agent", "agent", "critic", "agent", "gate"],
+  );
   // [B-40] mock CEO는 '진행' 판정을 내므로 kill 게이트가 통과시키고 해제 digest가 발급된다.
   // 고정 아이디어 문서의 sha256이라 결정적이다 — golden이 이 값을 그대로 들고 있어야 한다.
   assert.deepEqual(actual.kill_history, [], "폐기 없음");

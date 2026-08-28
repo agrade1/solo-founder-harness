@@ -7,7 +7,7 @@
         "chief_of_staff",
         "research",
         "pm",
-        "red_team",
+        { "critique_loop": { "target": "pm", "critic": "red_team", "max_rounds": 2 } },
         "founder_ceo",
         { "gate": { "decider": "founder_ceo", "on": { "축소": "pm", "검증": "research" }, "kill": ["폐기"], "max_jumps": 1 } }
       ]
