@@ -132,6 +132,20 @@ export async function runRun(
           `    ⓑ 처음부터 재평가: --resume 없이 새 run — 새 run은 영수증을 이어받지 않아 예산이 새로 시작합니다(전체 재실행 비용).`,
       );
     }
+    // [B-50] '검증' 소진은 같은 자리(예산 소진)이지만 **뜻이 다르다**: 기계가 되돌려 봤는데도 같은
+    // '검증'이면 검색으로 안 나오는 것이 필요하다는 뜻이고, 그것은 사람의 일이다. 그래서 안내도 갈린다.
+    // 위 예산 소진 블록과 같은 검증 규율로, 코드로 확인한 실동작만 적는다.
+    if (state.failed_reason === "ceo_decision_verify") {
+      const deciderDoc = (state.failed_agent && findAgent(loadAgentRegistry(), state.failed_agent)?.default_output) || "(decider 산출 문서)";
+      console.log(
+        `  ↳ 되돌림을 다 쓰고도 판정이 '검증'입니다 — **하네스가 아니라 사람이 확인할 차례입니다** (개발하지 않습니다).\n` +
+          `    ① ${deciderDoc}의 산문에서 CEO가 요구한 확인 항목을 읽고 직접 확인하세요 (인터뷰·설치·수동 재현 등).\n` +
+          `    ② 확인 결과로 같은 문서의 "## Decision"을 **결론 판정**('진행'·'폐기'·'보류')으로 고친 뒤 --resume —\n` +
+          `       게이트가 그 문서를 다시 읽어 재판정합니다(모델 호출 0회 · 영수증에 "판정 출처: 복원 문서").\n` +
+          `    '축소'는 되돌림 예산이 이미 소진된 뒤라 진행하지 못하고, 아무것도 고치지 않은 --resume도\n` +
+          `    모델 호출 없이 같은 자리에서 다시 멈춥니다. 확인 전에는 task-prompt·plan-dag가 거부합니다.`,
+      );
+    }
   }
   for (const c of state.critique_rounds) {
     console.log(`비평 루프: ${c.critic}⟲${c.target} ${c.rounds}라운드 — ${c.resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);

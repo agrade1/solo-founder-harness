@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
-import { ideaGateStatus, readRunState, snapshotIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { ceoVerifyGateStatus, ideaGateStatus, readRunState, snapshotIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
 import { pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
@@ -45,6 +45,11 @@ export function buildTaskPrompt(project: string, today: string): string {
   const read = readRunState(project);
   const gate = ideaGateStatus(read, ideaSnapshot);
   if (!gate.ok) throw new Error(`${gate.code}: ${gate.message}`);
+
+  // [B-50] '검증' 대기 중에는 지시문을 만들지 않는다 — 게이트가 "개발하지 마라"로 멈춘 상태에서
+  // 개발 착수 문서가 나오면 그것이 곧 상태 전이 우회다(plan-dag와 같은 판정 함수를 쓴다).
+  const verifyGate = ceoVerifyGateStatus(read);
+  if (!verifyGate.ok) throw new Error(`${verifyGate.code}: ${verifyGate.message}`);
 
   // [B-41/2단] 단계 체크포인트 게이트. 파이프라인을 쓰는 프로젝트에서는 **완료 후**(또는 마지막
   // dev-handoff 단계의 실행 대기)에만 지시문을 만든다 — 확인 대기 중인 산출물로 구현을 시작하는 것이
