@@ -22,7 +22,7 @@ import { closeSync, existsSync, openSync, renameSync, unlinkSync } from "node:fs
 import { join } from "node:path";
 import { DEFAULT_PIPELINE, PIPELINE_ID, PIPELINE_LOCK_REL, PIPELINE_STATE_REL, lockPipeline, approvedDigests, buildManifest, checkpointIdFor, currentStage, digestArtifacts, driftProblem, effectiveDigests, newPipelineState, pipelineGateStatus, pipelineStatePath, pipelineWorkflowProblem, readLock, readPipelineStateAt, runStateSources, seedFindingsFrom, writePipelineState, PipelineError, } from "../core/pipeline.js";
 import { projectExists, projectPaths } from "../core/project.js";
-import { findWorkflow, hasKillGate, loadWorkflows } from "../core/registry.js";
+import { findAgent, findWorkflow, hasKillGate, loadAgentRegistry, loadWorkflows } from "../core/registry.js";
 import { ideaGateStatus, readRunStateAt, readRunState, runWorkflow, snapshotProjectIdea, } from "../core/runWorkflow.js";
 import { generateTaskPrompt } from "../core/taskPrompt.js";
 import { researchModeLines, researchOutcomeLines, resolveResearchRuntime } from "../core/researchRuntime.js";
@@ -266,17 +266,42 @@ ctx) {
         state.last_failure !== null &&
         state.last_failure.stage === stage.id;
     // 승인 바이트 사전 검증. **fresh는 예외 없는 전수 검증**이고, resume만 `last_failure.written`
-    // digest와 일치하는 경로에 예외를 준다(그 attempt가 정당하게 덮은 것). 어느 쪽도 아니면 손댄 것이다.
+    // digest에 예외를 준다(그 attempt가 정당하게 덮은 것). 그 예외는 **경로별 교체**다 — 아래 [B-52].
     const written = new Map((resume && state.last_failure ? state.last_failure.written : []).map((w) => [w.path, w]));
     for (const approved of approvedDigests(state).values()) {
-        const accept = [approved];
         const w = written.get(approved.path);
+        // [B-52] 예외는 **교체이지 추가가 아니다.** 이 단계의 실패 attempt가 덮은 경로는 그 attempt가
+        // 쓴 바이트만이 정본이고, 앞 단계의 승인 바이트는 그 경로의 **다른 단계 산출물**이다.
+        //
+        // 예전 판은 `accept = [approved, written]`(OR)이라 앞 단계 승인본을 되돌려 놓으면 통과했다.
+        // `docs/06_CEO_DECISION.md`는 1·2단계가 **같은 경로에 다시 쓰므로**(registry: founder_ceo의
+        // default_output이 하나) 2단계 게이트 실패 후 1단계 승인본을 복원하면 drift를 통과하고,
+        // resume한 runWorkflow가 그 문서를 재실행 없이 `lastMarkdown`으로 복원해
+        // **1단계의 '진행'이 2단계 판정으로 채택됐다** — 모델 호출 0회로 run이 completed가 되고
+        // B-40 폐기 잠금 해제(`cleared_idea_sha256`)까지 발급됐다(2026-08-30 실측 재현).
+        //
+        // 게이트에서 막지 않는 이유: 사람이 "## Decision"을 고쳐 재개하는 것은 이미 계약이라
+        // (runWorkflow.ts의 ceo_decision_absent 주석) 게이트가 보는 신호 — 문서 바이트 · restoredIds ·
+        // 실패 사유 — 가 정당한 편집과 앞 단계 재생에서 **전부 동일**하다. 바이트로 저자를 증명할 수
+        // 없으므로 권한 경계는 게이트가 아니라 **승인 바이트 perimeter**인 여기다. (설계 §2.2)
+        //
+        // 1단계는 approvedDigests가 비어 이 루프가 0회 돈다 — 사람이 판정을 고쳐 재개하는 레버는
+        // 그 자리에 그대로 살아 있다(B-49 설계 보완 ③).
+        const accept = [approved];
         if (w)
             accept.push(w);
         if (!accept.some((a) => driftProblem(root, [a]) === null)) {
-            return reject("pipeline_artifact_drift", `승인된 산출물이 승인 시점 바이트와 다릅니다: ${approved.path}\n` +
-                `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다 — 파일을 복원하거나 ` +
-                `'harness pipeline restart --project ${project}'로 다시 심사하세요.`, 1);
+            // 같은 사유 코드 안에서 **원인별로 다른 문장**을 낸다: B-52 케이스는 "승인 시점 바이트와
+            // 다르다"가 아니라 오히려 **같아서** 거부되므로, 기존 문구를 그대로 내면 진단이 불가능하다.
+            const replay = w !== undefined && driftProblem(root, [approved]) === null;
+            return reject("pipeline_artifact_drift", replay
+                ? `이 단계가 덮어쓴 산출물이 **앞 단계 승인본 바이트로 되돌아가 있습니다**: ${approved.path}\n` +
+                    `앞 단계의 판단을 현 단계 판단으로 재사용하게 되므로 **모델을 호출하지 않고** 멈춥니다 — ` +
+                    `이 단계의 실행이 남긴 내용으로 되돌리거나, 이 단계를 처음부터 다시 돌리려면 파이프라인을 ` +
+                    `종결(폐기 판정 또는 'harness pipeline reject')한 뒤 다시 세우세요.`
+                : `승인된 산출물이 승인 시점 바이트와 다릅니다: ${approved.path}\n` +
+                    `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다 — 파일을 복원하거나 ` +
+                    `'harness pipeline restart --project ${project}'로 다시 심사하세요.`, 1);
         }
     }
     // ── dev-handoff: workflow가 아니라 지시문 생성 단계 ──
@@ -394,6 +419,31 @@ function commitAfterRun(o, ctx) {
                     : `  ⓐ 원인(키 오류·네트워크·크레딧)을 고친 뒤: harness pipeline next --project ${project}\n`) +
                 `  ⓑ 외부 검색 없이 진행: 셸의 TAVILY_API_KEY를 unset하고 ${ctx.research.kind === "self" ? ctx.research.envPath : "workspace 루트의 .env"}의 값을 비운 뒤 같은 명령 — 키 부재는 **승인된 자체 리서치(self) fallback**입니다.\n` +
                 `  (실패한 external attempt는 삭제하지 않고 outputs/research/의 영수증에 남습니다.)`);
+        }
+        // [B-50] '검증'은 오류가 아니라 **사람이 확인할 차례**다 — 무차별 "고친 뒤 다시" 안내로는
+        // "무엇을 고치라는 것인지"가 전달되지 않는다(고칠 것은 코드도 키도 아니고 사람의 확인 결과다).
+        //
+        // **아래 문장은 전부 코드로 확인한 실동작만 적는다**(C-138/④ 규율 — 이 레포는 거짓 복구 안내를
+        // 두 번 냈다): 위에서 방금 쓴 `last_failure`가 resume 조건을 만족시키고(:353-359 계열),
+        // 사전 drift 검증은 **승인된 digest**만 결박하므로 decider 문서가 아직 승인 manifest에 없으면
+        // 사람의 수정이 통과하며, 게이트 인덱스부터의 resume은 복원 문서를 읽어 재판정한다(모델 호출 0회 ·
+        // 영수증 `decision_source: "restored_artifact"`).
+        //
+        // **decider 문서가 이미 승인 manifest에 있으면 그 약속이 거짓이 된다**(수정이 `pipeline_artifact_drift`로
+        // 막힌다) — 그 경우엔 이 안내를 내지 않는다. 그쪽 경로(앞 단계 승인 이후)에는 stale 판정 재생
+        // 문제도 얽혀 있어 여기서 참인 안내를 쓸 수 없다(대장 등재 · 이번 슬라이스에서 닫지 않는다).
+        if (reason === "ceo_decision_verify") {
+            const deciderDoc = (result.state.failed_agent && findAgent(loadAgentRegistry(), result.state.failed_agent)?.default_output) || null;
+            if (deciderDoc !== null && !approvedDigests(state).has(deciderDoc)) {
+                console.error(`CEO 판정이 '검증'인데 되돌림 예산이 소진됐습니다 — **하네스가 아니라 사람이 확인할 차례입니다** (개발하지 않습니다).\n` +
+                    `  ① ${deciderDoc}의 산문에서 CEO가 요구한 확인 항목을 읽고 직접 확인하세요 (인터뷰·설치·수동 재현 등).\n` +
+                    `  ② 확인 결과로 같은 문서의 "## Decision"을 **결론 판정**('진행'·'폐기'·'보류')으로 고친 뒤 같은 명령:\n` +
+                    `     harness pipeline next --project ${project}\n` +
+                    `     게이트가 그 문서를 다시 읽어 재판정합니다 — **모델 호출 0회**이고 영수증에 "판정 출처: 복원 문서"가 남습니다.\n` +
+                    `  ('축소'는 되돌림 예산이 이미 소진된 뒤라 진행하지 못하고 같은 자리에서 다시 멈춥니다.\n` +
+                    `   아무것도 고치지 않은 재실행도 모델 호출 없이 같은 자리에서 다시 멈춥니다.)\n` +
+                    `  확인이 끝나기 전에는 작업 지시문·DAG 초안이 만들어지지 않습니다 (task-prompt·plan-dag가 이 사유를 거부합니다).`);
+            }
         }
         return done("pipeline_stage_failed", 1);
     }

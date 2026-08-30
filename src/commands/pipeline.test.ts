@@ -339,6 +339,45 @@ test("[B-41/P6] 폐기 판정 → killed 종료 · restart 후 killed run_state�
   rmProject(name);
 });
 
+// ── [B-50] '검증' 소진은 "사람이 확인할 차례"다 ────────────────
+test("[B-50] 파이프라인 1단계: '검증' 소진엔 사람 확인 안내가 붙고 exit 1로 멈춘다", async () => {
+  // red: commitAfterRun의 ceo_decision_verify 분기를 지우면 무차별 "고친 뒤 다시: pipeline next" 한 줄만
+  //      남는다 — 고칠 것이 코드도 키도 아니라 **사람의 확인 결과**라는 사실이 전달되지 않는다.
+  // 1단계는 승인 manifest가 비어 있어(approvedDigests 0건) Decision 수정 레버가 살아 있다 —
+  // 그래서 여기서만 안내를 낸다(2단계 이후는 결박돼 있어 참을 보장할 수 없다).
+  const name = "_b50_pipe";
+  makeProject(name);
+  const p = counting("- 검증");
+  const prevExit = process.exitCode;
+  let r!: Awaited<ReturnType<typeof nextPipeline>>;
+  const out = await captureLogs(async () => {
+    r = await nextPipeline({ project: name, providerOverride: p, now: () => FIXED });
+  });
+  process.exitCode = prevExit;
+
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.equal(r.exit, 1);
+  assert.equal(loadRunState(name)?.failed_reason, "ceo_decision_verify");
+  assert.equal(stateOf(name).status, "awaiting_run", "상태는 실행 대기 그대로 — 같은 명령으로 이어간다");
+  assert.notEqual(stateOf(name).last_failure, null, "resume 영수증이 남는다 (다음 next가 resume 조건을 만족한다)");
+  assert.deepEqual(stateOf(name).checkpoints, [], "전제: 1단계라 승인 manifest가 비어 있다 (Decision 수정 레버 생존)");
+
+  assert.match(out, /사람이 확인할 차례/, "기계가 아니라 사람의 일이라고 말한다");
+  assert.ok(out.includes('"## Decision"'), "고칠 절을 이름으로 말한다");
+  assert.ok(out.includes("docs/06_CEO_DECISION.md"), "고칠 파일을 이름으로 말한다");
+  assert.match(out, /harness pipeline next --project _b50_pipe/, "다음에 칠 명령을 그대로 준다");
+  assert.match(out, /모델 호출 0회/);
+
+  // 안내가 참인지 실제로 태워본다: 사람이 결론 판정으로 고치면 같은 명령이 통과한다 (모델 호출 0회).
+  const doc = join(projectPaths(name).root, "docs/06_CEO_DECISION.md");
+  writeFileSync(doc, readFileSync(doc, "utf8").replace("## Decision\n\n- 검증", "## Decision\n\n- 진행"), "utf8");
+  const guard = counting("- 검증"); // 다시 돌면 여전히 '검증' — 통과가 복원 바이트 덕임을 고정한다
+  const ok = await quiet(() => nextPipeline({ project: name, providerOverride: guard, now: () => FIXED }));
+  assert.equal(ok.code, "pipeline_awaiting_approval", `안내대로 했더니 통과해야 한다 — 실제: ${ok.code}`);
+  assert.equal(guard.calls, 0, "게이트 재판정은 모델을 호출하지 않는다");
+  rmProject(name);
+});
+
 // ── P7 ────────────────────────────────────────────────────────
 test("[B-41/P7] 실패 → last_failure 영수증 실물 → resume(완료 step 미재실행) → manifest에 앞 step 문서 포함", async () => {
   const name = "_b41_p7";
@@ -474,7 +513,7 @@ test("[B-41/P8d] **영수증 없는 실패는 resume하지 않는다** — fresh
   rmProject(name);
 });
 
-// ── Codex A-6 ─────────────────────────────────────────────────
+// ── B-52 ──────────────────────────────────────────────────────
 test("[B-41/A-6] 마지막 단계만 승인해 '완료' 영수증을 받아낼 수 없다 — approve가 앞 단계 승인 바이트까지 전수 검증한다", async () => {
   const name = "_b41_a6";
   makeProject(name);

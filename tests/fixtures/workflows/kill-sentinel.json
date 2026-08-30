@@ -39,6 +39,15 @@
       ]
     },
     {
+      "workflow_id": "kill-overlap-verify",
+      "description": "[B-50] 테스트 전용: '검증'이 on과 kill에 둘 다 있다 — kill이 '검증' 처리보다 먼저인지 재는 잠금. 훗날 누가 '검증' 처리를 kill 분기 앞으로 옮기면 red가 된다. (정상 workflow는 이렇게 쓰지 않는다)",
+      "steps": [
+        "founder_ceo",
+        { "gate": { "decider": "founder_ceo", "on": { "검증": "founder_ceo" }, "kill": ["검증", "폐기"], "max_jumps": 1 } },
+        "chief_of_staff"
+      ]
+    },
+    {
       "workflow_id": "kill-overlap",
       "description": "테스트 전용: 같은 토큰이 on과 kill에 둘 다 있다 — kill이 먼저 판정되는지 재는 fixture. (정상 workflow는 이렇게 쓰지 않는다)",
       "steps": [

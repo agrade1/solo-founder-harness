@@ -365,10 +365,17 @@ test("[B-40] '축소'는 되돌림 1회 후 예산 소진 → 진행이 아니�
 const totalCalls = (p: { calls: Map<string, number> }): number => [...p.calls.values()].reduce((a, b) => a + b, 0);
 const CEO_DOC = findAgent(loadAgentRegistry(), "founder_ceo")!.default_output;
 
-/** [B-49] idea-validation을 '검증' 판정으로 예산 소진(failed)까지 돌린다 — resume 테스트들의 공통 전제. */
+/**
+ * [B-49] idea-validation을 '축소' 판정으로 예산 소진(failed)까지 돌린다 — resume 테스트들의 공통 전제.
+ *
+ * [B-50] 예전엔 '검증'으로 몰았는데, 이제 '검증'의 소진은 `ceo_decision_verify`(사람 차례)로 갈린다 —
+ * `gate_jump_budget_exhausted` 자체를 재려면 그 사유가 나오는 판정으로 몰아야 한다. **약화가 아니다**:
+ * '축소'도 idea-validation에서 되돌림(→pm) 1회 뒤 같은 자리에서 소진되므로 재는 대상(소진된 예산이
+ * resume으로 부활하지 않는다)은 바이트 하나 다르지 않게 유지된다. '검증' 쪽 계약은 아래 [B-50] 테스트들이 잰다.
+ */
 async function exhaustedProject(name: string): Promise<void> {
   makeProject(name);
-  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 검증"), now: () => FIXED });
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 축소"), now: () => FIXED });
   assert.equal(r.state.failed_reason, "gate_jump_budget_exhausted", "전제: 되돌림 1회 후 예산 소진으로 실패");
   assert.equal(r.state.gate_jumps.length, 2, "전제: jump 1 + failed 1");
 }
@@ -379,7 +386,7 @@ test("[B-49] 예산 소진 실패에서 resume해도 되돌림이 부활하지 �
   const name = "_b49_resume";
   await exhaustedProject(name);
 
-  const p = ceoDeciding("- 검증");
+  const p = ceoDeciding("- 축소");
   const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
 
   assert.equal(totalCalls(p), 0, "게이트만 재판정한다 — 모델 호출 0회");
@@ -400,11 +407,11 @@ test("[B-49] 사람이 Decision을 고치면 resume이 모델 호출 0회로 종
   // 사람의 레버: decider 산출 문서의 정본 판정 절을 종결 판정으로 고친다 (ceo_decision_absent 복구 경로와 같은 레버).
   const doc = join(projectPaths(name).root, CEO_DOC);
   const before = readFileSync(doc, "utf8");
-  const after = before.replace("## Decision\n\n- 검증", "## Decision\n\n- 진행");
-  assert.notEqual(after, before, "전제: 저장된 decider 문서에 '검증' 판정 절이 있다");
+  const after = before.replace("## Decision\n\n- 축소", "## Decision\n\n- 진행");
+  assert.notEqual(after, before, "전제: 저장된 decider 문서에 '축소' 판정 절이 있다");
   writeFileSync(doc, after, "utf8");
 
-  const p = ceoDeciding("- 검증"); // 모델이 다시 돌면 여전히 '검증'을 낸다 — 종결이 복원 바이트 덕임을 고정한다
+  const p = ceoDeciding("- 축소"); // 모델이 다시 돌면 여전히 '축소'를 낸다 — 종결이 복원 바이트 덕임을 고정한다
   const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
 
   assert.equal(totalCalls(p), 0, "복원 문서를 읽어 판정한다 — 모델 호출 0회");
@@ -434,9 +441,9 @@ test("[B-49/R1-C] outcome 필드가 없는 레거시 jump 영수증도 소진으
   const raw = JSON.parse(readFileSync(sp, "utf8")) as { gate_jumps: Record<string, unknown>[] };
   for (const g of raw.gate_jumps) delete g.outcome; // outcome 도입 이전 형태를 재현
   writeFileSync(sp, JSON.stringify(raw, null, 2), "utf8");
-  assert.equal(loadRunState(name)?.gate_jumps[0].jumped_to, "research", "전제: 레거시 entry도 읽히고 jumped_to만 남았다");
+  assert.equal(loadRunState(name)?.gate_jumps[0].jumped_to, "pm", "전제: 레거시 entry도 읽히고 jumped_to만 남았다");
 
-  const p = ceoDeciding("- 검증");
+  const p = ceoDeciding("- 축소");
   const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
 
   assert.equal(totalCalls(p), 0, "레거시 영수증도 되돌림 1회로 세어 예산이 소진된 채로 남는다");
@@ -472,7 +479,7 @@ test("[B-49] harness run: 예산 소진 실패엔 사유별 안내가 붙는다 
     runRun(
       "idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false,
       false, undefined, undefined, undefined,
-      ceoDeciding("- 검증"),
+      ceoDeciding("- 축소"),
     ),
   );
   process.exitCode = prevExit; // failed는 exit 1 — 테스트 프로세스의 종료 코드를 오염시키지 않는다
@@ -484,14 +491,173 @@ test("[B-49] harness run: 예산 소진 실패엔 사유별 안내가 붙는다 
   rmProject(name);
 });
 
+// ── [B-50] 소진된 뒤의 '검증'은 "사람이 확인할 차례"다 ─────────
+// **예산이 기계와 사람의 경계다**: 예산이 남아 있을 때의 '검증'은 research 되돌림(기계가 할 수 있는 일)이고,
+// 다 쓰고도 같은 '검증'이면 검색으로 안 나오는 것이 필요하다는 뜻이다.
+
+/** [B-50] idea-validation을 '검증' 판정으로 되돌림 1회 + 사람 대기(failed)까지 돌린다. */
+async function verifyStalledProject(name: string): Promise<void> {
+  makeProject(name);
+  const r = await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 검증"), now: () => FIXED });
+  assert.equal(r.state.failed_reason, "ceo_decision_verify", "전제: 되돌림 1회 후 사람 확인 대기로 중단");
+}
+
+test("[B-50] 되돌림을 다 쓰고도 '검증'이면 ceo_decision_verify — 되돌림 자체는 그대로 돈다", async () => {
+  // red ①: 사유 ternary의 `decision === "검증"` case를 되돌리면 gate_jump_budget_exhausted가 나온다.
+  // red ②: '검증'을 on 조회 전에 가로채는(=되돌림을 없애는) 설계로 바꾸면 research 2회·jump entry가 사라진다 —
+  //         2차 research는 live 실측에서 결정적 증거를 냈으므로 그 되돌림은 계약이다.
+  const name = "_b50_verify";
+  makeProject(name);
+  const p = ceoDeciding("- 검증");
+  const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, now: () => FIXED })).state;
+
+  assert.equal(s.status, "failed");
+  assert.equal(s.failed_reason, "ceo_decision_verify");
+  assert.equal(s.failed_agent, "founder_ceo");
+  assert.equal(p.calls.get("research"), 2, "예산이 남아 있던 첫 '검증'은 research로 되돌아간다 (기계가 할 수 있는 일)");
+  assert.deepEqual(s.gate_jumps, [
+    { decider: "founder_ceo", decision: "검증", jumped_to: "research", outcome: "jump" },
+    { decider: "founder_ceo", decision: "검증", jumped_to: null, outcome: "failed", reason: "ceo_decision_verify" },
+  ]);
+  assert.equal(s.cleared_idea_sha256, null, "사람 대기는 폐기 잠금 해제를 발급하지 않는다");
+  assert.equal(typeof s.resume_from, "number", "게이트 인덱스부터 재개 가능한 중단이다 (terminal 아님)");
+  rmProject(name);
+});
+
+test("[B-50] 같은 자리의 '축소' 소진은 그대로 gate_jump_budget_exhausted다 (사유가 갈린다)", async () => {
+  // red: `decision === "검증"` 조건을 지우고 무조건 ceo_decision_verify를 내면 이 테스트가 빨감 —
+  //      "기계가 좁히기를 두 번 시도했다"와 "사람 차례다"는 다른 사실이고 사유 코드가 그것을 나른다.
+  const name = "_b50_shrink";
+  makeProject(name);
+  const p = ceoDeciding("- 축소");
+  const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, now: () => FIXED })).state;
+
+  assert.equal(s.failed_reason, "gate_jump_budget_exhausted");
+  assert.equal(s.gate_jumps[0].jumped_to, "pm", "'축소'는 pm으로 되돌아간다 (research 아님)");
+  assert.equal(s.gate_jumps.at(-1)?.reason, "gate_jump_budget_exhausted");
+  rmProject(name);
+});
+
+test("[B-50/R1-H] 레거시 '검증' 영수증 두 형태가 섞여도 소진으로 세고 resume이 verify 사유를 덧붙인다 (모델 호출 0회)", async () => {
+  // 디스크에는 `outcome` 도입 **전후**의 entry가 섞여 있을 수 있다(교착된 live 프로젝트의 run_state가 그렇다).
+  // red: 사유 ternary의 '검증' case를 되돌리면 이 레거시 state의 resume이 gate_jump_budget_exhausted로 떨어진다 —
+  //      즉 넷이 사람 확인 경로를 얻지 못하고 오늘의 교착에 그대로 남는다.
+  const name = "_b50_legacy";
+  await verifyStalledProject(name);
+
+  const sp = join(projectPaths(name).root, "outputs/run_state.json");
+  const raw = JSON.parse(readFileSync(sp, "utf8")) as { gate_jumps: Record<string, unknown>[] };
+  const jump = raw.gate_jumps[0];
+  const legacy = { ...jump };
+  delete legacy.outcome; // outcome 도입 이전 형태 (같은 사실, 다른 바이트)
+  assert.deepEqual({ ...jump }, { decider: "founder_ceo", decision: "검증", jumped_to: "research", outcome: "jump" }, "전제: 현행 형태의 '검증' jump 영수증");
+  raw.gate_jumps = [jump, legacy];
+  writeFileSync(sp, JSON.stringify(raw, null, 2), "utf8");
+  assert.equal(loadRunState(name)?.gate_jumps[1].outcome, undefined, "전제: 두 형태가 한 state에 섞여 있다");
+
+  const p = ceoDeciding("- 검증");
+  const s = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: p, resume: true, now: () => FIXED })).state;
+
+  assert.equal(totalCalls(p), 0, "복원 문서만 다시 읽는다 — 모델 호출 0회");
+  assert.equal(s.failed_reason, "ceo_decision_verify", "두 형태 모두 되돌림으로 세어 소진 상태이고, 그 소진의 '검증'은 사람 차례다");
+  assert.equal(s.gate_jumps.length, 3, "실패 영수증 한 줄만 늘었다 (재점프 없음)");
+  assert.equal(s.gate_jumps.filter((g) => g.outcome === "jump").length, 1, "새 jump는 없다");
+  assert.deepEqual(s.gate_jumps.at(-1), {
+    decider: "founder_ceo",
+    decision: "검증",
+    jumped_to: null,
+    outcome: "failed",
+    reason: "ceo_decision_verify",
+    decision_source: "restored_artifact",
+  });
+  rmProject(name);
+});
+
+test("[B-50/R1-I] '검증'이 on과 kill에 둘 다 있으면 kill이 이긴다 (kill은 어떤 '검증' 처리보다도 먼저)", async () => {
+  // red: '검증' 처리를 kill 분기 **앞으로** 옮기면(예: on 조회 전 가로채기·조기 중단) killed가 아니라
+  //      failed가 되고 sentinel 계약이 무너진다. kill-overlap('폐기')과 같은 잠금을 '검증'에도 건다.
+  const name = "_b50_overlap";
+  makeProject(name);
+  const p = ceoDeciding("- 검증");
+  const s = (await runWorkflow({ workflowId: "kill-overlap-verify", workflowsPath: SENTINEL_WF, project: name, provider: p, now: () => FIXED })).state;
+
+  assert.equal(s.status, "killed", "kill 목록에 있는 토큰은 되돌림·사람 대기보다 먼저 판정된다");
+  assert.equal(s.failed_reason, null, "폐기는 실패가 아니다");
+  assert.equal(s.gate_jumps.at(-1)?.outcome, "kill");
+  assert.equal(p.calls.get(SENTINEL), undefined, "게이트 뒤 step은 실행되지 않는다");
+  assert.equal(s.kill_history.length, 1);
+  rmProject(name);
+});
+
+test("[B-50] '검증' 대기 중에는 개발 표면이 열리지 않는다 — task-prompt·plan-dag 거부", async () => {
+  // red: taskPrompt.ts / planDag.ts의 ceoVerifyGateStatus 가드를 지우면 둘 다 통과한다 —
+  //      게이트가 "아직 개발하지 마라"로 멈춘 상태에서 개발 착수 문서가 나오는 상태 전이 우회다.
+  const name = "_b50_surfaces";
+  await verifyStalledProject(name);
+
+  let caught: Error | null = null;
+  try {
+    buildTaskPrompt(name, "2026-01-01");
+  } catch (err) {
+    caught = err as Error;
+  }
+  assert.ok(caught, "'검증' 대기 상태에서 지시문을 만들지 않는다");
+  assert.match(caught!.message, /ceo_decision_verify/);
+  assert.match(caught!.message, /사람이 확인할 차례/, "무엇을 해야 하는지 말한다");
+  assert.ok(caught!.message.includes(`${CEO_DOC}의 산문`), "고칠 파일을 이름으로 말한다");
+
+  const ideaAbs = join(projectPaths(name).root, IDEA_REL);
+  const missingApproval = join(tmpdir(), `b50-no-such-approval-${process.pid}.json`);
+  assert.equal(existsSync(missingApproval), false, "전제: 승인 파일이 없다");
+  assert.throws(
+    () => createPlanDagRun({ run: "r1", milestone: "m1", approval: missingApproval, idea: ideaAbs }),
+    /ceo_decision_verify/,
+    "'검증' 검사가 승인 읽기·run 생성보다 앞이다",
+  );
+
+  // 그리고 이 거부는 사람이 판정을 바꾸면 풀린다 — 막힌 채로 끝나는 상태가 아니다.
+  const doc = join(projectPaths(name).root, CEO_DOC);
+  writeFileSync(doc, readFileSync(doc, "utf8").replace("## Decision\n\n- 검증", "## Decision\n\n- 진행"), "utf8");
+  const after = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 검증"), resume: true, now: () => FIXED })).state;
+  assert.equal(after.status, "completed", "전제: 사람이 결론 판정으로 고치면 resume이 종결한다");
+  assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "확인이 끝나면 개발 표면이 다시 열린다");
+  rmProject(name);
+});
+
+test("[B-50] harness run: '검증' 소진엔 '사람이 확인할 차례' 안내가 붙는다 (예산 소진 안내와 다르다)", async () => {
+  // red: run.ts의 ceo_decision_verify 분기를 지우면 무차별 "재개: ... --resume" 한 줄만 남아,
+  //      기계가 이어서 할 일이 있는 것처럼 읽힌다(거짓 안내).
+  const name = "_b50_cli";
+  makeProject(name);
+  const prevExit = process.exitCode;
+  const out = await captureLogs(() =>
+    runRun(
+      "idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false,
+      false, undefined, undefined, undefined,
+      ceoDeciding("- 검증"),
+    ),
+  );
+  process.exitCode = prevExit; // failed는 exit 1 — 테스트 프로세스의 종료 코드를 오염시키지 않는다
+
+  assert.match(out, /중단 사유: ceo_decision_verify/);
+  assert.match(out, /사람이 확인할 차례/, "기계가 아니라 사람의 일이라고 말한다");
+  assert.ok(out.includes(`${CEO_DOC}의 산문`), "고칠 파일을 이름으로 말한다");
+  assert.ok(out.includes('"## Decision"'), "고칠 절을 이름으로 말한다");
+  assert.match(out, /모델 호출 0회/, "재판정 비용을 말한다");
+  assert.doesNotMatch(out, /되돌림 예산이 소진됐습니다 —/, "예산 소진 안내(다른 사유)가 섞이지 않는다");
+  rmProject(name);
+});
+
 test("[B-40/A-1] 게이트 통과는 '진행' 토큰 하나뿐 — 5토큰 × 3 workflow 전수", async () => {
   // kill 게이트가 있는 세 workflow에서 다섯 토큰이 각각 어디로 가는지 전수로 고정한다.
   // (mvp-planning엔 '검증' 매핑이 없다 → unmapped. 예전엔 그것이 조용히 진행했다.)
+  // [B-50] 되돌림 대상이 **있는** workflow에서 '검증'이 소진되면 ceo_decision_verify(사람 차례)이고,
+  // 같은 자리의 '축소'는 그대로 gate_jump_budget_exhausted다 — 두 사유가 갈리는 것을 여기서 전수로 고정한다.
   const expected: Record<string, Record<string, string>> = {
     "idea-validation": {
       진행: "completed",
       축소: "failed:gate_jump_budget_exhausted",
-      검증: "failed:gate_jump_budget_exhausted",
+      검증: "failed:ceo_decision_verify", // [B-50] 되돌림 1회 후에도 '검증'이면 사람 차례 — 같은 소진, 다른 뜻
       보류: "failed:ceo_decision_hold",
       폐기: "killed",
     },
@@ -505,7 +671,7 @@ test("[B-40/A-1] 게이트 통과는 '진행' 토큰 하나뿐 — 5토큰 × 3 
     "full-predev": {
       진행: "completed",
       축소: "failed:gate_jump_budget_exhausted",
-      검증: "failed:gate_jump_budget_exhausted",
+      검증: "failed:ceo_decision_verify", // [B-50]
       보류: "failed:ceo_decision_hold",
       폐기: "killed",
     },
