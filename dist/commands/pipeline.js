@@ -287,9 +287,7 @@ ctx) {
         //
         // 1단계는 approvedDigests가 비어 이 루프가 0회 돈다 — 사람이 판정을 고쳐 재개하는 레버는
         // 그 자리에 그대로 살아 있다(B-49 설계 보완 ③).
-        const accept = [approved];
-        if (w)
-            accept.push(w);
+        const accept = w ? [w] : [approved];
         if (!accept.some((a) => driftProblem(root, [a]) === null)) {
             // 같은 사유 코드 안에서 **원인별로 다른 문장**을 낸다: B-52 케이스는 "승인 시점 바이트와
             // 다르다"가 아니라 오히려 **같아서** 거부되므로, 기존 문구를 그대로 내면 진단이 불가능하다.

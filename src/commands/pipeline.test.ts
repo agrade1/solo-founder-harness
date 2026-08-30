@@ -514,6 +514,92 @@ test("[B-41/P8d] **영수증 없는 실패는 resume하지 않는다** — fresh
 });
 
 // ── B-52 ──────────────────────────────────────────────────────
+test("[B-52] 2단계 게이트 실패 후 **1단계 승인본 CEO 문서를 되돌려 놓으면** resume이 거부한다 (앞 단계 판정 재생)", async () => {
+  // `founder_ceo`의 default_output은 하나(`docs/06_CEO_DECISION.md`)이고 1·2단계가 **둘 다** 그
+  // 경로에 쓴다. 예전 판의 resume 예외는 `accept = [approved, written]`(OR)이라 1단계 승인본을
+  // 복원해 두면 drift를 통과했고, resume한 runWorkflow가 그 문서를 재실행 없이 복원해
+  // **1단계의 '진행'이 2단계 판정으로 채택됐다**(모델 호출 0회로 run completed + 확인 대기).
+  const name = "_b52_replay";
+  const { state } = await toFirstCheckpoint(name);
+  await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+  const root = projectPaths(name).root;
+  const ceoPath = join(root, "docs/06_CEO_DECISION.md");
+  const stage1Bytes = bytesOf(ceoPath);
+  assert.match(stage1Bytes, /## Decision\n\n- 진행/, "전제: 1단계 승인본의 정본 판정은 '진행'");
+
+  // 2단계 CEO가 '보류' → 게이트가 ceo_decision_hold로 멈춘다 (founder_ceo는 completed_steps에 있다).
+  let r = await quiet(() => nextPipeline({ project: name, providerOverride: counting("- 보류"), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_stage_failed", "2단계는 게이트에서 멈췄다");
+  assert.equal(loadRunState(name)?.failed_reason, "ceo_decision_hold");
+  assert.ok(
+    stateOf(name).last_failure!.written.some((w) => w.path === "docs/06_CEO_DECISION.md"),
+    "전제: 2단계 attempt가 판정 문서를 덮었다 (그래서 그 경로의 정본은 written이어야 한다)",
+  );
+
+  // ── 공격: 1단계 승인본 바이트로 되돌린다 (승인 digest와 정확히 일치한다) ──
+  const stage2Bytes = bytesOf(ceoPath); // 2단계가 실제로 쓴 것 — 아래 대조군에서 되돌린다
+  assert.notEqual(stage2Bytes, stage1Bytes, "전제: 두 단계의 판정 문서는 다른 바이트다");
+  writeFileSync(ceoPath, stage1Bytes, "utf8");
+  const beforeState = bytesOf(pipelineStatePath(root));
+  const beforeJumps = loadRunState(name)!.gate_jumps.length;
+  const guard = counting("- 보류");
+  const prevExit = process.exitCode;
+  const msg = await captureLogs(async () => {
+    r = await nextPipeline({ project: name, providerOverride: guard, now: () => FIXED, internalApprover: async () => true });
+  });
+  process.exitCode = prevExit;
+
+  assert.equal(r.code, "pipeline_artifact_drift", "앞 단계 승인 바이트는 현 단계 내용으로 설 수 없다");
+  // 같은 사유 코드 안에서 **원인별로 다른 문장**이다: 이 케이스는 승인 바이트와 **같아서** 거부된다.
+  // 기존 문구("승인 시점 바이트와 다릅니다")를 그대로 내면 사람이 진단할 수 없다.
+  assert.match(msg, /앞 단계 승인본 바이트로 되돌아가 있습니다/, "재생 케이스는 재생이라고 말한다");
+  assert.doesNotMatch(msg, /승인 시점 바이트와 다릅니다/, "정반대 원인을 적지 않는다");
+  assert.equal(r.exit, 1);
+  // **이 단정은 이 구멍을 구분하지 못한다 — 실측으로 확인했다(mutation GREEN).** resume은 게이트
+  // 인덱스에서 재개하므로 원본·변종 **양쪽 다** 호출 0이다(재생본은 모델이 아니라 게이트가 읽는다).
+  // 남겨 두는 이유는 "거부 경로에서 모델을 부르지 않는다"가 별개의 참인 성질이라서다.
+  // 이 구멍을 실제로 구분하는 단정은 아래 넷(state 바이트 · run status · gate_jumps 길이 · 마지막 판정)이고,
+  // 넷 다 OR 복원 시 **독립적으로** 빨감을 확인했다. (P8a·P8d가 남긴 같은 계열의 교훈)
+  assert.equal(guard.calls, 0, "거부 경로는 모델을 호출하지 않는다 (이 mutation은 구분하지 못한다 — 위 주석)");
+  assert.equal(bytesOf(pipelineStatePath(root)), beforeState, "pipeline_state 바이트 불변");
+  const rs = loadRunState(name)!;
+  assert.equal(rs.status, "failed", "run이 completed로 승격되지 않았다");
+  assert.equal(rs.gate_jumps.length, beforeJumps, "게이트가 다시 판정하지 않았다");
+  assert.equal(rs.gate_jumps.at(-1)?.decision, "보류", "마지막 판정은 여전히 2단계 CEO의 실제 판정이다");
+
+  // 이 단계가 실제로 쓴 바이트로 되돌리면 resume이 재개된다 — 무조건 거부가 아니다.
+  // (판정은 여전히 '보류'라 게이트는 같은 자리에서 다시 멈춘다: 막힌 것은 **재생**이지 resume이 아니다.)
+  writeFileSync(ceoPath, stage2Bytes, "utf8");
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: counting("- 보류"), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_stage_failed", "written 바이트면 drift를 지나 게이트까지 간다");
+  assert.equal(loadRunState(name)?.failed_reason, "ceo_decision_hold", "drift가 아니라 판정에서 멈췄다");
+  rmProject(name);
+});
+
+test("[B-52] 1단계에서는 사람이 '## Decision'을 고쳐 재개하는 레버가 살아 있다 (과잉 차단 감시)", async () => {
+  // B-50/B-49의 복구 경로다. 1단계는 승인 checkpoint가 0개라 resume 사전 검증 루프가 **0회** 돈다 —
+  // B-52 규칙을 `approvedDigests` 밖(=`written` 전수)으로 넓히면 이 문이 함께 닫힌다.
+  const name = "_b52_lever";
+  makeProject(name);
+  const root = projectPaths(name).root;
+  let r = await quiet(() => nextPipeline({ project: name, providerOverride: counting("- 보류"), now: () => FIXED }));
+  assert.equal(r.code, "pipeline_stage_failed", "1단계 게이트가 '보류'로 멈췄다");
+  assert.equal(loadRunState(name)?.failed_reason, "ceo_decision_hold");
+
+  const ceoPath = join(root, "docs/06_CEO_DECISION.md");
+  writeFileSync(ceoPath, bytesOf(ceoPath).replace("## Decision\n\n- 보류", "## Decision\n\n- 진행"), "utf8");
+
+  const resumed = counting("- 보류"); // 재실행되면 다시 '보류'가 나온다 — 재실행 0회여야 통과한다
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: resumed, now: () => FIXED }));
+  assert.equal(r.code, "pipeline_awaiting_approval", "사람이 고친 판정으로 단계가 끝난다");
+  assert.equal(resumed.byAgent.get("founder_ceo") ?? 0, 0, "decider를 재실행하지 않았다 (복원 문서로 판정)");
+  const last = loadRunState(name)!.gate_jumps.at(-1)!;
+  assert.equal(last.outcome, "proceed");
+  assert.equal(last.decision_source, "restored_artifact", "[B-49] 복원 문서 판정이라는 사실이 영수증에 남는다");
+  rmProject(name);
+});
+
+// ── Codex A-6 ─────────────────────────────────────────────────
 test("[B-41/A-6] 마지막 단계만 승인해 '완료' 영수증을 받아낼 수 없다 — approve가 앞 단계 승인 바이트까지 전수 검증한다", async () => {
   const name = "_b41_a6";
   makeProject(name);
