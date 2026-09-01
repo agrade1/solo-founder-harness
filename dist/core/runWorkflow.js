@@ -1017,22 +1017,30 @@ export async function runWorkflow(args) {
                     failed_agent = decider;
                     failed_reason = targetMissing
                         ? "gate_jump_target_missing" // on에 있지만 그 step이 workflow에 없다 (정의 오류 — 예산과 무관)
-                        : jumpTarget === null
-                            ? decision === "보류"
-                                ? "ceo_decision_hold" // 판정 자체가 "지금은 하지 않는다" — 매핑 부재와 구분한다
-                                : "ceo_decision_unmapped" // 이 workflow에 해당 판정의 되돌림 대상이 없다
-                            : // [B-50] **예산이 기계와 사람의 경계다.** 예산이 남아 있을 때의 '검증'은 "더 파봐라"이고
-                                // research 되돌림이 실제로 새 사실을 낸다(live 실측: claimrep은 2차 attempt에서만 나온
-                                // 사실이 판정의 축이 됐고, sellercs·nuga는 2차 근거의 8/9·10/10이 새 출처였다).
-                                // 되돌림을 **다 쓰고도** 같은 '검증'이 나왔다면 검색으로 안 나오는 것이 필요하다는 뜻이다
-                                // = 사람 차례. 오류가 아니라 "사람이 확인할 차례"라는 뜻의 중단이고, 복귀는 사람이
-                                // decider 문서의 "## Decision"을 결론 판정으로 고친 뒤 resume이다(모델 호출 0회).
-                                // 다른 판정(축소 등)의 소진은 그대로 예산 소진이다 — 기계가 좁히기를 두 번 시도한 것이라
-                                // 뜻이 다르다. (기각: '검증'을 on 조회 전에 가로채 되돌림 자체를 없애는 안 —
-                                //  위 실측대로 2차 research가 결정적 증거를 냈으므로 실증된 가치를 버리는 것이다.)
-                                decision === "검증"
-                                    ? "ceo_decision_verify"
-                                    : "gate_jump_budget_exhausted"; // 되돌려 봤는데 판정이 그대로다
+                        : decision === "검증"
+                            ? // [B-50/live] **매핑이 없든 예산이 소진됐든 '검증'은 사람 차례다.** 여기 도달했다는 것은
+                                // 이미 "되돌림이 일어나지 않는다"는 뜻이고('검증'이 매핑돼 있고 예산이 남았으면 위에서
+                                // 점프해 이 자리에 오지 않는다), 그러면 남은 뜻은 하나뿐이다 — 기계가 더 할 것이 없다.
+                                // 2026-09-01 live 2단계(mvp-planning)가 이 구멍을 드러냈다: 그 게이트는 on이
+                                // {"축소":"pm"}뿐이라 '검증'이 `ceo_decision_unmapped`(정의 오류)로 떨어졌고
+                                // **사람에게 아무 안내도 나가지 않았다.** 초판이 예산 소진 가지만 덮은 것이 원인이다.
+                                "ceo_decision_verify"
+                            : jumpTarget === null
+                                ? decision === "보류"
+                                    ? "ceo_decision_hold" // 판정 자체가 "지금은 하지 않는다" — 매핑 부재와 구분한다
+                                    : "ceo_decision_unmapped" // 이 workflow에 해당 판정의 되돌림 대상이 없다
+                                : // [B-50] **예산이 기계와 사람의 경계다.** 예산이 남아 있을 때의 '검증'은 "더 파봐라"이고
+                                    // research 되돌림이 실제로 새 사실을 낸다(live 실측: claimrep은 2차 attempt에서만 나온
+                                    // 사실이 판정의 축이 됐고, sellercs·nuga는 2차 근거의 8/9·10/10이 새 출처였다).
+                                    // 되돌림을 **다 쓰고도** 같은 '검증'이 나왔다면 검색으로 안 나오는 것이 필요하다는 뜻이다
+                                    // = 사람 차례. 오류가 아니라 "사람이 확인할 차례"라는 뜻의 중단이고, 복귀는 사람이
+                                    // decider 문서의 "## Decision"을 결론 판정으로 고친 뒤 resume이다(모델 호출 0회).
+                                    // 다른 판정(축소 등)의 소진은 그대로 예산 소진이다 — 기계가 좁히기를 두 번 시도한 것이라
+                                    // 뜻이 다르다. (기각: '검증'을 on 조회 전에 가로채 되돌림 자체를 없애는 안 —
+                                    //  위 실측대로 2차 research가 결정적 증거를 냈으므로 실증된 가치를 버리는 것이다.)
+                                    decision === "검증"
+                                        ? "ceo_decision_verify"
+                                        : "gate_jump_budget_exhausted"; // 되돌려 봤는데 판정이 그대로다
                     failedIndex = i;
                     gate_jumps.push({ decider, decision, jumped_to: null, outcome: "failed", reason: failed_reason, ...src });
                     // 문구를 렌더러(gateOutcomeLabel)와 같은 형태로 맞춘다: "→ 진행하지 않고 중단"은
