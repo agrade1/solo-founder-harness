@@ -664,7 +664,9 @@ test("[B-40/A-1] 게이트 통과는 '진행' 토큰 하나뿐 — 5토큰 × 3 
     "mvp-planning": {
       진행: "completed",
       축소: "failed:gate_jump_budget_exhausted",
-      검증: "failed:ceo_decision_unmapped", // 이 workflow엔 research step이 없어 매핑이 없다
+      // [B-50/live] 매핑이 없어도 '검증'은 **사람 차례**다(정의 오류가 아니다). 2026-09-01 live 2단계가
+      // 이것을 드러냈다 — `ceo_decision_unmapped`로 떨어져 복구 안내가 안 나갔다.
+      검증: "failed:ceo_decision_verify",
       보류: "failed:ceo_decision_hold",
       폐기: "killed",
     },
@@ -1031,10 +1033,14 @@ test("[B-40/A-1] kill digest도 CEO가 본 바이트의 것이다", async () => 
 
 // ── A-2: 게이트 결과가 CLI·vault에서 정직하게 렌더된다 ──────────
 test("[B-40/A-2] 게이트 실패 4종이 CLI·vault에서 '진행'이 아니라 '중단(코드)'로 기록된다", async () => {
-  // 4개 실패 코드 × 2개 소비자(CLI · vault) = 8건. 예전엔 전부 "→ 진행"이었다(durable은 failed인데).
+  // 5개 실패 코드 × 2개 소비자(CLI · vault) = 10건. 예전엔 전부 "→ 진행"이었다(durable은 failed인데).
   const cases: Array<{ wf: string; token: string; code: string; wfPath?: string }> = [
     { wf: "idea-validation", token: "보류", code: "ceo_decision_hold" },
-    { wf: "mvp-planning", token: "검증", code: "ceo_decision_unmapped" },
+    // [B-50/live] unmapped 대표를 `kill-overlap`+'축소'로 옮긴다 — 그 fixture는 on={"폐기"}뿐이라
+    // '축소'가 매핑 없음이다. mvp-planning+'검증'은 이제 verify로 갈리므로 **커버리지를 잃지 않으려고**
+    // 대표를 바꾸고 verify 사례를 하나 **추가**했다(4종 → 5종).
+    { wf: "kill-overlap", token: "축소", code: "ceo_decision_unmapped", wfPath: SENTINEL_WF },
+    { wf: "mvp-planning", token: "검증", code: "ceo_decision_verify" },
     { wf: "idea-validation", token: "축소", code: "gate_jump_budget_exhausted" },
     { wf: "kill-badtarget", token: "축소", code: "gate_jump_target_missing", wfPath: SENTINEL_WF },
   ];
@@ -1646,5 +1652,32 @@ test("[C-125/R1-A] 게이트 재진입은 resume 힌트를 재사용하지 않�
   // 힌트를 소비하지 않으면 재진입 pass가 옛 실패 라운드를 이어받아 [2, 2]가 된다 — R1이 사라진다.
   assert.deepEqual(rounds, [2, 1, 2], "resume pass는 남은 R2만, 재진입 pass는 R1부터");
   assert.deepEqual(again.state.critique_rounds.map((c) => c.rounds), [2, 2], "pass마다 영수증 한 건");
+  rmProject(name);
+});
+
+/**
+ * [B-50/live] **'검증' 매핑이 아예 없는 게이트에서도 사람 차례로 끝난다.**
+ * 2026-09-01 live 2단계(`mvp-planning`)가 이 구멍을 드러냈다 — 그 게이트의 on은 `{"축소":"pm"}`뿐이라
+ * CEO의 '검증'이 `ceo_decision_unmapped`(정의 오류)로 떨어졌고 **복구 안내가 하나도 안 나갔다.**
+ * B-50 초판이 "매핑은 있는데 예산 소진" 가지만 덮은 것이 원인이다.
+ * red 조건: `decision === "검증"` 가지를 ternary에서 빼면 다시 `ceo_decision_unmapped`가 된다.
+ */
+test("[B-50/live] '검증' 되돌림 대상이 없는 게이트도 ceo_decision_verify로 끝난다 (unmapped 아님)", async () => {
+  const name = "_b50_unmapped";
+  makeProject(name);
+  const r = await runWorkflow({
+    workflowId: "mvp-planning",
+    project: name,
+    provider: ceoDeciding("- 검증"),
+    now: () => FIXED,
+    approve: async () => true, // 내부 디자인 게이트 (이 테스트의 관심사가 아니다)
+  });
+  const s = r.state;
+  assert.equal(s.status, "failed");
+  assert.equal(s.failed_reason, "ceo_decision_verify", "매핑 부재도 '사람 차례'다 — 정의 오류가 아니다");
+  assert.equal(s.failed_agent, "founder_ceo");
+  const last = s.gate_jumps.at(-1);
+  assert.equal(last?.outcome, "failed");
+  assert.equal(last?.reason, "ceo_decision_verify");
   rmProject(name);
 });

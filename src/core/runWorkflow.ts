@@ -1389,7 +1389,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
         failed_agent = decider;
         failed_reason = targetMissing
           ? "gate_jump_target_missing" // on에 있지만 그 step이 workflow에 없다 (정의 오류 — 예산과 무관)
-          : jumpTarget === null
+          : decision === "검증"
+            ? // [B-50/live] **매핑이 없든 예산이 소진됐든 '검증'은 사람 차례다.** 여기 도달했다는 것은
+              // 이미 "되돌림이 일어나지 않는다"는 뜻이고('검증'이 매핑돼 있고 예산이 남았으면 위에서
+              // 점프해 이 자리에 오지 않는다), 그러면 남은 뜻은 하나뿐이다 — 기계가 더 할 것이 없다.
+              // 2026-09-01 live 2단계(mvp-planning)가 이 구멍을 드러냈다: 그 게이트는 on이
+              // {"축소":"pm"}뿐이라 '검증'이 `ceo_decision_unmapped`(정의 오류)로 떨어졌고
+              // **사람에게 아무 안내도 나가지 않았다.** 초판이 예산 소진 가지만 덮은 것이 원인이다.
+              "ceo_decision_verify"
+            : jumpTarget === null
             ? decision === "보류"
               ? "ceo_decision_hold" // 판정 자체가 "지금은 하지 않는다" — 매핑 부재와 구분한다
               : "ceo_decision_unmapped" // 이 workflow에 해당 판정의 되돌림 대상이 없다
