@@ -112,7 +112,8 @@ export function statusPipeline(o) {
     }
     else if (st.status === "awaiting_run") {
         if (st.last_failure) {
-            console.log(`직전 실패: '${st.last_failure.stage}' @ ${st.last_failure.at} (덮인 파일 ${st.last_failure.written.length}개) — next가 자동 resume합니다`);
+            // [B-53] `written`은 이 단계의 attempt들에 걸친 **누적**이므로 "직전 실패가 덮은"이 아니다.
+            console.log(`직전 실패: '${st.last_failure.stage}' @ ${st.last_failure.at} (이 단계에서 덮인 파일 ${st.last_failure.written.length}개) — next가 자동 resume합니다`);
         }
         console.log(`다음: harness pipeline next --project ${st.project}`);
     }
@@ -386,14 +387,36 @@ function commitAfterRun(o, ctx) {
         // [C-126/A-4] `savedFiles`에는 리서치 receipt와 저장된 raw도 들어 있다(partial 포함) — 그래서
         // 중간에 죽어도 "무엇이 덮였나"가 사실대로 남고, resume 사전 drift 검증이 그것을 손댄 것으로
         // 오해하지 않는다.
+        //
+        // [B-53] **이 단계의 attempt들에 걸쳐 누적한다** (경로 합집합 · 새 digest가 이긴다).
+        // 예전 판은 실패마다 통째로 덮었는데, `savedFiles`는 **그 attempt가 쓴 것만** 담는다:
+        //  ⓐ 2번째 실패가 게이트에서 나면 agent가 하나도 안 돌아 `savedFiles`가 비고 `written`이 `[]`가 된다.
+        //  ⓑ resume은 완료 step을 재실행하지 않으므로, 앞 attempt가 덮은 경로는 뒤 attempt의 `savedFiles`에 없다.
+        // 어느 쪽이든 3번째 `next`의 사전 검증이 그 경로를 `[approved(앞 단계)]`로만 판정해
+        // `pipeline_artifact_drift`로 거부한다 — 그리고 `awaiting_run`에서는 restart도 reject도 막혀 있어
+        // **탈출구가 하나도 없다**(2026-09-01 실측: ⓐⓑ 둘 다 재현 · restart=pipeline_active · reject=pipeline_no_pending).
+        //
+        // 합집합이 검사를 넓히지 않는 이유: 이번 attempt가 **쓴** 경로는 새 digest가 앞 것을 덮으므로
+        // (`merged.set`) 그 경로의 정본은 여전히 **가장 최근에 그 경로를 쓴 attempt의 바이트 하나**다.
+        // 늘어나는 것은 "이번 attempt가 건드리지 않은, 앞 attempt가 쓴 경로"뿐이고 그 정본도 하나다.
+        // 그래서 [B-52]의 교체 규칙(`accept = w ? [w] : [approved]`)이 그대로 성립한다 — 합집합 어디에도
+        // **앞 단계 승인 바이트**는 들어오지 않는다(이 단계가 실제로 쓴 바이트만 들어온다).
         const at = now();
+        // 단계가 바뀌면 리셋한다. 실제로는 승인·폐기가 `last_failure`를 null로 내리고
+        // `replayProblem`(core/pipeline.ts)이 단계 불일치 state를 아예 unreadable로 막으므로 이 조건이
+        // 거짓이 되는 경로는 현재 없다 — **불변식이 다른 파일에 있어서** 여기 한 번 더 적는다.
+        // (`workflow_id`는 `stage.id`의 함수라 따로 대조하지 않는다.)
+        const carry = state.last_failure?.stage === stage.id ? state.last_failure.written : [];
+        const merged = new Map(carry.map((w) => [w.path, w]));
+        for (const w of digestArtifacts(root, result.savedFiles, { skipMissing: true }))
+            merged.set(w.path, w);
         const next = {
             ...state,
             last_failure: {
                 stage: stage.id,
                 workflow_id: stage.workflowId,
                 at,
-                written: digestArtifacts(root, result.savedFiles, { skipMissing: true }),
+                written: [...merged.values()],
             },
             updated_at: at,
         };

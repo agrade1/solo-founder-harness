@@ -599,6 +599,102 @@ test("[B-52] 1단계에서는 사람이 '## Decision'을 고쳐 재개하는 레
   rmProject(name);
 });
 
+// ── B-53 ──────────────────────────────────────────────────────
+test("[B-53] 2단계에서 두 번 연속 실패해도 3번째 resume이 drift로 막히지 않는다 (재생은 여전히 거부)", async () => {
+  // **교착 재현**: 예전 판은 `last_failure.written`을 실패마다 통째로 덮었다. 2번째 실패가
+  // 게이트에서 나면 agent가 하나도 안 돌아 `savedFiles`가 비고 `written`이 `[]`가 된다 —
+  // 그러면 3번째 `next`는 1단계 승인 경로(`docs/02_PRD.md`)를 승인 digest로만 판정해 거부한다.
+  // 그리고 `awaiting_run`에서는 restart(`pipeline_active`)도 reject(`pipeline_no_pending`)도
+  // 막혀 있어 **하네스 명령으로는 탈출구가 없다**(2026-09-01 실측).
+  const name = "_b53_brick";
+  const { state } = await toFirstCheckpoint(name);
+  await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+  const root = projectPaths(name).root;
+  const ceoPath = join(root, "docs/06_CEO_DECISION.md");
+  const stage1Ceo = bytesOf(ceoPath);
+
+  // ① 1번째 실패 — CEO '보류'로 게이트가 멈춘다. 이 attempt가 02_PRD.md(1단계 승인 경로)를 덮었다.
+  let r = await quiet(() => nextPipeline({ project: name, providerOverride: counting("- 보류"), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.ok(stateOf(name).last_failure!.written.some((w) => w.path === "docs/02_PRD.md"), "전제: 1번째 attempt가 승인 경로를 덮었다");
+  const stage2Ceo = bytesOf(ceoPath);
+  assert.notEqual(stage2Ceo, stage1Ceo, "전제: 2단계 CEO 문서는 1단계 승인본과 다른 바이트다");
+
+  // ② 2번째 실패 — resume이 게이트 인덱스에서 재개해 **agent를 하나도 돌리지 않고** 같은 자리에서 멈춘다.
+  const g2 = counting("- 보류");
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: g2, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.equal(g2.calls, 0, "전제: 게이트 실패라 이 attempt는 아무것도 쓰지 않았다 (savedFiles가 비어 있다)");
+  // **이 단정이 교착의 원인을 직접 잰다.** 누적하지 않으면 여기가 0개다.
+  assert.ok(
+    stateOf(name).last_failure!.written.some((w) => w.path === "docs/02_PRD.md"),
+    "1번째 attempt가 덮은 경로가 영수증에 남아 있다 (통째로 덮으면 여기서 사라진다)",
+  );
+
+  // ③ 3번째 resume — drift가 아니라 **원래 사유**(게이트 '보류')로 멈춘다. 교착이 아니다.
+  const g3 = counting("- 보류");
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: g3, now: () => FIXED, internalApprover: async () => true }));
+  assert.notEqual(r.code, "pipeline_artifact_drift", "앞 attempt의 정당한 재작성을 drift로 보지 않는다");
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.equal(loadRunState(name)?.failed_reason, "ceo_decision_hold", "막힌 자리는 판정이지 산출물 검증이 아니다");
+
+  // ④ **[B-52]가 그대로 성립한다**: 합집합에는 이 단계가 쓴 바이트만 들어가므로, 1단계 승인본을
+  //    되돌려 놓는 재생은 여전히 거부된다(그 경로의 정본은 written = 2단계 바이트다).
+  const beforeState = bytesOf(pipelineStatePath(root));
+  const beforeJumps = loadRunState(name)!.gate_jumps.length;
+  writeFileSync(ceoPath, stage1Ceo, "utf8");
+  const guard = counting("- 보류");
+  const prevExit = process.exitCode;
+  const msg = await captureLogs(async () => {
+    r = await nextPipeline({ project: name, providerOverride: guard, now: () => FIXED, internalApprover: async () => true });
+  });
+  process.exitCode = prevExit;
+  assert.equal(r.code, "pipeline_artifact_drift", "[B-52] 앞 단계 승인 바이트 재생은 2연속 실패 뒤에도 거부된다");
+  assert.match(msg, /앞 단계 승인본 바이트로 되돌아가 있습니다/);
+  assert.equal(bytesOf(pipelineStatePath(root)), beforeState, "pipeline_state 바이트 불변");
+  const rs = loadRunState(name)!;
+  assert.equal(rs.status, "failed", "run이 completed로 승격되지 않았다");
+  assert.equal(rs.gate_jumps.length, beforeJumps, "게이트가 다시 판정하지 않았다");
+
+  // ⑤ **알려진 한계(B-52 설계대로다 — 이 수정이 만든 것이 아니다)**: 2단계 이후에는 사람이
+  //    `## Decision`을 고쳐 재개하는 B-50 레버가 살아나지 않는다. 06_CEO_DECISION.md는 1단계 승인
+  //    경로이면서 2단계가 다시 쓰는 파일이라, 손댄 바이트는 승인 digest도 written digest도 아니다.
+  writeFileSync(ceoPath, stage2Ceo.replace("## Decision\n\n- 보류", "## Decision\n\n- 진행"), "utf8");
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: counting("- 보류"), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_artifact_drift", "2단계 이후 사람 편집은 여전히 막힌다 (B-52 의도 · 이 슬라이스 범위 밖)");
+  rmProject(name);
+});
+
+test("[B-53] resume이 앞 attempt의 재작성을 잃지 않는다 — 서로 다른 파일을 쓴 2연속 실패", async () => {
+  // 이 순서가 "attempt가 아무것도 안 썼을 때만 보존한다"(기각안 A)로는 못 고치는 것이다:
+  // 2번째 attempt는 **썼는데 다른 파일을 썼다**. resume은 완료 step을 재실행하지 않으므로
+  // 앞 attempt가 덮은 `docs/02_PRD.md`가 2번째 `savedFiles`에 없다.
+  const name = "_b53_disjoint";
+  const { state } = await toFirstCheckpoint(name);
+  await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: state.pending!.checkpoint_id, now: () => FIXED }));
+
+  process.env.HARNESS_FAIL_AT = "ux_ui"; // pm(02_PRD.md)까지만 완료
+  let r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  delete process.env.HARNESS_FAIL_AT;
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.deepEqual(stateOf(name).last_failure!.written.map((w) => w.path), ["docs/02_PRD.md"], "전제: 1번째 attempt는 02_PRD.md만 덮었다");
+
+  process.env.HARNESS_FAIL_AT = "tech_lead"; // resume: ux_ui/design만 돌고 실패 — 02_PRD.md는 다시 쓰지 않는다
+  const g2 = counting();
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: g2, now: () => FIXED, internalApprover: async () => true }));
+  delete process.env.HARNESS_FAIL_AT;
+  assert.equal(r.code, "pipeline_stage_failed");
+  assert.ok(g2.calls > 0, "전제: 이 attempt는 실제로 파일을 썼다 (빈 savedFiles 경로가 아니다)");
+  const written = stateOf(name).last_failure!.written.map((w) => w.path);
+  assert.ok(written.includes("docs/03_UX_FLOW.md"), `이번 attempt가 쓴 것 (${written.join(", ")})`);
+  assert.ok(written.includes("docs/02_PRD.md"), `앞 attempt가 쓴 것도 남아 있다 (${written.join(", ")})`);
+
+  const g3 = counting();
+  r = await quiet(() => nextPipeline({ project: name, providerOverride: g3, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_awaiting_approval", "3번째 resume이 단계를 끝낸다 (예전 판은 02_PRD.md에서 drift로 거부했다)");
+  rmProject(name);
+});
+
 // ── Codex A-6 ─────────────────────────────────────────────────
 test("[B-41/A-6] 마지막 단계만 승인해 '완료' 영수증을 받아낼 수 없다 — approve가 앞 단계 승인 바이트까지 전수 검증한다", async () => {
   const name = "_b41_a6";
