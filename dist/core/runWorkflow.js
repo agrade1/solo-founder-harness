@@ -1,7 +1,7 @@
 import { writeFileSync, readFileSync, existsSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, sep } from "node:path";
-import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent, isCritiqueLoop, isGate, isFanout, isApproval, hasKillGate, reevaluationWorkflowIds, } from "./registry.js";
+import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent, isCritiqueLoop, isGate, isFanout, isApproval, hasKillGate, reevaluationWorkflowIds, gateDeciderIds, } from "./registry.js";
 import { projectPaths, projectExists } from "./project.js";
 import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
@@ -182,30 +182,79 @@ export function ideaGateStatus(read, idea, allowReevaluation = false) {
     };
 }
 /**
- * [B-50] **'검증' 대기 중에는 개발 표면을 열지 않는다.** `ceo_decision_verify`는 "개발하지 않는다 —
- * 사람이 확인할 차례"라는 뜻인데, `task-prompt`·`plan-dag`는 오늘 failed run으로도 문서를 만든다
- * (`ideaGateStatus`는 폐기 이력만 본다). 그대로 두면 게이트가 "아직 개발하지 마라"라고 멈춘 그 상태에서
- * 개발 착수 문서가 나온다 — 상태 전이 우회다.
+ * [A-1/A-2] **개발 표면(`task-prompt`·`plan-dag`)을 여는 판정은 '진행' 하나뿐이다.**
  *
- * **`run`은 막지 않는다**: 복귀 경로가 바로 그 resume이고, 새 run(재평가)도 정당한 탈출구다.
- * 그래서 `ideaGateStatus`에 합치지 않고 별도 판정으로 둔다 — 두 게이트의 소비자가 다르다.
+ * 초판(B-50)은 `run_state`의 현재 `failed_reason` **한 필드**를 봤다. 거기에 구멍이 둘 있었다:
+ *
+ *   `A-1` — `run_state`는 새 run이 **통째로 교체**한다. 게이트도 `founder_ceo`도 없는 workflow
+ *     (`dev-preflight`)를 한 번 돌리면 `failed_reason`이 `null`이 되어 잠금이 사라지고 `task-prompt`가
+ *     열렸다. `B-40`이 kill 잠금에서 **똑같은 공격**(다른 workflow의 completed run으로 증거 덮기)을
+ *     `kill_history` carry-forward로 막았는데, 검증 잠금은 그 carry-forward를 받지 못했다.
+ *   `A-2` — 막는 조건이 `ceo_decision_verify` 문자열 **하나**여서 `'보류'`(`ceo_decision_hold`)·
+ *     `'축소'` 소진·`ceo_decision_unmapped`는 그대로 열렸다. 그런데 이 게이트의 복구 안내가
+ *     `'보류'`를 결론 판정의 하나로 권했다 — **하네스 자신의 안내가 우회로를 지시**한 것이다.
+ *
+ * 그래서 판정 근거를 **decider 문서의 `## Decision` 토큰**으로 옮긴다. 그 문서는 durable하고
+ * (새 run이 지우지 않는다), 게이트가 실제로 판정에 쓴 **같은 바이트·같은 파서**(`extractCeoDecision`)다.
+ * 통과 조건은 게이트 자신과 같은 화이트리스트 하나 — `'진행'`.
+ *
+ * - **문서 부재 → 통과**: 게이트가 한 번도 판정한 적 없다는 뜻이다(`init`은 이 문서를 만들지 않는다).
+ *   여기서 막으면 게이트 없는 workflow만 쓰는 프로젝트가 전부 벽돌이 된다.
+ * - **`## Decision`을 못 읽음 → 차단**: 게이트 자신이 같은 조건에서 멈춘다(`ceo_decision_absent`·
+ *   `_ambiguous`). 절을 지우는 것이 해제 수단이 되면 안 된다.
+ *
+ * **기각한 보강 하나 — 실측으로 기각했다.** "문서는 `'진행'`인데 그 판정으로 게이트를 다시 통과시키지
+ * 않았으면(=마지막 게이트 영수증이 `failed`면) 계속 막는다"는 팔을 붙였다가 걷어냈다. 그 팔의 근거가
+ * 다시 `run_state.status`라서 **`A-1`과 똑같은 명령 하나로 증발한다** — `harness run dev-preflight`가
+ * `status`를 `completed`로 만들면 팔이 사라진다. CLI로 따라가 확인했다: 안내는 "재판정 없이는 계속
+ * 거부한다"고 적었는데 그 자리에서 `exit 0`으로 열렸다 — **이 레포 다섯 번째 거짓 안내가 될 뻔했다.**
+ * 지킬 수 없는 약속을 하는 가드는 없느니만 못하다. 규칙을 하나로 줄이고, 안내는 문서를 고치면 열린다는
+ * 사실을 숨기지 않는다. 남는 우회로는 **판정 문서를 사람이 직접 고치는 것 하나**이고 그것은 이미
+ * 하네스가 문서화한 복구 경로다("사람이 판정을 대체") — 다른 명령의 부수효과로 조용히 열리지 않는다.
+ *
+ * **`run`은 여전히 막지 않는다**: 복귀 경로가 바로 그 resume이고, 새 run(재평가)도 정당한 탈출구다.
+ * (기각한 대안: `kill_history`처럼 run_state에 `verify_history`를 carry-forward하는 안 — `A-1`은 막지만
+ *  `A-2`를 못 막고, 판정의 정본을 문서 밖에 한 벌 더 두게 된다. 두 벌이 되면 한쪽만 정직해진다.)
  */
-export function ceoVerifyGateStatus(read) {
-    if (read.kind !== "ok")
-        return { ok: true }; // 부재·손상은 폐기 잠금(ideaGateStatus)이 판정한다 — 규칙을 두 벌로 만들지 않는다
-    const s = read.state;
-    if (s.status !== "failed" || s.failed_reason !== "ceo_decision_verify")
-        return { ok: true };
-    const doc = (s.failed_agent && findAgent(loadAgentRegistry(), s.failed_agent)?.default_output) || "(decider 산출 문서)";
-    return {
-        ok: false,
-        code: "ceo_decision_verify",
-        message: `CEO 판정이 '검증'이고 되돌림 예산이 소진됐습니다 (workflow '${s.workflow_id}') — ` +
-            `**개발하지 않습니다. 사람이 확인할 차례입니다.**\n` +
-            `${doc}의 산문에서 확인할 항목을 읽고 직접 확인한 뒤, 같은 문서의 "## Decision"을 ` +
-            `**결론 판정**('진행'·'폐기'·'보류')으로 고치고 run을 재개하세요 — 그 판정이 나온 뒤에 이 명령이 열립니다.\n` +
-            `('축소'는 되돌림 예산이 이미 소진된 뒤라 진행하지 못하고 같은 자리에서 다시 멈춥니다.)`,
-    };
+export function devSurfaceGateStatus(projectRoot) {
+    const registry = loadAgentRegistry();
+    const seenDocs = new Set();
+    for (const deciderId of gateDeciderIds()) {
+        const rel = findAgent(registry, deciderId)?.default_output;
+        if (rel === undefined || seenDocs.has(rel))
+            continue;
+        seenDocs.add(rel);
+        const abs = join(projectRoot, rel);
+        if (!existsSync(abs))
+            continue; // 이 decider는 이 프로젝트에서 판정한 적이 없다
+        const parsed = extractCeoDecision(readFileSync(abs, "utf8"));
+        if ("token" in parsed && parsed.token === "진행")
+            continue;
+        const what = "token" in parsed
+            ? `'${parsed.token}'입니다`
+            : parsed.error === "absent"
+                ? `없습니다 ("## Decision" 절이 없습니다)`
+                : `애매합니다 ("## Decision" 절이 여럿이거나 본문이 정본 토큰이 아닙니다)`;
+        return { ok: false, code: "ceo_decision_not_proceed", message: devSurfaceMessage(deciderId, rel, what) };
+    }
+    return { ok: true };
+}
+/**
+ * 차단 안내. **이 레포는 거짓 복구 안내를 네 번 냈다**(대장 `B-54` 계열). 그래서 여기 적는 문장은
+ * 전부 CLI로 따라가 확인한 실동작이고, **열려 있는 탈출구를 숨기지 않는다** — 숨기면 그것이 다섯 번째다.
+ */
+function devSurfaceMessage(deciderId, rel, what) {
+    const rerun = reevaluationWorkflowIds().join(" | ") || "(게이트가 있는 workflow 없음)";
+    return (`${deciderId} 판정이 ${what} — **개발 표면(작업 지시문·DAG 초안)은 '진행' 판정에서만 열립니다.**\n` +
+        `판정 정본: ${rel}의 "## Decision" — 게이트가 판정에 쓴 그 문서·그 파서입니다.\n` +
+        `  (run_state가 아니라 이 문서를 봅니다. 그래서 다른 workflow를 실행해도 이 잠금은 지워지지 않습니다.)\n` +
+        `  · '검증' — 그 문서의 산문이 요구하는 확인을 **사람이 직접** 하고, 결과로 판정을 고칩니다.\n` +
+        `  · '보류'·'폐기' — 지금 개발하지 않는다는 판정입니다. 되살리려면 ${IDEA_REL}를 고쳐 재평가를 돌리세요.\n` +
+        `  · '축소' — 결론이 아니라 되돌림 판정입니다. 되돌림 예산이 남아 있어야 진행합니다.\n` +
+        `복귀: ${rel}의 "## Decision"을 '진행'으로 고치면 이 명령은 열립니다 — 판정의 정본이 그 문서이기 때문입니다.\n` +
+        `  다만 그것만으로는 **run 영수증에 그 '진행'이 남지 않습니다.** 영수증까지 맞추려면 게이트를 다시 통과시키세요:\n` +
+        `  harness run <${rerun}> --project <name>   (그 workflow의 run이 실패 상태로 멈춰 있으면 --resume을 붙이세요 —\n` +
+        `   게이트가 복원 문서를 다시 읽어 재판정하므로 모델 호출 0회입니다. 이미 종료된 run에는 --resume이 거부됩니다.)`);
 }
 /** 완료된 step id의 저장 산출물 상대경로를 구한다 (resume 시 findings 복원용). */
 function resolveOutputRel(id, registry, prior) {
@@ -872,7 +921,18 @@ export async function runWorkflow(args) {
                     failed_reason = "token_budget_exceeded";
                     failedIndex = i; // 아직 실행 안 한 step — resume 시 여기부터
                     budgetStopped = true;
-                    console.error(`  ✗ 토큰 예산 초과: ${spent}/${maxTokens} — step ${i} 앞에서 중단 (--resume으로 재개)`);
+                    // [B-1] "(--resume으로 재개)"는 **거짓이었다.** 사용량은 영수증에 누적되고 resume이 그것을
+                    // 그대로 이어받으므로(`usagePerAgent.push(...prior.usage.per_agent)`), 같은 상한으로 재개하면
+                    // 이 검사가 step 하나도 실행하기 전에 다시 걸린다. 실측: 같은 예산으로 3회 연속 재개 →
+                    // **모델 호출 0회 · 같은 메시지 · 같은 자리**. 반대로 상한을 빼고 재개하면 상한이 **조용히**
+                    // 사라져 남은 step이 전부 무제한으로 돈다 — 어느 쪽도 안내하지 않던 결과다.
+                    // 그래서 실제로 통하는 둘만 적는다(`C-138`/`B-49`/`B-50`과 같은 규율 — 코드로 확인한 것만).
+                    console.error(`  ✗ 토큰 예산 초과: ${spent}/${maxTokens} — step ${i} 앞에서 중단 (모델 호출 없이 중단했습니다)\n` +
+                        `    ↳ 사용량 ${spent}는 영수증에 누적되어 --resume에 그대로 이어집니다 — ` +
+                        `**같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다.**\n` +
+                        `      ⓐ 예산을 올려 재개: --max-tokens <${spent}보다 큰 값> --resume\n` +
+                        `      ⓑ 상한 없이 재개: --max-tokens와 HARNESS_MAX_TOKENS를 **둘 다** 비우고 --resume ` +
+                        `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).`);
                     break;
                 }
                 if (!warned80 && spent >= maxTokens * 0.8) {

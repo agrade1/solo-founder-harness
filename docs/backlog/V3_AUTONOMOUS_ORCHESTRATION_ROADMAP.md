@@ -747,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 116건 (A 0 · **등급 B 12** · 등급 C 102 · nonblocking `B-1`/`B-2` 2)
+##### 열린 항목 — id 121건 (**등급 A 1** · **등급 B 13** · 등급 C 104 · nonblocking `B-1`/`B-2` 2)
 
-**등급 B (14).** (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
+**등급 B (15) + 등급 A (1).** (M15: **`B-55` 신규 — 이 대장의 첫 등급 A 항목이다**(`A-4` · live 계측 전 필수) · `C-150` 신규. **`A-1`·`A-2`·`A-3`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호이고 판정 ⑯에서 closed다** — 여기 등재하지 않는 이유는 열린 적이 없기 때문이다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
 
 **(옛 머리말)** **등급 B (10) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed · **`B-40`은 판정 ⑪에서 closed** —
 CEO '폐기'가 처음으로 집행된다.)
@@ -770,6 +770,9 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-48` | **critique_loop 내부에 토큰 예산 검사가 없다** — 예산 검사는 top-level step 시작 전에만 있고 critic/revise/critic 연속 호출 사이에는 없다. **`C-125`가 M14에서 머지되어 트리거가 도래했다** — `idea-validation` 최악 호출이 점프 포함 13(external 15 · `maxRegen=1`이면 30)이다. `B-49`가 resume 무한 증식 항은 없앴으나 **run 내부 상한은 그대로다** | **도래 + live 실현 확인**(2026-08-28: external 15호출 · output 105k→**157k, +49%** · 44.4분) — 다음 하드닝 slice 1순위 | `M13 진행 판정 ⑭` ⓗ 표 · `M14 진행 판정 ⑮` ⓒ |
 | `B-51` | **아이디어 문서로 게이트 심사 범위를 축소할 수 있다 (실증됨)** — `agents/*.md`는 계약 문서라 승인 없이 못 고치는데 **`00_IDEA.md`에는 아무 제약이 없다.** 2026-08-28 `naming` run에서 오케스트레이터가 아이디어 문서에 「평가 기준」 절을 넣어 *무료 대체재는 폐기 사유가 아니다 · 차별점을 요구하지 말 것 · 검증 순서는 반대다* 를 적었더니, **`chief_of_staff`가 지불 의향·경쟁·차별점을 "판정 대상에서 제외"하고 보류/검증 가능성을 "미리 차단"하라고 하류에 전파**했고 research·red_team이 그대로 수용했다(Codex 사실검증 A급). run을 중단시켜 **거짓 영수증 발급은 없었다.** 대조군: `claimrep`은 CEO가 아이디어 문서의 전제를 증거로 반박했고 `sellercs`는 "먼저 만든다" 전제에도 '검증'을 냈다 — **CEO 자체는 건강하다.** 심각도 B · 확률 높음(문서만 쓰면 재현) · 영향 반경 = **모든 게이트 판정의 신뢰성** · 수정 방향 = 사용자 선호 절을 **판정 기준 대체 불가**로 명시하는 공용 문구 규약, 또는 `chief_of_staff`가 아이디어 문서의 지시를 판정 규칙으로 승격하지 못하게 하는 프롬프트 가드 | **파이프라인 실사용 전** | `M14 진행 판정 ⑮` ⓘ |
 | `B-54` | **`pipeline_artifact_drift` 안내가 제시하는 두 탈출구가 둘 다 막혀 있다 (live 실측 2026-09-01)** — `pipeline.ts:399`가 *"파일을 복원하거나 `harness pipeline restart`로 다시 심사하세요"* 라고 안내하는데 `awaiting_run` 상태에서 **둘 다 불가능하다**: ⓐ `restart`는 `pipeline_active`로 거부된다(실측: *"진행 중인 파이프라인은 다시 시작할 수 없습니다 (상태 awaiting_run · 단계 2/4)"*) ⓑ **"파일 복원"이 물리적으로 불가능하다** — checkpoint artifact는 `{path,size,sha256}`만 보관하고 **내용을 보관하지 않아** 승인 시점 바이트를 되살릴 방법이 없다(2단계 `pm`이 이미 덮었다). `reject`도 pending이 없어 거부된다. **즉 drift로 막힌 `awaiting_run` 단계는 탈출구가 0개인데 안내는 2개를 제시한다.** 이 레포가 `C-138`·`B-49`·`B-50`에서 세 번 잡은 **거짓 안내 계열의 네 번째**다. 심각도 **B** · 확률 높음(2단계 이후 drift면 재현) · 영향 반경 = 사람이 없는 길을 따라가 시간을 버린다 · 수정 방향 = 안내를 실제 가능한 것으로 좁히고(현재는 **없음**), 근본적으로는 승인 산출물 내용 스냅샷 보관 또는 `awaiting_run`에서의 restart 허용 여부 재검토 | **파이프라인 2단계 이후 실사용 전** | `M14 진행 판정 ⑮` ⓝ |
+| `B-55` | **[등급 A] 2단계 이상 실행 중 Ctrl-C/크래시 → 승인 바이트가 영수증 없이 덮여 영구 drift** — step마다 산출물이 `default_output`에 즉시 write되는데(`runWorkflow.ts:987`) `run_state`는 runWorkflow가 끝나야 write되고(`:1663-1677`) `last_failure.written`은 runWorkflow **반환 후**에 적힌다(`pipeline.ts:515-535`). 1단계에서 승인된 문서를 2단계 agent가 덮어쓴 직후 중단되면 **두 상태 파일 모두 바이트 불변**이라 이후 `next`=`pipeline_artifact_drift` · `restart`=`pipeline_active` · `run`=`pipeline_run_reserved` · `reject`=`pipeline_no_pending`. checkpoint는 `{path,size,sha256}`만 보관하므로(`core/pipeline.ts:78-82`) "파일 복원"도 불가능하다 — `B-54`와 같은 막다른 길이고, `B-53`의 누적 `written`은 **영수증이 존재할 때만** 작동해 이 경로를 못 덮는다. 심각도 **A** · 확률 높음(긴 live 실행 중 Ctrl-C는 가장 흔한 중단) · 영향 반경 = 유료 2단계 산출물이 통째로 사라진다 · 수정 방향 = 단계 시작 시점에 그 단계 workflow의 **선언된 출력 경로들**을 `pipeline_state`에 미리 적고(= "이 단계가 손댈 경로"), 사전 drift 검증이 `last_failure` 대신 그 목록을 예외로 쓴다 (**상태 스키마 변경이라 별도 slice가 맞다**) | **live 3·4단계 계측을 시작하기 전** — 계측 시작 순간 노출된다 | `M15_DEFECT_SWEEP_REPORT.md` A-4 · `M15 진행 판정 ⑯` ⓖ |
+| `C-150` | **전수 수색 후보 13건이 아직 실물 재검 없이 남아 있다** — `harness-latent-defect-sweep`이 확인한 19건 중 `A-1`·`A-2`(M14 오케스트레이터 재확인)와 `A-3`·`B-1`·`B-5`(M15에서 재현·수정)를 뺀 나머지 = 보고서 `B-2`·`B-3`·`B-4`·`B-6`~`B-10` · `C-1`~`C-4`. **적대적 검증은 거쳤으나 실물 확인은 없다.** M15에서 재검한 3건이 전부 보고서대로 재현된 것은 신호이지 증명이 아니다 (그리고 같은 세션에서 **보고서에 없던 거짓 안내 하나를 새로 만들 뻔했다** — 판정 ⑯ ⓒ). 심각도 C · 수정 방향 = 리비전 발행 **전에** 각 건을 실물로 재현하고, 재현되지 않으면 보고서 쪽을 고친다 | **그 13건 중 하나를 근거로 코드를 고치기 직전** | `M15_DEFECT_SWEEP_REPORT.md` PART 1 · `M15 진행 판정 ⑯` ⓖ |
+| `C-151` | **`test:core`가 이 호스트에서 결정적이지 않다** — 683건 중 **매 실행마다 다른 2~10건**이 실패하고 전부 `src/tools/` MCP·shadcn spawn 테스트의 **~5000ms 타임아웃**이다(연속 두 실행에서 겹치지 않는 쌍이 실패 · 단독 실행하면 통과 · **`git stash`한 HEAD에서도 8건 실패**해 코드 변경과 무관함을 확인). 심각도 C · 확률 = 부하가 있으면 거의 매번 · 영향 반경 = **"전체 suite 1회 green"이 handoff 게이트로 기능하지 못한다** (진짜 회귀가 flake 소음에 묻히고, 인계문서의 `core 677`류 수치도 재현되지 않는다) · 수정 방향 = spawn 테스트의 타임아웃을 부하에 비례시키거나 그 파일들을 직렬 그룹으로 분리 | **suite green을 다시 handoff 근거로 인용하기 전** | `M15 진행 판정 ⑯` ⓘ |
 
 **`B-` 번호이지만 등급 C — nonblocking (2).**
 
@@ -778,7 +781,7 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-1` | 조용한 호스트에서 **부하(stress) acceptance 재실행** | **release 준비 시점** — 마일스톤 게이트 아님 | 707 |
 | `B-2` | **live runner 재실행**과 evidence 재생성 | **release 준비 시점** — 마일스톤 게이트 아님 | 708 |
 
-**등급 C (102).** — 각 id의 **마지막 등재 행**이 현행 서술이다. (M14: **`C-125`·`C-140` closed** · `C-147`·`C-148` 신규(`C-149`는 live 재현으로 **`B-53`으로 승격**).) (M13: **`C-127`·`C-135` closed** · `C-141`~`C-143`·`C-145`·`C-146` 신규(`C-144`는 live 증거로 **`B-49`로 승격**).)
+**등급 C (104).** — 각 id의 **마지막 등재 행**이 현행 서술이다. (M15: `C-150`·`C-151` 신규 — 수색 후보 13건 미재검 · suite 비결정성.) (M14: **`C-125`·`C-140` closed** · `C-147`·`C-148` 신규(`C-149`는 live 재현으로 **`B-53`으로 승격**).) (M13: **`C-127`·`C-135` closed** · `C-141`~`C-143`·`C-145`·`C-146` 신규(`C-144`는 live 증거로 **`B-49`로 승격**).)
 
 ```text
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
@@ -788,7 +791,7 @@ C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
 C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
 C-120 C-121 C-122 C-123 C-124 C-128 C-129
-C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-141 C-142 C-143 C-145 C-146 C-147 C-148
+C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-141 C-142 C-143 C-145 C-146 C-147 C-148 C-150 C-151
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -1932,6 +1935,119 @@ M5a 구현·리비전에서 확인한 항목이다. **리뷰가 낸 A(P0 2 · P1
 | id | 분류 | 항목 | 확률 | 영향 반경 | 유예 비용(rework) | 수정 공수 | 기한/트리거 | 담당 | 증거 | 상태 |
 |---|---|---|---|---|---|---|---|---|---|---|
 | `C-38` | C (P3) | **호출자 getter가 artifact 거부 taxonomy를 고를 수 있다**(5차 리뷰 C-8 — 기존 ID 없음). `readClosedOnce`가 caller가 던진 `OrchestrationError`를 그대로 다시 던지므로, `path`/`role` getter가 `new OrchestrationError("artifact_missing", …)`처럼 kernel 코드를 흉내 내면 **거부 1건의 코드**를 호출자가 고를 수 있다. controller는 경계 밖 코드를 닫힌 집합(`KERNEL_MARKERS`) 밖이면 `kernel_rejected`로 접고 **무효 state는 어떤 경로로도 durable에 남지 않으므로** 성공 marker·상태 오염은 불가능하다 | 낮음 — 호출자가 controller 코드일 때만 | kernel API 거부 1건의 진단 코드(정확성·durable 무결성 무관) | 낮음 | 소(입양 경로에서 caller 오류를 `invalid_artifact_ref`로 접기) | **M5c가 caller-owned 값에서 온 kernel 오류로 직접 분기하기 전** | M5c 구현 세션 | 5차 독립 리뷰 C-8 · `orchestrationKernel.ts` `readClosedOnce`(caller `OrchestrationError` 재throw) · emitted `dist/exec/orchestrationKernel.js` 동일 · 인접: `C-33`(`KERNEL_MARKERS` 수동 목록) | open |
+
+##### **M15 진행 판정 ⑯ — `A-1`·`A-2` (직전 세션이 출하한 잠금의 구멍 둘) + `A-3` 파이프라인 영구 벽돌 + `B-1`·`B-5` (live 계측 전 필수) closed** (2026-09-02 · **이 절이 현행이며 아래 ⑮보다 최신이다**)
+
+> 축 B(먼저 재고 그 다음 고친다). **다섯 건 전부 실물 재현 → 수정 → 같은 경로 재추적**으로 닫았다.
+> 이 절이 증명한 것과 못 한 것을 같은 무게로 적는다.
+
+### ⓐ `A-1` closed — 검증 잠금이 게이트 없는 workflow 한 번으로 지워졌다
+
+`B-50`이 출하한 `ceoVerifyGateStatus`의 판정 근거가 **`run_state`의 현재 `failed_reason` 한 필드**뿐이었다.
+`run_state`는 새 run이 통째로 교체하므로 `harness run dev-preflight` 한 번이면 잠금이 사라졌다.
+`B-40`이 kill 잠금에서 **똑같은 공격**을 `kill_history` carry-forward로 막았는데 검증 잠금은 그것을 못 받았다.
+
+**고친 것**: 판정 근거를 **decider 문서의 `## Decision` 토큰**으로 옮겼다(`devSurfaceGateStatus`).
+그 문서는 durable하고, 게이트가 실제로 판정에 쓴 **같은 바이트·같은 파서**(`extractCeoDecision`)다.
+decider 목록은 `registry.gateDeciderIds()`로 workflows.json에서 파생한다(손으로 적은 `founder_ceo` 사본 없음).
+
+**CLI 실측**(mock · 격리 workspace): `idea-validation`→'검증' 정지 → `task-prompt` exit 2 →
+`harness run dev-preflight --yes` completed(**run_state가 실제로 교체됐다**: `failed_reason=null` ·
+`gate_jumps=0` · `kill_history=0`) → `task-prompt` **여전히 exit 2**.
+
+### ⓑ `A-2` closed — `'보류'`가 개발 표면을 열었고, 하네스 자신의 안내가 사람을 그리로 보냈다
+
+가드가 `ceo_decision_verify` 문자열 하나만 막아 `'보류'`(`ceo_decision_hold`)·`'축소'` 소진·
+`ceo_decision_unmapped`는 그대로 열렸다. 그런데 `M14`가 쓴 복구 안내가 `'보류'`를 **결론 판정의 하나로 권했다.**
+
+**고친 것**: 통과 조건을 화이트리스트 하나로 뒤집었다 — **`'진행'`뿐**. 그리고 `run.ts`·`pipeline.ts`의
+복구 안내에 "결론은 셋이지만 개발 표면을 여는 것은 `'진행'` 하나"를 명시했다.
+
+**CLI 전수 실측**: `검증`·`보류`·`축소`·`폐기`·`## Decision` 절 삭제 → 전부 exit 2 · `진행` → exit 0.
+
+### ⓒ **이 세션이 다섯 번째 거짓 안내를 쓸 뻔했다 — 실측이 잡았다** (함정 25의 값)
+
+`A-1`/`A-2` 수정에 "문서는 `'진행'`인데 게이트를 다시 통과시키지 않았으면 계속 막는다"는 팔을 덧붙이고,
+안내에 *"재판정 없이 문서만 고치면 이 명령은 계속 거부합니다"* 라고 적었다. **읽기에는 맞았다.**
+CLI로 따라가 보니 그 자리에서 **`exit 0`으로 열렸다** — 그 팔의 근거가 다시 `run_state.status`라서
+`A-1`과 **똑같은 명령 하나로 증발**했기 때문이다(`dev-preflight`가 status를 `completed`로 만든다).
+
+**결정**: 팔을 걷어내고 규칙을 하나로 줄였다. 안내는 **문서를 고치면 열린다는 사실을 숨기지 않는다** —
+남는 우회로는 "사람이 판정 문서를 직접 고치는 것" 하나이고 그것은 이미 하네스가 문서화한 복구 경로다
+(`run.ts` ⓐ "사람이 판정을 대체"). **지킬 수 없는 약속을 하는 가드는 없느니만 못하다**는 것이 이 판정의 교훈이다.
+기각 근거는 `devSurfaceGateStatus` 함수 주석에 남겼다.
+
+### ⓓ `A-3` closed — `pipeline restart`가 복구 가능한 상태를 영구 벽돌로 바꿨다
+
+**재현**(프로그램 경로 + CLI · 2026-09-02): 1단계 승인 → 2단계 `mvp-planning`에서 '폐기' →
+pipeline `killed` · run_state `killed(mvp-planning)` → **도구가 안내하는 유일한 복구인 `restart`** →
+pipeline `awaiting_run/idx0` · run_state 그대로 `killed(mvp-planning)` → 이후
+`next`=`pipeline_killed_elsewhere` · `restart`=`pipeline_active` · `run`=`pipeline_run_reserved`.
+그리고 **`pipeline_killed_elsewhere`가 안내하던 탈출구 둘 다 그 상태에서 막혀 있었다**(둘 다 실행해 확인).
+
+**대조 실측이 핵심이다**: `restart` **직전**(pipeline killed)에는 같은 재평가 run이 **통한다**(저장 6개).
+즉 `restart`는 탈출구가 있는 상태를 탈출구가 없는 상태로 바꾼다.
+
+**고친 것**: `restartPipeline`이 `run_state`가 killed이고 그 workflow가 **첫 단계가 아닐 때** 거부하고,
+"재평가 먼저, restart는 그다음"이라고 순서를 말한다. **1단계 폐기는 막지 않는다** — 그때는 첫 `next`가
+화해해(`pipeline_killed_reconciled`) 파이프라인이 `killed`로 돌아가므로 `harness run`이 열린 채다(벽돌 아님).
+`pipeline_killed_elsewhere` 안내에서는 막힌 탈출구 둘을 지우고 **"안내할 수 있는 명령이 없다"**를 사실대로 적었다.
+
+**CLI 재추적**: restart → `run_state_killed` 거부 → 안내대로 재평가 run(게이트 '진행') → restart → `pipeline_restarted`.
+
+### ⓔ `B-1` closed — 예산 소진 안내가 무한 재차단을 권했다 (live 계측 전 필수)
+
+**실측**(usage를 보고하는 provider · `maxTokens=500`): 1회차 3호출 후 `token_budget_exceeded` →
+안내대로 **같은 예산으로 3회 연속 `--resume` → 매번 모델 호출 0회 · 같은 메시지 · 같은 `resume_from`**.
+반대로 상한을 빼고 재개하면 **상한이 조용히 사라져** 남은 step이 무제한으로 돈다(2호출 후 completed).
+초판 안내 `(--resume으로 재개)`는 두 결과 어느 것도 말하지 않았다.
+
+**고친 것**: 안내를 실제로 통하는 둘로 바꿨다 — ⓐ `--max-tokens <쓴 양보다 큰 값> --resume`,
+ⓑ 상한을 **둘 다**(플래그·`HARNESS_MAX_TOKENS`) 비우고 재개(**상한이 사라진다고 명시**).
+`run_state`에 예산을 저장하는 안은 **채택하지 않았다** — 안내를 정직하게 만드는 것이 harm을 없애고,
+상한 자동 승계는 사용자가 요청하지 않은 동작 변경이다.
+
+### ⓕ `B-5` closed — `tokens.json`이 문서 전체의 첫 json 펜스를 가져갔다 (mock으로는 절대 안 잡힌다)
+
+`extractTokensJson`이 `markdown.match(/```json/)`로 **문서 전체의 첫 펜스**를 뽑았는데, 같은 프롬프트가
+그보다 **앞에** `## 디자인 토큰 개요`("tokens.json 요약")를 요구한다(`agents/design_agent.md:23` ·
+계약은 `:35`에서 "`## 디자인 토큰` 헤더 아래에 정확히 하나"라고 말한다). 모델이 그 요약을 json으로 적으면
+**요약이 토큰 파일이 되고** 저장·성공 로그·승인 해시 결박·task-prompt Include까지 그대로 간다.
+
+**고친 것**: `## 디자인 토큰` 절 **안에서만** 찾는다. 헤더 매칭은 `DESIGN_REQUIRED_HEADERS` 검사와 같은
+줄-전체 정규식이라 `## 디자인 토큰 개요`는 걸리지 않는다. **mock은 펜스를 하나만 내므로 오프라인
+회귀로는 절대 노출되지 않는다** — 그래서 두 펜스 fixture로 테스트를 새로 깔았다.
+
+### ⓖ 증명하지 못한 것 (정직하게)
+
+- **`A-4`(2단계 이상 실행 중 Ctrl-C → 승인 바이트가 영수증 없이 덮여 영구 drift)는 이 세션에서 닫지 않았다.**
+  최소 수정이 "단계 시작 시점에 그 단계 workflow의 선언된 출력 경로를 `pipeline_state`에 미리 적는다"는
+  **상태 스키마 변경**이라 별도 slice가 맞다. **live 계측을 시작하는 순간 노출된다** — 계측 전 1순위.
+- **`M15_DEFECT_SWEEP_REPORT.md`의 나머지 13건은 이 세션도 재검하지 않았다.** `B-2`·`B-3`·`B-4`·`B-6`~`B-10`·
+  `C-1`~`C-4`가 그것이고, **적대적 검증은 거쳤으나 실물 확인은 여전히 없다.**
+- **live 3·4단계는 여전히 0회다.** §3의 `P1`은 이 세션에서 돌리지 않았다.
+- **이 레포(`-m5c`)의 live 프로젝트 산출물이 전부 사라져 있다** — 아래 ⓗ.
+
+### ⓘ 회귀 스위트가 이 호스트에서 결정적이지 않다 — `C-151` 신규
+
+`test:core` 683건 중 **매 실행마다 다른 2~10건이 실패**한다. 전부 `src/tools/`의 MCP·shadcn spawn
+테스트이고 실패 시각이 전부 **~5000ms**(타임아웃 상수)다. 연속 두 실행에서 **서로 겹치지 않는 쌍**이
+실패했고, 같은 파일들을 단독 실행하면 통과한다 — 부하 의존 flake다.
+
+**내 변경과 무관함을 확인했다**: 변경을 `git stash`한 HEAD에서 같은 부류 8건이 실패했다.
+내가 건드린 5개 suite(`runWorkflow`·`pipeline`×2·`designContract`·`planDag`)는 **125/125**다.
+
+**왜 대장에 올리는가**: 이 상태에서는 "전체 suite 1회 green"이 handoff 게이트로 기능하지 않는다 —
+진짜 회귀가 flake 소음에 묻힌다. 인계문서 §1의 `core 677` 같은 수치도 이 호스트에서는 재현되지 않는다.
+
+### ⓗ 지반 정정 — live 7 run의 산출물이 이 체크아웃에 없다 (인계문서 §1과 다름)
+
+`projects/{nuga,commrep,claimrep,sellercs,subcut,shiftpay,_t_stages}`에 **`outputs/research/`만 남아 있고**
+`docs/`도 `run_state.json`도 없다(`find` 실측). gitignore되지 않은 것만 정확히 사라진 모양이라
+`git clean -fd` 계열의 정리로 보인다. **인계문서 §3의 "하지 말 것" 중 `subcut`·`shiftpay`에서
+`pipeline restart` 금지는 이 체크아웃에서는 대상 자체가 없다**(run_state가 없으므로 killed도 아니다).
+`/Users/jihun/Developer/solo-founder-harness`(다른 클론)에도 그 7개는 없다. **`'진행'` 0/7의 원본 증거는
+연구 영수증 24개뿐**이고, 게이트 판정 열의 재검은 이제 불가능하다. `P1`은 새 프로젝트를 쓰므로 무영향.
 
 ##### **M14 진행 판정 ⑮ — `B-49` 게이트 교착 종결 + `C-125` 아이디어 비평 루프 + `B-46` 토큰 회계 + `C-140`(Codex 계획 리뷰 A 6건 수용 · diff 리뷰 1회) (2026-08-27 · **이 절이 현행이며 아래 ⑭보다 최신이다**)
 

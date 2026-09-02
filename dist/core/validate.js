@@ -17,11 +17,26 @@ function escapeRegex(s) {
     return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 /**
- * markdown에서 첫 ```json 코드펜스 내용을 추출한다(design 에이전트의 tokens.json 분리용).
+ * design 산출물에서 `docs/tokens.json`으로 저장할 블록을 뽑는다.
  * JSON으로 파싱되면 예쁘게 정렬해 반환, 파싱 실패면 원문, 블록 없으면 null.
+ *
+ * [B-5] **`## 디자인 토큰` 절 안에서만 찾는다.** 예전엔 문서 전체의 **첫 ```json 펜스**를 가져갔는데,
+ * 같은 프롬프트가 그보다 **앞에** `## 디자인 토큰 개요`("tokens.json 요약")를 요구한다
+ * (`agents/design_agent.md:23` · 계약은 `:35`에서 "`## 디자인 토큰` 헤더 아래에 정확히 하나"라고 말한다).
+ * 모델이 그 요약을 json 스니펫으로 적으면 **요약이 토큰 파일이 되고**, 그대로 저장돼 성공 로그가 찍히고
+ * 승인 해시로 결박되고 task-prompt Include에 오른다. mock은 펜스를 하나만 내므로 **오프라인 테스트로는
+ * 절대 안 잡히고 첫 live mvp-planning에서 터진다** — 그래서 여기 고정한다.
+ *
+ * 헤더 매칭은 `designContract.DESIGN_REQUIRED_HEADERS` 검사와 **같은 정규식 모양**이다(`^##\s+…\s*$`) —
+ * 그래서 `## 디자인 토큰 개요`는 걸리지 않는다(접두사 일치가 아니라 줄 전체 일치).
+ * 헤더가 없으면 null이다: 그 문서는 헤더 검사에서 이미 `design_header_missing`으로 표시된다.
  */
 export function extractTokensJson(markdown) {
-    const m = markdown.match(/```json\s*\n([\s\S]*?)\n```/);
+    const head = markdown.match(/^##[ \t]+디자인 토큰[ \t]*$/m);
+    if (head?.index === undefined)
+        return null;
+    const section = markdown.slice(head.index + head[0].length).split(/^##[ \t]+\S/m)[0];
+    const m = section.match(/```json\s*\n([\s\S]*?)\n```/);
     if (!m)
         return null;
     const raw = m[1].trim();

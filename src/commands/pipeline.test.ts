@@ -811,6 +811,47 @@ test("[B-41/A-9] 승인 산출물이 프로젝트 밖을 가리키는 symlink로
   }
 });
 
+// ── A-3 ───────────────────────────────────────────────────────
+test("[A-3] 2단계 폐기 후 restart는 거부된다 — 안내가 시키는 재평가가 먼저이고, 그 순서는 실제로 통한다", async () => {
+  // red: restartPipeline의 run_state_killed 가드를 지우면 restart가 성공하고 **프로젝트가 영구 벽돌**이
+  //      된다(실측: next→pipeline_killed_elsewhere · restart→pipeline_active · run→pipeline_run_reserved ·
+  //      approve/reject→pipeline_no_pending). 그 상태의 안내가 권하던 탈출구 둘 다 막혀 있었다.
+  const name = "_a3_brick";
+  makeProject(name);
+  // 1단계 통과 → 2단계(mvp-planning)에서 폐기. 폐기를 2단계에서만 내야 첫 단계는 승인까지 간다.
+  const p = counting();
+  const kill: Provider = {
+    id: "mock",
+    async generate(i) {
+      const r = await p.generate(i);
+      return i.agent.agent_id === "founder_ceo" && i.workflowId === "mvp-planning"
+        ? { ...r, markdown: r.markdown.replace("## Decision\n\n- 진행", "## Decision\n\n- 폐기") }
+        : r;
+    },
+  };
+  const first = await quiet(() => nextPipeline({ project: name, providerOverride: kill, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(first.code, "pipeline_awaiting_approval", "전제: 1단계는 확인 대기까지 간다");
+  const pend = stateOf(name).pending!;
+  assert.equal((await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }))).code, "pipeline_approved");
+  const second = await quiet(() => nextPipeline({ project: name, providerOverride: kill, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(second.code, "pipeline_killed_reconciled", "전제: 2단계에서 폐기 — pipeline killed · run_state killed(mvp-planning)");
+
+  const prevExit = process.exitCode;
+  const blocked = await captureLogs(() => {
+    assert.equal(restartPipeline({ project: name, now: () => FIXED }).code, "run_state_killed", "벽돌이 되는 restart를 거부한다");
+  });
+  process.exitCode = prevExit; // 거부는 exitCode로도 신호한다 — 테스트 프로세스를 오염시키지 않는다
+  assert.match(blocked, /전부 거부되는 상태/, "왜 거부하는지(결과가 무엇인지) 말한다");
+  assert.match(blocked, /재평가를 먼저/, "순서를 말한다");
+
+  // 그리고 **안내가 시키는 그 순서가 실제로 통한다** — 없는 길을 권하지 않는다는 것이 이 단정이다.
+  const cleared = await quiet(() => runWorkflow({ workflowId: "idea-validation", project: name, provider: counting(), now: () => FIXED }));
+  assert.equal(cleared.state.status, "completed", "폐기 상태에서도 재평가 run은 열려 있다 (파이프라인이 killed라서)");
+  assert.equal((await quiet(() => restartPipeline({ project: name, now: () => FIXED }))).code, "pipeline_restarted", "재평가 뒤에는 restart가 열린다");
+  assert.equal(stateOf(name).status, "awaiting_run");
+  rmProject(name);
+});
+
 // ── Codex A-11 ────────────────────────────────────────────────
 test("[B-41/A-11] restart archive 이름이 충돌해도 앞 archive를 덮지 않는다", async () => {
   const name = "_b41_a11";
