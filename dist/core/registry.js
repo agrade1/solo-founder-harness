@@ -53,6 +53,14 @@ export function findAgent(reg, agentId) {
 export function hasKillGate(wf) {
     return wf.steps.some((s) => isGate(s) && (s.gate.kill ?? []).length > 0);
 }
+/**
+ * [A-1] 모든 workflow의 gate decider agent_id (중복 제거). 개발 표면 잠금이 "누구의 판정 문서를
+ * 볼 것인가"를 **레지스트리에서 파생**하기 위한 것이다 — 손으로 적은 `founder_ceo` 사본을 두면
+ * workflow가 decider를 바꿀 때 잠금만 조용히 빈 곳을 보게 된다.
+ */
+export function gateDeciderIds(absPath) {
+    return [...new Set(loadWorkflows(absPath).flatMap((w) => w.steps.filter(isGate).map((s) => s.gate.decider)))];
+}
 /** [B-40] kill 게이트를 가진 workflow id 목록 (거부 메시지에 "무엇을 돌려라"를 적기 위해). */
 export function reevaluationWorkflowIds(absPath) {
     return loadWorkflows(absPath).filter(hasKillGate).map((w) => w.workflow_id);

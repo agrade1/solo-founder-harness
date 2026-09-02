@@ -52,7 +52,7 @@ import {
   type PipelineStateRead,
 } from "../core/pipeline.js";
 import { projectExists, projectPaths } from "../core/project.js";
-import { findAgent, findWorkflow, hasKillGate, loadAgentRegistry, loadWorkflows } from "../core/registry.js";
+import { findAgent, findWorkflow, hasKillGate, loadAgentRegistry, loadWorkflows, reevaluationWorkflowIds } from "../core/registry.js";
 import {
   ideaGateStatus,
   readRunStateAt,
@@ -339,8 +339,13 @@ async function nextLocked(
         "pipeline_killed_elsewhere",
         `run_state가 폐기 판정인데 그 workflow('${rsWf}')는 현 단계('${stage.id}')가 아닙니다 — ` +
           `현 단계 영수증으로 적으면 거짓 기록이 되므로 아무것도 쓰지 않았습니다.\n` +
-          `재평가를 직접 돌려 '진행' 판정을 받은 뒤(harness run <kill 게이트 workflow> --project ${project}) 다시 시도하거나, ` +
-          `'harness pipeline restart --project ${project}'로 파이프라인을 다시 세우세요.`,
+          `[A-3] **이 상태에서는 안내할 수 있는 명령이 없습니다** — 실측으로 확인했습니다: ` +
+          `\`harness run\`은 파이프라인이 이 run을 예약해 거부되고(pipeline_run_reserved), ` +
+          `\`restart\`는 pipeline_active로, approve/reject는 pending 부재로 거부됩니다.\n` +
+          `확인된 생성 경로는 "2단계 이상 폐기 → pipeline restart" 하나이고 그 경로는 이제 restart가 막습니다 ` +
+          `(다른 경로가 있는지는 전수로 확인하지 않았습니다).\n` +
+          `이미 이 상태라면 outputs/run_state.json(폐기 기록)을 **검토한 뒤 옮기면** 파이프라인이 1단계부터 다시 섭니다 ` +
+          `— 실측으로 확인한 유일한 탈출구이고, 폐기 판정을 지우는 일이라 사람이 직접 판단할 몫이라 명령으로 만들지 않았습니다.`,
         1,
       );
     }
@@ -577,12 +582,13 @@ function commitAfterRun(
         console.error(
           `CEO 판정이 '검증'인데 되돌림 예산이 소진됐습니다 — **하네스가 아니라 사람이 확인할 차례입니다** (개발하지 않습니다).\n` +
             `  ① ${deciderDoc}의 산문에서 CEO가 요구한 확인 항목을 읽고 직접 확인하세요 (인터뷰·설치·수동 재현 등).\n` +
-            `  ② 확인 결과로 같은 문서의 "## Decision"을 **결론 판정**('진행'·'폐기'·'보류')으로 고친 뒤 같은 명령:\n` +
+            `  ② 확인 결과로 같은 문서의 "## Decision"을 **결론 판정**으로 고친 뒤 같은 명령:\n` +
             `     harness pipeline next --project ${project}\n` +
             `     게이트가 그 문서를 다시 읽어 재판정합니다 — **모델 호출 0회**이고 영수증에 "판정 출처: 복원 문서"가 남습니다.\n` +
             `  ('축소'는 되돌림 예산이 이미 소진된 뒤라 진행하지 못하고 같은 자리에서 다시 멈춥니다.\n` +
             `   아무것도 고치지 않은 재실행도 모델 호출 없이 같은 자리에서 다시 멈춥니다.)\n` +
-            `  확인이 끝나기 전에는 작업 지시문·DAG 초안이 만들어지지 않습니다 (task-prompt·plan-dag가 이 사유를 거부합니다).`,
+            `  [A-2] 결론은 셋이지만 **개발 표면을 여는 것은 '진행' 하나뿐입니다** — '보류'는 백로그, '폐기'는 종료라\n` +
+            `   둘 다 작업 지시문·DAG 초안을 열지 않습니다 (초판 안내는 '보류'를 결론의 하나로 권해 우회로를 지시했다).`,
         );
       }
     }
@@ -868,6 +874,39 @@ export function restartPipeline(o: { project: string; now?: () => string }): Pip
     // archive해 버리는 것이 이 경로의 최악이다).
     const read = locked.read;
     if (read.kind === "absent") return reject("pipeline_absent", `파이프라인이 사라졌습니다 (${o.project}).`, 1);
+    // [A-3] **restart가 복구 가능한 상태를 영구 벽돌로 바꾸는 조합 하나를 막는다.**
+    // `restart`는 `pipeline_state.json`만 갈아 끼우고 `run_state`는 읽지도 쓰지도 않는다. 그래서
+    // "2단계 이상에서 폐기 → restart"를 하면 파이프라인은 1단계 `awaiting_run`이 되는데 `run_state`는
+    // **다른 workflow의 killed**로 남는다. 그 조합에서는 이후 **모든 명령이 거부된다**(실측 2026-09-02):
+    //   `next`→`pipeline_killed_elsewhere` · `restart`→`pipeline_active` ·
+    //   `run`→`pipeline_run_reserved` · `approve`/`reject`→`pipeline_no_pending`.
+    // 그리고 `pipeline_killed_elsewhere`가 안내하는 탈출구 **둘 다 그 상태에서 막혀 있다** —
+    // 이 레포 거짓 안내 계열(`C-138`·`B-49`·`B-50`·`B-54`)의 또 하나다.
+    //
+    // **restart 직전에는 그 재평가가 실제로 가능하다**(파이프라인이 `killed`라 `harness run`이 열려
+    // 있다 — 실측으로 대조했다). 즉 restart는 **탈출구가 있는 상태를 탈출구가 없는 상태로** 바꾼다.
+    // 그래서 여기서 거부하고 순서를 뒤집는다: 재평가 먼저, restart는 그다음.
+    //
+    // **1단계 폐기는 막지 않는다**: 그때는 `run_state`의 workflow가 새 파이프라인의 첫 단계와 같아서
+    // 첫 `next`가 화해하고(`pipeline_killed_reconciled`) 파이프라인이 다시 `killed`로 돌아가므로
+    // `harness run` 재평가가 열린 채다 — 벽돌이 아니다. 막을 이유가 없는 것을 막지 않는다.
+    const rs = readRunStateAt(join(root, RUN_STATE_REL));
+    const first = DEFAULT_PIPELINE[0];
+    const firstWf = first.kind === "workflow" ? first.workflowId : null;
+    if (rs.kind === "ok" && rs.state.status === "killed" && rs.state.workflow_id !== firstWf) {
+      const k = rs.state.killed_by;
+      return reject(
+        "run_state_killed",
+        `이 프로젝트의 마지막 run이 폐기 판정입니다 (workflow '${rs.state.workflow_id}' · ` +
+          `${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}') — 파이프라인을 다시 세우지 않았습니다.\n` +
+          `지금 다시 세우면 파이프라인은 1단계로 돌아가는데 폐기 기록은 '${rs.state.workflow_id}'에 남아, ` +
+          `이후 next·restart·run·approve가 **전부 거부되는 상태**가 됩니다.\n` +
+          `순서를 뒤집으세요 — **재평가를 먼저** 돌려 '진행' 판정을 받고, 그다음에 restart 하세요:\n` +
+          `  harness run <${reevaluationWorkflowIds().join(" | ")}> --project ${o.project}\n` +
+          `  (지금은 파이프라인이 폐기 상태라 이 run이 열려 있습니다. restart 뒤에는 막힙니다.)`,
+        2,
+      );
+    }
     if (read.kind === "ok" && read.state.status !== "killed" && read.state.status !== "completed") {
       return reject(
         "pipeline_active",

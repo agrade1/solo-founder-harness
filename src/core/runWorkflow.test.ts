@@ -602,16 +602,16 @@ test("[B-50] '검증' 대기 중에는 개발 표면이 열리지 않는다 — 
     caught = err as Error;
   }
   assert.ok(caught, "'검증' 대기 상태에서 지시문을 만들지 않는다");
-  assert.match(caught!.message, /ceo_decision_verify/);
-  assert.match(caught!.message, /사람이 확인할 차례/, "무엇을 해야 하는지 말한다");
-  assert.ok(caught!.message.includes(`${CEO_DOC}의 산문`), "고칠 파일을 이름으로 말한다");
+  assert.match(caught!.message, /ceo_decision_not_proceed/);
+  assert.match(caught!.message, /'진행' 판정에서만 열립니다/, "무엇이 열쇠인지 말한다");
+  assert.ok(caught!.message.includes(`${CEO_DOC}의 "## Decision"`), "고칠 파일과 절을 이름으로 말한다");
 
   const ideaAbs = join(projectPaths(name).root, IDEA_REL);
   const missingApproval = join(tmpdir(), `b50-no-such-approval-${process.pid}.json`);
   assert.equal(existsSync(missingApproval), false, "전제: 승인 파일이 없다");
   assert.throws(
     () => createPlanDagRun({ run: "r1", milestone: "m1", approval: missingApproval, idea: ideaAbs }),
-    /ceo_decision_verify/,
+    /ceo_decision_not_proceed/,
     "'검증' 검사가 승인 읽기·run 생성보다 앞이다",
   );
 
@@ -621,6 +621,126 @@ test("[B-50] '검증' 대기 중에는 개발 표면이 열리지 않는다 — 
   const after = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 검증"), resume: true, now: () => FIXED })).state;
   assert.equal(after.status, "completed", "전제: 사람이 결론 판정으로 고치면 resume이 종결한다");
   assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "확인이 끝나면 개발 표면이 다시 열린다");
+  rmProject(name);
+});
+
+test("[B-1] 예산 소진 안내는 '같은 예산 재개'를 권하지 않는다 — 그것이 호출 0회 무한 재차단이다", async () => {
+  // red: 안내를 "(--resume으로 재개)"로 되돌리면 사람이 그대로 따라가 **모델 호출 0회로 영원히**
+  //      같은 자리에 막힌다(실측: 같은 예산 3회 연속 재개 → 호출 0 · 같은 메시지). 반대로 상한을
+  //      빼고 재개하면 상한이 조용히 사라진다 — 두 결과 모두 초판 안내가 말하지 않았다.
+  const name = "_b1_budget";
+  makeProject(name);
+  let calls = 0;
+  const paid: Provider = {
+    id: "mock",
+    async generate(i) {
+      calls++;
+      const r = await mockProvider.generate(i);
+      return { ...r, usage: { inputTokens: 100, outputTokens: 100 } };
+    },
+  };
+  const out = await captureLogs(async () => {
+    await runWorkflow({ workflowId: "idea-validation", project: name, provider: paid, maxTokens: 500, now: () => FIXED });
+  });
+  const first = loadRunState(name)!;
+  assert.equal(first.failed_reason, "token_budget_exceeded", "전제: 예산에서 멈췄다");
+  assert.match(out, /같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다/, "무엇이 통하지 않는지 말한다");
+  assert.match(out, /예산을 올려 재개/, "통하는 길 ⓐ");
+  assert.match(out, /상한이 사라집니다/, "길 ⓑ의 대가를 숨기지 않는다");
+  assert.doesNotMatch(out, /step \d+ 앞에서 중단 \(--resume으로 재개\)/, "거짓 안내가 돌아오지 않았다");
+
+  // 그리고 그 경고가 사실임을 잰다 — 같은 예산 재개는 호출 0회로 같은 자리에 남는다.
+  calls = 0;
+  await captureLogs(async () => {
+    await runWorkflow({ workflowId: "idea-validation", project: name, provider: paid, maxTokens: 500, resume: true, now: () => FIXED });
+  });
+  const again = loadRunState(name)!;
+  assert.equal(calls, 0, "같은 예산 재개는 모델을 부르지 않는다");
+  assert.equal(again.resume_from, first.resume_from, "같은 자리다 — 전진이 0이다");
+  assert.equal(again.failed_reason, "token_budget_exceeded");
+
+  // ⓐ 예산을 올리면 실제로 전진한다 (안내가 권하는 길이 통하는지 잰다).
+  calls = 0;
+  await captureLogs(async () => {
+    await runWorkflow({ workflowId: "idea-validation", project: name, provider: paid, maxTokens: 5000, resume: true, now: () => FIXED });
+  });
+  assert.ok(calls > 0, "예산을 올린 재개는 전진한다");
+  assert.equal(loadRunState(name)!.status, "completed");
+  rmProject(name);
+});
+
+test("[A-1] 검증 잠금은 게이트 없는 workflow를 돌려도 지워지지 않는다 (run_state가 아니라 판정 문서를 본다)", async () => {
+  // red: devSurfaceGateStatus가 run_state.failed_reason을 보던 초판으로 되돌리면 이 테스트가 통과한다 —
+  //      B-50이 출하한 잠금은 `harness run dev-preflight` 한 번으로 지워졌다(실측 재현: M15 보고서 A-1).
+  //      B-40이 kill 잠금에서 kill_history carry-forward로 막은 것과 **똑같은 공격**이다.
+  const name = "_a1_wipe";
+  await verifyStalledProject(name);
+  assert.throws(() => buildTaskPrompt(name, "2026-01-01"), /ceo_decision_not_proceed/, "전제: 잠겨 있다");
+
+  // 게이트도 founder_ceo도 없는 workflow 한 번 — run_state를 통째로 교체한다.
+  const after = (await runWorkflow({ workflowId: "dev-preflight", project: name, provider: mockProvider, approve: async () => true, now: () => FIXED })).state;
+  assert.equal(after.status, "completed", "전제: 이 workflow는 게이트가 없어 그대로 완주한다");
+  assert.equal(after.failed_reason, null, "전제: 잠금의 옛 근거(failed_reason)는 실제로 지워졌다");
+  assert.equal(after.gate_jumps.length, 0, "전제: 게이트 영수증도 없다");
+
+  assert.throws(
+    () => buildTaskPrompt(name, "2026-01-01"),
+    /ceo_decision_not_proceed/,
+    "run_state가 교체돼도 판정 문서가 '검증'이면 개발 표면은 닫혀 있다",
+  );
+
+  // **남는 탈출구는 판정 문서 자체 하나뿐이고, 안내가 그것을 그대로 적는다** — 그 문장이 참임을 여기서
+  // 고정한다. 한때 "재판정 없이 문서만 고치면 계속 거부한다"는 팔을 붙였는데, 그 팔의 근거가 다시
+  // run_state.status라 바로 이 dev-preflight 한 번으로 증발했다(안내만 거짓이 되고 잠금은 그대로였다).
+  // 이 단정이 깨지면 안내도 같이 고쳐야 한다 — 지킬 수 없는 약속을 다시 심지 말 것.
+  const doc = join(projectPaths(name).root, CEO_DOC);
+  writeFileSync(doc, readFileSync(doc, "utf8").replace("## Decision\n\n- 검증", "## Decision\n\n- 진행"), "utf8");
+  assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "사람이 판정 문서를 고치는 것은 하네스가 문서화한 복구 경로다");
+  rmProject(name);
+});
+
+test("[A-2] 개발 표면을 여는 판정은 '진행' 하나뿐 — 5토큰 전수", async () => {
+  // red: 통과 조건을 화이트리스트('진행')가 아니라 블랙리스트('검증'만 차단)로 되돌리면 '보류'·'축소'가
+  //      열린다. M14가 쓴 복구 안내는 바로 그 '보류'를 결론 판정의 하나로 권했다 — 안내를 따르면 우회로다.
+  const name = "_a2_tokens";
+  makeProject(name);
+  const doc = join(projectPaths(name).root, CEO_DOC);
+  // run_state 팔이 판정을 가리지 않도록, 게이트를 한 번 '진행'으로 통과시킨 completed run을 전제로 깐다.
+  const base = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 진행"), now: () => FIXED })).state;
+  assert.equal(base.status, "completed", "전제: '진행'으로 완주");
+  assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "대조군: '진행'이면 열린다");
+
+  const md = readFileSync(doc, "utf8");
+  for (const token of CEO_DECISION_TOKENS) {
+    writeFileSync(doc, md.replace("## Decision\n\n- 진행", `## Decision\n\n- ${token}`), "utf8");
+    if (token === "진행") {
+      assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "'진행'만 연다");
+      continue;
+    }
+    assert.throws(() => buildTaskPrompt(name, "2026-01-01"), /ceo_decision_not_proceed/, `'${token}'은 개발 표면을 열지 않는다`);
+  }
+  // 절을 지우는 것도 해제 수단이 아니다 (게이트 자신이 ceo_decision_absent로 멈추는 조건과 같다).
+  writeFileSync(doc, "# 판정 절을 지웠다\n", "utf8");
+  assert.throws(() => buildTaskPrompt(name, "2026-01-01"), /ceo_decision_not_proceed/, '"## Decision" 절 삭제도 열지 않는다');
+  rmProject(name);
+});
+
+test("[A-2] 복구 안내가 '보류'를 개발 경로로 권하지 않는다 (안내 자신이 우회로를 지시하던 자리)", async () => {
+  // red: run.ts의 ceo_decision_verify 안내에서 "'진행' 하나뿐" 문장을 지우면, 안내가 다시
+  //      '보류'를 결론 판정의 하나로 나열하고 사람은 막히지 않는 판정으로 간다(거짓 안내 4번째 계열).
+  const name = "_a2_guide";
+  makeProject(name);
+  const prevExit = process.exitCode;
+  const out = await captureLogs(() =>
+    runRun(
+      "idea-validation", name, "mock", 1, false, undefined, false, 0, true, undefined, false,
+      false, undefined, undefined, undefined,
+      ceoDeciding("- 검증"),
+    ),
+  );
+  process.exitCode = prevExit;
+  assert.match(out, /개발 표면\(task-prompt·plan-dag\)을 여는 것은 '진행' 하나뿐입니다/, "무엇이 열쇠인지 말한다");
+  assert.match(out, /'보류'는 백로그/, "'보류'가 개발을 열지 않는다고 말한다");
   rmProject(name);
 });
 
