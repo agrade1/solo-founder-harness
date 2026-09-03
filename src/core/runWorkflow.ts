@@ -281,6 +281,19 @@ export interface RunWorkflowArgs {
    * ([B-41/1단] `approval_approver_missing` preflight — 예전엔 미지정이 곧 자동 승인이었다).
    */
   approve?: (message: string, show?: string) => Promise<boolean>;
+  /**
+   * [A-4] **산출물 하나를 저장할 때마다 즉시 호출된다** (경로는 프로젝트 루트 기준 상대경로).
+   *
+   * 파이프라인이 "이 단계가 이 경로를 덮었다"는 영수증을 **실행 중에** 남기기 위한 seam이다.
+   * 예전엔 그 영수증(`last_failure.written`)이 **runWorkflow가 반환한 뒤에만** 쓰였다. 그래서
+   * 2단계 이상 실행 중 Ctrl-C·크래시가 나면 **파일은 이미 덮였는데 영수증은 없는** 상태가 남고,
+   * 이후 사전 drift 검증이 그 경로를 앞 단계 승인 바이트로만 판정해 `pipeline_artifact_drift`로
+   * 거부한다 — 그리고 그 상태에선 restart·approve·reject가 전부 막혀 **탈출구가 0개다**(실측).
+   *
+   * 콜백은 **저장 성공 직후**에만 부른다(계약 미달로 저장하지 않은 산출물은 부르지 않는다) —
+   * 영수증이 디스크의 사실보다 앞서 나가면 안 되기 때문이다.
+   */
+  onArtifactSaved?: (rel: string) => void;
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
   reporter?: ProgressReporter; // 진행 상황 표시자 (CLI 주입). 미지정 시 조용히 동작
   toolProfileId?: string; // [M2] 활성 도구 profile. 지정 시 run 시작 전 fail-fast 검증. 미지정 시 무영향.
@@ -704,6 +717,14 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const step_timings: StepTiming[] = [];
   let design_gate: DesignGateEntry | null = null;
   const savedFiles: string[] = [];
+  /**
+   * [A-4] 저장 등재는 **여기 하나**를 지난다 — `savedFiles.push`가 네 군데로 흩어져 있어서 영수증
+   * 콜백을 거기 각각 붙이면 새 저장 경로가 생길 때 조용히 하나가 빠진다(이 레포가 반복해 잡은 부류).
+   */
+  const recordSaved = (rel: string): void => {
+    savedFiles.push(rel);
+    args.onArtifactSaved?.(rel);
+  };
   const usagePerAgent: UsageEntry[] = [];
   const findings = new Map<string, string>(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
   const lastMarkdown = new Map<string, string>(); // agentId → 마지막 출력 원문 (게이트 판정 추출용)
@@ -1039,13 +1060,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       );
     }
     const saved = saveArtifact(project, agent.default_output, o.markdown);
-    savedFiles.push(saved);
+    recordSaved(saved);
     // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
     if (agent.token_output) {
       const tokens = extractTokensJson(o.markdown);
       if (tokens) {
         const tSaved = saveArtifact(project, agent.token_output, tokens);
-        savedFiles.push(tSaved);
+        recordSaved(tSaved);
         console.log(`  ⿻ ${agent.agent_id}: 토큰 추출 → ${tSaved}`);
       } else {
         console.warn(`  ⚠ ${agent.agent_id}: ${agent.token_output} 추출 실패 — 산출물에 \`\`\`json 블록 없음`);
@@ -1109,7 +1130,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       // receipt와 raw는 checkpoint 결박 대상이고, 실패 시엔 `last_failure.written`에 잡혀야 한다
       // (그래서 resume 사전 drift 검증이 partial 저장을 "손댄 것"으로 오해하지 않는다).
       attempt.receipt_path = writeResearchReceipt(projectRoot, attempt); // 실패는 throw — 삼키지 않는다
-      savedFiles.push(attempt.receipt_path);
+      recordSaved(attempt.receipt_path);
       researchAttempts.push(attempt);
       if (researchAttempts.length > RESEARCH_MAX_ATTEMPTS) {
         // 표시용 상한. **상한 집행 근거는 이 배열이 아니라 durable `totals`다**(A-3).
@@ -1187,7 +1208,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             attempt.evidence.push(item);
             const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
             attempt.raw_paths.push(projRel);
-            savedFiles.push(projRel);
+            recordSaved(projRel);
           },
         });
         attempt.dropped_by_domain = res.droppedByDomain;
