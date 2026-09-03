@@ -116,6 +116,18 @@ export interface PipelineState {
   pipeline_version: number;
   pipeline_id: string;
   project: string;
+  /**
+   * [B-57] **이 파이프라인이 쓰는 provider.** 없으면(옛 state) 호출자 기본값으로 강하한다.
+   *
+   * 왜 durable인가: 예전엔 매 `next`가 독립적으로 provider를 해석했고 기본값이 `mock`이었다.
+   * 그런데 도구가 인쇄하는 다음 단계 안내 **6곳 전부**에 `--provider`가 없어서, 1단계를
+   * `claude-code`로 돌린 사람이 **안내를 그대로 따르면 2단계가 mock으로 떨어졌다.** 오류가 아니라
+   * `[MOCK]` 딱지가 붙은 그럴듯한 문서가 나와 승인 대기로 갔다 — 이 레포 거짓 안내 계열 중 처음으로
+   * "막히는" 것이 아니라 **"가짜를 만드는"** 쪽이었다.
+   *
+   * `--provider`를 명시하면 그것이 이기고 이 값이 갱신된다(전환은 정당하다 — 조용한 전환만 막는다).
+   */
+  provider?: string;
   current_index: number;
   status: PipelineStatus;
   pending: PipelinePending | null;
@@ -330,7 +342,7 @@ function stateProblem(raw: unknown, expectProject: string): string | null {
   const s = raw as Record<string, unknown>;
   if (s.schema !== PIPELINE_SCHEMA) return `schema가 ${PIPELINE_SCHEMA}가 아니다 (${String(s.schema)})`;
   if (s.pipeline_version !== PIPELINE_VERSION) {
-    return `pipeline_version 불일치 (기록 ${String(s.pipeline_version)} · 현재 ${PIPELINE_VERSION}) — 'harness pipeline restart'로 새로 시작하거나 이 파일을 복원하라`;
+    return `pipeline_version 불일치 (기록 ${String(s.pipeline_version)} · 현재 ${PIPELINE_VERSION}) — 'harness pipeline restart --project <name>'으로 새로 시작하거나 이 파일을 복원하라`;
   }
   if (s.pipeline_id !== PIPELINE_ID) return `pipeline_id가 '${PIPELINE_ID}'가 아니다 (${String(s.pipeline_id)})`;
   if (s.project !== expectProject) return `project가 디렉터리 이름과 다르다 (기록 ${String(s.project)} · 경로 ${expectProject}) — 복사·오배치된 state`;
@@ -340,6 +352,8 @@ function stateProblem(raw: unknown, expectProject: string): string | null {
   const statuses: PipelineStatus[] = ["awaiting_run", "awaiting_approval", "completed", "killed"];
   if (!statuses.includes(s.status as PipelineStatus)) return `status가 enum이 아니다 (${String(s.status)})`;
   if (typeof s.started_at !== "string" || typeof s.updated_at !== "string") return "started_at/updated_at이 문자열이 아니다";
+  // [B-57] provider는 선택 필드다 — 옛 state(필드 없음)를 거부하지 않는다(하위 호환).
+  if (s.provider !== undefined && typeof s.provider !== "string") return "provider가 문자열이 아니다";
 
   // awaiting_approval ⟺ pending≠null (**양방향**). 한쪽만 보면 "대기인데 확인할 것이 없다"거나
   // "확인 대기가 아닌데 승인 가능한 pending이 있다"가 둘 다 통과한다.
@@ -446,12 +460,13 @@ export function writePipelineState(projectRoot: string, state: PipelineState): v
   renameSync(tmp, abs);
 }
 
-export function newPipelineState(project: string, at: string): PipelineState {
+export function newPipelineState(project: string, at: string, provider?: string): PipelineState {
   return {
     schema: PIPELINE_SCHEMA,
     pipeline_version: PIPELINE_VERSION,
     pipeline_id: PIPELINE_ID,
     project,
+    ...(provider === undefined ? {} : { provider }),
     current_index: 0,
     status: "awaiting_run",
     pending: null,
@@ -857,7 +872,7 @@ export function pipelineGateStatus(read: PipelineStateRead, projectRoot: string,
       code: "pipeline_state_unreadable",
       message:
         `pipeline_state.json이 있지만 읽을 수 없습니다: ${read.path} (${read.detail}).\n` +
-        `단계 승인 기록이 이 파일에 있어 덮어쓰지 않습니다 — 파일을 복원하거나, 검토 후 'harness pipeline restart'로 새로 시작하세요.`,
+        `단계 승인 기록이 이 파일에 있어 덮어쓰지 않습니다 — 파일을 복원하거나, 검토 후 'harness pipeline restart --project <name>'으로 새로 시작하세요.`,
     };
   }
   if (read.kind === "absent") return { ok: true }; // 파이프라인 미사용 — 기존 사용법 무영향
@@ -893,7 +908,8 @@ export function pipelineGateStatus(read: PipelineStateRead, projectRoot: string,
       code: "pipeline_killed",
       message:
         `pipeline_killed: 이 파이프라인은 폐기 판정으로 종료됐습니다 — 폐기된 아이디어로 지시문·DAG·handoff를 만들지 않습니다.\n` +
-        `재평가는 'harness run <kill 게이트 workflow> --project ${st.project}'로 직접 돌리고, 파이프라인을 다시 세우려면 'harness pipeline restart --project ${st.project}'입니다.`,
+        `[A-3] **순서가 있습니다**: 먼저 재평가를 직접 돌려 '진행' 판정을 받으세요 — 'harness run <kill 게이트 workflow> --project ${st.project}'.\n` +
+        `그다음에 'harness pipeline restart --project ${st.project}'입니다. 순서를 바꾸면 restart가 'run_state_killed'로 거부됩니다(2단계 이상 폐기일 때).`,
     };
   }
   if (st.status === "awaiting_approval") {
@@ -928,8 +944,11 @@ export function pipelineGateStatus(read: PipelineStateRead, projectRoot: string,
 function driftMessage(problem: string, project: string): string {
   return (
     `pipeline_artifact_drift: ${problem}\n` +
-    `승인 후 문서가 바뀌었습니다 — 사람이 확인한 내용이 아니므로 진행하지 않습니다. 파일을 복원하거나 ` +
-    `'harness pipeline restart --project ${project}'로 다시 심사하세요.`
+    `승인 후 문서가 바뀌었습니다 — 사람이 확인한 내용이 아니므로 진행하지 않습니다.\n` +
+    `  ⓐ 그 파일을 승인 시점 내용으로 되돌리면 이어집니다 — **하네스는 내용을 보관하지 않습니다**(영수증은 path·size·sha256뿐). ` +
+    `git·백업 등 바깥에서 되돌려야 합니다.\n` +
+    `  ⓑ [B-54] 'harness pipeline restart --project ${project}'는 **진행 중 파이프라인에서 거부됩니다**(pipeline_active) — ` +
+    `완료·폐기 상태에서만 열립니다. 실행해 확인했고, 그래서 더는 무조건 권하지 않습니다.`
   );
 }
 

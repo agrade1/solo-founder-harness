@@ -96,7 +96,7 @@ export function buildTaskPrompt(project, today) {
     // **일반적 경로 제외(설계 §9-6이 기각한 방향)를 도입한 것이 아니다** — drift 검증은 그대로 전수다.
     // 시각이 필요한 곳은 승인 대상 **밖**이다: run_state.finished_at · pipeline 영수증의
     // `run_finished_at`/`decided_at`가 "언제 만들어졌고 언제 승인됐나"를 담는다.
-    lines.push(`생성: harness task-prompt (provider: ${state?.provider ?? "미실행"})`, "");
+    lines.push(`생성: harness task-prompt --project ${project} (provider: ${state?.provider ?? "미실행"})`, "");
     lines.push("## Context");
     lines.push(`- 프로젝트: ${project}`);
     if (state) {
@@ -132,7 +132,7 @@ export function buildTaskPrompt(project, today) {
             if (s.output)
                 lines.push(`- 계획 문서: ${s.output}`);
             else
-                lines.push(`- (계획 문서 미생성 — \`harness run ... --allow-spawn\`으로 생성 가능)`);
+                lines.push(`- (계획 문서 미생성 — \`harness run ${state?.workflow_id ?? "<workflow>"} --project ${project} --allow-spawn\`으로 생성 가능)`);
             lines.push(`- 산출: 담당 범위의 코드/변경만. 다른 영역 파일은 건드리지 않는다.`);
             lines.push("");
         }
@@ -160,7 +160,7 @@ export function buildTaskPrompt(project, today) {
         lines.push("- primitive 토큰을 컴포넌트에서 직접 사용 금지. semantic 또는 component 토큰만 사용.");
         lines.push("- DESIGN.md 컴포넌트 인벤토리에 없는 컴포넌트가 필요하면 임의 생성하지 말고 인벤토리 추가를 먼저 제안할 것.");
         lines.push("- 상태(hover/focus/disabled/error) 처리는 DESIGN.md 인터랙션 원칙을 따를 것.");
-        lines.push("- 구현 완료 후 `scripts/token-lint`를 실행해 위반 0건을 확인할 것.");
+        lines.push("- 구현 완료 후 `node scripts/token-lint.mjs`를 실행해 위반 0건을 확인할 것.");
         lines.push("");
     }
     lines.push("## Include (읽을 것)");

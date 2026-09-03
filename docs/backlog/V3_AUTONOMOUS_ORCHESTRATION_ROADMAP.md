@@ -747,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 127건 (**등급 A 1** · **등급 B 15** · 등급 C 108 · nonblocking `B-1`/`B-2` 2)
+##### 열린 항목 — id 125건 (**등급 A 1** · **등급 B 13** · 등급 C 108 · nonblocking `B-1`/`B-2` 2)
 
-**등급 B (14).** (M15: **`B-55`는 등재된 세션에서 그대로 closed다**(`A-4` — 판정 ⑯ ⓙ · 등급 A 잔량 0) · `C-150`·`C-151` 신규 · **`B-54`는 안내의 거짓 절반만 걷어냈고 열린 채다**(판정 ⑯ ⓚ). **`A-1`~`A-4`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호다** — `A-4`만 트리거가 도래해 `B-55`로 등재됐다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
+**등급 B (14).** (M15: **`B-55`는 등재된 세션에서 그대로 closed다**(`A-4` — 판정 ⑯ ⓙ · 등급 A 잔량 0) · `C-150`·`C-151` 신규 · **`B-54`는 안내의 거짓 절반만 걷어냈고 열린 채다**(판정 ⑯ ⓚ) · **`B-56` 신규(등급 A · 재현 전)** · **`B-57`·`B-58`은 등재된 세션에서 closed**(판정 ⑯ ⓜ). **`A-1`~`A-4`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호다** — `A-4`만 트리거가 도래해 `B-55`로 등재됐다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
 
 **(옛 머리말)** **등급 B (10) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed · **`B-40`은 판정 ⑪에서 closed** —
 CEO '폐기'가 처음으로 집행된다.)
@@ -773,8 +773,6 @@ CEO '폐기'가 처음으로 집행된다.)
 | `C-150` | **전수 수색 후보 13건이 아직 실물 재검 없이 남아 있다** — `harness-latent-defect-sweep`이 확인한 19건 중 `A-1`·`A-2`(M14 오케스트레이터 재확인)와 `A-3`·`B-1`·`B-5`(M15에서 재현·수정)를 뺀 나머지 = 보고서 `B-2`·`B-3`·`B-4`·`B-6`~`B-10` · `C-1`~`C-4`(12건). **적대적 검증은 거쳤으나 실물 확인은 없다.** M15에서 재검한 4건이 전부 보고서대로 재현된 것은 신호이지 증명이 아니다 (그리고 같은 세션에서 **보고서에 없던 거짓 안내 하나를 새로 만들 뻔했다** — 판정 ⑯ ⓒ). 심각도 C · 수정 방향 = 리비전 발행 **전에** 각 건을 실물로 재현하고, 재현되지 않으면 보고서 쪽을 고친다 | **그 13건 중 하나를 근거로 코드를 고치기 직전** | `M15_DEFECT_SWEEP_REPORT.md` PART 1 · `M15 진행 판정 ⑯` ⓖ |
 | `C-151` | **`test:core`가 이 호스트에서 결정적이지 않다** — 683건 중 **매 실행마다 다른 2~10건**이 실패하고 전부 `src/tools/` MCP·shadcn spawn 테스트의 **~5000ms 타임아웃**이다(연속 두 실행에서 겹치지 않는 쌍이 실패 · 단독 실행하면 통과 · **`git stash`한 HEAD에서도 8건 실패**해 코드 변경과 무관함을 확인). 심각도 C · 확률 = 부하가 있으면 거의 매번 · 영향 반경 = **"전체 suite 1회 green"이 handoff 게이트로 기능하지 못한다** (진짜 회귀가 flake 소음에 묻히고, 인계문서의 `core 677`류 수치도 재현되지 않는다) · **2026-09-03 보강 — acceptance도 같다**: `npm run acceptance`를 다른 suite와 겹쳐 돌리자 **PASS=244·FAIL=28**, 단독으로 돌리자 **272·0**(연속 2회). `scripts/suite-lock.mjs`가 `npm test` 경로만 지키므로 `test:core`·`acceptance`를 **직접** 부르면 보호가 없다 — 이 세션이 실제로 그 실수를 했고 28건을 회귀로 오인할 뻔했다. | 수정 방향 = spawn 테스트의 타임아웃을 부하에 비례시키거나 그 파일들을 직렬 그룹으로 분리하고, `test:core`·`acceptance` 직접 호출에도 lock을 걸어 겹침 자체를 막는다 | **suite green을 다시 handoff 근거로 인용하기 전** | `M15 진행 판정 ⑯` ⓘ |
 | `B-56` | **[등급 A] `exec`/`mission` 자동 병합이 3단으로 뚫려 있다 (2026-09-03 Codex 재검수 · 코드 확인)** — ⓐ Claude가 non-zero로 죽어도 `unknown/exit_error` **이벤트 하나**만 나고(`claudeCliProvider.ts:94-104`) `consumeTurn`이 그것을 실패로 바꾸지 않는다(`sessionRunner.ts:90-97`) ⓑ 대상 레포에 test/lint/typecheck/build 스크립트가 하나도 없으면 `runMachineGate`가 `checks=[]`로 **통과**한다(`machineGate.ts:77-106`) ⓒ `mergeCoordinator.ts:57-72`가 그 통과로 **바로 push**하고 `mission`은 `merge:true`·`approver:autoApprove`다. `"체크 없음"` 공개는 `commands/exec.ts:79` **한 곳뿐**이라 mission·parallel 경로는 아무 말도 하지 않으면서 `mission.ts:47`이 *"게이트 통과 시 develop 자동 병합"*이라고 광고한다. **중단된 작업의 부분 코드가 검증 0회로 develop에 병합될 수 있다.** 심각도 **A** · 확률 = 스크립트 없는 레포에서 mission을 쓰면 항상 · 영향 반경 = **develop 브랜치** · 수정 방향 = exit_error를 세션 실패로 접고, `checks=[]`를 통과가 아니라 명시적 `skipped`+경고로 만들고, 자동 병합 경로에서 게이트 결과를 보고서에 남긴다 | **`exec`/`mission`을 실사용하기 전** | `M15_CODEX_AUDIT.md` §5ⓑ |
-| `B-57` | **파이프라인이 provider를 기억하지 않아 안내대로 따르면 mock으로 조용히 강등된다** — `PipelineState`에 `provider` 필드가 **없고**(`core/pipeline.ts` 등장 0회) 매 `next`가 독립 해석하며 기본값이 `mock`이다(`commands/pipeline.ts:451` · `providers/index.ts:21`). 그런데 도구가 인쇄하는 다음 단계 안내 **6곳 전부**(`commands/pipeline.ts:145,172,602,618,644,780`)에 `--provider`가 없다. `run_state`는 provider를 기억한다(실측: `_t_preflight`=claude-code). **결과: 1단계를 claude-code로 돌린 뒤 안내를 그대로 따르면 2단계가 mock으로 떨어지고, 오류가 아니라 `[MOCK]` 문서가 승인 대기로 간다.** 이 레포 거짓 안내 계열 중 처음으로 "막히는" 것이 아니라 **"가짜를 만드는"** 쪽이다. 심각도 **B** · 확률 높음 · 수정 방향 = provider를 `pipeline_state`에 저장해 승계하거나, 안내 문자열에 `--provider`를 싣는다 | **파이프라인 실사용 전** | `M15_CODEX_AUDIT.md` §2 |
-| `B-58` | **거짓 안내 6건 신규 — 그중 3건은 M15 내 수정이 만들었다** — ⓐ `summary.ts:56,66,109`·`core/pipeline.ts:333,860`이 `harness task-prompt`·`handoff`·`pipeline restart`를 **`--project` 없이** 인쇄한다(실행: `required option not specified`) ⓑ `taskPrompt.ts:184`가 `scripts/token-lint` 실행을 지시하는데 그 파일이 없다(실제 `node scripts/token-lint.mjs`) ⓒ **`commands/pipeline.ts:412-415` replay 분기**가 "폐기 판정 또는 `pipeline reject`로 종결"을 권하는데 그 상태(`awaiting_run`+drift)에서 둘 다 도달 불가 ⓓ **`driftMessage()`(`core/pipeline.ts:928`)와 `summary.ts:63`이 여전히 restart를 권한다** — 그 함수 주석이 *"drift 거부 문장은 한 곳에서 만든다"*인데 M15가 고친 것은 **다른 쪽**이었다 ⓔ `A-3` 가드가 막는 상태에서 restart를 권하는 자리 4곳(`commands/pipeline.ts:177,304`·`core/pipeline.ts:896`·`summary.ts:56`) ⓕ `summary.ts:52`가 "next가 자동 resume한다"(`A-4` 크래시 뒤엔 fresh) + M15의 `B-1` 문구가 `--resume`을 권하는데 `pipeline next`엔 그 옵션이 없다(`C-2` 확대). 심각도 **B** · **교훈 = 메시지를 고칠 때 같은 말을 하는 형제 자리를 grep하지 않았다** | **다음 슬라이스 즉시** | `M15_CODEX_AUDIT.md` §2·§5ⓐ |
 | `C-154` | **파이프라인 입구·아이디어 결박·취소 전이 4종** — ⓐ `init`이 `harness run`을 안내해 4단계 파이프라인으로 가는 길을 말하지 않는다(`init.ts:48`) ⓑ 97B 자리표시자 아이디어가 그대로 1단계를 통과한다(실측) — 프롬프트 층이 빈 아이디어를 명시적으로 허용한다 ⓒ 승인 후 `00_IDEA.md`를 통째로 바꿔도 2단계가 진행한다(실측) — 아이디어는 checkpoint manifest에 없다 ⓓ **사용자가 조종할 수 있는 활성 파이프라인 취소가 없다**(restart=`pipeline_active` · reject=같은 index 복귀). 단 게이트가 '폐기'를 내면 terminal에 닿는다 ⓔ 단독 `task-prompt` 산출물에 경로 루트 선언이 없다 — 계약은 `handoff.ts:193-207`에만 있고 그 주석이 막는 실패를 단독 경로가 그대로 맞는다. 심각도 C(개별) · 다만 ⓑ+ⓒ는 **조용한 오답** 계열 | **파이프라인을 남에게 쥐여 주기 전** | `M15_CODEX_AUDIT.md` §5 |
 | `C-155` | **`briefGenerator`의 `asStrings`가 잘못된 항목을 조용히 버린다 — `deps`에서 의미가 바뀐다** — `briefGenerator.ts:48-64`가 배열이 아니면 `undefined`, 배열이면 비-문자열 원소를 제거한다. `deps: "task-a"`(스칼라)는 `undefined`가 되고 스케줄러가 **의존성 없음**으로 취급해(`mission.ts:99-105` · `parallelMission.ts:67-73`) 선행 완료 전에 실행하고 병렬 모드에선 자동 병합까지 간다. `deps`는 미지 id·순환·타입도 검증하지 않는다. **초판 판정("영향 낮음")은 틀렸다** — Codex 재검수가 뒤집었다. 심각도 C(트리거 도래 시 B) | **`mission` 실사용 전** | `M15_CODEX_AUDIT.md` §5 |
 | `C-152` | **fanout 하위 에이전트가 직렬로 돈다** — `P1` 실측(2026-09-03): step 소요 합 1,142.2초 = wall clock 1,142.2초(**차이 0.0초** = 겹침 0). 4개는 `tech_lead` 계획을 서로 독립적으로 나눠 받고 서로의 산출물을 입력으로 받지 않는데도 한 줄로 선다. spawn 구간 합 722.6초 · 최댓값 282.3초 → **병렬이면 440.3초 절감(run 전체 -39%)**. 심각도 C · 확률 = fanout을 쓰면 항상 · 영향 반경 = 벽시계 시간(정확성·영수증 무관) · 유예 비용 = fanout 단계마다 누적 · 수정 공수 = **중** (프로세스 회계 `maxProcessesPerRun`·부분 실패 처리·영수증 순서와 얽힌다 — `B-10` 계열의 열린 결함 위에 얹힌다) | **fanout 단계 시간이 실사용에서 문제가 될 때** | `M15 진행 판정 ⑯` ⓛ · `M15_P1_LIVE_MEASUREMENT.md` §3ⓐ |
@@ -2086,6 +2084,28 @@ drift 안내 *"파일을 복원하거나 `harness pipeline restart`로 다시 �
 **과대주장 금지**: 사업 판정이 아니다(게이트 없음 — `chief_of_staff`가 스스로 *"5개 에이전트 중
 누구도 '축소 후에도 쓸 만한가'에는 답하지 않았다"* 고 적었다) · **4단계는 여전히 0회**(F3 — `task_prompt`
 단계라 파이프라인 경로로만 닿는다) · 파이프라인 상태기는 이 run이 재지 않았다 · **비용 대조군이 없다.**
+
+### ⓜ `B-57`·`B-58` closed — 안내를 "읽어서" 고치지 않고 "실행해서" 고쳤다
+
+**`B-57` provider 승계.** `PipelineState.provider`(선택 필드 · 새 필수 필드 0)를 두고 우선순위를
+**테스트 seam > 이번 호출의 `--provider` > 파이프라인에 새겨진 값 > 기본값**으로 바꿨다. 전환은
+막지 않는다(mock 리허설 → 실제 실행은 정당한 흐름) — **조용한 전환만** 막고 화면에 남긴다.
+실측: 1단계를 `claude-code`로 새긴 뒤 `--provider` 없이 `next` → **`claude-code` 유지**(구판은 `mock`).
+검증 중 2단계가 **실제 claude CLI를 띄우려 해 매달린 것 자체가 승계의 증거**였다(유료 호출 전에 끊었다).
+
+**`B-58` 거짓 안내 6건 + 형제 전수.** 고친 자리 16곳: `summary.ts` 6 · `core/pipeline.ts` 4 ·
+`commands/pipeline.ts` 3 · `taskPrompt.ts` 2 · `runWorkflow.ts` 1. 특히 `driftMessage()`는
+*"drift 거부 문장은 한 곳에서 만든다"* 는 주석을 달고 있었는데 M15가 고친 것은 **다른 쪽**이었다.
+
+**그리고 개별 문자열을 고치는 것으로는 닫히지 않는다** — 그래서 `src/core/guidance.test.ts`를 깔았다:
+소스를 훑어 ⓐ `--project`가 필수인 명령(**`cli.ts`에서 파생** — 손으로 적은 사본 없음)이 그 플래그
+없이 인쇄되는 곳 ⓑ 존재하지 않는 `scripts/…` 경로를 인쇄하는 곳을 **전수로** 잡는다. 면제는
+`// guidance-exempt: <사유>`로만 되고 **사유 없는 면제는 받지 않는다**(면제가 값싸면 검사가 조용히 빈다).
+그 검사가 내가 못 본 4곳을 더 잡았다 — 그중 하나가 `init`의 "harness run으로 실행"(= `C-154` ⓐ)이다.
+
+**CLI 재추적**(안내를 읽지 말고 따라가라 — 함정 25): `init` → 인쇄된 `pipeline next` → 인쇄된 `approve`
+→ 인쇄된 `next --provider mock` → 4단계 완주 → summary가 인쇄한 `task-prompt --project f1` 실행 →
+지시문이 인쇄한 `node scripts/token-lint.mjs` 경로 존재 확인. **전 구간 복붙 가능.**
 
 ### ⓖ 증명하지 못한 것 (정직하게)
 
