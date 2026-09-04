@@ -101,6 +101,26 @@ test("독립 태스크 2개 모두 병합 → merged 2, deferred 0", async () =>
   }
 });
 
+test("[B-56] 미션 리포트가 '게이트 체크 0개'를 병합 옆에 적는다 (검증 0회를 검증된 것으로 읽지 않게)", async () => {
+  // red: TaskResult.gateVacuous 전달이나 렌더링을 지우면, 아침에 리포트만 보는 사람에게
+  //      **검사 0회 병합이 "게이트 통과 병합"으로 읽힌다.** 예전엔 이 사실을 말하는 곳이
+  //      commands/exec.ts 한 곳뿐이었고 미션·병렬 리포트에는 흔적이 없었다.
+  //      (mission.ts는 사용자에게 "게이트 통과 시 develop 자동 병합"이라고 광고한다.)
+  const repo = await initRepo(); // package.json 없음 → L1 게이트가 빌 수밖에 없다
+  try {
+    const brief: MissionBrief = { goal: "g", tasks: [{ id: "t1", role: "r", task: "a" }] };
+    const r = await runMission({ repoRoot: repo, brief, coderProvider: new MissionCoder(), reviewProvider: cleanReviewer(), sessionIdFor: idFor, now: () => 1000, sleep: async () => {} });
+    assert.deepEqual(r.merged, ["t1"], "정상 세션은 그대로 병합된다 — 게이트 의미를 바꾸지 않았다");
+    assert.equal(r.tasks[0].gateVacuous, true, "게이트가 아무것도 못 돌렸다는 사실이 결과에 남는다");
+
+    const md = renderMissionReport(r);
+    assert.match(md, /게이트 체크 0개/, "리포트 본문이 그 사실을 적는다");
+    assert.match(md, /검증되지 않았다/, "'통과'와 '검증됨'을 구분해 말한다");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("선행 태스크 미충족 → dep_unmet 보류", async () => {
   const repo = await initRepo();
   try {

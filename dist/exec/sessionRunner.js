@@ -49,17 +49,40 @@ export async function runSession(opts) {
         decision: null,
         status: "error",
     };
-    // 한 turn의 이벤트를 소진하며 카운트/usage 갱신.
+    /**
+     * 한 turn의 이벤트를 소진하며 카운트/usage 갱신.
+     *
+     * [B-56] **실패 신호를 여기서 잡는다.** provider는 실패를 이벤트로만 말한다 — 프로세스가
+     * non-zero로 죽으면 `unknown/exit_error`(`claudeCliProvider.ts`), 세션이 오류로 끝나면
+     * `result.isError`다. 예전엔 둘 다 `outcome.events++`로만 세고 버려서, 죽은 세션이 그대로
+     * 게이트·승인·병합으로 넘어갔다. 반환값이 실패 사유이고, 호출자가 **게이트 전에** 멈춘다.
+     */
     async function consumeTurn(handle) {
+        let failure = null;
         for await (const e of opts.provider.events(handle)) {
             outcome.events++;
             if (e.kind === "assistant")
                 outcome.turns++;
-            if (e.kind === "result")
+            if (e.kind === "result") {
                 outcome.usage = e.usage;
+                // 마지막 result가 이긴다: revise 루프에서 앞 turn이 실패했어도 뒤 turn이 성공하면 진행한다.
+                failure = e.isError ? `코더 세션이 오류로 끝났습니다: ${e.text.slice(0, 200)}` : null;
+            }
+            if (e.kind === "unknown" && e.type === "exit_error") {
+                const code = e.raw.code;
+                const stderr = String(e.raw.stderr ?? "").slice(0, 200);
+                failure = `코더 프로세스가 비정상 종료했습니다 (exit ${String(code)})${stderr ? `: ${stderr}` : ""}`;
+            }
             opts.onEvent?.(e);
         }
+        return failure;
     }
+    /** [B-56] 코더 실패는 게이트·승인·병합 **앞에서** 끝난다 — 부분 산출물을 병합하지 않는다. */
+    const coderFailed = (why) => {
+        outcome.status = "coder_failed";
+        outcome.error = `${why} — 산출물이 불완전할 수 있어 게이트·병합으로 넘기지 않았습니다 (브랜치 ${outcome.branch}는 남습니다).`;
+        return outcome;
+    };
     // 게이트 → 커밋 → diff. gatePassed=false면 즉시 중단 신호.
     async function finalize() {
         outcome.gate = await runMachineGate({ cwd: wt.path });
@@ -96,7 +119,9 @@ export async function runSession(opts) {
         // 4) 코더 세션 실행
         opts.onPhase?.("coding");
         const handle = await opts.provider.start(spec, prompt);
-        await consumeTurn(handle);
+        const coderFailure = await consumeTurn(handle);
+        if (coderFailure)
+            return coderFailed(coderFailure);
         // 5) L1 게이트 + 커밋 + diff
         opts.onPhase?.("gate");
         let fin = await finalize();
@@ -137,7 +162,9 @@ export async function runSession(opts) {
                     verdict.critical.map((c, i) => `${i + 1}. ${c}`).join("\n") +
                     `\n이 이슈들을 정면으로 고쳐라. 담당 경로 밖은 건드리지 말고 테스트도 갱신하라. 끝나면 STATUS를 DONE으로.`;
                 await opts.provider.send(handle, revise);
-                await consumeTurn(handle);
+                const reviseFailure = await consumeTurn(handle);
+                if (reviseFailure)
+                    return coderFailed(reviseFailure); // revise 중 죽어도 같다
                 fin = await finalize();
                 if (!fin.gatePassed)
                     return ((outcome.status = "gate_failed"), outcome);
