@@ -122,6 +122,83 @@ class DyingProvider implements ExecutionProvider {
   async stop(): Promise<void> {}
 }
 
+// ── B-59 ──────────────────────────────────────────────────────
+test("[B-59] 담당 경로(ownership) 밖에 쓰면 병합하지 않는다", async () => {
+  // red: runSession의 ownership 검사를 지우면 이 세션이 merged가 된다.
+  //      실측(2026-09-04): `CompiledPermissions.ownership`은 컴파일 후 **아무도 읽지 않고**,
+  //      settings.json에도 그 경로가 등장하지 않는다(`allow/ask/deny` 어디에도 없다 — 확인).
+  //      정책의 T1_bounded가 `Edit`/`Write`/`MultiEdit`를 **경로 제약 없이** allow에 넣고
+  //      permissionMode는 `acceptEdits`다. 즉 담당 밖 쓰기를 막는 것이 아무것도 없었고,
+  //      그런데도 task 문서는 "소유(쓰기 허용) 경로"라고 적어 강제성을 주장했다.
+  const repo = await initRepo();
+  try {
+    const provider = new FileWriteProvider({ "mine.txt": "담당 안\n", "not-mine.txt": "담당 밖\n" });
+    const out = await runSession({
+      repoRoot: repo,
+      runId: "b59",
+      spec: { ...spec(), ownership: ["mine.txt"] },
+      provider,
+      approver: autoApprove,
+    });
+    assert.equal(out.status, "ownership_violation", `담당 밖 쓰기는 병합으로 가지 않는다 (실제: ${out.status})`);
+    assert.ok(out.error && out.error.includes("not-mine.txt"), `어느 파일인지 말한다 (실제: ${out.error})`);
+    const show = await runProcess("git", ["-C", repo, "show", "develop:mine.txt"]);
+    assert.notEqual(show.code, 0, "담당 안 파일도 함께 막힌다 (부분 병합하지 않는다)");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("[B-59] revise가 담당 밖으로 새어 나가도 막는다 (첫 turn만 보면 리뷰가 우회 통로가 된다)", async () => {
+  // red: revise 루프의 ownership 재검사를 지우면, 1차엔 담당 안만 쓰고 2차 revise에서 담당 밖을
+  //      건드리는 세션이 그대로 병합된다. 리뷰 되먹임이 경계를 넘는 통로가 되는 것이다.
+  const repo = await initRepo();
+  try {
+    let turn = 0;
+    const drifting: ExecutionProvider = {
+      id: "drift",
+      async start(spec: SessionSpec): Promise<SessionHandle> {
+        writeFileSync(join(spec.cwd, "mine.txt"), "1차: 담당 안\n");
+        return { sessionId: spec.sessionId, spec };
+      },
+      async send(h: SessionHandle): Promise<void> {
+        writeFileSync(join(h.spec.cwd, "not-mine.txt"), "2차 revise: 담당 밖\n");
+      },
+      events(h: SessionHandle): AsyncIterable<SessionEvent> {
+        const q = new AsyncEventQueue<SessionEvent>();
+        const raw = { type: "drift", session_id: h.sessionId };
+        q.push({ kind: "assistant", sessionId: h.sessionId, text: `t${++turn}`, toolUses: [], stopReason: "end_turn", raw });
+        q.push({ kind: "result", sessionId: h.sessionId, isError: false, text: "ok", numTurns: 1, usage: { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }, totalCostUsd: 0, permissionDenials: [], raw });
+        q.close();
+        return q;
+      },
+      async stop(): Promise<void> {},
+    };
+    const out = await runSession({
+      repoRoot: repo,
+      runId: "b59c",
+      spec: { ...spec(), ownership: ["mine.txt"] },
+      provider: drifting,
+      approver: autoApprove,
+      review: { provider: reviewerProvider([["1라운드 Critical"], []]), maxRounds: 2 },
+    });
+    assert.equal(out.status, "ownership_violation", `revise가 담당 밖으로 새면 막는다 (실제: ${out.status})`);
+    assert.match(out.error ?? "", /revise 후/, "어느 단계에서 샜는지 말한다");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
+test("[B-59] ownership이 없으면 아무것도 막지 않는다 (없는 경계를 지어내지 않는다)", async () => {
+  const repo = await initRepo();
+  try {
+    const out = await runSession({ repoRoot: repo, runId: "b59b", spec: spec(), provider: new FileWriteProvider({ "any.txt": "x\n" }), approver: autoApprove });
+    assert.equal(out.status, "merged", "ownership 미지정 세션의 동작은 바이트 하나 바뀌지 않는다");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 // ── B-56 ──────────────────────────────────────────────────────
 for (const mode of ["exit_error", "result_error"] as const) {
   test(`[B-56] 코더가 ${mode}로 죽으면 병합하지 않는다 — 스크립트 없는 레포(빈 게이트)에서도`, async () => {

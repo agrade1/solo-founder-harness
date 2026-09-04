@@ -77,6 +77,20 @@ export async function runSession(opts) {
         }
         return failure;
     }
+    /**
+     * [B-59] 담당 경로 밖 변경을 찾는다. `spec.ownership`이 비어 있으면 **아무것도 막지 않는다** —
+     * 선언되지 않은 경계를 지어내면 기존 세션이 전부 깨진다(경계가 없는 것과 "밖이 없는 것"은 다르다).
+     *
+     * ponytail: glob 전체가 아니라 **접두 매칭**이다 — 계약이 쓰는 모양(`src/api/**`·정확한 경로)을
+     * 덮는다. `src/*.ts`처럼 중간 와일드카드가 필요해지면 그때 matcher를 넣는다(지금은 없는 요구다).
+     */
+    const ownershipViolations = () => {
+        const own = (opts.spec.ownership ?? []).map((o) => o.replace(/\/\*\*$/, "").replace(/\/\*$/, "").replace(/\/$/, ""));
+        if (own.length === 0 || !outcome.diff)
+            return [];
+        const changed = [...outcome.diff.files.map((f) => f.path), ...outcome.diff.untracked];
+        return changed.filter((p) => !own.some((o) => p === o || p.startsWith(`${o}/`)));
+    };
     /** [B-56] 코더 실패는 게이트·승인·병합 **앞에서** 끝난다 — 부분 산출물을 병합하지 않는다. */
     const coderFailed = (why) => {
         outcome.status = "coder_failed";
@@ -129,6 +143,16 @@ export async function runSession(opts) {
             return ((outcome.status = "gate_failed"), outcome);
         if (!fin.hasChanges)
             return ((outcome.status = "no_changes"), outcome);
+        // [B-59] 담당 경계는 **리뷰·승인·병합 앞에서** 본다. 부분 병합은 하지 않는다 —
+        // 담당 밖을 건드린 세션은 그 변경만 떼어내도 나머지가 그것을 전제로 쓰였을 수 있다.
+        const outside = ownershipViolations();
+        if (outside.length > 0) {
+            outcome.status = "ownership_violation";
+            outcome.error =
+                `담당 경로(ownership) 밖 변경 ${outside.length}건: ${outside.slice(0, 10).join(", ")}${outside.length > 10 ? " …" : ""} — ` +
+                    `선언된 담당은 ${(opts.spec.ownership ?? []).join(", ")}입니다. 병합하지 않았습니다 (브랜치 ${outcome.branch}는 남습니다).`;
+            return outcome;
+        }
         // 6) L3 리뷰어 루프 (critique_loop 이식) — 있을 때만
         if (opts.review) {
             opts.onPhase?.("review");
@@ -168,6 +192,16 @@ export async function runSession(opts) {
                 fin = await finalize();
                 if (!fin.gatePassed)
                     return ((outcome.status = "gate_failed"), outcome);
+                // [B-59] **revise도 담당 밖으로 새어 나갈 수 있다.** 첫 turn만 검사하면 리뷰 되먹임이
+                // 경계를 우회하는 통로가 된다 — 같은 말을 하는 자리를 놓치지 않는다(B-58의 교훈).
+                const reviseOutside = ownershipViolations();
+                if (reviseOutside.length > 0) {
+                    outcome.status = "ownership_violation";
+                    outcome.error =
+                        `revise 후 담당 경로 밖 변경 ${reviseOutside.length}건: ${reviseOutside.slice(0, 10).join(", ")} — ` +
+                            `선언된 담당은 ${(opts.spec.ownership ?? []).join(", ")}입니다. 병합하지 않았습니다.`;
+                    return outcome;
+                }
             }
             if (!passed)
                 return ((outcome.status = "review_deferred"), outcome); // 보류 목록행 (ARCH §4.1)
