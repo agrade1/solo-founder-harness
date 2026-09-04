@@ -22,6 +22,7 @@ import { projectPaths, projectExists } from "./project.js";
 import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt, type PipelineLease } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
+import { validateDesignArtifacts } from "./designContract.js";
 import {
   validateAgentOutput,
   extractTokensJson,
@@ -988,6 +989,22 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           usageOut += res.usage.outputTokens;
         }
         validation = validateAgentOutput(markdown, agent.required_headers ?? []);
+        // [B-4] **design 산출물 계약을 실제 경로에 배선한다.** `validateDesignArtifacts`는 토큰 3계층·
+        // a11y 대비·focus 토큰·컴포넌트 인벤토리를 전부 재는데, 지금까지 **비-테스트 호출자가 0개**였다
+        // (유일한 호출자 `buildDesignHandoff`도 호출자 0 — 체인 전체가 production에서 죽어 있었다).
+        // v1이 실제로 하던 검증은 **헤더 존재**뿐이었는데, `task-prompt`는 구현자에게 그 문서를 읽고
+        // 토큰을 참조하고 인벤토리를 따르라고 지시한다 — 트리거("design 산출물을 구현 입력으로 쓴다")는
+        // 이미 지났다. 대장 `C-70`이 근거로 적던 "handoff로도 아직 쓰이지 않는다"는 사실이 아니었다.
+        //
+        // **기존 재생성 루프에 합류시킨다**(별도 루프를 만들지 않는다): 계약 위반이 헤더 누락과 같은
+        // 자리에서 피드백되고, 재생성 후에도 미달이면 `persistFinalOutcome`의 fail-closed가 그대로
+        // 막는다 — 채택도 저장도 하지 않는다. 새 상태·새 경로 0.
+        if (agent.token_output) {
+          const contract = validateDesignArtifacts(markdown, extractTokensJson(markdown) === null ? null : JSON.parse(extractTokensJson(markdown)!));
+          if (!contract.ok) {
+            validation = { ok: false, missing: [...validation.missing, ...contract.errors.map((e) => `${e.code}@${e.where}`)] };
+          }
+        }
         if (validation.ok || attempt >= maxRegen) break;
 
         attempt++;

@@ -747,7 +747,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 126건 (등급 A **0** · **등급 B 14** · 등급 C 109 · nonblocking `B-1`/`B-2` 2)
+##### 열린 항목 — id 125건 (등급 A **0** · **등급 B 14** · 등급 C 108 · nonblocking `B-1`/`B-2` 2)
 
 **등급 B (14).** (M15: **`B-55`는 등재된 세션에서 그대로 closed다**(`A-4` — 판정 ⑯ ⓙ · 등급 A 잔량 0) · `C-150`·`C-151` 신규 · **`B-54`는 안내의 거짓 절반만 걷어냈고 열린 채다**(판정 ⑯ ⓚ) · **`B-56`은 등재 다음 날 재현 후 closed**(판정 ⑯ ⓝ) · **`B-59`는 등재 당일 재현 후 closed**(쓰기 경계 미집행 — 판정 ⑯ ⓞ) · **`B-57`·`B-58`은 등재된 세션에서 closed**(판정 ⑯ ⓜ). **`A-1`~`A-4`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호다** — `A-4`만 트리거가 도래해 `B-55`로 등재됐다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
 
@@ -772,7 +772,6 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-54` | **`pipeline_artifact_drift` 안내가 제시하는 두 탈출구가 둘 다 막혀 있다 (live 실측 2026-09-01)** — `pipeline.ts:399`가 *"파일을 복원하거나 `harness pipeline restart`로 다시 심사하세요"* 라고 안내하는데 `awaiting_run` 상태에서 **둘 다 불가능하다**: ⓐ `restart`는 `pipeline_active`로 거부된다(실측: *"진행 중인 파이프라인은 다시 시작할 수 없습니다 (상태 awaiting_run · 단계 2/4)"*) ⓑ **"파일 복원"이 물리적으로 불가능하다** — checkpoint artifact는 `{path,size,sha256}`만 보관하고 **내용을 보관하지 않아** 승인 시점 바이트를 되살릴 방법이 없다(2단계 `pm`이 이미 덮었다). `reject`도 pending이 없어 거부된다. **즉 drift로 막힌 `awaiting_run` 단계는 탈출구가 0개인데 안내는 2개를 제시한다.** 이 레포가 `C-138`·`B-49`·`B-50`에서 세 번 잡은 **거짓 안내 계열의 네 번째**다. 심각도 **B** · 확률 높음(2단계 이후 drift면 재현) · 영향 반경 = 사람이 없는 길을 따라가 시간을 버린다 · 수정 방향 = 안내를 실제 가능한 것으로 좁히고(현재는 **없음**), 근본적으로는 승인 산출물 내용 스냅샷 보관 또는 `awaiting_run`에서의 restart 허용 여부 재검토 | **파이프라인 2단계 이후 실사용 전** | `M14 진행 판정 ⑮` ⓝ |
 | `B-64` | **`maxProcessesPerRun`(32)이 attempt 롤오버마다 리셋된다** — `launchedProcesses`(`orchestrationKernel.ts:1086-1094`)가 `task.execution.operationReceipts` + `pendingOperations`만 세는데, attempt 롤오버가 `task.execution`을 `emptyTaskExecution()`+`operationReceipts: []`로 갈아끼운다(`:2916-2921` · `:3911`). 같은 함수의 주석은 *"재시작해도 상한이 다시 열리지 않는다"* 라고 적지만 그것은 **프로세스 재시작**에 대한 말이고 **attempt 롤오버는 연다**. maxTaskAttempts 4 × maxChildrenPerTask 4 → task 하나가 16 프로세스, 8 task면 128인데 run 집계는 32를 넘지 않는다. 심각도 B · **정직한 한계: 코드 대조만 했고 kernel fixture로 관측하지 않았다** · 수정 방향 = 카운터를 attempt 밖(task 또는 run accounting)에 둔다 | **v3 실행층을 실사용하기 전** | 수색 `B-10` |
 | `C-156` | **`accounting.elapsedMsUsed`가 합계가 아니라 running max인데 소비량으로 렌더된다** — `orchestrationKernel.ts:3581`은 `tokensUsed + delta`(합계)인데 **바로 다음 줄** `:3582`는 `Math.max(elapsedMsUsed, elapsedMs)`다. `orchestrationStore.ts:1241`이 `elapsedMsUsed / maxElapsedMs`로 **같은 모양으로** 렌더한다. 진행 차단은 wall-clock이 따로 하므로 우회는 아니고 **영수증만 거짓**이다. 심각도 C · **코드 대조만 했다**(런타임 관측 없음) | **회계 영수증을 근거로 인용하기 전** | 수색 `C-3` |
-| `C-157` | **a11y 대비 검사의 "공허함 방지"가 다크모드 분기에서 0회 돈다 (재현)** — `designContract.ts:322-331`이 `semantic.color`의 `text-*` **정확한 이름**만 훑는데, 같은 프롬프트(`agents/design_agent.md:77`)가 다크모드를 `semantic.light`/`semantic.dark`로 분기하라고 지시한다. 실측: **동일 토큰**이 `semantic.color`면 `a11y_text_uncovered` 1건, `semantic.light`면 **`ok:true` 오류 0건** — 대비 2.9(AA 4.5 미달) 텍스트가 통과했다. 심각도 C(`B-4`로 v1에서는 도달 불가) · 수정 방향 = semantic 하위 그룹을 전부 훑거나 그룹 이름을 계약으로 고정 | **design 산출물을 구현 입력으로 쓰기 전** | 수색 `C-4` |
 | `C-151` | **`test:core`가 이 호스트에서 결정적이지 않다** — 683건 중 **매 실행마다 다른 2~10건**이 실패하고 전부 `src/tools/` MCP·shadcn spawn 테스트의 **~5000ms 타임아웃**이다(연속 두 실행에서 겹치지 않는 쌍이 실패 · 단독 실행하면 통과 · **`git stash`한 HEAD에서도 8건 실패**해 코드 변경과 무관함을 확인). 심각도 C · 확률 = 부하가 있으면 거의 매번 · 영향 반경 = **"전체 suite 1회 green"이 handoff 게이트로 기능하지 못한다** (진짜 회귀가 flake 소음에 묻히고, 인계문서의 `core 677`류 수치도 재현되지 않는다) · **2026-09-03 보강 — acceptance도 같다**: `npm run acceptance`를 다른 suite와 겹쳐 돌리자 **PASS=244·FAIL=28**, 단독으로 돌리자 **272·0**(연속 2회). `scripts/suite-lock.mjs`가 `npm test` 경로만 지키므로 `test:core`·`acceptance`를 **직접** 부르면 보호가 없다 — 이 세션이 실제로 그 실수를 했고 28건을 회귀로 오인할 뻔했다. | 수정 방향 = spawn 테스트의 타임아웃을 부하에 비례시키거나 그 파일들을 직렬 그룹으로 분리하고, `test:core`·`acceptance` 직접 호출에도 lock을 걸어 겹침 자체를 막는다 | **suite green을 다시 handoff 근거로 인용하기 전** | `M15 진행 판정 ⑯` ⓘ |
 | `C-154` | **파이프라인 입구·아이디어 결박·취소 전이 4종** — ⓐ `init`이 `harness run`을 안내해 4단계 파이프라인으로 가는 길을 말하지 않는다(`init.ts:48`) ⓑ 97B 자리표시자 아이디어가 그대로 1단계를 통과한다(실측) — 프롬프트 층이 빈 아이디어를 명시적으로 허용한다 ⓒ 승인 후 `00_IDEA.md`를 통째로 바꿔도 2단계가 진행한다(실측) — 아이디어는 checkpoint manifest에 없다 ⓓ **사용자가 조종할 수 있는 활성 파이프라인 취소가 없다**(restart=`pipeline_active` · reject=같은 index 복귀). 단 게이트가 '폐기'를 내면 terminal에 닿는다 ⓔ 단독 `task-prompt` 산출물에 경로 루트 선언이 없다 — 계약은 `handoff.ts:193-207`에만 있고 그 주석이 막는 실패를 단독 경로가 그대로 맞는다. 심각도 C(개별) · 다만 ⓑ+ⓒ는 **조용한 오답** 계열 | **파이프라인을 남에게 쥐여 주기 전** | `M15_CODEX_AUDIT.md` §5 |
 | `C-155` | **`briefGenerator`의 `asStrings`가 잘못된 항목을 조용히 버린다 — `deps`에서 의미가 바뀐다** — `briefGenerator.ts:48-64`가 배열이 아니면 `undefined`, 배열이면 비-문자열 원소를 제거한다. `deps: "task-a"`(스칼라)는 `undefined`가 되고 스케줄러가 **의존성 없음**으로 취급해(`mission.ts:99-105` · `parallelMission.ts:67-73`) 선행 완료 전에 실행하고 병렬 모드에선 자동 병합까지 간다. `deps`는 미지 id·순환·타입도 검증하지 않는다. **초판 판정("영향 낮음")은 틀렸다** — Codex 재검수가 뒤집었다. 심각도 C(트리거 도래 시 B) | **`mission` 실사용 전** | `M15_CODEX_AUDIT.md` §5 |
@@ -792,7 +791,7 @@ CEO '폐기'가 처음으로 집행된다.)
 C-1   C-3   C-5   C-7   C-9   C-10  C-11  C-13  C-14  C-15  C-18  C-19  C-22  C-26
 C-29  C-30  C-31  C-33  C-34  C-35  C-36  C-37  C-38  C-39  C-43  C-46  C-47  C-48
 C-49  C-50  C-51  C-52  C-53  C-54  C-56  C-57  C-58  C-60  C-61  C-62  C-63  C-64
-C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
+C-65  C-66  C-68  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-83
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
 C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
 C-120 C-121 C-122 C-123 C-124 C-128 C-129
@@ -2221,6 +2220,34 @@ drift 안내 *"파일을 복원하거나 `harness pipeline restart`로 다시 �
 **남는 셋**: `B-64`(프로세스 상한 attempt 리셋)·`C-156`(elapsedMsUsed)은 **코드 대조만 한 커널 항목**이라
 수정 전에 kernel fixture 관측이 먼저다. `C-157`(a11y 다크모드)은 `B-4`(design 계약에 production 호출자 0)
 때문에 v1에서 도달 불가라 그쪽과 함께 다뤄야 한다.
+
+### ⓡ `B-4`(=`C-70`)·`C-157` closed — 죽어 있던 design 계약을 살리고, 그 계약의 구멍을 먼저 막았다
+
+**`C-157` 먼저.** a11y "공허함 방지"가 `semantic.color` **하나만** 훑는데 같은 프롬프트
+(`agents/design_agent.md:77`)가 다크 모드를 `semantic.light`/`semantic.dark`로 분기하라고 **지시한다**.
+그 지시를 따르면 루프가 **0회 돌고** AA 미달 텍스트가 `ok:true`로 통과했다(실측: 동일 토큰이
+`semantic.color`면 걸리고 `semantic.light`면 0건 · 대비 2.9). **계약이 지시하는 모양이 검사를
+무력화하고 있었다** — group 이름을 고정하는 대신 `semantic`의 **모든 하위 group**을 훑는다.
+깨진 계약을 먼저 고치고 배선했다(순서를 뒤집으면 무력한 계약을 배선하는 것이다).
+
+**`B-4` 배선.** `validateDesignArtifacts`(토큰 3계층·a11y·focus 토큰·컴포넌트 인벤토리)는
+**비-테스트 호출자가 0개**였다 — 유일한 호출자 `buildDesignHandoff`도 호출자 0이라 체인 전체가
+production에서 죽어 있었다. v1이 실제로 하던 검증은 **헤더 존재**뿐이다.
+
+**기존 재생성 루프에 합류시켰다**(별도 루프 0 · 새 상태 0): 계약 위반이 헤더 누락과 같은 자리에서
+피드백되고, 재생성 후에도 미달이면 `persistFinalOutcome`의 fail-closed가 그대로 막는다 —
+**채택도 저장도 하지 않는다.** 테스트가 그 경계를 고정한다: 본문 색 하나를 AA 미달로 바꾸면
+(`#111827` → `#AAAAAA`) run이 `failed`/`failed_agent: design`이 되고 `docs/DESIGN.md`가 **디스크에
+쓰이지 않는데**, **같은 산출물이 옛 검증(헤더 존재)으로는 통과한다.**
+
+**배선하자 test provider들이 곧바로 red가 됐다 — 그것이 계약이 한 번도 안 돌았다는 증거다.**
+`mockProvider`는 인벤토리를 범용 bullet(`- [MOCK] …`)로 내고 있어 계약 정규식(`- <Name>: <variant>`)에
+걸리지 않았고, `component.button`에 focus 토큰이 없었다. **고칠 것은 계약이 아니라 test provider다**
+(`## Decision`·tokens.json 때 세운 그 규율). `progress.test.ts`의 scripted provider는 design만
+**mock에 위임**하게 했다 — 토큰 JSON을 테스트마다 복사하면 계약이 바뀔 때 전부 낡는다.
+
+**대장 서술 정정**: `C-70`이 근거로 적던 *"handoff·구현으로는 아직 쓰이지 않는다"* 는 **사실이 아니었다** —
+`task-prompt`가 구현자에게 그 문서를 읽고 따르라고 지시하고 있었다. 그 문단을 고쳤다.
 
 ### ⓖ 증명하지 못한 것 (정직하게)
 
@@ -4928,8 +4955,12 @@ KICKOFF는 `B-17`을 "inbox 전달 소비(ack)"로 적었으나, §9.1 대장 �
 미보장) · `C-73`(디렉터리 단위 `provides`의 명목성)는 T2 리뷰 산물이다.
 **`B-29`·`B-30`은 M9 완료 선언 전 필수다** — 완료 조건이 "kernel이 소유권 충돌을 fail-closed
 검증"이라고 적고 있는데 지금 그 검증은 **문서 단계에만** 있다.
-`C-70`(design 계약이 v1 `runWorkflow`에 미배선)은 **아직 열려 있다**(담당 "M9 착수 세션" — T3 이후로
-미룬다). `C-10`(starvation)은 병렬 worker를 실제로 돌리는 T3에서 실측 대상이 된다.
+`C-70`(design 계약이 v1 `runWorkflow`에 미배선)은 **2026-09-04 M15에서 closed다**(판정 ⑯ ⓡ).
+~~아직 열려 있다(담당 "M9 착수 세션" — T3 이후로 미룬다).~~
+**이 문단이 근거로 삼던 "handoff·구현으로는 아직 쓰이지 않는다"는 사실이 아니었다** — `task-prompt`가
+구현자에게 `docs/DESIGN.md`·`docs/tokens.json`을 읽고 토큰을 참조하고 인벤토리를 따르라고 **지시하고
+있었다**(`taskPrompt.ts:176-184`). 트리거는 이미 지나 있었고, 그 사이 계약은 **비-테스트 호출자 0개**로
+production에서 한 번도 돌지 않았다(수색 `B-4`). `C-10`(starvation)은 병렬 worker를 실제로 돌리는 T3에서 실측 대상이 된다.
 
 **적대적 read-only 리뷰 ②(T2)**: **APPROVE — A=0, B=2, C=3**. 리뷰어가 독립 검증한 것:
 의존 간선의 비동시성 보장은 **건전하다**(`recompute`는 `dependsOn`이 전부 `completed`일 때만
