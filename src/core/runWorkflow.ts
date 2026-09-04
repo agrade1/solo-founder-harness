@@ -234,7 +234,7 @@ export interface RunState {
    * `totals`는 **단조 증가**하고 절대 잘리지 않는다 — 상한 집행(호출 수·evidence 건수)의 유일한
    * 근거다. 잘린 `attempts`를 합산해 복원하면 무한 resume으로 예산이 되살아난다(A-3).
    */
-  research?: { attempts: ResearchAttempt[]; totals?: ResearchTotals };
+  research?: { attempts: ResearchAttempt[]; totals?: ResearchTotals; carried_attempts?: number };
 }
 
 /**
@@ -781,6 +781,17 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   // [A-4·kill_history 선례] attempts는 **명시적 carry-forward**. 없으면 뒤 run 하나가 앞 단계
   // 리서치 영수증을 지운다(그리고 checkpoint 결박 대상도 함께 사라진다).
   const researchAttempts: ResearchAttempt[] = [...(priorState?.research?.attempts ?? [])];
+  /**
+   * [B-60] **앞 run에서 물려받은 attempt 수.** 영수증 자체에 `workflow_id`를 넣지 않는 이유는
+   * `ResearchAttempt`가 content-addressed이기 때문이다(본문 바이트가 곧 파일명) — 필드를 하나
+   * 늘리면 기존 영수증 해시가 전부 바뀌고 checkpoint 결박이 함께 깨진다.
+   *
+   * 대신 run_state에 경계 하나만 남긴다: 이 index 앞은 **남의 것**이다. 예전엔 이 구분이 없어서
+   * `mvp-planning`(research step 없음)이 `idea-validation`의 영수증을 **바이트 동일하게** 자기
+   * 결과로 출력했다(실측). carry-forward 자체는 유지한다 — 그것을 지우면 뒤 run 하나가 앞 단계
+   * 영수증을 없애고 checkpoint 결박 대상도 사라진다(`A-4` 선례).
+   */
+  let carriedAttempts = researchAttempts.length;
   const projectRoot = projectPaths(project).root;
   /**
    * [C-126/A-3] **단조 증가 durable 누적치.** `attempts[]`는 4개로 잘리므로 그것을 합산해 상한을
@@ -1134,7 +1145,9 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       researchAttempts.push(attempt);
       if (researchAttempts.length > RESEARCH_MAX_ATTEMPTS) {
         // 표시용 상한. **상한 집행 근거는 이 배열이 아니라 durable `totals`다**(A-3).
-        researchAttempts.splice(0, researchAttempts.length - RESEARCH_MAX_ATTEMPTS);
+        const dropped = researchAttempts.length - RESEARCH_MAX_ATTEMPTS;
+        researchAttempts.splice(0, dropped);
+        carriedAttempts = Math.max(0, carriedAttempts - dropped); // [B-60] 앞에서 잘린 만큼 경계도 당긴다
       }
     };
     /** 성공 반환 직전 불변식: **영수증 없는 성공 상태는 없다.** */
@@ -1742,6 +1755,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       ? {
           research: {
             attempts: researchAttempts,
+            carried_attempts: carriedAttempts, // [B-60] 이 index 앞은 앞 run에서 물려받은 것이다
             totals: sessionBackend
               ? { backend_calls: sessionBackend.calls, results: sessionBackend.results }
               : { backend_calls: priorTotals.backend_calls, results: priorTotals.results },

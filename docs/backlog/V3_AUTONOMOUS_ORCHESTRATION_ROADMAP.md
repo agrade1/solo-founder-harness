@@ -747,7 +747,7 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 131건 (등급 A **0** · **등급 B 19** · 등급 C 109 · nonblocking `B-1`/`B-2` 2)
+##### 열린 항목 — id 126건 (등급 A **0** · **등급 B 14** · 등급 C 109 · nonblocking `B-1`/`B-2` 2)
 
 **등급 B (14).** (M15: **`B-55`는 등재된 세션에서 그대로 closed다**(`A-4` — 판정 ⑯ ⓙ · 등급 A 잔량 0) · `C-150`·`C-151` 신규 · **`B-54`는 안내의 거짓 절반만 걷어냈고 열린 채다**(판정 ⑯ ⓚ) · **`B-56`은 등재 다음 날 재현 후 closed**(판정 ⑯ ⓝ) · **`B-59`는 등재 당일 재현 후 closed**(쓰기 경계 미집행 — 판정 ⑯ ⓞ) · **`B-57`·`B-58`은 등재된 세션에서 closed**(판정 ⑯ ⓜ). **`A-1`~`A-4`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호다** — `A-4`만 트리거가 도래해 `B-55`로 등재됐다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
 
@@ -770,12 +770,7 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-48` | **critique_loop 내부에 토큰 예산 검사가 없다** — 예산 검사는 top-level step 시작 전에만 있고 critic/revise/critic 연속 호출 사이에는 없다. **`C-125`가 M14에서 머지되어 트리거가 도래했다** — `idea-validation` 최악 호출이 점프 포함 13(external 15 · `maxRegen=1`이면 30)이다. `B-49`가 resume 무한 증식 항은 없앴으나 **run 내부 상한은 그대로다** | **도래 + live 실현 확인**(2026-08-28: external 15호출 · output 105k→**157k, +49%** · 44.4분) — 다음 하드닝 slice 1순위 | `M13 진행 판정 ⑭` ⓗ 표 · `M14 진행 판정 ⑮` ⓒ |
 | `B-51` | **아이디어 문서로 게이트 심사 범위를 축소할 수 있다 (실증됨)** — `agents/*.md`는 계약 문서라 승인 없이 못 고치는데 **`00_IDEA.md`에는 아무 제약이 없다.** 2026-08-28 `naming` run에서 오케스트레이터가 아이디어 문서에 「평가 기준」 절을 넣어 *무료 대체재는 폐기 사유가 아니다 · 차별점을 요구하지 말 것 · 검증 순서는 반대다* 를 적었더니, **`chief_of_staff`가 지불 의향·경쟁·차별점을 "판정 대상에서 제외"하고 보류/검증 가능성을 "미리 차단"하라고 하류에 전파**했고 research·red_team이 그대로 수용했다(Codex 사실검증 A급). run을 중단시켜 **거짓 영수증 발급은 없었다.** 대조군: `claimrep`은 CEO가 아이디어 문서의 전제를 증거로 반박했고 `sellercs`는 "먼저 만든다" 전제에도 '검증'을 냈다 — **CEO 자체는 건강하다.** 심각도 B · 확률 높음(문서만 쓰면 재현) · 영향 반경 = **모든 게이트 판정의 신뢰성** · 수정 방향 = 사용자 선호 절을 **판정 기준 대체 불가**로 명시하는 공용 문구 규약, 또는 `chief_of_staff`가 아이디어 문서의 지시를 판정 규칙으로 승격하지 못하게 하는 프롬프트 가드 | **파이프라인 실사용 전** | `M14 진행 판정 ⑮` ⓘ |
 | `B-54` | **`pipeline_artifact_drift` 안내가 제시하는 두 탈출구가 둘 다 막혀 있다 (live 실측 2026-09-01)** — `pipeline.ts:399`가 *"파일을 복원하거나 `harness pipeline restart`로 다시 심사하세요"* 라고 안내하는데 `awaiting_run` 상태에서 **둘 다 불가능하다**: ⓐ `restart`는 `pipeline_active`로 거부된다(실측: *"진행 중인 파이프라인은 다시 시작할 수 없습니다 (상태 awaiting_run · 단계 2/4)"*) ⓑ **"파일 복원"이 물리적으로 불가능하다** — checkpoint artifact는 `{path,size,sha256}`만 보관하고 **내용을 보관하지 않아** 승인 시점 바이트를 되살릴 방법이 없다(2단계 `pm`이 이미 덮었다). `reject`도 pending이 없어 거부된다. **즉 drift로 막힌 `awaiting_run` 단계는 탈출구가 0개인데 안내는 2개를 제시한다.** 이 레포가 `C-138`·`B-49`·`B-50`에서 세 번 잡은 **거짓 안내 계열의 네 번째**다. 심각도 **B** · 확률 높음(2단계 이후 drift면 재현) · 영향 반경 = 사람이 없는 길을 따라가 시간을 버린다 · 수정 방향 = 안내를 실제 가능한 것으로 좁히고(현재는 **없음**), 근본적으로는 승인 산출물 내용 스냅샷 보관 또는 `awaiting_run`에서의 restart 허용 여부 재검토 | **파이프라인 2단계 이후 실사용 전** | `M14 진행 판정 ⑮` ⓝ |
-| `B-60` | **리서치 step이 없는 단계가 앞 단계 영수증을 자기 것으로 증언한다 (재현 2026-09-04)** — `runWorkflow.ts:783`의 `priorState?.research?.attempts` carry-forward에 **resume 조건이 없다**. 실측: `idea-validation` 뒤 `mvp-planning`(research step **없음** · `completed_steps`에 research 없음)을 돌리자 `researchOutcomeLines`가 1단계 영수증 경로를 **바이트 동일하게** 자기 결과로 출력했다. `researchOutcomeLines` 자신의 주석은 *"리서치 step이 없는 workflow에서 리서치 이야기를 하지 않는다"* 라고 적고 있다. 심각도 B · 영향 반경 = 근거 없는 단계가 근거 있는 것처럼 보이고 checkpoint 결박도 함께 오염된다 · 수정 방향 = `ResearchAttempt`에 `workflow_id`를 넣고 `researchOutcomeLines`가 현재 run의 attempt만 렌더 | **파이프라인 실사용 전** | 수색 `B-2` · `M15_UNVERIFIED.md` §3 |
-| `B-61` | **근거 상한 검사가 유료 backend 호출 뒤에 있어 resume마다 크레딧 1회를 사서 버린다 (재현)** — `researchRuntime.ts:356-362`: 예산 검사(`calls >= MAX`) → `calls++` → **`await inner.search()` 유료 호출** → `take()`가 `research_cap_exceeded`를 던진다. 실측(stub backend): `priorResults`가 상한(32)인 채로 resume 4회 → **유료 호출 4회 · 저장 근거 0건 · 매번 `research_cap_exceeded`**. 심각도 B · 확률 = 상한 도달 후 resume하면 항상 · 수정 방향 = `:356` 앞에 `if (results >= RESEARCH_MAX_EVIDENCE_PER_RUN) throw …` **한 줄** | **live 리서치 재개를 쓰기 전** | 수색 `B-3` |
-| `B-62` | **`summary.ts`의 지역 run_state 리더가 손상을 "미실행"으로 접는다 (재현)** — `summary.ts:8-16`이 `catch { return null }`이다. `B-40/A-4`가 `taskPrompt`에서 지운 바로 그 리더이고 core의 `readRunState`(부재/손상 구분)가 이미 있다. 실측: run_state를 40바이트로 자르자 summary가 *"아직 workflow 미실행 — `harness run <workflow> --project <name>` 실행"* 을 durable 문서에 적었고, **그 명령은 `run_state_unreadable`로 거부된다**(실행 확인). 폐기 기록이 그 파일에 있을 수 있다. 심각도 B · 수정 방향 = `readRunStateAt`으로 교체하고 `unreadable`을 사실대로 렌더 | **다음 슬라이스** | 수색 `B-6` |
-| `B-63` | **`handoff`가 `run_state.json`을 비원자적으로 덮는다 — `C-135`의 tmp+rename이 형제 writer에 미적용** — `handoff.ts:325-330`이 plain `readFileSync`+`writeFileSync`이고 lock도 tmp+rename도 없다(`runWorkflow.ts`는 같은 파일을 원자적으로 쓴다 · 실측 위치까지 주석에 있다). run_state는 폐기 잠금의 유일한 근거이고 하류 명령이 fail-closed라 **찢어진 write = 벽돌**이다(그 결과는 `B-62` 재현이 그대로 보여준다). 심각도 B · 수정 방향 = `runWorkflow`의 tmp+rename 3줄을 그대로 옮긴다 | **다음 슬라이스** | 수색 `B-7` |
 | `B-64` | **`maxProcessesPerRun`(32)이 attempt 롤오버마다 리셋된다** — `launchedProcesses`(`orchestrationKernel.ts:1086-1094`)가 `task.execution.operationReceipts` + `pendingOperations`만 세는데, attempt 롤오버가 `task.execution`을 `emptyTaskExecution()`+`operationReceipts: []`로 갈아끼운다(`:2916-2921` · `:3911`). 같은 함수의 주석은 *"재시작해도 상한이 다시 열리지 않는다"* 라고 적지만 그것은 **프로세스 재시작**에 대한 말이고 **attempt 롤오버는 연다**. maxTaskAttempts 4 × maxChildrenPerTask 4 → task 하나가 16 프로세스, 8 task면 128인데 run 집계는 32를 넘지 않는다. 심각도 B · **정직한 한계: 코드 대조만 했고 kernel fixture로 관측하지 않았다** · 수정 방향 = 카운터를 attempt 밖(task 또는 run accounting)에 둔다 | **v3 실행층을 실사용하기 전** | 수색 `B-10` |
-| `B-65` | **완료 파이프라인에 drift가 있으면 summary가 같은 문서 안에서 정면 모순을 낸다 (재현)** — `summary.ts`의 `pipelineOwns`가 `completed`만 배제해서, 완료+drift 상태가 파이프라인 안내(*"task-prompt·handoff·plan-dag가 **거부된다**"*)와 기존 문구(*"`harness task-prompt --project X`로 작업 지시문 **생성**"*)를 **연달아** 적는다. 실측: 그 명령은 `exit 2`. 이 레포 거짓 안내 계열이고 **사람이 두 줄을 같은 화면에서 본다.** 심각도 B · 수정 방향 = `pipelineOwns` 판정에 drift 검사를 넣는다(그 상태에서 `pipeline restart`는 **실제로 열린다** — 실행 확인) | **다음 슬라이스** | 수색 `C-1` |
 | `C-156` | **`accounting.elapsedMsUsed`가 합계가 아니라 running max인데 소비량으로 렌더된다** — `orchestrationKernel.ts:3581`은 `tokensUsed + delta`(합계)인데 **바로 다음 줄** `:3582`는 `Math.max(elapsedMsUsed, elapsedMs)`다. `orchestrationStore.ts:1241`이 `elapsedMsUsed / maxElapsedMs`로 **같은 모양으로** 렌더한다. 진행 차단은 wall-clock이 따로 하므로 우회는 아니고 **영수증만 거짓**이다. 심각도 C · **코드 대조만 했다**(런타임 관측 없음) | **회계 영수증을 근거로 인용하기 전** | 수색 `C-3` |
 | `C-157` | **a11y 대비 검사의 "공허함 방지"가 다크모드 분기에서 0회 돈다 (재현)** — `designContract.ts:322-331`이 `semantic.color`의 `text-*` **정확한 이름**만 훑는데, 같은 프롬프트(`agents/design_agent.md:77`)가 다크모드를 `semantic.light`/`semantic.dark`로 분기하라고 지시한다. 실측: **동일 토큰**이 `semantic.color`면 `a11y_text_uncovered` 1건, `semantic.light`면 **`ok:true` 오류 0건** — 대비 2.9(AA 4.5 미달) 텍스트가 통과했다. 심각도 C(`B-4`로 v1에서는 도달 불가) · 수정 방향 = semantic 하위 그룹을 전부 훑거나 그룹 이름을 계약으로 고정 | **design 산출물을 구현 입력으로 쓰기 전** | 수색 `C-4` |
 | `C-151` | **`test:core`가 이 호스트에서 결정적이지 않다** — 683건 중 **매 실행마다 다른 2~10건**이 실패하고 전부 `src/tools/` MCP·shadcn spawn 테스트의 **~5000ms 타임아웃**이다(연속 두 실행에서 겹치지 않는 쌍이 실패 · 단독 실행하면 통과 · **`git stash`한 HEAD에서도 8건 실패**해 코드 변경과 무관함을 확인). 심각도 C · 확률 = 부하가 있으면 거의 매번 · 영향 반경 = **"전체 suite 1회 green"이 handoff 게이트로 기능하지 못한다** (진짜 회귀가 flake 소음에 묻히고, 인계문서의 `core 677`류 수치도 재현되지 않는다) · **2026-09-03 보강 — acceptance도 같다**: `npm run acceptance`를 다른 suite와 겹쳐 돌리자 **PASS=244·FAIL=28**, 단독으로 돌리자 **272·0**(연속 2회). `scripts/suite-lock.mjs`가 `npm test` 경로만 지키므로 `test:core`·`acceptance`를 **직접** 부르면 보호가 없다 — 이 세션이 실제로 그 실수를 했고 28건을 회귀로 오인할 뻔했다. | 수정 방향 = spawn 테스트의 타임아웃을 부하에 비례시키거나 그 파일들을 직렬 그룹으로 분리하고, `test:core`·`acceptance` 직접 호출에도 lock을 걸어 겹침 자체를 막는다 | **suite green을 다시 handoff 근거로 인용하기 전** | `M15 진행 판정 ⑯` ⓘ |
@@ -2203,6 +2198,29 @@ drift 안내 *"파일을 복원하거나 `harness pipeline restart`로 다시 �
 
 **비용이 싼 것부터**: `B-61`은 **한 줄**(유료 호출 앞에 상한 검사), `B-63`은 **세 줄**(tmp+rename 이식),
 `B-62`는 리더 교체 하나. `B-60`·`B-65`는 조건 하나씩이다.
+
+### ⓠ 수색 잔여 수정 슬라이스 — `B-60`~`B-63`·`B-65` closed (`B-64`·`C-156`·`C-157`은 남는다)
+
+판정 ⓟ가 확인한 8건 중 **재현으로 확인한 5건**을 닫았다. 각 재현 스크립트가 그대로 회귀 테스트가 됐다.
+
+| id | 고친 것 | 크기 |
+|---|---|---|
+| `B-61` | evidence 상한 검사를 **유료 호출 앞**으로. `take()`의 검사는 **지우지 않았다** — 그쪽은 "이 배치를 받으면 넘는다"이고 이쪽은 "한 건도 못 받는다"라 서로 다른 것을 잰다 | 5줄 |
+| `B-63` | `handoff`의 `run_state.json` write를 tmp+rename으로. **`C-135`가 셋을 고칠 때 빠진 네 번째 writer**다 | 3줄 |
+| `B-62` | `summary`의 지역 리더(`catch { return null }`)를 core의 부재/손상 구분 리더로. 손상을 **손상이라 적고**, 그 상태에서 거부되는 명령을 권하지 않는다 | 리더 교체 |
+| `B-65` | `pipelineOwns` 판정에 **drift 검사**를 넣어 "거부된다"와 "생성"이 같은 화면에 나오던 모순을 없앴다 | 조건 하나 |
+| `B-60` | `researchOutcomeLines`가 **이 run이 만든 attempt만** 렌더. 영수증에 `workflow_id`를 넣는 안은 **기각** — `ResearchAttempt`는 content-addressed라 필드 하나가 모든 `receipt_path`를 바꾸고 checkpoint 결박을 깬다. run_state에 경계 index(`carried_attempts`) 하나만 뒀다 | 경계 1 필드 |
+
+**개별 수정으로는 닫히지 않는 것에 가드를 하나 더 깔았다** — `guidance.test.ts`가 이제 `run_state.json`에
+쓰는 **모든** 자리가 tmp+rename인지 전수로 잰다. `B-63`은 "패턴을 복사하다 하나를 빠뜨린" 결함이라
+그 자리만 고치면 다섯 번째 누락을 못 막는다(`B-58`과 같은 부류).
+
+**golden을 갱신했다** — `research.carried_attempts: 0`. golden은 **변경 감지기**라서 말없이 고치면
+감지기가 죽는다. 그래서 테스트 주석에 "왜 스키마가 늘었나 · 왜 영수증 대신 run_state인가"를 적었다.
+
+**남는 셋**: `B-64`(프로세스 상한 attempt 리셋)·`C-156`(elapsedMsUsed)은 **코드 대조만 한 커널 항목**이라
+수정 전에 kernel fixture 관측이 먼저다. `C-157`(a11y 다크모드)은 `B-4`(design 계약에 production 호출자 0)
+때문에 v1에서 도달 불가라 그쪽과 함께 다뤄야 한다.
 
 ### ⓖ 증명하지 못한 것 (정직하게)
 

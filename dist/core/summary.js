@@ -2,17 +2,21 @@ import { existsSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment } from "./validate.js";
+import { readRunStateAt } from "./runWorkflow.js";
 import { DEFAULT_PIPELINE, approvedDigests, currentStage, driftProblem, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
-function readRunState(project) {
-    const p = join(projectPaths(project).outputs, "run_state.json");
-    if (!existsSync(p))
-        return null;
-    try {
-        return JSON.parse(readFileSync(p, "utf8"));
-    }
-    catch {
-        return null;
-    }
+/**
+ * [B-62] **손상을 부재로 접지 않는다.** 예전 지역 리더는 `catch { return null }`이라 찢어진
+ * `run_state.json`을 "아직 workflow 미실행"으로 적었다 — `B-40/A-4`가 `taskPrompt`에서 지운 바로
+ * 그 리더가 여기 남아 있었다.
+ *
+ * 실측(2026-09-04): 40바이트로 잘린 state에서 summary가 durable 문서 `docs/CONTEXT_SUMMARY.md`에
+ * *"아직 workflow 미실행 — `harness run <workflow> --project <name>` 실행"* 을 적었고, **그 명령은
+ * `run_state_unreadable`로 거부된다**(실행 확인). 폐기 기록이 그 파일에 있을 수 있는데도 요약은
+ * "실행한 적 없음"이라고 말한 것이다. 같은 파일의 pipeline_state는 이미 fail-closed로 다룬다.
+ */
+function readRunStateForSummary(project) {
+    const read = readRunStateAt(join(projectPaths(project).outputs, "run_state.json"));
+    return read.kind === "ok" ? { kind: "ok", state: read.state } : read.kind === "absent" ? { kind: "absent" } : { kind: "unreadable", detail: read.detail };
 }
 function listMarkdown(dir) {
     if (!existsSync(dir))
@@ -125,7 +129,8 @@ function nextActions(state, project, pipelineOwns = false) {
 /** CONTEXT_SUMMARY.md에 쓸 짧은 요약 markdown을 생성한다. */
 export function buildSummary(project, today) {
     const paths = projectPaths(project);
-    const state = readRunState(project);
+    const runRead = readRunStateForSummary(project);
+    const state = runRead.kind === "ok" ? runRead.state : null;
     const docs = listMarkdown(paths.docs);
     const outputs = listMarkdown(paths.outputs);
     const lines = [];
@@ -163,15 +168,27 @@ export function buildSummary(project, today) {
     lines.push(`- outputs/: ${outputs.join(", ") || "(없음)"}`);
     lines.push("");
     lines.push("## 다음 작업");
+    if (runRead.kind === "unreadable") {
+        // [B-62] 손상은 손상이라고 적는다. "미실행"으로 접으면 폐기 기록이 그 안에 있어도 사람이 모르고,
+        // 그 상태에서 권하던 `harness run`은 `run_state_unreadable`로 거부된다(실행 확인).
+        lines.push(`- **run_state.json을 읽을 수 없다** (${runRead.detail}) — "미실행"이 아니다. ` +
+            `폐기 기록이 이 파일에 있을 수 있어 하네스는 덮어쓰지 않는다.`, `- 이 상태에서는 \`run\`·\`task-prompt\`·\`plan-dag\`가 전부 \`run_state_unreadable\`로 거부된다. ` +
+            `파일을 복원하거나(백업) 내용을 검토한 뒤 지워야 다시 열린다.`);
+    }
     // [Codex A-5] 파이프라인이 있으면 **그 상태가 먼저**다 (확인 대기를 완료로 적지 않는다).
     const pipe = pipelineActions(project, paths.root);
     if (pipe)
         for (const a of pipe)
             lines.push(`- ${a}`);
-    // 파이프라인이 완료·정상일 때만 기존 문구(task-prompt 안내)를 그대로 쓴다.
-    const pipelineOwns = pipe !== null && !(pipeRead.kind === "ok" && pipeRead.state.status === "completed");
-    for (const a of nextActions(state, project, pipelineOwns))
-        lines.push(`- ${a}`);
+    // [B-65] `pipelineOwns`에 **drift 검사를 넣는다.** 예전엔 `completed`만 배제해서, 완료 + drift 상태가
+    // 바로 위 파이프라인 안내(*"task-prompt·handoff·plan-dag가 **거부된다**"*)와 아래 기존 문구
+    // (*"`harness task-prompt --project X`로 작업 지시문 **생성**"*)를 **연달아** 적었다.
+    // 실측: 그 명령은 `exit 2`다. 사람이 두 줄을 같은 화면에서 본다.
+    const pipeCompletedClean = pipeRead.kind === "ok" && pipeRead.state.status === "completed" && driftProblem(paths.root, approvedDigests(pipeRead.state).values()) === null;
+    const pipelineOwns = pipe !== null && !pipeCompletedClean;
+    if (runRead.kind !== "unreadable")
+        for (const a of nextActions(state, project, pipelineOwns))
+            lines.push(`- ${a}`);
     lines.push("");
     return lines.join("\n");
 }
