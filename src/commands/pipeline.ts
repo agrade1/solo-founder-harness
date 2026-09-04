@@ -523,7 +523,7 @@ async function nextLocked(
   // 기록을 갖지 못한다 → vault만 보는 사람에게 거짓 완료 영수증이다. try/finally로 모든 종료
   // 경로(정상·거부)에서 한 번만 내보낸다.
   // [C-126/A-6] 실제 mode 영수증은 run이 끝난 **뒤에만** 낼 수 있다 (사전 문구는 "설정됨"까지다).
-  for (const line of researchOutcomeLines(result.state.research?.attempts)) console.log(line);
+  for (const line of researchOutcomeLines(result.state.research?.attempts, result.state.research?.carried_attempts ?? 0)) console.log(line);
   try {
     if (result.state.status === "killed") {
       const next = reconcileKilled(root, state, stage, result.state, now());

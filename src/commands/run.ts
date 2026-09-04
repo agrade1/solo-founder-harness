@@ -102,7 +102,7 @@ export async function runRun(
   console.log("");
   // [C-126/A-6] **실행 후** 실제 mode 영수증. 위 사전 문구는 "설정됨"까지만 말한다 — 모델이 `none`을
   // 냈는지, 결과가 0건이었는지, 중단됐는지는 여기서만 알 수 있다.
-  for (const line of researchOutcomeLines(state.research?.attempts)) console.log(line);
+  for (const line of researchOutcomeLines(state.research?.attempts, state.research?.carried_attempts ?? 0)) console.log(line);
   console.log(`완료 단계: ${state.completed_steps.join(" → ") || "(없음)"}`);
   if (state.failed_agent) {
     console.log(`실패 agent: ${state.failed_agent}`);
