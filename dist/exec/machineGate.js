@@ -73,5 +73,5 @@ export async function runMachineGate(opts) {
         }
     }
     const passed = results.every((r) => r.ok || r.skipped);
-    return { passed, checks: results };
+    return { passed, checks: results, vacuous: results.length === 0 };
 }
