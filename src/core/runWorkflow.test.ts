@@ -625,6 +625,37 @@ test("[B-50] '검증' 대기 중에는 개발 표면이 열리지 않는다 — 
   rmProject(name);
 });
 
+test("[B-4] design 산출물이 계약을 어기면 채택도 저장도 하지 않는다 (계약이 실제 경로에 배선됐다)", async () => {
+  // red: runStepWithRegen의 validateDesignArtifacts 합류를 지우면 이 run이 completed가 되고
+  //      계약을 어긴 DESIGN.md가 디스크에 남는다.
+  //      배선 전 실측: `validateDesignArtifacts`의 비-테스트 호출자가 **0개**였다(유일한 호출자
+  //      `buildDesignHandoff`도 호출자 0 — 체인 전체가 production에서 죽어 있었다). v1이 실제로 하던
+  //      검증은 **헤더 존재**뿐인데, task-prompt는 구현자에게 그 문서를 읽고 토큰을 참조하고
+  //      인벤토리를 따르라고 지시한다 — 트리거는 이미 지나 있었다.
+  const name = "_b4_contract";
+  makeProject(name);
+  // 본문 색 하나만 AA 미달로 바꾼다(#111827 → #AAAAAA, 흰 배경 대비 ≈ 2.3).
+  // **헤더는 전부 그대로다** — 옛 검증(헤더 존재)으로는 통과했을 산출물이라는 것이 이 테스트의 요점이다.
+  const broken: Provider = {
+    id: "mock",
+    async generate(i) {
+      const r = await mockProvider.generate(i);
+      if (!i.agent.token_output) return r;
+      return { ...r, markdown: r.markdown.replace('"#111827"', '"#AAAAAA"') };
+    },
+  };
+  const out = await runWorkflow({ workflowId: "mvp-planning", project: name, provider: broken, approve: async () => true, now: () => FIXED });
+
+  assert.equal(out.state.status, "failed", `계약 미달 design은 완주하지 못한다 (실제: ${out.state.status})`);
+  assert.equal(out.state.failed_agent, "design");
+  assert.equal(existsSync(join(projectPaths(name).root, "docs/DESIGN.md")), false, "계약 미달 문서는 디스크에 쓰지 않는다");
+
+  // 그리고 **헤더만 보던 옛 검증으로는 통과했을 산출물**이라는 것을 같이 고정한다.
+  const md = (await broken.generate({ agent: findAgent(loadAgentRegistry(), "design")!, workflowId: "mvp-planning", project: name, createdAt: FIXED, priorFindings: [], nextAgentId: undefined } as never)).markdown;
+  assert.equal(validateAgentOutput(md, findAgent(loadAgentRegistry(), "design")!.required_headers ?? []).ok, true, "옛 검증(헤더 존재)으로는 통과한다 — 그래서 계약 배선이 필요했다");
+  rmProject(name);
+});
+
 test("[B-60] 리서치 step이 없는 단계는 앞 단계 영수증을 자기 것으로 증언하지 않는다", async () => {
   // red: `researchOutcomeLines`에서 carried 슬라이스를 지우면 2단계가 1단계 영수증 경로를
   //      **바이트 동일하게** 자기 결과로 출력한다(실측 2026-09-04). 그 함수 자신의 주석이
