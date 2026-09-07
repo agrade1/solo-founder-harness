@@ -878,23 +878,25 @@ test("[A-4] 영수증은 산출물을 저장하는 **그 순간** durable에 적
   const approved = stateOf(name).checkpoints.at(-1)!.artifacts.find((a) => a.path === "docs/02_PRD.md")!;
 
   // 2단계: pm이 그 경로를 덮은 **직후**(다음 agent 호출 시점)에 영수증이 이미 durable인지 본다.
-  let seen: PipelineState["last_failure"] = null;
+  // TS CFA는 nested function 안에서만 일어나는 대입을 추적하지 못한다 — `let seen = null`로 두면
+  // 아래 assert.ok 뒤 타입이 `never`가 되어 typecheck가 깨진다(홀더 객체로 그 좁힘을 피한다).
+  const probe: { seen: PipelineState["last_failure"] } = { seen: null };
   const inner = counting();
   let calls = 0;
   const probing: Provider = {
     id: "mock",
     async generate(i) {
-      if (calls++ === 1) seen = stateOf(name).last_failure;
+      if (calls++ === 1) probe.seen = stateOf(name).last_failure;
       return inner.generate(i);
     },
   };
   await quiet(() => nextPipeline({ project: name, providerOverride: probing, now: () => FIXED, internalApprover: async () => true }));
 
-  assert.ok(seen, "pm 저장 직후 시점에 영수증이 이미 있다 — 크래시해도 남는 것이 이것이다");
-  const w = seen!.written.find((x) => x.path === "docs/02_PRD.md");
+  assert.ok(probe.seen, "pm 저장 직후 시점에 영수증이 이미 있다 — 크래시해도 남는 것이 이것이다");
+  const w = probe.seen.written.find((x) => x.path === "docs/02_PRD.md");
   assert.ok(w, "덮은 경로가 영수증에 있다");
   assert.notEqual(w!.sha256, approved.sha256, "그 영수증은 **이 단계가 쓴 바이트**다 (앞 단계 승인본이 아니다)");
-  assert.equal(seen!.stage, "mvp-planning", "영수증의 단계가 현 단계로 결박된다");
+  assert.equal(probe.seen.stage, "mvp-planning", "영수증의 단계가 현 단계로 결박된다");
   rmProject(name);
 });
 
