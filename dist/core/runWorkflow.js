@@ -375,6 +375,14 @@ export async function runWorkflow(args) {
     const step_timings = [];
     let design_gate = null;
     const savedFiles = [];
+    /**
+     * [A-4] 저장 등재는 **여기 하나**를 지난다 — `savedFiles.push`가 네 군데로 흩어져 있어서 영수증
+     * 콜백을 거기 각각 붙이면 새 저장 경로가 생길 때 조용히 하나가 빠진다(이 레포가 반복해 잡은 부류).
+     */
+    const recordSaved = (rel) => {
+        savedFiles.push(rel);
+        args.onArtifactSaved?.(rel);
+    };
     const usagePerAgent = [];
     const findings = new Map(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
     const lastMarkdown = new Map(); // agentId → 마지막 출력 원문 (게이트 판정 추출용)
@@ -678,13 +686,13 @@ export async function runWorkflow(args) {
                 `${agent.default_output}에 쓰지 않고 채택도 하지 않는다 (기존 산출물 보존).`);
         }
         const saved = saveArtifact(project, agent.default_output, o.markdown);
-        savedFiles.push(saved);
+        recordSaved(saved);
         // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
         if (agent.token_output) {
             const tokens = extractTokensJson(o.markdown);
             if (tokens) {
                 const tSaved = saveArtifact(project, agent.token_output, tokens);
-                savedFiles.push(tSaved);
+                recordSaved(tSaved);
                 console.log(`  ⿻ ${agent.agent_id}: 토큰 추출 → ${tSaved}`);
             }
             else {
@@ -745,7 +753,7 @@ export async function runWorkflow(args) {
             // receipt와 raw는 checkpoint 결박 대상이고, 실패 시엔 `last_failure.written`에 잡혀야 한다
             // (그래서 resume 사전 drift 검증이 partial 저장을 "손댄 것"으로 오해하지 않는다).
             attempt.receipt_path = writeResearchReceipt(projectRoot, attempt); // 실패는 throw — 삼키지 않는다
-            savedFiles.push(attempt.receipt_path);
+            recordSaved(attempt.receipt_path);
             researchAttempts.push(attempt);
             if (researchAttempts.length > RESEARCH_MAX_ATTEMPTS) {
                 // 표시용 상한. **상한 집행 근거는 이 배열이 아니라 durable `totals`다**(A-3).
@@ -819,7 +827,7 @@ export async function runWorkflow(args) {
                         attempt.evidence.push(item);
                         const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
                         attempt.raw_paths.push(projRel);
-                        savedFiles.push(projRel);
+                        recordSaved(projRel);
                     },
                 });
                 attempt.dropped_by_domain = res.droppedByDomain;

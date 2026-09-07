@@ -113,7 +113,9 @@ export function statusPipeline(o) {
     else if (st.status === "awaiting_run") {
         if (st.last_failure) {
             // [B-53] `written`은 이 단계의 attempt들에 걸친 **누적**이므로 "직전 실패가 덮은"이 아니다.
-            console.log(`직전 실패: '${st.last_failure.stage}' @ ${st.last_failure.at} (이 단계에서 덮인 파일 ${st.last_failure.written.length}개) — next가 자동 resume합니다`);
+            console.log(`직전 실패: '${st.last_failure.stage}' @ ${st.last_failure.at} (이 단계에서 덮인 파일 ${st.last_failure.written.length}개)\n` +
+                `  [A-4] next는 run_state가 이 workflow의 failed일 때만 resume하고, 그렇지 않으면 **fresh로 다시 돌린다** ` +
+                `(실행 중 크래시는 run_state를 남기지 못한다). 어느 쪽이든 이 영수증이 덮인 경로의 정본이라 drift로 막히지 않는다.`);
         }
         console.log(`다음: harness pipeline next --project ${st.project}`);
     }
@@ -271,9 +273,20 @@ ctx) {
         rs.workflow_id === stage.workflowId &&
         state.last_failure !== null &&
         state.last_failure.stage === stage.id;
-    // 승인 바이트 사전 검증. **fresh는 예외 없는 전수 검증**이고, resume만 `last_failure.written`
-    // digest에 예외를 준다(그 attempt가 정당하게 덮은 것). 그 예외는 **경로별 교체**다 — 아래 [B-52].
-    const written = new Map((resume && state.last_failure ? state.last_failure.written : []).map((w) => [w.path, w]));
+    // 승인 바이트 사전 검증. 예외는 `last_failure.written` digest뿐이고 **경로별 교체**다 — 아래 [B-52].
+    //
+    // [A-4] 예외를 **`resume`이 아니라 영수증의 단계**에 건다. 예전엔 `resume &&`가 앞에 붙어 있었는데,
+    // `resume`은 `run_state.status === "failed"`까지 요구한다(위 판정). 실행 **중**의 크래시는 run_state를
+    // 남기지 못하므로(runWorkflow가 끝나야 쓴다) 그 뒤의 `next`는 fresh로 강하하고, 그러면 이 단계가
+    // 방금 덮은 경로까지 앞 단계 승인 바이트로 판정돼 `pipeline_artifact_drift`가 된다 — fresh 재실행이
+    // 어차피 그 경로를 다시 덮을 것인데도. 영수증이 "이 단계가 이 바이트를 썼다"고 말하면 그 사실은
+    // resume 여부와 무관하게 참이다.
+    //
+    // **약화가 아니다**(B-52 규칙 그대로): 예외로 들어오는 것은 **이 단계가 실제로 쓴 바이트 하나**이고
+    // 아래 `accept = w ? [w] : [approved]`가 여전히 교체다. 앞 단계 승인 바이트를 되돌려 놓으면
+    // `w`와 달라 그대로 거부된다(replay 문구). 넓어지는 것은 "판정 대상 경로"가 아니라 "정본을 아는 경로"다.
+    const stageWrote = state.last_failure?.stage === stage.id ? state.last_failure.written : [];
+    const written = new Map(stageWrote.map((w) => [w.path, w]));
     for (const approved of approvedDigests(state).values()) {
         const w = written.get(approved.path);
         // [B-52] 예외는 **교체이지 추가가 아니다.** 이 단계의 실패 attempt가 덮은 경로는 그 attempt가
@@ -304,8 +317,12 @@ ctx) {
                     `이 단계의 실행이 남긴 내용으로 되돌리거나, 이 단계를 처음부터 다시 돌리려면 파이프라인을 ` +
                     `종결(폐기 판정 또는 'harness pipeline reject')한 뒤 다시 세우세요.`
                 : `승인된 산출물이 승인 시점 바이트와 다릅니다: ${approved.path}\n` +
-                    `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다 — 파일을 복원하거나 ` +
-                    `'harness pipeline restart --project ${project}'로 다시 심사하세요.`, 1);
+                    `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다.\n` +
+                    `  ⓐ 그 파일을 승인 시점 내용으로 되돌리면 이 명령이 이어집니다 — **다만 하네스는 내용을 ` +
+                    `보관하지 않습니다**(영수증은 path·size·sha256뿐). git·백업 등 바깥에서 되돌려야 합니다.\n` +
+                    `  ⓑ [B-54] 예전 안내가 함께 제시하던 'harness pipeline restart'는 **이 상태에서 거부됩니다** ` +
+                    `(진행 중 파이프라인 · pipeline_active) — 실행해 확인했고, 그래서 더는 권하지 않습니다.\n` +
+                    `  바이트를 어디에도 갖고 있지 않다면 이 단계에서 나갈 길은 없습니다 — 대장 \`B-54\`의 잔여분입니다.`, 1);
         }
     }
     // ── dev-handoff: workflow가 아니라 지시문 생성 단계 ──
@@ -346,6 +363,11 @@ ctx) {
         // 발행되고(현 단계 workflow + awaiting_run일 때만) 끝나면 만료된다. 임의 호출자가 nonce를
         // 읽어 lease를 만들 길이 없다 — 그것이 예전 판의 구멍이었다.
         result = await locked.runStage(stage.workflowId, (lease) => runWorkflow({
+            // [A-4] 산출물을 저장할 때마다 영수증을 **즉시** durable에 남긴다 — 여기서 죽어도
+            // "이 단계가 이 경로를 덮었다"가 남아야 다음 next가 탈출구를 갖는다(위 사전 검증의 예외).
+            // lock을 쥔 채 도는 구간이라 다른 writer와 경합하지 않는다. 매번 재독·병합하는 이유는
+            // 같은 경로를 다시 쓰면(게이트 되돌림 등) **가장 최근 바이트가 정본**이어야 하기 때문이다.
+            onArtifactSaved: (rel) => recordStageWrite(root, stage.id, stage.workflowId, rel, now),
             workflowId: stage.workflowId,
             project,
             provider,
@@ -362,7 +384,10 @@ ctx) {
     }
     catch (err) {
         // run_state가 만들어지지 않는 경로(잠금·approver 부재·profile 거부 등) — 파이프라인 상태 불변.
-        return reject("pipeline_run_not_started", `단계 '${stage.id}' 실행이 시작되지 않았습니다 (파이프라인 상태 불변): ${err.message}`, 1);
+        // [A-4] "상태 불변"은 **산출물을 하나도 저장하기 전**에만 참이다. runWorkflow는 step 루프 전체를
+        // try로 감싸 provider 오류를 failed 결과로 접으므로 여기 오는 것은 preflight 실패뿐이고(잠금·
+        // approver 부재·profile 거부) 그때는 저장이 0건이라 영수증도 0건이다 — 그 전제를 문장에 적어 둔다.
+        return reject("pipeline_run_not_started", `단계 '${stage.id}' 실행이 시작되지 않았습니다 (산출물 저장 전이라 파이프라인 상태 불변): ${err.message}`, 1);
     }
     // [Codex A-5] vault export는 **아래 전이(pending/killed/failed 기록)가 끝난 뒤**에 한다:
     // 여기서 내보내면 "run completed"만 적힌 노트가 나오고, 그 시점에 파이프라인은 아직 확인 대기
@@ -382,6 +407,38 @@ ctx) {
     }
     finally {
         exportVault(o, root, result.state);
+    }
+}
+/**
+ * [A-4] 산출물 하나가 저장된 **직후** 영수증에 등재한다 (실행 중 · lock 보유 중).
+ *
+ * `commitAfterRun`의 병합 규칙과 **같다**: 단계가 같으면 이어 붙이고, 같은 경로는 최신 digest가
+ * 이긴다. 다른 것은 시점 하나뿐이다 — 그 하나가 "크래시하면 영수증이 없다"와 "있다"를 가른다.
+ *
+ * state를 매번 재독하는 이유: 이 콜백은 run 도중 여러 번 불리고, 그 사이 `commitAfterRun`이 아직
+ * 돌지 않았어도 앞선 콜백이 이미 파일을 갱신했다. 메모리 snapshot을 들고 있으면 앞의 등재를 덮는다.
+ * 실패는 삼킨다 — 영수증 등재가 run 자체를 죽이면 그것이 더 큰 손해다(산출물은 이미 디스크에 있다).
+ */
+function recordStageWrite(root, stageId, workflowId, rel, now) {
+    try {
+        const read = readPipelineStateAt(pipelineStatePath(root));
+        if (read.kind !== "ok")
+            return;
+        const st = read.state;
+        const carry = st.last_failure?.stage === stageId ? st.last_failure.written : [];
+        const merged = new Map(carry.map((w) => [w.path, w]));
+        for (const w of digestArtifacts(root, [rel], { skipMissing: true }))
+            merged.set(w.path, w);
+        if (merged.size === 0)
+            return;
+        writePipelineState(root, {
+            ...st,
+            last_failure: { stage: stageId, workflow_id: workflowId, at: now(), written: [...merged.values()] },
+            updated_at: now(),
+        });
+    }
+    catch {
+        // 영수증을 못 남겨도 run은 계속한다 — 이 경로가 없던 예전 동작으로 강하할 뿐이다.
     }
 }
 /** run 결과를 파이프라인 상태에 반영한다 (failed → last_failure · completed → pending). */

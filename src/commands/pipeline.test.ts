@@ -16,6 +16,7 @@ import { join } from "node:path";
 import {
   DEFAULT_PIPELINE,
   pipelineStatePath,
+  digestArtifacts,
   readPipelineStateAt,
   checkpointIdFor,
   PIPELINE_LOCK_REL,
@@ -809,6 +810,91 @@ test("[B-41/A-9] 승인 산출물이 프로젝트 밖을 가리키는 symlink로
     rmSync(outside, { force: true });
     rmProject(name);
   }
+});
+
+// ── A-4 ───────────────────────────────────────────────────────
+test("[A-4] 영수증은 산출물을 저장하는 **그 순간** durable에 적힌다 — 실행 중 크래시가 벽돌을 만들지 않는다", async () => {
+  // red: 영수증 쓰기를 runWorkflow **반환 후**(commitAfterRun)로 되돌리면, 실행 중 Ctrl-C/크래시는
+  //      "파일은 덮였는데 영수증은 없는" 상태를 남긴다. 실측(2026-09-03): 그 상태에서 next는
+  //      pipeline_artifact_drift · restart는 pipeline_active · approve/reject는 pipeline_no_pending —
+  //      **탈출구가 0개**이고, drift 안내가 권하던 두 길 중 restart는 그 자리에서 거부된다(B-54).
+  const name = "_a4_crash";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const pend = stateOf(name).pending!;
+  assert.equal((await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }))).code, "pipeline_approved");
+  const approved = stateOf(name).checkpoints.at(-1)!.artifacts.find((a) => a.path === "docs/02_PRD.md")!;
+
+  // 2단계: pm이 그 경로를 덮은 **직후**(다음 agent 호출 시점)에 영수증이 이미 durable인지 본다.
+  let seen: PipelineState["last_failure"] = null;
+  const inner = counting();
+  let calls = 0;
+  const probing: Provider = {
+    id: "mock",
+    async generate(i) {
+      if (calls++ === 1) seen = stateOf(name).last_failure;
+      return inner.generate(i);
+    },
+  };
+  await quiet(() => nextPipeline({ project: name, providerOverride: probing, now: () => FIXED, internalApprover: async () => true }));
+
+  assert.ok(seen, "pm 저장 직후 시점에 영수증이 이미 있다 — 크래시해도 남는 것이 이것이다");
+  const w = seen!.written.find((x) => x.path === "docs/02_PRD.md");
+  assert.ok(w, "덮은 경로가 영수증에 있다");
+  assert.notEqual(w!.sha256, approved.sha256, "그 영수증은 **이 단계가 쓴 바이트**다 (앞 단계 승인본이 아니다)");
+  assert.equal(seen!.stage, "mvp-planning", "영수증의 단계가 현 단계로 결박된다");
+  rmProject(name);
+});
+
+test("[A-4] 크래시 모양의 상태(영수증 있음 · run_state는 이 단계의 failed 아님)에서 next가 drift로 막히지 않는다", async () => {
+  // red: 사전 검증의 예외를 다시 `resume &&`로 묶으면 이 next가 pipeline_artifact_drift로 거부된다.
+  //      resume은 run_state.status==="failed"를 요구하는데 **실행 중 크래시는 run_state를 남기지 못한다**
+  //      (runWorkflow가 끝나야 쓴다) — 그래서 크래시 뒤의 next는 fresh로 강하한다.
+  const name = "_a4_shape";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const pend = stateOf(name).pending!;
+  await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }));
+
+  // 크래시 모양을 손으로 만든다: 2단계가 02_PRD.md를 덮었고, 영수증은 있고, run_state는 1단계 completed.
+  const root = projectPaths(name).root;
+  const prd = join(root, "docs/02_PRD.md");
+  writeFileSync(prd, readFileSync(prd, "utf8") + "\n<!-- 2단계 pm이 덮었다 -->\n", "utf8");
+  assert.equal(loadRunState(name)!.status, "completed", "전제: run_state는 1단계 completed다 (크래시는 2단계 run_state를 못 남긴다)");
+  const st = stateOf(name);
+  writeFileSync(
+    pipelineStatePath(root),
+    JSON.stringify(
+      { ...st, last_failure: { stage: "mvp-planning", workflow_id: "mvp-planning", at: FIXED, written: digestArtifacts(root, ["docs/02_PRD.md"], { skipMissing: true }) } },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_awaiting_approval", "덮인 경로의 정본이 영수증에 있으므로 fresh 재실행이 통과한다");
+  rmProject(name);
+});
+
+test("[A-4/B-54] 영수증 없는 변경은 그대로 drift이고, 안내는 거부되는 restart를 더는 권하지 않는다", async () => {
+  // red ①: 예외를 경로 목록(바이트 없음)으로 바꾸면 이 tamper가 통과한다 — B-52 replay가 되살아난다.
+  // red ②: 안내에 restart를 되살리면 사람이 pipeline_active로 거부되는 명령을 따라간다(거짓 안내 계열).
+  const name = "_a4_tamper";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const pend = stateOf(name).pending!;
+  await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }));
+  writeFileSync(join(projectPaths(name).root, "docs/02_PRD.md"), "# 손댄 내용\n", "utf8");
+
+  const prevExit = process.exitCode;
+  const out = await captureLogs(async () => {
+    const rr = await nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true });
+    assert.equal(rr.code, "pipeline_artifact_drift", "영수증 없는 변경은 그대로 drift다");
+  });
+  process.exitCode = prevExit;
+  assert.match(out, /하네스는 내용을 보관하지 않습니다/, "복원이 왜 사람 몫인지 말한다");
+  assert.doesNotMatch(out, /restart --project \S+'로 다시 심사하세요/, "[B-54] 거부되는 restart를 더는 권하지 않는다");
+  rmProject(name);
 });
 
 // ── A-3 ───────────────────────────────────────────────────────
