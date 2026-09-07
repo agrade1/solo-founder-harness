@@ -39,22 +39,53 @@ export function parseTasks(raw) {
     }
     if (!Array.isArray(arr))
         throw new Error("브리프가 배열이 아님");
-    return arr.map((t, i) => {
+    /**
+     * [C-155] **형태 오류를 조용히 버리지 않는다.** 예전 판은 배열이 아니면 `undefined`,
+     * 배열이면 비-문자열 원소를 걸러 냈다. `deps`에서 그것은 **의미가 바뀌는** 처리다:
+     * `deps: "task-a"`(스칼라)가 `undefined`가 되고 스케줄러 둘(`mission.ts`의 `task.deps?.some` ·
+     * `parallelMission.ts`의 `(t.deps ?? []).every`)이 **의존성 없음**으로 읽어 선행 완료 전에
+     * 실행한다 — 병렬 모드에선 자동 병합까지 간다. 원소 하나가 사라지는 것도 같은 사고다.
+     *
+     * `id`/`role`/`task`가 이미 타입 오류에서 throw하므로 이쪽만 무음이던 것이 비대칭이었다.
+     */
+    const asStrings = (v, i, field) => {
+        if (v === undefined || v === null)
+            return undefined;
+        if (!Array.isArray(v))
+            throw new Error(`태스크[${i}] ${field}는 문자열 배열이어야 합니다 (받은 값: ${JSON.stringify(v)})`);
+        for (const x of v) {
+            if (typeof x !== "string")
+                throw new Error(`태스크[${i}] ${field}에 문자열이 아닌 원소가 있습니다: ${JSON.stringify(x)}`);
+        }
+        return v;
+    };
+    const tasks = arr.map((t, i) => {
         const o = t;
         if (typeof o.id !== "string" || typeof o.role !== "string" || typeof o.task !== "string") {
             throw new Error(`태스크[${i}] 필수 필드(id/role/task) 누락`);
         }
-        const asStrings = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === "string") : undefined);
         return {
             id: o.id,
             role: o.role,
             task: o.task,
-            ownership: asStrings(o.ownership),
-            dod: asStrings(o.dod),
-            deps: asStrings(o.deps),
+            ownership: asStrings(o.ownership, i, "ownership"),
+            dod: asStrings(o.dod, i, "dod"),
+            deps: asStrings(o.deps, i, "deps"),
             difficulty: o.difficulty === "simple" ? "simple" : o.difficulty === "hard" ? "hard" : undefined,
         };
     });
+    // [C-155] 없는 id를 가리키는 deps는 여기서 이름을 대고 멈춘다. 스케줄러는 이미 fail closed라
+    // (미지 id는 영원히 미충족 → dep_unmet) **일찍 실행되지는 않지만**, 오타 하나가 mission 전체를
+    // 말없이 보류로 만든다. 순환은 검사하지 않는다 — 같은 이유로 스케줄러가 dep_unmet으로 닫고,
+    // 검사를 더해도 막는 사고가 없다(YAGNI).
+    const ids = new Set(tasks.map((t) => t.id));
+    for (const [i, t] of tasks.entries()) {
+        for (const d of t.deps ?? []) {
+            if (!ids.has(d))
+                throw new Error(`태스크[${i}] '${t.id}'의 deps가 없는 태스크를 가리킵니다: ${d}`);
+        }
+    }
+    return tasks;
 }
 /** 목표 → 브리프. 플래너 세션 1회 실행 후 파싱. */
 export async function generateBrief(opts) {
