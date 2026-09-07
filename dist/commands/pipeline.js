@@ -691,7 +691,13 @@ export function approveCheckpoint(o) {
         //    (정당한 재작성을 drift로 잡지 않는다 — effectiveDigests가 그 우선순위를 표현한다).
         const problem = driftProblem(root, effectiveDigests(state, pending.artifacts).values());
         if (problem) {
-            return reject("pipeline_artifact_drift", `${problem}\n확인한 바이트가 아니므로 승인하지 않았습니다 (상태 불변) — 파일을 복원하거나 'harness pipeline reject'로 되돌린 뒤 다시 실행하세요.`, 1);
+            return reject("pipeline_artifact_drift", 
+            // [B-54 잔여/함정 27] 다른 drift 안내 둘은 "하네스는 내용을 보관하지 않는다"를 M15에서 적었는데
+            // **이 자리는 빠졌다.** 여기서는 pending이 있어 `reject`가 실제로 열려 있으므로 안내가 거짓은
+            // 아니지만, 사람이 ⓐ를 먼저 시도하고 되살릴 방법이 없음을 그때서야 알게 된다. 같은 사실을 적는다.
+            `${problem}\n확인한 바이트가 아니므로 승인하지 않았습니다 (상태 불변).\n` +
+                `  ⓐ 그 파일을 확인 시점 내용으로 되돌린다 — **하네스는 내용을 보관하지 않습니다**(영수증은 path·size·sha256뿐). git·백업 등 바깥에서 되돌려야 합니다.\n` +
+                `  ⓑ 'harness pipeline reject ${pending.stage} --checkpoint ${pending.checkpoint_id} --project ${state.project}'로 되돌린 뒤 다시 실행한다 — 이 상태에서는 실제로 열려 있습니다(확인 대기라 pending이 있습니다).`, 1);
         }
         // ③ workflow 단계면 run_state를 다시 읽어 그 단계의 완료를 확인한다. killed면 화해가 먼저다.
         if (stage.kind === "workflow") {

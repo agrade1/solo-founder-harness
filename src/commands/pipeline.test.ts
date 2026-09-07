@@ -266,8 +266,16 @@ test("[B-41/P4] approve 직전 1바이트 수정 → 거부 / 같은 바이트�
   const original = readFileSync(prd);
 
   writeFileSync(prd, Buffer.concat([original, Buffer.from("x")]));
-  const drift = await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: id, now: () => FIXED }));
+  let drift!: Awaited<ReturnType<typeof approveCheckpoint>>;
+  const driftOut = await captureLogs(async () => {
+    drift = await approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: id, now: () => FIXED });
+  });
+  process.exitCode = undefined;
   assert.equal(drift.code, "pipeline_artifact_drift", "확인한 바이트가 아니면 승인하지 않는다");
+  // [B-54 잔여] 이 자리의 안내도 **하네스가 내용을 보관하지 않는다**는 사실을 말한다 — 다른 drift
+  // 안내 둘은 M15에서 그렇게 고쳤는데 여기만 빠져 있었다(함정 27: 문자열도 형제를 grep해야 한다).
+  assert.match(driftOut, /하네스는 내용을 보관하지 않습니다/, "되돌릴 수 없다는 사실을 먼저 말한다");
+  assert.match(driftOut, /실제로 열려 있습니다/, "이 상태에서 통하는 길(reject)을 통한다고 말한다");
   assert.equal(stateOf(name).status, "awaiting_approval", "상태 불변");
 
   // 되돌린 뒤 같은 workflow를 **다시** 돌린다.
