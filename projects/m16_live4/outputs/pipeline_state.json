@@ -10,7 +10,7 @@
   "last_failure": {
     "stage": "idea-validation",
     "workflow_id": "idea-validation",
-    "at": "2026-09-07T07:29:41.483Z",
+    "at": "2026-09-07T07:34:05.712Z",
     "written": [
       {
         "path": "outputs/chief_of_staff.md",
@@ -81,5 +81,5 @@
   },
   "checkpoints": [],
   "started_at": "2026-09-07T07:22:50.998Z",
-  "updated_at": "2026-09-07T07:29:41.483Z"
+  "updated_at": "2026-09-07T07:34:05.712Z"
 }
