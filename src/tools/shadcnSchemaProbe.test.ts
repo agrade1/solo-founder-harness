@@ -144,7 +144,7 @@ async function runProbe(cfg: Record<string, unknown>, opts: ProbeOpts = {}) {
   process.env.PATH = binDir + ":" + (prevPath ?? "");
   if (opts.bogusEnvOverride) process.env.HARNESS_SHADCN_NPX_BIN = "/nonexistent/should-be-ignored";
   try {
-    const res = await runShadcnSchemaProbe({ serviceCwd, runtimeDir, now: () => "2026-01-01T00:00:00.000Z", timeoutMs: opts.timeoutMs ?? 8000, redactNames: opts.redactNames });
+    const res = await runShadcnSchemaProbe({ serviceCwd, runtimeDir, now: () => "2026-01-01T00:00:00.000Z", timeoutMs: opts.timeoutMs ?? 20000, redactNames: opts.redactNames });
     return { res, err: undefined, dir, runtimeDir, methods: readMethods(binDir) };
   } catch (e) {
     return { res: undefined, err: e as Error, dir, runtimeDir, methods: readMethods(binDir) };
@@ -296,13 +296,17 @@ test("[M3c-1] nonzero / timeout / stdout·stderr 상한 거부", async () => {
   } finally {
     rmSync(b.dir, { recursive: true, force: true });
   }
-  const c = await runProbe({ mode: "stdoutLarge" }, { timeoutMs: 5000 });
+  // [C-151] 스케줄링 여유(slack)이지 계약이 아니다 — 이 값을 재는 테스트는 전부 짧은 값을
+  // **명시 override**한다(hang 300·400·700). 부하가 있는 호스트에서 5s는 stub spawn에 모자라
+  // `src/tools/` spawn 테스트가 매 실행마다 다른 2~10건씩 타임아웃으로 실패했다(대장 `C-151`).
+  // 빠른 호스트에서는 stub이 즉시 응답하므로 이 상향의 비용은 0이다.
+  const c = await runProbe({ mode: "stdoutLarge" }, { timeoutMs: 20000 });
   try {
     assert.equal((c.err as ShadcnSchemaProbeError)?.code, "stdout_too_large");
   } finally {
     rmSync(c.dir, { recursive: true, force: true });
   }
-  const d = await runProbe({ mode: "stderrLarge" }, { timeoutMs: 5000 });
+  const d = await runProbe({ mode: "stderrLarge" }, { timeoutMs: 20000 });
   try {
     assert.equal((d.err as ShadcnSchemaProbeError)?.code, "stderr_too_large");
   } finally {
@@ -313,7 +317,7 @@ test("[M3c-1] nonzero / timeout / stdout·stderr 상한 거부", async () => {
 // ── UTF-8 / lifecycle ─────────────────────────────────────────────────────────
 
 test("[M3c-1][P0-5] 멀티바이트 chunk 분할 → StringDecoder로 손상 없이 수집", async () => {
-  const out = await runProbe({ mode: "multibyteSplit" }, { timeoutMs: 5000 });
+  const out = await runProbe({ mode: "multibyteSplit" }, { timeoutMs: 20000 });
   try {
     assert.ok(out.res, out.err?.message);
     assert.deepEqual(out.res!.snapshot.tools.map((t) => t.name), EXPECTED_SHADCN_TOOLS);
@@ -324,7 +328,7 @@ test("[M3c-1][P0-5] 멀티바이트 chunk 분할 → StringDecoder로 손상 없
 });
 
 test("[M3c-1][P0-5] 종료 지연 서버 → stdin 종료 후 bounded wait로 close 확인 뒤 성공", async () => {
-  const out = await runProbe({ mode: "delayedClose" }, { timeoutMs: 5000 });
+  const out = await runProbe({ mode: "delayedClose" }, { timeoutMs: 20000 });
   try {
     assert.ok(out.res, out.err?.message);
     assert.deepEqual(out.res!.snapshot.tools.map((t) => t.name), EXPECTED_SHADCN_TOOLS);
