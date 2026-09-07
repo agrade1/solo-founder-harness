@@ -10,7 +10,7 @@
   "last_failure": {
     "stage": "idea-validation",
     "workflow_id": "idea-validation",
-    "at": "2026-09-07T07:34:05.712Z",
+    "at": "2026-09-07T07:36:57.124Z",
     "written": [
       {
         "path": "outputs/chief_of_staff.md",
@@ -76,10 +76,15 @@
         "path": "outputs/research/receipt-b005823ee82e20b940a103d163488cda5797e7a028eadad0bc38122880af66bb.json",
         "size": 11726,
         "sha256": "b005823ee82e20b940a103d163488cda5797e7a028eadad0bc38122880af66bb"
+      },
+      {
+        "path": "docs/02_PRD.md",
+        "size": 13080,
+        "sha256": "2134d20358a5a235fdac488c2e231783f9177441fd7b3b85ecd8010860e18f67"
       }
     ]
   },
   "checkpoints": [],
   "started_at": "2026-09-07T07:22:50.998Z",
-  "updated_at": "2026-09-07T07:34:05.712Z"
+  "updated_at": "2026-09-07T07:36:57.124Z"
 }
