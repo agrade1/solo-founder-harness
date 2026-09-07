@@ -32,7 +32,12 @@ export const mockProvider = {
                         color: { "text-body": "{primitive.color.gray-900}", action: "{primitive.color.blue-500}", surface: "{primitive.color.white}" },
                         space: { gap: "{primitive.space.2}" },
                     },
-                    component: { button: { bg: "{semantic.color.action}", fg: "{semantic.color.text-body}", gap: "{semantic.space.gap}" } },
+                    // [B-4] `focus-ring`은 장식이 아니다: 인벤토리에 대화형 컴포넌트(Button)가 실리면
+                    // `validateFocusTokens`가 `component.button`에 focus 표시 토큰을 요구한다(`focus_token_missing`).
+                    component: {
+                        button: { bg: "{semantic.color.action}", fg: "{semantic.color.text-body}", gap: "{semantic.space.gap}", "focus-ring": "{semantic.color.action}" },
+                        input: { bg: "{semantic.color.surface}", fg: "{semantic.color.text-body}", "focus-ring": "{semantic.color.action}" },
+                    },
                     // **최상위 key는 3계층 + `a11y`가 정확히 있어야 하고**(`designContract.ts`의 `tokens_layers`),
                     // `text-*` semantic 색은 전부 `contrastPairs`의 fg로 선언돼야 한다(`a11y_text_uncovered`).
                     // 그래서 mock도 그 계약을 만족한다 — test provider가 만족 못 하는 계약은 fixture가 아니라 함정이다.
@@ -47,7 +52,17 @@ export const mockProvider = {
         // B-41의 tokens.json과 **같은 규율**이다: test provider가 자기가 받은 계약을 만족하지 못하면
         // 고칠 것은 계약이 아니라 test provider다. (이전 판의 golden run_state는 pm의 누락 7건을
         // `warnings`에 박아 두고 status는 completed였다 — 그 스냅샷이 곧 이 구멍의 증거였다.)
-        const alreadyEmitted = decisionBlock + tokensBlock;
+        // [B-4] **컴포넌트 인벤토리는 전용 형식이 있다.** 범용 `requiredBlock`이 내는
+        // `- [MOCK] <헤더> — …` bullet은 계약 정규식(`- <Name>: <variant>, …`)에 걸리지 않아
+        // `inventory_line_format` + `inventory_empty`로 죽는다. `## Decision`·tokens.json과 같은 규율이다:
+        // **test provider가 자기가 받은 계약을 만족하지 못하면 고칠 것은 계약이 아니라 test provider다.**
+        // (M15에서 design 계약을 실제 경로에 배선하자 이 fixture가 곧바로 red가 됐다 — 계약이 production에서
+        //  한 번도 안 돌았다는 증거이기도 하다.)
+        const INVENTORY_HEADER = "컴포넌트 인벤토리";
+        const inventoryBlock = (agent.required_headers ?? []).includes(INVENTORY_HEADER)
+            ? `## ${INVENTORY_HEADER}\n\n- Button: primary, secondary\n- Input: default, error\n\n`
+            : "";
+        const alreadyEmitted = decisionBlock + tokensBlock + inventoryBlock;
         const requiredBlock = (agent.required_headers ?? [])
             .filter((h) => !alreadyEmitted.includes(`## ${h}\n`))
             .map((h) => `## ${h}\n\n- [MOCK] ${h} — ${agent.role} 관점의 내용\n\n`)
@@ -79,7 +94,7 @@ export const mockProvider = {
 - 이전 판단 요약:
 ${priorBlock}
 
-${decisionBlock}${requiredBlock}${tokensBlock}## Main Judgment
+${decisionBlock}${requiredBlock}${inventoryBlock}${tokensBlock}## Main Judgment
 
 - [MOCK] ${agent.name}의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다.
 

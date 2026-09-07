@@ -164,15 +164,21 @@ export function statusPipeline(o: { project: string }): PipelineCommandResult {
     if (st.last_failure) {
       // [B-53] `written`은 이 단계의 attempt들에 걸친 **누적**이므로 "직전 실패가 덮은"이 아니다.
       console.log(
-        `직전 실패: '${st.last_failure.stage}' @ ${st.last_failure.at} (이 단계에서 덮인 파일 ${st.last_failure.written.length}개) — next가 자동 resume합니다`,
+        `직전 실패: '${st.last_failure.stage}' @ ${st.last_failure.at} (이 단계에서 덮인 파일 ${st.last_failure.written.length}개)\n` +
+          `  [A-4] next는 run_state가 이 workflow의 failed일 때만 resume하고, 그렇지 않으면 **fresh로 다시 돌린다** ` +
+          `(실행 중 크래시는 run_state를 남기지 못한다). 어느 쪽이든 이 영수증이 덮인 경로의 정본이라 drift로 막히지 않는다.`,
       );
     }
-    console.log(`다음: harness pipeline next --project ${st.project}`);
+    console.log(`다음: harness pipeline next --project ${st.project}${st.provider ? ` --provider ${st.provider}` : ""}`);
   } else if (st.status === "killed") {
     console.log("");
     console.log("폐기 판정으로 종료된 파이프라인입니다 — 지시문·DAG·handoff는 만들지 않습니다.");
     console.log(`재평가: harness run <kill 게이트 workflow> --project ${st.project} (게이트가 '진행'을 내면 잠금이 풀립니다)`);
-    console.log(`다시 세우기: harness pipeline restart --project ${st.project} (기존 state는 지우지 않고 rename 보관)`);
+    // [A-3] 2단계 이상 폐기면 restart가 먼저 오면 거부된다 — 순서를 문장에 넣는다.
+    console.log(
+      `다시 세우기: **먼저** 재평가로 '진행' 판정을 받고(harness run <${reevaluationWorkflowIds().join(" | ")}> --project ${st.project}), ` +
+        `**그다음** harness pipeline restart --project ${st.project} (기존 state는 지우지 않고 rename 보관)`,
+    );
   } else {
     // [B-41/결정 2] 완료 상태에서도 **하류가 막혀 있으면 그 사실을 먼저 말한다.** 예전 status는
     // drift가 있어도 "완료 — 직접 실행하세요"만 출력했다(오케스트레이터 스모크에서 실측).
@@ -287,7 +293,8 @@ async function nextLocked(
         2,
       );
     }
-    state = newPipelineState(project, now());
+    // [B-57] 이 파이프라인이 쓸 provider를 **처음 만들 때 새긴다** — 이후 단계는 이것을 승계한다.
+    state = newPipelineState(project, now(), o.provider);
     writePipelineState(root, state); // 전이: 파이프라인 생성 (원자 쓰기 1회)
     console.log(`파이프라인 시작: ${PIPELINE_ID} · ${DEFAULT_PIPELINE.map((s) => s.id).join(" → ")}`);
   } else {
@@ -299,7 +306,8 @@ async function nextLocked(
     return reject(
       "pipeline_killed",
       `이 파이프라인은 폐기 판정으로 종료됐습니다 — next로 전진하지 않습니다.\n` +
-        `재평가: harness run <kill 게이트 workflow> --project ${project} · 다시 세우기: harness pipeline restart --project ${project}`,
+        `[A-3] 순서: **먼저** 재평가 harness run <kill 게이트 workflow> --project ${project} → '진행' 판정 → ` +
+          `**그다음** harness pipeline restart --project ${project} (순서를 바꾸면 restart가 run_state_killed로 거부된다)`,
       1,
     );
   }
@@ -340,6 +348,7 @@ async function nextLocked(
         `run_state가 폐기 판정인데 그 workflow('${rsWf}')는 현 단계('${stage.id}')가 아닙니다 — ` +
           `현 단계 영수증으로 적으면 거짓 기록이 되므로 아무것도 쓰지 않았습니다.\n` +
           `[A-3] **이 상태에서는 안내할 수 있는 명령이 없습니다** — 실측으로 확인했습니다: ` +
+          // guidance-exempt: 실행 지시가 아니라 **거부되는 명령을 설명**한다 (인용된 명령을 권하지 않는다)
           `\`harness run\`은 파이프라인이 이 run을 예약해 거부되고(pipeline_run_reserved), ` +
           `\`restart\`는 pipeline_active로, approve/reject는 pending 부재로 거부됩니다.\n` +
           `확인된 생성 경로는 "2단계 이상 폐기 → pipeline restart" 하나이고 그 경로는 이제 restart가 막습니다 ` +
@@ -366,9 +375,20 @@ async function nextLocked(
     state.last_failure !== null &&
     state.last_failure.stage === stage.id;
 
-  // 승인 바이트 사전 검증. **fresh는 예외 없는 전수 검증**이고, resume만 `last_failure.written`
-  // digest에 예외를 준다(그 attempt가 정당하게 덮은 것). 그 예외는 **경로별 교체**다 — 아래 [B-52].
-  const written = new Map((resume && state.last_failure ? state.last_failure.written : []).map((w) => [w.path, w]));
+  // 승인 바이트 사전 검증. 예외는 `last_failure.written` digest뿐이고 **경로별 교체**다 — 아래 [B-52].
+  //
+  // [A-4] 예외를 **`resume`이 아니라 영수증의 단계**에 건다. 예전엔 `resume &&`가 앞에 붙어 있었는데,
+  // `resume`은 `run_state.status === "failed"`까지 요구한다(위 판정). 실행 **중**의 크래시는 run_state를
+  // 남기지 못하므로(runWorkflow가 끝나야 쓴다) 그 뒤의 `next`는 fresh로 강하하고, 그러면 이 단계가
+  // 방금 덮은 경로까지 앞 단계 승인 바이트로 판정돼 `pipeline_artifact_drift`가 된다 — fresh 재실행이
+  // 어차피 그 경로를 다시 덮을 것인데도. 영수증이 "이 단계가 이 바이트를 썼다"고 말하면 그 사실은
+  // resume 여부와 무관하게 참이다.
+  //
+  // **약화가 아니다**(B-52 규칙 그대로): 예외로 들어오는 것은 **이 단계가 실제로 쓴 바이트 하나**이고
+  // 아래 `accept = w ? [w] : [approved]`가 여전히 교체다. 앞 단계 승인 바이트를 되돌려 놓으면
+  // `w`와 달라 그대로 거부된다(replay 문구). 넓어지는 것은 "판정 대상 경로"가 아니라 "정본을 아는 경로"다.
+  const stageWrote = state.last_failure?.stage === stage.id ? state.last_failure.written : [];
+  const written = new Map(stageWrote.map((w) => [w.path, w]));
   for (const approved of approvedDigests(state).values()) {
     const w = written.get(approved.path);
     // [B-52] 예외는 **교체이지 추가가 아니다.** 이 단계의 실패 attempt가 덮은 경로는 그 attempt가
@@ -397,12 +417,19 @@ async function nextLocked(
         "pipeline_artifact_drift",
         replay
           ? `이 단계가 덮어쓴 산출물이 **앞 단계 승인본 바이트로 되돌아가 있습니다**: ${approved.path}\n` +
-            `앞 단계의 판단을 현 단계 판단으로 재사용하게 되므로 **모델을 호출하지 않고** 멈춥니다 — ` +
-            `이 단계의 실행이 남긴 내용으로 되돌리거나, 이 단계를 처음부터 다시 돌리려면 파이프라인을 ` +
-            `종결(폐기 판정 또는 'harness pipeline reject')한 뒤 다시 세우세요.`
+            `앞 단계의 판단을 현 단계 판단으로 재사용하게 되므로 **모델을 호출하지 않고** 멈춥니다.\n` +
+            `  ⓐ 이 단계의 실행이 남긴 내용으로 되돌리면 이어집니다 (그 digest가 영수증에 있습니다).\n` +
+            `  ⓑ [B-58] 예전 안내가 함께 제시하던 "폐기 판정 또는 'harness pipeline reject'로 종결"은 ` +
+            `**이 상태에서 둘 다 도달할 수 없습니다** — 폐기 판정은 게이트까지 가야 하는데 이 검사가 그 앞에서 막고, ` +
+            `reject는 확인 대기 산출물이 없어 'pipeline_no_pending'입니다. 실행해 확인했고, 그래서 더는 권하지 않습니다.\n` +
+            `  이 단계의 바이트를 갖고 있지 않다면 나갈 길이 없습니다 — 대장 \`B-54\`의 잔여분입니다.`
           : `승인된 산출물이 승인 시점 바이트와 다릅니다: ${approved.path}\n` +
-            `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다 — 파일을 복원하거나 ` +
-            `'harness pipeline restart --project ${project}'로 다시 심사하세요.`,
+            `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다.\n` +
+            `  ⓐ 그 파일을 승인 시점 내용으로 되돌리면 이 명령이 이어집니다 — **다만 하네스는 내용을 ` +
+            `보관하지 않습니다**(영수증은 path·size·sha256뿐). git·백업 등 바깥에서 되돌려야 합니다.\n` +
+            `  ⓑ [B-54] 예전 안내가 함께 제시하던 'harness pipeline restart'는 **이 상태에서 거부됩니다** ` +
+            `(진행 중 파이프라인 · pipeline_active) — 실행해 확인했고, 그래서 더는 권하지 않습니다.\n` +
+            `  바이트를 어디에도 갖고 있지 않다면 이 단계에서 나갈 길은 없습니다 — 대장 \`B-54\`의 잔여분입니다.`,
         1,
       );
     }
@@ -431,7 +458,19 @@ async function nextLocked(
   }
 
   // ── workflow 단계 ──
-  const provider = o.providerOverride ?? getProvider(o.provider ?? DEFAULT_PROVIDER_ID);
+  // [B-57] **provider 승계.** 우선순위: 테스트 seam > 이번 호출의 --provider > 이 파이프라인에 새겨진 값 > 기본값.
+  // 예전엔 저장된 값이 없어서 `--provider`를 안 붙인 next가 곧바로 mock으로 떨어졌고, 안내 6곳 전부가
+  // 그 플래그를 빼고 인쇄했다 — 사람이 안내를 따르는 것 자체가 강등 경로였다.
+  const providerId = o.provider ?? state.provider ?? DEFAULT_PROVIDER_ID;
+  const provider = o.providerOverride ?? getProvider(providerId);
+  if (state.provider !== providerId) {
+    // 전환은 정당하다(mock으로 리허설하고 실제로 돌리는 흐름). **조용한** 전환만 막는다.
+    if (state.provider !== undefined) {
+      console.log(`provider 변경: '${state.provider}' → '${providerId}' (이 파이프라인에 새로 새깁니다)`);
+    }
+    state = { ...state, provider: providerId, updated_at: now() };
+    writePipelineState(root, state);
+  }
   // [C-126/A-1] **파이프라인이 리서치 어댑터의 1급 소비자다.** 여기서 해석하지 않으면 `run.ts`를
   // 거치지 않는 이 경로(→ locked.runStage → runWorkflow)에서 1단계는 항상 self가 된다.
   const researchRuntime = o.researchRuntimeOverride ?? resolveResearchRuntime();
@@ -448,6 +487,11 @@ async function nextLocked(
     // 읽어 lease를 만들 길이 없다 — 그것이 예전 판의 구멍이었다.
     result = await locked.runStage(stage.workflowId, (lease) =>
       runWorkflow({
+        // [A-4] 산출물을 저장할 때마다 영수증을 **즉시** durable에 남긴다 — 여기서 죽어도
+        // "이 단계가 이 경로를 덮었다"가 남아야 다음 next가 탈출구를 갖는다(위 사전 검증의 예외).
+        // lock을 쥔 채 도는 구간이라 다른 writer와 경합하지 않는다. 매번 재독·병합하는 이유는
+        // 같은 경로를 다시 쓰면(게이트 되돌림 등) **가장 최근 바이트가 정본**이어야 하기 때문이다.
+        onArtifactSaved: (rel) => recordStageWrite(root, stage.id, stage.workflowId, rel, now),
         workflowId: stage.workflowId,
         project,
         provider,
@@ -464,7 +508,14 @@ async function nextLocked(
     );
   } catch (err) {
     // run_state가 만들어지지 않는 경로(잠금·approver 부재·profile 거부 등) — 파이프라인 상태 불변.
-    return reject("pipeline_run_not_started", `단계 '${stage.id}' 실행이 시작되지 않았습니다 (파이프라인 상태 불변): ${(err as Error).message}`, 1);
+    // [A-4] "상태 불변"은 **산출물을 하나도 저장하기 전**에만 참이다. runWorkflow는 step 루프 전체를
+    // try로 감싸 provider 오류를 failed 결과로 접으므로 여기 오는 것은 preflight 실패뿐이고(잠금·
+    // approver 부재·profile 거부) 그때는 저장이 0건이라 영수증도 0건이다 — 그 전제를 문장에 적어 둔다.
+    return reject(
+      "pipeline_run_not_started",
+      `단계 '${stage.id}' 실행이 시작되지 않았습니다 (산출물 저장 전이라 파이프라인 상태 불변): ${(err as Error).message}`,
+      1,
+    );
   }
 
   // [Codex A-5] vault export는 **아래 전이(pending/killed/failed 기록)가 끝난 뒤**에 한다:
@@ -472,7 +523,7 @@ async function nextLocked(
   // 기록을 갖지 못한다 → vault만 보는 사람에게 거짓 완료 영수증이다. try/finally로 모든 종료
   // 경로(정상·거부)에서 한 번만 내보낸다.
   // [C-126/A-6] 실제 mode 영수증은 run이 끝난 **뒤에만** 낼 수 있다 (사전 문구는 "설정됨"까지다).
-  for (const line of researchOutcomeLines(result.state.research?.attempts)) console.log(line);
+  for (const line of researchOutcomeLines(result.state.research?.attempts, result.state.research?.carried_attempts ?? 0)) console.log(line);
   try {
     if (result.state.status === "killed") {
       const next = reconcileKilled(root, state, stage, result.state, now());
@@ -483,6 +534,35 @@ async function nextLocked(
     return commitAfterRun(o, { project, root, now, state, stage, result, research: researchRuntime });
   } finally {
     exportVault(o, root, result.state);
+  }
+}
+
+/**
+ * [A-4] 산출물 하나가 저장된 **직후** 영수증에 등재한다 (실행 중 · lock 보유 중).
+ *
+ * `commitAfterRun`의 병합 규칙과 **같다**: 단계가 같으면 이어 붙이고, 같은 경로는 최신 digest가
+ * 이긴다. 다른 것은 시점 하나뿐이다 — 그 하나가 "크래시하면 영수증이 없다"와 "있다"를 가른다.
+ *
+ * state를 매번 재독하는 이유: 이 콜백은 run 도중 여러 번 불리고, 그 사이 `commitAfterRun`이 아직
+ * 돌지 않았어도 앞선 콜백이 이미 파일을 갱신했다. 메모리 snapshot을 들고 있으면 앞의 등재를 덮는다.
+ * 실패는 삼킨다 — 영수증 등재가 run 자체를 죽이면 그것이 더 큰 손해다(산출물은 이미 디스크에 있다).
+ */
+function recordStageWrite(root: string, stageId: string, workflowId: string, rel: string, now: () => string): void {
+  try {
+    const read = readPipelineStateAt(pipelineStatePath(root));
+    if (read.kind !== "ok") return;
+    const st = read.state;
+    const carry = st.last_failure?.stage === stageId ? st.last_failure.written : [];
+    const merged = new Map(carry.map((w) => [w.path, w]));
+    for (const w of digestArtifacts(root, [rel], { skipMissing: true })) merged.set(w.path, w);
+    if (merged.size === 0) return;
+    writePipelineState(root, {
+      ...st,
+      last_failure: { stage: stageId, workflow_id: workflowId, at: now(), written: [...merged.values()] },
+      updated_at: now(),
+    });
+  } catch {
+    // 영수증을 못 남겨도 run은 계속한다 — 이 경로가 없던 예전 동작으로 강하할 뿐이다.
   }
 }
 
@@ -933,7 +1013,7 @@ export function restartPipeline(o: { project: string; now?: () => string }): Pip
     }
     if (!archive) return reject("pipeline_archive_name_exhausted", `archive 이름을 예약할 수 없습니다 (${stamp} 계열 100개 사용 중)`, 1);
     renameSync(abs, archive); // **삭제 없음** — 기존 영수증은 예약한 자리로 그대로 보관된다
-    const fresh = newPipelineState(o.project, at);
+    const fresh = newPipelineState(o.project, at, undefined); // [B-57] 다시 세우면 provider도 다시 고른다(승계 안 함)
     writePipelineState(root, fresh);
     console.log(`파이프라인을 다시 시작했습니다 — 기존 state는 보관: ${archive.slice(root.length + 1)}`);
     console.log(`단계 ${stageLabel(fresh)}부터: harness pipeline next --project ${o.project}`);

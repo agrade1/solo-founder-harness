@@ -86,6 +86,10 @@ test("회귀: mock idea-validation run_state가 golden과 일치 (가변 메타 
   // 리서치 agent가 도는 workflow는 키가 없어도 attempt와 receipt를 남긴다(설계 §6.1 — 승인자가
   // "이 문서가 어떤 리서치 모드에서 나왔나"를 승인 바이트 안에서 본다). `receipt_path`는 attempt
   // 내용의 sha256이라 고정 시각·mock 출력에서 결정적이다 — 그 값이 바뀌면 attempt 내용이 바뀐 것이다.
+  // [B-60] golden에 `research.carried_attempts`가 **의도적으로** 추가됐다(값 0 = 물려받은 attempt 없음).
+  // 영수증(`ResearchAttempt`)에 `workflow_id`를 넣는 안을 기각하고 run_state에 경계 하나만 둔 결과다 —
+  // 영수증은 content-addressed라 필드를 늘리면 `receipt_path`가 전부 바뀌고 checkpoint 결박이 깨진다.
+  // **golden은 변경 감지기다**: 이 줄이 없으면 스키마 변경이 조용히 지나간다. 그래서 바꿀 때마다 이유를 적는다.
   assert.ok(existsSync(GOLDEN), `golden 스냅샷이 없습니다: ${GOLDEN} (생성 후 커밋 필요)`);
   const golden = JSON.parse(readFileSync(GOLDEN, "utf8")) as RunState;
   assert.deepEqual(actual, golden, "정규화된 run_state가 golden과 동일 (M2 변경이 mock 출력을 바꾸지 않음)");

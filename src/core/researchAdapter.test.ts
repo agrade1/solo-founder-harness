@@ -1859,3 +1859,42 @@ test("[C-138/④] `research_cap_exceeded` 안내는 'resume이 다시 막힌다'
   assert.ok(!other.includes("다시 막힙니다"), "예산 소진이 아닌 사유에 예산 문구가 샜다");
   rmProject(name2);
 });
+
+// ── B-61 ──────────────────────────────────────────────────────
+test("[B-61] evidence 상한에 이미 닿았으면 backend를 **호출하지 않고** 거부한다", async () => {
+  // red: 상한 검사를 `take()`(유료 호출 뒤)에만 두면 resume마다 크레딧 1회를 사서 버린다.
+  //      실측(2026-09-04): priorResults가 상한인 채로 resume 4회 → 유료 backend 4회 · 저장 근거 0건 ·
+  //      매번 research_cap_exceeded. 사람은 "상한이라 안 돈다"고 읽지만 돈은 나갔다.
+  let paid = 0;
+  const inner = {
+    async search(q: string) {
+      paid++;
+      return [{ source: `https://x/${q}`, title: "t", raw: "r" }];
+    },
+    async extract() {
+      throw new Error("n/a");
+    },
+  };
+  for (let attempt = 1; attempt <= 4; attempt++) {
+    const be = createSessionBackend(inner, (x) => x, { priorCalls: attempt - 1, priorResults: RESEARCH_MAX_EVIDENCE_PER_RUN });
+    await assert.rejects(() => be.search(`질의-${attempt}`), (e: unknown) => (e as { code?: string }).code === "research_cap_exceeded");
+  }
+  assert.equal(paid, 0, `상한 도달 후 resume 4회에 유료 호출이 0회여야 한다 (실제: ${paid})`);
+});
+
+test("[B-61] 상한 **직전**에는 그대로 호출한다 — 경계를 앞당기지 않았다", async () => {
+  let paid = 0;
+  const inner = {
+    async search() {
+      paid++;
+      return [{ source: "https://x/1", title: "t", raw: "r" }];
+    },
+    async extract() {
+      throw new Error("n/a");
+    },
+  };
+  const be = createSessionBackend(inner, (x) => x, { priorResults: RESEARCH_MAX_EVIDENCE_PER_RUN - 1 });
+  const out = await be.search("q");
+  assert.equal(out.length, 1);
+  assert.equal(paid, 1, "상한에 닿기 전 호출은 막지 않는다");
+});

@@ -217,3 +217,32 @@ test("[B-5] tokens.json은 '## 디자인 토큰' 절에서만 뽑는다 — 앞 
   assert.equal(extractTokensJson(onlySummary), null, "'개요'는 '## 디자인 토큰'이 아니다");
   assert.ok(DESIGN_REQUIRED_HEADERS.includes("디자인 토큰"), "정본 헤더 이름은 계약 상수에서 온다");
 });
+
+// ── C-157 ─────────────────────────────────────────────────────
+test("[C-157] a11y 공허함 방지가 semantic의 **모든** 하위 group을 훑는다 (다크모드 분기 포함)", () => {
+  // red: 훑는 대상을 `semantic.color` 하나로 되돌리면 두 번째 케이스가 ok:true로 통과한다.
+  //      실측(2026-09-04): 동일 토큰이 semantic.color면 a11y_text_uncovered, semantic.light면 0건 —
+  //      대비 2.9(AA 4.5 미달) 텍스트가 조용히 통과했다. 그런데 프롬프트 §77이 다크 모드를
+  //      light/dark로 분기하라고 **지시한다** — 계약이 지시하는 모양이 검사를 무력화하고 있었다.
+  const prim = { color: { white: "#FFFFFF", gray: "#8A8A8A", black: "#000000" } }; // gray/white ≈ 2.9
+  const mk = (group: string) => ({
+    primitive: prim,
+    semantic: {
+      [group]: {
+        "text-strong": "{primitive.color.black}",
+        "bg-base": "{primitive.color.white}",
+        "text-muted": "{primitive.color.gray}", // contrastPairs에 없다 — 공허함 방지가 유일한 방어선
+      },
+    },
+    component: {},
+    a11y: { contrastPairs: [{ fg: `semantic.${group}.text-strong`, bg: `semantic.${group}.bg-base`, min: 4.5 }] },
+  });
+  for (const group of ["color", "light", "dark", "brand"]) {
+    const r = validateA11y(mk(group) as never);
+    assert.equal(r.ok, false, `semantic.${group}: 선언 안 된 text-* 토큰이 통과하면 안 된다`);
+    assert.ok(
+      r.errors.some((e) => e.code === "a11y_text_uncovered" && e.where === `semantic.${group}.text-muted`),
+      `semantic.${group}: 어느 토큰인지 경로로 말한다 (실제: ${JSON.stringify(r.errors)})`,
+    );
+  }
+});

@@ -70,6 +70,10 @@ export async function runExec(opts) {
         console.log(`토큰: in ${outcome.usage.inputTokens} / out ${outcome.usage.outputTokens}`);
     if (outcome.error)
         console.log(`오류: ${outcome.error}`);
-    if (outcome.status === "error" || outcome.status === "gate_failed")
+    // [B-56/B-59] **실패는 exit code로도 신호한다.** `coder_failed`·`ownership_violation`은 `gate_failed`와
+    // 같은 부류다(사람이 판정한 `rejected`·`deferred`·`no_changes`는 실패가 아니라 결론이라 0으로 둔다).
+    // 이 목록을 손으로 유지하지 않도록 **성공 집합의 여집합**으로 적는다 — 상태가 늘면 기본이 실패다.
+    const OK = ["merged", "rejected", "deferred", "no_changes", "review_deferred"];
+    if (!OK.includes(outcome.status))
         process.exitCode = 1;
 }

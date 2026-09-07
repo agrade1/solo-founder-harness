@@ -22,6 +22,7 @@ import { projectPaths, projectExists } from "./project.js";
 import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt, type PipelineLease } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
+import { validateDesignArtifacts } from "./designContract.js";
 import {
   validateAgentOutput,
   extractTokensJson,
@@ -234,7 +235,7 @@ export interface RunState {
    * `totals`는 **단조 증가**하고 절대 잘리지 않는다 — 상한 집행(호출 수·evidence 건수)의 유일한
    * 근거다. 잘린 `attempts`를 합산해 복원하면 무한 resume으로 예산이 되살아난다(A-3).
    */
-  research?: { attempts: ResearchAttempt[]; totals?: ResearchTotals };
+  research?: { attempts: ResearchAttempt[]; totals?: ResearchTotals; carried_attempts?: number };
 }
 
 /**
@@ -281,6 +282,19 @@ export interface RunWorkflowArgs {
    * ([B-41/1단] `approval_approver_missing` preflight — 예전엔 미지정이 곧 자동 승인이었다).
    */
   approve?: (message: string, show?: string) => Promise<boolean>;
+  /**
+   * [A-4] **산출물 하나를 저장할 때마다 즉시 호출된다** (경로는 프로젝트 루트 기준 상대경로).
+   *
+   * 파이프라인이 "이 단계가 이 경로를 덮었다"는 영수증을 **실행 중에** 남기기 위한 seam이다.
+   * 예전엔 그 영수증(`last_failure.written`)이 **runWorkflow가 반환한 뒤에만** 쓰였다. 그래서
+   * 2단계 이상 실행 중 Ctrl-C·크래시가 나면 **파일은 이미 덮였는데 영수증은 없는** 상태가 남고,
+   * 이후 사전 drift 검증이 그 경로를 앞 단계 승인 바이트로만 판정해 `pipeline_artifact_drift`로
+   * 거부한다 — 그리고 그 상태에선 restart·approve·reject가 전부 막혀 **탈출구가 0개다**(실측).
+   *
+   * 콜백은 **저장 성공 직후**에만 부른다(계약 미달로 저장하지 않은 산출물은 부르지 않는다) —
+   * 영수증이 디스크의 사실보다 앞서 나가면 안 되기 때문이다.
+   */
+  onArtifactSaved?: (rel: string) => void;
   now?: () => string; // 테스트용 시각 주입 (기본: 현재 ISO 시각)
   reporter?: ProgressReporter; // 진행 상황 표시자 (CLI 주입). 미지정 시 조용히 동작
   toolProfileId?: string; // [M2] 활성 도구 profile. 지정 시 run 시작 전 fail-fast 검증. 미지정 시 무영향.
@@ -704,6 +718,14 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const step_timings: StepTiming[] = [];
   let design_gate: DesignGateEntry | null = null;
   const savedFiles: string[] = [];
+  /**
+   * [A-4] 저장 등재는 **여기 하나**를 지난다 — `savedFiles.push`가 네 군데로 흩어져 있어서 영수증
+   * 콜백을 거기 각각 붙이면 새 저장 경로가 생길 때 조용히 하나가 빠진다(이 레포가 반복해 잡은 부류).
+   */
+  const recordSaved = (rel: string): void => {
+    savedFiles.push(rel);
+    args.onArtifactSaved?.(rel);
+  };
   const usagePerAgent: UsageEntry[] = [];
   const findings = new Map<string, string>(); // agentId → "agentId: judgment" (재실행 시 덮어씀, 순서 유지)
   const lastMarkdown = new Map<string, string>(); // agentId → 마지막 출력 원문 (게이트 판정 추출용)
@@ -760,6 +782,17 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   // [A-4·kill_history 선례] attempts는 **명시적 carry-forward**. 없으면 뒤 run 하나가 앞 단계
   // 리서치 영수증을 지운다(그리고 checkpoint 결박 대상도 함께 사라진다).
   const researchAttempts: ResearchAttempt[] = [...(priorState?.research?.attempts ?? [])];
+  /**
+   * [B-60] **앞 run에서 물려받은 attempt 수.** 영수증 자체에 `workflow_id`를 넣지 않는 이유는
+   * `ResearchAttempt`가 content-addressed이기 때문이다(본문 바이트가 곧 파일명) — 필드를 하나
+   * 늘리면 기존 영수증 해시가 전부 바뀌고 checkpoint 결박이 함께 깨진다.
+   *
+   * 대신 run_state에 경계 하나만 남긴다: 이 index 앞은 **남의 것**이다. 예전엔 이 구분이 없어서
+   * `mvp-planning`(research step 없음)이 `idea-validation`의 영수증을 **바이트 동일하게** 자기
+   * 결과로 출력했다(실측). carry-forward 자체는 유지한다 — 그것을 지우면 뒤 run 하나가 앞 단계
+   * 영수증을 없애고 checkpoint 결박 대상도 사라진다(`A-4` 선례).
+   */
+  let carriedAttempts = researchAttempts.length;
   const projectRoot = projectPaths(project).root;
   /**
    * [C-126/A-3] **단조 증가 durable 누적치.** `attempts[]`는 4개로 잘리므로 그것을 합산해 상한을
@@ -822,7 +855,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
   const prior = args.resume ? loadRunState(project) : null;
   if (args.resume) {
     if (!prior) {
-      throw new Error(`재개할 run_state가 없습니다: ${project} (먼저 'harness run' 실행)`);
+      throw new Error(`재개할 run_state가 없습니다: ${project} (먼저 'harness run ${workflowId} --project ${project}' 실행)`);
     }
     if (prior.status !== "failed" || prior.resume_from === null) {
       throw new Error(`재개할 실패 상태가 아닙니다 (status=${prior.status}) — 재개할 것이 없습니다.`);
@@ -956,6 +989,22 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           usageOut += res.usage.outputTokens;
         }
         validation = validateAgentOutput(markdown, agent.required_headers ?? []);
+        // [B-4] **design 산출물 계약을 실제 경로에 배선한다.** `validateDesignArtifacts`는 토큰 3계층·
+        // a11y 대비·focus 토큰·컴포넌트 인벤토리를 전부 재는데, 지금까지 **비-테스트 호출자가 0개**였다
+        // (유일한 호출자 `buildDesignHandoff`도 호출자 0 — 체인 전체가 production에서 죽어 있었다).
+        // v1이 실제로 하던 검증은 **헤더 존재**뿐이었는데, `task-prompt`는 구현자에게 그 문서를 읽고
+        // 토큰을 참조하고 인벤토리를 따르라고 지시한다 — 트리거("design 산출물을 구현 입력으로 쓴다")는
+        // 이미 지났다. 대장 `C-70`이 근거로 적던 "handoff로도 아직 쓰이지 않는다"는 사실이 아니었다.
+        //
+        // **기존 재생성 루프에 합류시킨다**(별도 루프를 만들지 않는다): 계약 위반이 헤더 누락과 같은
+        // 자리에서 피드백되고, 재생성 후에도 미달이면 `persistFinalOutcome`의 fail-closed가 그대로
+        // 막는다 — 채택도 저장도 하지 않는다. 새 상태·새 경로 0.
+        if (agent.token_output) {
+          const contract = validateDesignArtifacts(markdown, extractTokensJson(markdown) === null ? null : JSON.parse(extractTokensJson(markdown)!));
+          if (!contract.ok) {
+            validation = { ok: false, missing: [...validation.missing, ...contract.errors.map((e) => `${e.code}@${e.where}`)] };
+          }
+        }
         if (validation.ok || attempt >= maxRegen) break;
 
         attempt++;
@@ -1039,13 +1088,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       );
     }
     const saved = saveArtifact(project, agent.default_output, o.markdown);
-    savedFiles.push(saved);
+    recordSaved(saved);
     // design 에이전트: 산출 markdown의 ```json 블록을 tokens.json으로 분리 저장(결정 B).
     if (agent.token_output) {
       const tokens = extractTokensJson(o.markdown);
       if (tokens) {
         const tSaved = saveArtifact(project, agent.token_output, tokens);
-        savedFiles.push(tSaved);
+        recordSaved(tSaved);
         console.log(`  ⿻ ${agent.agent_id}: 토큰 추출 → ${tSaved}`);
       } else {
         console.warn(`  ⚠ ${agent.agent_id}: ${agent.token_output} 추출 실패 — 산출물에 \`\`\`json 블록 없음`);
@@ -1109,11 +1158,13 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       // receipt와 raw는 checkpoint 결박 대상이고, 실패 시엔 `last_failure.written`에 잡혀야 한다
       // (그래서 resume 사전 drift 검증이 partial 저장을 "손댄 것"으로 오해하지 않는다).
       attempt.receipt_path = writeResearchReceipt(projectRoot, attempt); // 실패는 throw — 삼키지 않는다
-      savedFiles.push(attempt.receipt_path);
+      recordSaved(attempt.receipt_path);
       researchAttempts.push(attempt);
       if (researchAttempts.length > RESEARCH_MAX_ATTEMPTS) {
         // 표시용 상한. **상한 집행 근거는 이 배열이 아니라 durable `totals`다**(A-3).
-        researchAttempts.splice(0, researchAttempts.length - RESEARCH_MAX_ATTEMPTS);
+        const dropped = researchAttempts.length - RESEARCH_MAX_ATTEMPTS;
+        researchAttempts.splice(0, dropped);
+        carriedAttempts = Math.max(0, carriedAttempts - dropped); // [B-60] 앞에서 잘린 만큼 경계도 당긴다
       }
     };
     /** 성공 반환 직전 불변식: **영수증 없는 성공 상태는 없다.** */
@@ -1187,7 +1238,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             attempt.evidence.push(item);
             const projRel = `${RESEARCH_DIR_REL}/${rel.split(sep).join("/")}`;
             attempt.raw_paths.push(projRel);
-            savedFiles.push(projRel);
+            recordSaved(projRel);
           },
         });
         attempt.dropped_by_domain = res.droppedByDomain;
@@ -1301,7 +1352,9 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
             `**같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다.**\n` +
             `      ⓐ 예산을 올려 재개: --max-tokens <${spent}보다 큰 값> --resume\n` +
             `      ⓑ 상한 없이 재개: --max-tokens와 HARNESS_MAX_TOKENS를 **둘 다** 비우고 --resume ` +
-            `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).`,
+            `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).\n` +
+            `      [C-2] **파이프라인이 이 run을 소유한 경우**(pipeline next로 들어온 경우)에는 --resume이 없습니다 ` +
+            `— 같은 두 길을 'harness pipeline next --project <name> --max-tokens <더 큰 값>'로 쓰거나 상한을 비우세요.`,
         );
         break;
       }
@@ -1719,6 +1772,7 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
       ? {
           research: {
             attempts: researchAttempts,
+            carried_attempts: carriedAttempts, // [B-60] 이 index 앞은 앞 run에서 물려받은 것이다
             totals: sessionBackend
               ? { backend_calls: sessionBackend.calls, results: sessionBackend.results }
               : { backend_calls: priorTotals.backend_calls, results: priorTotals.results },

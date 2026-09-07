@@ -287,14 +287,23 @@ export function validateA11y(tokens) {
         }
     });
     // 공허함 방지: text-* semantic 색은 전부 선언 대상이어야 한다.
-    const semanticColor = isPlainObject(tokens.semantic) && isPlainObject(tokens.semantic.color)
-        ? tokens.semantic.color
-        : {};
-    for (const name of Object.keys(semanticColor)) {
-        if (!name.startsWith("text-"))
+    //
+    // [C-157] **semantic의 모든 하위 group을 훑는다.** 예전엔 `semantic.color` 하나만 봤는데, 같은
+    // 프롬프트(`agents/design_agent.md:77`)가 다크 모드를 **`semantic.light`/`semantic.dark`로 분기**하라고
+    // 지시한다. 그 지시를 따르면 `semantic.color`가 없어 이 루프가 **0회 돌고**, AA 미달 텍스트 토큰이
+    // `ok:true`로 통과했다(실측: 동일 토큰이 `semantic.color`면 걸리고 `semantic.light`면 0건 · 대비 2.9).
+    // **계약이 지시하는 모양이 검사를 무력화하고 있었다** — group 이름을 고정하는 대신 전부 훑는다.
+    const semantic = isPlainObject(tokens.semantic) ? tokens.semantic : {};
+    for (const [group, members] of Object.entries(semantic)) {
+        if (!isPlainObject(members))
             continue;
-        if (!declaredFg.has(`semantic.color.${name}`)) {
-            err(errors, "a11y_text_uncovered", `semantic.color.${name}`, "text-* 토큰이 contrastPairs의 fg로 선언되지 않았다");
+        for (const name of Object.keys(members)) {
+            if (!name.startsWith("text-"))
+                continue;
+            const path = `semantic.${group}.${name}`;
+            if (!declaredFg.has(path)) {
+                err(errors, "a11y_text_uncovered", path, "text-* 토큰이 contrastPairs의 fg로 선언되지 않았다");
+            }
         }
     }
     return { ok: errors.length === 0, errors };

@@ -43,6 +43,13 @@ export interface TaskResult {
   usage: SessionUsage | null;
   reviews: { round: number; critical: string[] }[];
   error?: string;
+  /**
+   * [B-56] **L1 게이트가 아무 체크도 돌리지 못했다** (대상 레포에 test/lint/typecheck/build 스크립트가
+   * 하나도 없다). 게이트는 통과로 나가지만 — 막을 근거가 없으므로 — 그것을 "검증됐다"로 읽으면 안 된다.
+   * 예전엔 이 사실이 `commands/exec.ts` 한 곳에서만 화면에 나갔고 미션 리포트에는 흔적이 없어서,
+   * 아침에 리포트만 보는 사람에게 **검사 0회 병합이 "게이트 통과 병합"으로 읽혔다.**
+   */
+  gateVacuous?: boolean;
 }
 
 export interface DegradeEvent {
@@ -157,6 +164,7 @@ export async function runMission(opts: RunMissionOpts): Promise<MissionReport> {
       usage: outcome.usage,
       reviews: outcome.reviews,
       error: outcome.error,
+      gateVacuous: outcome.gate?.vacuous === true,
     });
     if (outcome.status === "merged") mergedIds.add(task.id);
     opts.onPhase?.(task.id, outcome.status === "merged" ? "merged" : outcome.status === "error" ? "failed" : "deferred");
@@ -210,7 +218,16 @@ export function renderMissionReport(r: MissionReport): string {
   L.push(`## 태스크`);
   for (const t of r.tasks) {
     const rv = t.reviews.length ? ` / 리뷰 ${t.reviews.length}R(마지막 Critical ${t.reviews[t.reviews.length - 1].critical.length})` : "";
-    L.push(`- **${t.taskId}**: ${t.status}${t.branch ? ` [${t.branch}]` : ""}${rv}${t.error ? ` — ${t.error}` : ""}`);
+    // [B-56] 검사 0회를 병합 옆에 그대로 적는다 — 리포트만 보는 사람이 "검증됐다"로 읽지 않도록.
+    const vac = t.gateVacuous ? " · **게이트 체크 0개**(레포에 test/lint/typecheck/build 스크립트 없음 — 검증되지 않았다)" : "";
+    L.push(`- **${t.taskId}**: ${t.status}${t.branch ? ` [${t.branch}]` : ""}${rv}${vac}${t.error ? ` — ${t.error}` : ""}`);
+  }
+  if (r.tasks.some((t) => t.gateVacuous)) {
+    L.push(
+      ``,
+      `> [B-56] 위 **게이트 체크 0개** 표시가 붙은 태스크는 L1 게이트가 **아무것도 실행하지 못한 채** 통과한 것이다.`,
+      `> 대상 레포의 package.json에 \`typecheck\`·\`lint\`·\`test\`·\`build\` 중 하나라도 있으면 그때부터 실제로 돈다.`,
+    );
   }
   L.push(``, `## 다음 (사람)`, `- 보류 항목 결정(예산 증액/분할/폐기)`, `- MISSION_REPORT 검토 후 main 병합·푸시`, ``);
   return L.join("\n");

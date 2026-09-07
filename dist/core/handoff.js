@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, accessSync, constants } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, statSync, accessSync, constants, renameSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { randomUUID } from "node:crypto";
 import { join, dirname, resolve } from "node:path";
@@ -247,12 +247,25 @@ function buildPreview(o) {
     lines.push(`Hook: ${SUPPORTED_HOOKS.join(", ")} (${SUPPORTED_HOOKS.length}개, exec form)`, `trace: ${o.tracePath}`, `secret: 설정·argv에 값 없음 / trace는 환경 secret 이름 ${o.redactCount}개 값 자동 마스킹 (raw MCP 결과 미저장)`, "hard deny(자동화 대상 아님): production deploy · live billing · remote repository write · pull request merge");
     return o.scrub(lines.join("\n"));
 }
-/** run_state.json을 다시 읽어 handoff 필드만 병합·기록한다. status/completed는 건드리지 않는다. */
+/**
+ * run_state.json을 다시 읽어 handoff 필드만 병합·기록한다. status/completed는 건드리지 않는다.
+ *
+ * [B-63] **tmp + rename(원자)으로 쓴다.** `C-135`가 `runWorkflow`·`writePipelineState`·
+ * `orchestrationStore` 셋을 이 패턴으로 바꿀 때 **이 형제 writer가 빠졌다** — 같은 파일에 plain
+ * `writeFileSync`로 쓰고 있었다. 그 파일은 `pipeline status`가 **설계상 lock 없이** 읽고, 폐기 잠금의
+ * 유일한 근거이며, 하류 명령이 전부 fail-closed다. 찢어진 write 한 번이면 `run_state_unreadable`로
+ * 모든 명령이 거부되고 사람이 손으로 복구해야 한다(그 결과는 `B-62` 재현이 그대로 보여준다).
+ *
+ * 공용 헬퍼를 만들지 않은 이유는 `runWorkflow`의 같은 자리 주석과 같다(모듈 순환). 대신 **누락을
+ * 테스트가 잡는다** — `guidance.test.ts`가 run_state.json writer 전수를 훑는다.
+ */
 function persistHandoffRecord(project, record) {
     const p = join(projectPaths(project).root, "outputs/run_state.json");
     const state = JSON.parse(readFileSync(p, "utf8"));
     state.handoff = record;
-    writeFileSync(p, JSON.stringify(state, null, 2) + "\n", "utf8");
+    const tmp = `${p}.tmp-${process.pid}`;
+    writeFileSync(tmp, JSON.stringify(state, null, 2) + "\n", "utf8");
+    renameSync(tmp, p);
 }
 export async function runHandoff(opts) {
     const now = opts.now ?? (() => new Date().toISOString());
