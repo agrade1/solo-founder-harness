@@ -281,6 +281,8 @@ export const TASK_EXECUTION_KEYS = [
   "pendingResult",
   "pendingOperations",
   "operationReceipts",
+  // [B-64] attempt 롤오버가 영수증을 비워도 프로세스 상한이 다시 열리지 않게 하는 누적 카운터.
+  "priorAttemptProcesses",
 ] as const;
 
 /** M5c 3A 2차 리비전 — 미확정 operation 레코드의 닫힌 key 집합. */
@@ -611,6 +613,13 @@ function validateTaskExecution(raw: unknown, state: OrchestrationTask["state"]):
     pendingResult: o.pendingResult === null ? null : validatePendingResult(o.pendingResult),
     pendingOperations,
     operationReceipts: receipts,
+    // 상한은 run당 프로세스 수이므로 그 값을 넘을 수 없다(넘은 state는 위조이거나 손상이다).
+    priorAttemptProcesses: boundedInt(
+      o.priorAttemptProcesses,
+      "task.execution.priorAttemptProcesses",
+      0,
+      LIMITS.maxProcessesPerRun,
+    ),
   };
 
   const bad = (why: string): never => {
@@ -1238,7 +1247,9 @@ export function renderSnapshot(state: OrchestrationRunState): string {
   lines.push(`- budgetStartedAt: ${acc.budgetStartedAt}`);
   lines.push(`- budgetDeadlineAt: ${acc.budgetDeadlineAt}`);
   lines.push(`- tokensUsed: ${acc.tokensUsed}${m.maxTokens === null ? "" : ` / ${m.maxTokens}`}`);
-  lines.push(`- elapsedMsUsed: ${acc.elapsedMsUsed} / ${m.maxElapsedMs}`);
+  // [C-156] `tokensUsed`는 합계인데 `elapsedMsUsed`는 **예산 시작 이후 경과의 최댓값**이다.
+  // 같은 모양으로 인쇄하면 읽는 사람이 둘 다 합계로 읽는다 — 무엇인지 그 줄에 적는다.
+  lines.push(`- elapsedMsUsed: ${acc.elapsedMsUsed} / ${m.maxElapsedMs} (예산 시작 이후 경과의 최댓값 — turn 합계가 아니다)`);
   lines.push(`- chargedTurns: ${acc.chargedTurnIds.length}`);
   lines.push("");
 

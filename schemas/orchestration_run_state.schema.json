@@ -355,7 +355,8 @@
         "retryDeadlineAt",
         "pendingResult",
         "pendingOperations",
-        "operationReceipts"
+        "operationReceipts",
+        "priorAttemptProcesses"
       ],
       "properties": {
         "attemptNo": {
@@ -419,6 +420,12 @@
           "type": "array",
           "maxItems": 64,
           "items": { "$ref": "#/definitions/operationReceipt" }
+        },
+        "priorAttemptProcesses": {
+          "description": "대장 `B-64` — **앞선 attempt들이 이미 연 프로세스 수**(누적·단조). operationReceipts는 attempt 롤오버(preflight 재준비·resume)가 비우므로, 프로세스 상한을 영수증만으로 세면 롤오버가 상한을 다시 연다(kernel fixture 관측: 32까지 채운 뒤 롤오버 1회에 run 집계가 28로 떨어졌다). 롤오버 지점이 그 attempt의 수를 여기 더하고 영수증만 비운다 → 상한이 attempt 밖에 산다. 상한은 run당 프로세스 수(maxProcessesPerRun=32)이므로 그 값을 넘을 수 없다.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 32
         }
       }
     },

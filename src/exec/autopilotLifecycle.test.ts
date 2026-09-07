@@ -591,6 +591,38 @@ test("[M5c] 토큰·경과 회계는 durable이고 재시작이 리셋하지 않
   assert.ok(lease.startsWith("lease."));
 });
 
+test("[C-156] elapsedMsUsed는 turn 합계가 아니라 **예산 시작 이후 경과의 최댓값**이다 — 상한이 wall-clock이라 그 짝이 맞다", () => {
+  // 대장 `C-156`은 "합계여야 하는데 running max라 영수증이 거짓"이라고 적었다(코드 대조만 했다).
+  // kernel fixture로 관측하니 **max인 것은 맞지만 거짓은 아니다**:
+  //   ⓐ 상한 `maxElapsedMs`는 `budgetStartedAt + maxElapsedMs = budgetDeadlineAt`을 **now와** 비교해
+  //      집행된다(`seedAccounting` · `assertBudget`) — 즉 **wall-clock**이다.
+  //   ⓑ 그래서 그 상한과 비교 가능한 값은 "예산 시작 이후 경과"이고, 그 누적기는 **max**다.
+  //      turn 합계로 바꾸면 **병렬 task의 wall time을 중복 계산**해 상한보다 먼저 소진된 것처럼 보인다.
+  //   ⓒ `remainingBudget()`은 이 값을 아예 쓰지 않는다 — deadline과 now로 계산한다.
+  // 남는 진짜 위험은 **호출자가 turn 단위 delta를 넘기면 조용히 과소 집계된다**는 것이다.
+  // 지금은 production 호출자가 0이라(테스트만 부른다) 관측할 수 없다 — 계약을 여기 고정한다.
+  const { k } = bootRoot();
+  startNow(k, "root");
+  k.chargeTurnUsage({ taskId: "root", turnId: "turn.a", actionId: nextAction(), inputTokens: 1, outputTokens: 1, elapsedMs: 5_000 });
+  k.chargeTurnUsage({ taskId: "root", turnId: "turn.b", actionId: nextAction(), inputTokens: 1, outputTokens: 1, elapsedMs: 9_000 });
+  assert.equal(k.getAccounting().elapsedMsUsed, 9_000, "max다 (합계 14,000이 아니다)");
+
+  // 뒤로 가는 값은 회계를 되돌리지 못한다 — 누적기가 단조라는 뜻이다.
+  k.chargeTurnUsage({ taskId: "root", turnId: "turn.c", actionId: nextAction(), inputTokens: 1, outputTokens: 1, elapsedMs: 100 });
+  assert.equal(k.getAccounting().elapsedMsUsed, 9_000, "작은 값이 와도 내려가지 않는다");
+
+  // 토큰은 반대다 — 그것은 진짜 합계이고, 그래서 두 필드가 같은 줄에 렌더돼도 의미가 다르다.
+  assert.equal(k.getAccounting().tokensUsed, 6, "토큰은 합계다");
+
+  // 집행은 이 값이 아니라 deadline이 한다(그래서 max여도 상한이 새지 않는다).
+  const rb = k.remainingBudget(k.getAccounting().budgetStartedAt);
+  assert.equal(
+    rb.elapsedMs,
+    Date.parse(k.getAccounting().budgetDeadlineAt) - Date.parse(k.getAccounting().budgetStartedAt),
+    "남은 경과는 elapsedMsUsed와 무관하게 deadline에서 나온다",
+  );
+});
+
 test("[M5c] 회계는 손으로 되돌릴 수 없다 — state↔event binding이 거부한다", () => {
   const { ws, k } = bootRoot();
   startNow(k, "root");

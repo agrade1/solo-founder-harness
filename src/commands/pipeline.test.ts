@@ -864,6 +864,70 @@ test("[B-57] provider 필드가 없는 옛 state도 그대로 돈다 (하위 호
   rmProject(name);
 });
 
+// ── B-47 ──────────────────────────────────────────────────────
+test("[B-47] 2단계 산출물을 되돌림한 뒤 재실행이 drift로 막히지 않는다 (탈출구가 restart뿐이던 막다른 길)", async () => {
+  // red: 되돌림 후의 next가 1단계 승인 digest로 `docs/02_PRD.md`를 판정하면 exit 1이다.
+  //      2단계 pm은 그 경로를 **다시 쓰는 것이 정상**인데(registry의 default_output이 같다),
+  //      성공 시 `last_failure`가 null로 내려가 그 사실을 아는 영수증이 사라진다.
+  const name = "_b47_reject";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p1 = stateOf(name).pending!;
+  assert.equal((await quiet(() => approveCheckpoint({ project: name, stage: p1.stage, checkpointId: p1.checkpoint_id, now: () => FIXED }))).code, "pipeline_approved");
+
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p2 = stateOf(name).pending!;
+  assert.equal(p2.stage, "mvp-planning", "전제: 2단계까지 왔다");
+  assert.equal((await quiet(() => rejectCheckpoint({ project: name, stage: p2.stage, checkpointId: p2.checkpoint_id, now: () => FIXED }))).code, "pipeline_rejected");
+
+  const again = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.notEqual(again.code, "pipeline_artifact_drift", `되돌림이 지시한 재실행이 그 자리에서 거부됐다 (${again.code})`);
+  rmProject(name);
+});
+
+test("[B-47/B-52] 되돌림 뒤에도 앞 단계 승인본 재생은 거부된다 — 넓어진 것은 판정 경로가 아니라 정본을 아는 경로다", async () => {
+  // 이 테스트가 없으면 B-47 수정이 B-52(앞 단계 판단을 현 단계 판단으로 재사용)를 열었는지 알 수 없다.
+  const name = "_b47_replay";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p1 = stateOf(name).pending!;
+  await quiet(() => approveCheckpoint({ project: name, stage: p1.stage, checkpointId: p1.checkpoint_id, now: () => FIXED }));
+  const approvedBytes = bytesOf(join(projectPaths(name).root, "docs/02_PRD.md"));
+
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p2 = stateOf(name).pending!;
+  await quiet(() => rejectCheckpoint({ project: name, stage: p2.stage, checkpointId: p2.checkpoint_id, now: () => FIXED }));
+
+  // 사람이 1단계 승인본을 되돌려 놓는다 — 2단계가 쓴 바이트가 아니다.
+  writeFileSync(join(projectPaths(name).root, "docs/02_PRD.md"), approvedBytes, "utf8");
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_artifact_drift", "앞 단계 승인 바이트로 되돌려 놓으면 여전히 막힌다");
+  rmProject(name);
+});
+
+test("[B-47] 되돌림 뒤 재실행이 게이트에서 실패해도 다음 재실행이 다시 막히지 않는다 (영수증이 이어진다)", async () => {
+  // red: 되돌림 checkpoint를 누적의 seed로 쓰지 않으면, 다음 실패가 `written`을 빈 배열로 덮어
+  //      막다른 길이 되살아난다(B-53이 고친 것과 같은 기전).
+  const name = "_b47_carry";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p1 = stateOf(name).pending!;
+  await quiet(() => approveCheckpoint({ project: name, stage: p1.stage, checkpointId: p1.checkpoint_id, now: () => FIXED }));
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p2 = stateOf(name).pending!;
+  await quiet(() => rejectCheckpoint({ project: name, stage: p2.stage, checkpointId: p2.checkpoint_id, now: () => FIXED }));
+
+  // 되돌림 직후의 재실행을 사람 판정에서 멈춘다 — agent가 돌지 않아 savedFiles가 빈 attempt다.
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => false }));
+  const st = stateOf(name);
+  const w = (st.last_failure?.written ?? []).map((x) => x.path);
+  assert.ok(!st.last_failure || w.includes("docs/02_PRD.md"), `영수증이 이 단계가 덮은 경로를 잃었다 (${w.join(",")})`);
+
+  const again = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.notEqual(again.code, "pipeline_artifact_drift", `두 번째 재실행이 막혔다 (${again.code})`);
+  rmProject(name);
+});
+
 // ── A-4 ───────────────────────────────────────────────────────
 test("[A-4] 영수증은 산출물을 저장하는 **그 순간** durable에 적힌다 — 실행 중 크래시가 벽돌을 만들지 않는다", async () => {
   // red: 영수증 쓰기를 runWorkflow **반환 후**(commitAfterRun)로 되돌리면, 실행 중 Ctrl-C/크래시는
@@ -878,23 +942,25 @@ test("[A-4] 영수증은 산출물을 저장하는 **그 순간** durable에 적
   const approved = stateOf(name).checkpoints.at(-1)!.artifacts.find((a) => a.path === "docs/02_PRD.md")!;
 
   // 2단계: pm이 그 경로를 덮은 **직후**(다음 agent 호출 시점)에 영수증이 이미 durable인지 본다.
-  let seen: PipelineState["last_failure"] = null;
+  // TS CFA는 nested function 안에서만 일어나는 대입을 추적하지 못한다 — `let seen = null`로 두면
+  // 아래 assert.ok 뒤 타입이 `never`가 되어 typecheck가 깨진다(홀더 객체로 그 좁힘을 피한다).
+  const probe: { seen: PipelineState["last_failure"] } = { seen: null };
   const inner = counting();
   let calls = 0;
   const probing: Provider = {
     id: "mock",
     async generate(i) {
-      if (calls++ === 1) seen = stateOf(name).last_failure;
+      if (calls++ === 1) probe.seen = stateOf(name).last_failure;
       return inner.generate(i);
     },
   };
   await quiet(() => nextPipeline({ project: name, providerOverride: probing, now: () => FIXED, internalApprover: async () => true }));
 
-  assert.ok(seen, "pm 저장 직후 시점에 영수증이 이미 있다 — 크래시해도 남는 것이 이것이다");
-  const w = seen!.written.find((x) => x.path === "docs/02_PRD.md");
+  assert.ok(probe.seen, "pm 저장 직후 시점에 영수증이 이미 있다 — 크래시해도 남는 것이 이것이다");
+  const w = probe.seen.written.find((x) => x.path === "docs/02_PRD.md");
   assert.ok(w, "덮은 경로가 영수증에 있다");
   assert.notEqual(w!.sha256, approved.sha256, "그 영수증은 **이 단계가 쓴 바이트**다 (앞 단계 승인본이 아니다)");
-  assert.equal(seen!.stage, "mvp-planning", "영수증의 단계가 현 단계로 결박된다");
+  assert.equal(probe.seen.stage, "mvp-planning", "영수증의 단계가 현 단계로 결박된다");
   rmProject(name);
 });
 

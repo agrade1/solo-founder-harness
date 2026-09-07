@@ -114,7 +114,11 @@ exit \${PF_EXIT:-0}
         now: () => "2026-01-01T00:00:00.000Z",
         // 테스트 완화가 아니라 CI 스케줄링 여유 확보 — stub이 init을 방출/파싱할 시간을 넉넉히 준다.
         // (hard-timeout 전용 테스트만 opts.timeoutMs=700으로 명시 override.)
-        timeoutMs: opts.timeoutMs ?? 5000,
+        // [C-151] 스케줄링 여유(slack)이지 계약이 아니다 — 이 값을 재는 테스트는 전부 짧은 값을
+        // **명시 override**한다(hang 300·400·700). 부하가 있는 호스트에서 5s는 stub spawn에 모자라
+        // `src/tools/` spawn 테스트가 매 실행마다 다른 2~10건씩 타임아웃으로 실패했다(대장 `C-151`).
+        // 빠른 호스트에서는 stub이 즉시 응답하므로 이 상향의 비용은 0이다.
+        timeoutMs: opts.timeoutMs ?? 20000,
         emptyConfig: opts.emptyConfig,
         redactNames: opts.redactNames,
         testEnv,

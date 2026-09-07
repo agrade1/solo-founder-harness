@@ -77,9 +77,30 @@ test("[C-104] test:inner는 exec → core → acceptance 순서를 유지한다"
   const inner = steps(scripts["test:inner"] ?? "");
   assert.deepEqual(
     inner,
-    ["npm run test:exec", "npm run test:core", "bash scripts/acceptance.sh"],
+    ["npm run test:exec", "npm run test:core", "npm run acceptance"],
     `test:inner 체인이 바뀌었다: ${scripts["test:inner"]}`,
   );
+});
+
+test("[C-151] 세 suite는 **직접 불러도** 배타 lock 안에서 돈다 — 겹침이 회귀를 만들어 냈다", () => {
+  // 실측(M15): `npm run acceptance`를 다른 suite와 겹쳐 돌리자 PASS=244·FAIL=28, 단독은 272·0이었다.
+  // lock이 `npm test` 경로에만 있었기 때문이다 — 사람은 `npm run test:core`를 직접 부른다.
+  // `test:inner`가 이 wrapper들을 다시 부르는 것은 안전하다: wrapper가 `HARNESS_SUITE_LOCK_TOKEN`으로
+  // **재진입**(nested)하고 새 lock을 잡지 않는다.
+  for (const name of ["test:core", "test:exec", "acceptance"]) {
+    const chain = steps(scripts[name] ?? "");
+    assert.equal(chain.length, 1, `${name}은 단일 단계여야 한다: ${scripts[name]}`);
+    assert.match(
+      chain[0] ?? "",
+      new RegExp(`scripts/suite-lock\\.mjs\\s+run\\s+${name.replace(":", "\\:")}:inner(?:\\s|$)`),
+      `${name}이 lock wrapper를 지나지 않는다 — 겹쳐 돌리면 거짓 실패가 난다: ${scripts[name]}`,
+    );
+    assert.ok((scripts[`${name}:inner`] ?? "").length > 0, `${name}:inner가 없다`);
+  }
+  // 진짜 명령이 inner에 그대로 살아 있는지 — wrapper만 있고 알맹이가 빈 배선을 막는다.
+  assert.match(scripts["test:core:inner"] ?? "", /tsx --test/);
+  assert.match(scripts["test:exec:inner"] ?? "", /tsx --test src\/exec/);
+  assert.match(scripts["acceptance:inner"] ?? "", /scripts\/acceptance\.sh/);
 });
 
 test("[C-101] typecheck는 production·test 두 tsconfig를 모두 검사한다", () => {

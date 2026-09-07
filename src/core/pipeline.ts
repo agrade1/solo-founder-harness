@@ -798,6 +798,35 @@ export function approvedDigests(state: PipelineState): Map<string, ArtifactEntry
 }
 
 /**
+ * [B-47] **이 단계가 실제로 쓴 것으로 하네스가 아는 바이트.** 소비자 셋(사전 drift 검증 ·
+ * 실행 중 영수증 등재 · 실행 후 등재)이 같은 답을 봐야 하므로 여기 한 곳에서만 만든다.
+ *
+ * 근거는 둘이고 우선순위가 있다:
+ *   ⓐ `last_failure` — 이 단계의 실패/실행 중 영수증(A-4·B-53).
+ *   ⓑ **되돌림된 checkpoint의 artifacts** — 성공한 run은 `last_failure`를 null로 내리므로(commitPending)
+ *      되돌림 뒤에는 ⓐ가 비어 있다. 그런데 그 단계는 이미 파일을 덮었다(2단계 `pm`이 1단계에서
+ *      승인된 `docs/02_PRD.md`를 다시 쓰는 것은 registry상 정상이다) — 그래서 `reject`가 안내하는
+ *      재실행이 그 자리에서 `pipeline_artifact_drift`로 거부됐고 탈출구가 `restart`(단계 폐기)뿐이었다.
+ *      그 checkpoint의 `artifacts`는 `runStateSources`가 **이 단계 run의 completed_steps에서만**
+ *      모은 것이라(다른 단계 산출물이 섞이지 않는다) 정확히 "이 단계가 쓴 바이트"다.
+ *
+ * **B-52를 약화하지 않는다**: 이것은 판정 대상 경로를 넓히지 않고 그 경로의 **정본을 교체**할 뿐이다
+ * (호출부의 `accept = w ? [w] : [approved]`). 앞 단계 승인 바이트를 되돌려 놓으면 여기서 나온
+ * digest와 달라 그대로 거부된다.
+ *
+ * ⓑ를 **마지막 checkpoint일 때만** 보는 이유: 되돌림 뒤 재실행이 성공해 새 pending이 생기거나
+ * 승인/폐기가 나면 그 receipt가 뒤에 붙는다 — 그때 ⓑ는 더 이상 현재 디스크의 근거가 아니다.
+ *
+ * 기각한 대안: `reject`가 `last_failure`를 채우게 하는 것. state 모양을 안 바꿔도 되지만
+ * `pipeline status`가 "직전 실패"라고 인쇄한다 — **실패가 아닌 것을 실패로 적는 거짓 안내**다(함정 27).
+ */
+export function stageWrittenBytes(state: PipelineState, stageId: string): readonly ArtifactEntry[] {
+  if (state.last_failure?.stage === stageId) return state.last_failure.written;
+  const last = state.checkpoints.at(-1);
+  return last?.stage === stageId && last.decision === "rejected" ? last.artifacts : [];
+}
+
+/**
  * [Codex A-6] 승인 digest에 **이번에 승인하려는 pending의 것을 얹은** 최종 기대치.
  *
  * pending이 같은 경로를 다시 담고 있으면(mvp-planning이 `docs/02_PRD.md`를 다시 쓰는 것처럼)

@@ -150,7 +150,11 @@ async function runProbe(cfg: Record<string, unknown>, opts: Opts = {}) {
       serviceCwd,
       runtimeDir,
       now: () => "2026-01-01T00:00:00.000Z",
-      perCallTimeoutMs: opts.perCallTimeoutMs ?? 5000,
+      // [C-151] 스케줄링 여유(slack)이지 계약이 아니다 — 이 값을 재는 테스트는 전부 짧은 값을
+      // **명시 override**한다(hang 300·400·700). 부하가 있는 호스트에서 5s는 stub spawn에 모자라
+      // `src/tools/` spawn 테스트가 매 실행마다 다른 2~10건씩 타임아웃으로 실패했다(대장 `C-151`).
+      // 빠른 호스트에서는 stub이 즉시 응답하므로 이 상향의 비용은 0이다.
+      perCallTimeoutMs: opts.perCallTimeoutMs ?? 20000,
       overallTimeoutMs: opts.overallTimeoutMs ?? 20000,
       redactNames: opts.redactNames,
     });
@@ -334,13 +338,13 @@ test("[M3c-2] per-call timeout / 256KiB / stdout·stderr 상한 + 실패 경로 
   } finally {
     rmSync(b.dir, { recursive: true, force: true });
   }
-  const c = await runProbe({ mode: "stdoutLarge" }, { overallTimeoutMs: 5000 });
+  const c = await runProbe({ mode: "stdoutLarge" }, { overallTimeoutMs: 20000 });
   try {
     assert.equal((c.err as ShadcnReadSemanticsError)?.code, "stdout_too_large");
   } finally {
     rmSync(c.dir, { recursive: true, force: true });
   }
-  const d = await runProbe({ mode: "stderrLarge" }, { overallTimeoutMs: 5000 });
+  const d = await runProbe({ mode: "stderrLarge" }, { overallTimeoutMs: 20000 });
   try {
     assert.equal((d.err as ShadcnReadSemanticsError)?.code, "stderr_too_large");
   } finally {
