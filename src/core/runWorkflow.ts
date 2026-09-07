@@ -18,7 +18,7 @@ import {
   type GateDef,
   type WorkflowStep,
 } from "./registry.js";
-import { projectPaths, projectExists } from "./project.js";
+import { IDEA_REL, projectPaths, projectExists } from "./project.js";
 import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt, type PipelineLease } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
@@ -423,8 +423,10 @@ export function loadRunState(project: string): RunState | null {
   return r.kind === "ok" ? r.state : null;
 }
 
-/** 검토 대상 아이디어 문서의 프로젝트 상대경로 — kill 잠금의 기준 파일. */
-export const IDEA_REL = "docs/00_IDEA.md";
+// [C-154ⓒ] 정의는 `core/project.ts`(leaf)로 옮겼다 — `core/pipeline.ts`가 값으로 필요한데
+// 이 파일이 그 파일을 import하므로 반대 방향 값 import는 런타임 순환이 된다. 여기서 re-export해
+// 기존 import 경로를 그대로 유지한다.
+export { IDEA_REL } from "./project.js";
 
 /**
  * [B-40/A-1] 아이디어 문서를 **한 번** 읽은 결과. 같은 바이트에서 나온 본문과 digest를 함께 들고 다녀서

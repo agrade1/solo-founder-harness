@@ -1,0 +1,138 @@
+{
+  "workflow_id": "idea-validation",
+  "project": "_b41_p1",
+  "provider": "mock",
+  "status": "completed",
+  "completed_steps": [
+    "chief_of_staff",
+    "research",
+    "pm",
+    "red_team",
+    "founder_ceo"
+  ],
+  "failed_agent": null,
+  "failed_reason": null,
+  "killed_by": null,
+  "kill_history": [],
+  "cleared_idea_sha256": "e500b499229ed24e80d419d7b2c6b7f2d0448c23fecae4950df0b323236e5cb5",
+  "resume_from": null,
+  "loop_state": null,
+  "warnings": [],
+  "regenerations": [],
+  "critique_rounds": [
+    {
+      "target": "pm",
+      "critic": "red_team",
+      "rounds": 1,
+      "resolved": true
+    }
+  ],
+  "gate_jumps": [
+    {
+      "decider": "founder_ceo",
+      "decision": "진행",
+      "jumped_to": null,
+      "outcome": "proceed"
+    }
+  ],
+  "spawned_agents": [],
+  "design_gate": null,
+  "step_timings": [
+    {
+      "agent_id": "chief_of_staff",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 3,
+      "ok": true
+    },
+    {
+      "agent_id": "research",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 1,
+      "ok": true
+    },
+    {
+      "agent_id": "pm",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 2,
+      "ok": true
+    },
+    {
+      "agent_id": "red_team",
+      "kind": "critic",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 1,
+      "ok": true
+    },
+    {
+      "agent_id": "founder_ceo",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 2,
+      "ok": true
+    },
+    {
+      "agent_id": "founder_ceo",
+      "kind": "gate",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 1,
+      "ok": true
+    }
+  ],
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "per_agent": [
+      {
+        "agent_id": "chief_of_staff",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "research",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "pm",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "red_team",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "founder_ceo",
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    ]
+  },
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "finished_at": "2026-01-01T00:00:00.000Z",
+  "research": {
+    "attempts": [
+      {
+        "started_at": "2026-01-01T00:00:00.000Z",
+        "mode": "external_declined",
+        "requests": [],
+        "backend_calls": 0,
+        "cache_hits": 0,
+        "dropped_by_domain": 0,
+        "first_pass_sha256": "1b49a5a43d711ba9927abf7eefafa708e5b6d818f66effa61b51b18eddd6ae5d",
+        "evidence": [],
+        "receipt_path": "outputs/research/receipt-b8f41e90a6b14016de94eb7747f4a37217a51edd6632860295ec17186e529271.json",
+        "raw_paths": []
+      }
+    ],
+    "carried_attempts": 0,
+    "totals": {
+      "backend_calls": 0,
+      "results": 0
+    }
+  }
+}

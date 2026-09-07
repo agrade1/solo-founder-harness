@@ -1,0 +1,73 @@
+{
+  "schema": 1,
+  "pipeline_version": 1,
+  "pipeline_id": "founder-predev",
+  "project": "_c154_idea",
+  "current_index": 0,
+  "status": "awaiting_approval",
+  "pending": {
+    "stage": "idea-validation",
+    "workflow_id": "idea-validation",
+    "run_finished_at": "2026-01-01T00:00:00.000Z",
+    "artifacts": [
+      {
+        "path": "outputs/chief_of_staff.md",
+        "size": 1322,
+        "sha256": "f9257be8d7def47a39724319e0c5b1e48d2bedd497a4be6a76c3d2a46bb09a2b"
+      },
+      {
+        "path": "docs/01_RESEARCH.md",
+        "size": 1426,
+        "sha256": "b8cf0013732e1f5ac588d27abc252b2977e9c9220a5fb2854e4a1fec2858bc79"
+      },
+      {
+        "path": "docs/02_PRD.md",
+        "size": 2540,
+        "sha256": "4fc3c013549b2dffba6f2ffb38e58d9d77fb2b9fd37c543f4e8a7c08c92275d4"
+      },
+      {
+        "path": "docs/05_RED_TEAM.md",
+        "size": 1412,
+        "sha256": "88365263bcbf49c4ef21fde06ea383b5c4f141d668a3971fba073babeb56ed30"
+      },
+      {
+        "path": "docs/06_CEO_DECISION.md",
+        "size": 1959,
+        "sha256": "b76600554f47d8499de7cb71598cb632b7f12a948abfb3cd9df7d3898b3ef84c"
+      },
+      {
+        "path": "outputs/research/receipt-50a62e6293a768cd39785aaaeceaaf3d2081206fac8e4f34eedf2c7d1977274a.json",
+        "size": 291,
+        "sha256": "50a62e6293a768cd39785aaaeceaaf3d2081206fac8e4f34eedf2c7d1977274a"
+      }
+    ],
+    "seeds": [
+      {
+        "agent_id": "chief_of_staff",
+        "line": "chief_of_staff: [MOCK] Chief of Staff Agent의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다."
+      },
+      {
+        "agent_id": "research",
+        "line": "research: [MOCK] Research Agent의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다."
+      },
+      {
+        "agent_id": "pm",
+        "line": "pm: [MOCK] PM / Product Strategy Agent의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다."
+      },
+      {
+        "agent_id": "red_team",
+        "line": "red_team: [MOCK] Red Team / Critic Agent의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다."
+      },
+      {
+        "agent_id": "founder_ceo",
+        "line": "founder_ceo: [MOCK] Founder CEO Agent의 판단 결과 (실제 LLM 미호출). 역할 관점에서 이 아이디어는 조건부로 진행 가능하다."
+      }
+    ],
+    "checkpoint_id": "a0f815476bd2"
+  },
+  "last_failure": null,
+  "checkpoints": [],
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "provider": "mock"
+}

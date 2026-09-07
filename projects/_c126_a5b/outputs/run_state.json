@@ -1,0 +1,105 @@
+{
+  "workflow_id": "idea-validation",
+  "project": "_c126_a5b",
+  "provider": "mock",
+  "status": "failed",
+  "completed_steps": [
+    "chief_of_staff"
+  ],
+  "failed_agent": "research",
+  "failed_reason": "research_declaration_missing",
+  "killed_by": null,
+  "kill_history": [],
+  "cleared_idea_sha256": null,
+  "resume_from": 1,
+  "loop_state": {
+    "step_index": 1
+  },
+  "warnings": [],
+  "regenerations": [],
+  "critique_rounds": [],
+  "gate_jumps": [],
+  "spawned_agents": [],
+  "design_gate": null,
+  "step_timings": [
+    {
+      "agent_id": "chief_of_staff",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 1,
+      "ok": true
+    },
+    {
+      "agent_id": "research",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 1,
+      "ok": true
+    },
+    {
+      "agent_id": "research",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 0,
+      "ok": true
+    }
+  ],
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "per_agent": [
+      {
+        "agent_id": "chief_of_staff",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "research",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "research",
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    ]
+  },
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "finished_at": "2026-01-01T00:00:00.000Z",
+  "research": {
+    "attempts": [
+      {
+        "started_at": "2026-01-01T00:00:00.000Z",
+        "mode": null,
+        "requests": [],
+        "backend_calls": 0,
+        "cache_hits": 0,
+        "dropped_by_domain": 0,
+        "first_pass_sha256": "c3d7b999ea22915ab9a77ba5460da05a26ceb5685c6dc037455bf262b66902e5",
+        "evidence": [],
+        "receipt_path": "outputs/research/receipt-fceb20f1642e7da4febea681217f2492cb509902c353b32265d13efff3c96998.json",
+        "raw_paths": [],
+        "error_code": "research_declaration_missing"
+      },
+      {
+        "started_at": "2026-01-01T00:00:00.000Z",
+        "mode": null,
+        "requests": [],
+        "backend_calls": 0,
+        "cache_hits": 0,
+        "dropped_by_domain": 0,
+        "first_pass_sha256": "c3d7b999ea22915ab9a77ba5460da05a26ceb5685c6dc037455bf262b66902e5",
+        "evidence": [],
+        "receipt_path": "outputs/research/receipt-fceb20f1642e7da4febea681217f2492cb509902c353b32265d13efff3c96998.json",
+        "raw_paths": [],
+        "error_code": "research_declaration_missing"
+      }
+    ],
+    "carried_attempts": 1,
+    "totals": {
+      "backend_calls": 0,
+      "results": 0
+    }
+  }
+}

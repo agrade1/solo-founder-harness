@@ -1174,12 +1174,18 @@ test("[C-126/A3c] self attempt의 receipt도 결박된다 (승인자가 리서�
       ],
     },
   };
+  // [C-154ⓒ] `docs/00_IDEA.md`가 **늘었다.** 왜 늘었나: 영수증이 산출물만 담아서 승인 뒤 아이디어를
+  // 통째로 바꿔도 다음 단계가 그대로 돌았다. 왜 이 자리인가: `runStateSources`가 "무엇이 승인 바이트
+  // perimeter 안인가"의 정본이고, 심사받은 **입력**도 그 안이어야 drift가 본다.
+  // 왜 맨 앞인가: 입력이 먼저 오고 그 뒤에 그것으로 만든 산출물이 온다(읽는 순서 = 만들어진 순서).
+  const IDEA = { agent_id: "idea", path: "docs/00_IDEA.md", seed: false };
   const srcs = runStateSources(state);
-  assert.deepEqual(srcs, [{ agent_id: "research", path: "outputs/research/receipt-self.json", seed: false }]);
+  assert.deepEqual(srcs, [IDEA, { agent_id: "research", path: "outputs/research/receipt-self.json", seed: false }]);
 
   // 실패로 끝난(mode:null) attempt만 있으면 결박하지 않는다 — 채택된 근거가 아니다.
+  // (아이디어는 남는다 — 그것은 attempt의 산출물이 아니라 이 run이 심사한 입력이다.)
   const failedOnly: RunState = { ...state, research: { attempts: [{ ...state.research!.attempts[0], mode: null }] } };
-  assert.deepEqual(runStateSources(failedOnly), []);
+  assert.deepEqual(runStateSources(failedOnly), [IDEA]);
 });
 
 // ══ 11. A-5 안내 정합 ═══════════════════════════════════════════

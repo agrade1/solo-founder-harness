@@ -117,4 +117,12 @@ export function runInit(name: string): void {
     console.log(`  ${TAVILY_SECRET_REF} 파일 준비를 건너뜀 (${env.code}) — 외부 검색 없이 자체 리서치로 진행됩니다`);
   }
   for (const n of env.notices) console.log(`    ${n}`);
+
+  // [C-154ⓐ] 다음 걸음을 **콘솔에서도** 말한다. 예전엔 4단계 파이프라인으로 가는 길이 생성된
+  // `CONTEXT_SUMMARY.md` 안에만 있어서, `init`을 돌린 사람은 그 파일을 열기 전까지 아무 안내도 못 받았다.
+  // 문구는 그 템플릿과 **같은 명령**이다 — 두 벌이면 한쪽만 정직해진다(함정 27).
+  console.log("");
+  console.log(`다음: docs/00_IDEA.md를 실제 아이디어로 채우세요 (템플릿 문장을 그대로 두면 안 됩니다).`);
+  console.log(`  그다음 4단계 파이프라인: harness pipeline next --project ${name} --provider <mock|claude-code|anthropic>`);
+  console.log(`  단계마다 확인 대기에서 멈춥니다 — 승인해야 다음 단계가 돕니다 (승인 우회 플래그는 없습니다).`);
 }
