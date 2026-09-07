@@ -49,21 +49,27 @@ function pipelineActions(project, root) {
         case "awaiting_run":
             return [
                 `**단계 실행 대기** ${label} — \`harness pipeline next --project ${project}\`.` +
-                    (st.last_failure ? ` (직전 실패 ${st.last_failure.stage} @ ${st.last_failure.at} — next가 자동 resume한다)` : ""),
+                    (st.last_failure ? ` (직전 실패 ${st.last_failure.stage} @ ${st.last_failure.at} — next가 이어서 돈다: run_state가 이 workflow의 failed면 resume, 아니면 fresh)` : ""),
             ];
         case "killed":
             return [
-                `**파이프라인 폐기** — 지시문·DAG·handoff를 만들 수 없다. 재평가는 \`harness run <kill 게이트 workflow> --project ${project}\`, 다시 세우려면 \`harness pipeline restart\`.`,
+                `**파이프라인 폐기** — 지시문·DAG·handoff를 만들 수 없다.`,
+                `[A-3] **순서가 있다**: 먼저 재평가 \`harness run <kill 게이트 workflow> --project ${project}\`로 '진행' 판정을 받고, ` +
+                    `**그다음** \`harness pipeline restart --project ${project}\`. 순서를 바꾸면 restart가 \`run_state_killed\`로 거부된다(2단계 이상 폐기일 때).`,
             ];
         case "completed": {
             const problem = driftProblem(root, approvedDigests(st).values());
             if (problem) {
                 return [
                     `**승인 후 문서가 바뀌었다** — ${problem}. 사람이 확인한 내용이 아니므로 \`task-prompt\`·\`handoff\`·\`plan-dag\`가 거부된다.`,
-                    `파일을 복원하거나 \`harness pipeline restart --project ${project}\`로 다시 심사한다.`,
+                    `[B-54] 복구는 **그 파일의 승인 시점 바이트를 되돌리는 것 하나**다 — 하네스는 내용을 보관하지 않으므로(영수증은 path·size·sha256뿐) ` +
+                        `git·백업 등 바깥에서 되돌려야 한다. \`pipeline restart\`는 완료 상태에서만 열린다.`,
                 ];
             }
-            return [`파이프라인 4단계 전부 승인 완료 — \`harness task-prompt\` 또는 \`harness handoff\`로 개발 착수.`];
+            return [
+                `파이프라인 4단계 전부 승인 완료 — \`harness task-prompt --project ${project}\` 또는 ` +
+                    `\`harness handoff --project ${project} --cwd <서비스 레포>\`로 개발 착수.`,
+            ];
         }
     }
 }
@@ -100,7 +106,7 @@ function nextActions(state, project, pipelineOwns = false) {
         case "completed":
             actions.push(pipelineOwns
                 ? `workflow \`${state.workflow_id}\` 자체는 완주했다 — 다음 행동은 위 단계 체크포인트가 정한다(승인 전에는 지시문을 만들지 않는다).`
-                : `workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
+                : `workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt --project ${project}\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
             break;
         default: {
             // status가 없는 옛 run_state(필드 도입 전)는 failed_agent로 판단한다 — 기존 동작 보존.
@@ -108,7 +114,7 @@ function nextActions(state, project, pipelineOwns = false) {
             void legacy;
             actions.push(state.failed_agent
                 ? `\`${state.failed_agent}\`에서 중단됨 — \`harness run ${state.workflow_id} --project ${project} --resume\`로 재개.`
-                : `workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
+                : `workflow \`${state.workflow_id}\` 완료 — \`harness task-prompt --project ${project}\`로 작업 지시문 생성 또는 다음 workflow 실행.`);
         }
     }
     if (state.warnings.length > 0) {

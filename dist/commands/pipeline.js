@@ -117,13 +117,15 @@ export function statusPipeline(o) {
                 `  [A-4] next는 run_state가 이 workflow의 failed일 때만 resume하고, 그렇지 않으면 **fresh로 다시 돌린다** ` +
                 `(실행 중 크래시는 run_state를 남기지 못한다). 어느 쪽이든 이 영수증이 덮인 경로의 정본이라 drift로 막히지 않는다.`);
         }
-        console.log(`다음: harness pipeline next --project ${st.project}`);
+        console.log(`다음: harness pipeline next --project ${st.project}${st.provider ? ` --provider ${st.provider}` : ""}`);
     }
     else if (st.status === "killed") {
         console.log("");
         console.log("폐기 판정으로 종료된 파이프라인입니다 — 지시문·DAG·handoff는 만들지 않습니다.");
         console.log(`재평가: harness run <kill 게이트 workflow> --project ${st.project} (게이트가 '진행'을 내면 잠금이 풀립니다)`);
-        console.log(`다시 세우기: harness pipeline restart --project ${st.project} (기존 state는 지우지 않고 rename 보관)`);
+        // [A-3] 2단계 이상 폐기면 restart가 먼저 오면 거부된다 — 순서를 문장에 넣는다.
+        console.log(`다시 세우기: **먼저** 재평가로 '진행' 판정을 받고(harness run <${reevaluationWorkflowIds().join(" | ")}> --project ${st.project}), ` +
+            `**그다음** harness pipeline restart --project ${st.project} (기존 state는 지우지 않고 rename 보관)`);
     }
     else {
         // [B-41/결정 2] 완료 상태에서도 **하류가 막혀 있으면 그 사실을 먼저 말한다.** 예전 status는
@@ -209,7 +211,8 @@ ctx) {
                 `${k?.decider ?? "게이트"}가 '${k?.decision ?? "폐기"}') — 파이프라인을 만들지 않았습니다.\n` +
                 `먼저 재평가를 직접 돌려 '진행' 판정을 받으세요: harness run <kill 게이트 workflow> --project ${project}`, 2);
         }
-        state = newPipelineState(project, now());
+        // [B-57] 이 파이프라인이 쓸 provider를 **처음 만들 때 새긴다** — 이후 단계는 이것을 승계한다.
+        state = newPipelineState(project, now(), o.provider);
         writePipelineState(root, state); // 전이: 파이프라인 생성 (원자 쓰기 1회)
         console.log(`파이프라인 시작: ${PIPELINE_ID} · ${DEFAULT_PIPELINE.map((s) => s.id).join(" → ")}`);
     }
@@ -219,7 +222,8 @@ ctx) {
     // ③ 사건 허용 판정
     if (state.status === "killed") {
         return reject("pipeline_killed", `이 파이프라인은 폐기 판정으로 종료됐습니다 — next로 전진하지 않습니다.\n` +
-            `재평가: harness run <kill 게이트 workflow> --project ${project} · 다시 세우기: harness pipeline restart --project ${project}`, 1);
+            `[A-3] 순서: **먼저** 재평가 harness run <kill 게이트 workflow> --project ${project} → '진행' 판정 → ` +
+            `**그다음** harness pipeline restart --project ${project} (순서를 바꾸면 restart가 run_state_killed로 거부된다)`, 1);
     }
     if (state.status === "completed") {
         console.log(`파이프라인이 이미 완료됐습니다 (${DEFAULT_PIPELINE.length}단계 전부 승인) — 전진할 것이 없습니다.`);
@@ -252,6 +256,7 @@ ctx) {
             return reject("pipeline_killed_elsewhere", `run_state가 폐기 판정인데 그 workflow('${rsWf}')는 현 단계('${stage.id}')가 아닙니다 — ` +
                 `현 단계 영수증으로 적으면 거짓 기록이 되므로 아무것도 쓰지 않았습니다.\n` +
                 `[A-3] **이 상태에서는 안내할 수 있는 명령이 없습니다** — 실측으로 확인했습니다: ` +
+                // guidance-exempt: 실행 지시가 아니라 **거부되는 명령을 설명**한다 (인용된 명령을 권하지 않는다)
                 `\`harness run\`은 파이프라인이 이 run을 예약해 거부되고(pipeline_run_reserved), ` +
                 `\`restart\`는 pipeline_active로, approve/reject는 pending 부재로 거부됩니다.\n` +
                 `확인된 생성 경로는 "2단계 이상 폐기 → pipeline restart" 하나이고 그 경로는 이제 restart가 막습니다 ` +
@@ -313,9 +318,12 @@ ctx) {
             const replay = w !== undefined && driftProblem(root, [approved]) === null;
             return reject("pipeline_artifact_drift", replay
                 ? `이 단계가 덮어쓴 산출물이 **앞 단계 승인본 바이트로 되돌아가 있습니다**: ${approved.path}\n` +
-                    `앞 단계의 판단을 현 단계 판단으로 재사용하게 되므로 **모델을 호출하지 않고** 멈춥니다 — ` +
-                    `이 단계의 실행이 남긴 내용으로 되돌리거나, 이 단계를 처음부터 다시 돌리려면 파이프라인을 ` +
-                    `종결(폐기 판정 또는 'harness pipeline reject')한 뒤 다시 세우세요.`
+                    `앞 단계의 판단을 현 단계 판단으로 재사용하게 되므로 **모델을 호출하지 않고** 멈춥니다.\n` +
+                    `  ⓐ 이 단계의 실행이 남긴 내용으로 되돌리면 이어집니다 (그 digest가 영수증에 있습니다).\n` +
+                    `  ⓑ [B-58] 예전 안내가 함께 제시하던 "폐기 판정 또는 'harness pipeline reject'로 종결"은 ` +
+                    `**이 상태에서 둘 다 도달할 수 없습니다** — 폐기 판정은 게이트까지 가야 하는데 이 검사가 그 앞에서 막고, ` +
+                    `reject는 확인 대기 산출물이 없어 'pipeline_no_pending'입니다. 실행해 확인했고, 그래서 더는 권하지 않습니다.\n` +
+                    `  이 단계의 바이트를 갖고 있지 않다면 나갈 길이 없습니다 — 대장 \`B-54\`의 잔여분입니다.`
                 : `승인된 산출물이 승인 시점 바이트와 다릅니다: ${approved.path}\n` +
                     `사람이 확인한 내용이 아니므로 **모델을 호출하지 않고** 멈춥니다.\n` +
                     `  ⓐ 그 파일을 승인 시점 내용으로 되돌리면 이 명령이 이어집니다 — **다만 하네스는 내용을 ` +
@@ -348,7 +356,19 @@ ctx) {
         return commitPending(root, state, base, now(), project);
     }
     // ── workflow 단계 ──
-    const provider = o.providerOverride ?? getProvider(o.provider ?? DEFAULT_PROVIDER_ID);
+    // [B-57] **provider 승계.** 우선순위: 테스트 seam > 이번 호출의 --provider > 이 파이프라인에 새겨진 값 > 기본값.
+    // 예전엔 저장된 값이 없어서 `--provider`를 안 붙인 next가 곧바로 mock으로 떨어졌고, 안내 6곳 전부가
+    // 그 플래그를 빼고 인쇄했다 — 사람이 안내를 따르는 것 자체가 강등 경로였다.
+    const providerId = o.provider ?? state.provider ?? DEFAULT_PROVIDER_ID;
+    const provider = o.providerOverride ?? getProvider(providerId);
+    if (state.provider !== providerId) {
+        // 전환은 정당하다(mock으로 리허설하고 실제로 돌리는 흐름). **조용한** 전환만 막는다.
+        if (state.provider !== undefined) {
+            console.log(`provider 변경: '${state.provider}' → '${providerId}' (이 파이프라인에 새로 새깁니다)`);
+        }
+        state = { ...state, provider: providerId, updated_at: now() };
+        writePipelineState(root, state);
+    }
     // [C-126/A-1] **파이프라인이 리서치 어댑터의 1급 소비자다.** 여기서 해석하지 않으면 `run.ts`를
     // 거치지 않는 이 경로(→ locked.runStage → runWorkflow)에서 1단계는 항상 self가 된다.
     const researchRuntime = o.researchRuntimeOverride ?? resolveResearchRuntime();
@@ -834,7 +854,7 @@ export function restartPipeline(o) {
         if (!archive)
             return reject("pipeline_archive_name_exhausted", `archive 이름을 예약할 수 없습니다 (${stamp} 계열 100개 사용 중)`, 1);
         renameSync(abs, archive); // **삭제 없음** — 기존 영수증은 예약한 자리로 그대로 보관된다
-        const fresh = newPipelineState(o.project, at);
+        const fresh = newPipelineState(o.project, at, undefined); // [B-57] 다시 세우면 provider도 다시 고른다(승계 안 함)
         writePipelineState(root, fresh);
         console.log(`파이프라인을 다시 시작했습니다 — 기존 state는 보관: ${archive.slice(root.length + 1)}`);
         console.log(`단계 ${stageLabel(fresh)}부터: harness pipeline next --project ${o.project}`);

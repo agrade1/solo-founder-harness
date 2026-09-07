@@ -494,7 +494,7 @@ export async function runWorkflow(args) {
     const prior = args.resume ? loadRunState(project) : null;
     if (args.resume) {
         if (!prior) {
-            throw new Error(`재개할 run_state가 없습니다: ${project} (먼저 'harness run' 실행)`);
+            throw new Error(`재개할 run_state가 없습니다: ${project} (먼저 'harness run ${workflowId} --project ${project}' 실행)`);
         }
         if (prior.status !== "failed" || prior.resume_from === null) {
             throw new Error(`재개할 실패 상태가 아닙니다 (status=${prior.status}) — 재개할 것이 없습니다.`);
@@ -940,7 +940,9 @@ export async function runWorkflow(args) {
                         `**같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다.**\n` +
                         `      ⓐ 예산을 올려 재개: --max-tokens <${spent}보다 큰 값> --resume\n` +
                         `      ⓑ 상한 없이 재개: --max-tokens와 HARNESS_MAX_TOKENS를 **둘 다** 비우고 --resume ` +
-                        `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).`);
+                        `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).\n` +
+                        `      [C-2] **파이프라인이 이 run을 소유한 경우**(pipeline next로 들어온 경우)에는 --resume이 없습니다 ` +
+                        `— 같은 두 길을 'harness pipeline next --project <name> --max-tokens <더 큰 값>'로 쓰거나 상한을 비우세요.`);
                     break;
                 }
                 if (!warned80 && spent >= maxTokens * 0.8) {

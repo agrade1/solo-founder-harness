@@ -812,6 +812,58 @@ test("[B-41/A-9] 승인 산출물이 프로젝트 밖을 가리키는 symlink로
   }
 });
 
+// ── B-57 ──────────────────────────────────────────────────────
+test("[B-57] provider는 파이프라인에 새겨져 승계된다 — --provider 없는 next가 mock으로 강등되지 않는다", async () => {
+  // red: 해석을 `o.provider ?? DEFAULT_PROVIDER_ID`로 되돌리면 2단계가 mock으로 떨어진다.
+  //      그런데 도구가 인쇄하는 다음 단계 안내 6곳 전부에 --provider가 없어서, **안내를 따르는 것
+  //      자체가 강등 경로**였다. 오류가 아니라 [MOCK] 문서가 승인 대기로 간다(조용한 오답).
+  const name = "_b57_inherit";
+  makeProject(name);
+  const seam = counting();
+  await quiet(() => nextPipeline({ project: name, provider: "claude-code", providerOverride: seam, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(stateOf(name).provider, "claude-code", "처음 만들 때 새긴다");
+  const pend = stateOf(name).pending!;
+  await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }));
+
+  // 안내 그대로 --provider 없이 (providerOverride는 실제 호출을 막는 테스트 seam일 뿐이다)
+  await quiet(() => nextPipeline({ project: name, providerOverride: seam, now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(stateOf(name).provider, "claude-code", "--provider 없는 next가 새긴 값을 지우지 않는다");
+  rmProject(name);
+});
+
+test("[B-57] 명시한 --provider는 이기고, 전환은 조용히 일어나지 않는다", async () => {
+  // red: 전환 로그를 지우면 mock↔실제 전환이 영수증에도 화면에도 남지 않는다.
+  const name = "_b57_switch";
+  makeProject(name);
+  const seam = counting();
+  await quiet(() => nextPipeline({ project: name, provider: "claude-code", providerOverride: seam, now: () => FIXED, internalApprover: async () => true }));
+  const pend = stateOf(name).pending!;
+  await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }));
+
+  const out = await captureLogs(async () => {
+    await nextPipeline({ project: name, provider: "mock", providerOverride: seam, now: () => FIXED, internalApprover: async () => true });
+  });
+  assert.equal(stateOf(name).provider, "mock", "명시 지정이 이긴다 (전환 자체는 정당하다)");
+  assert.match(out, /provider 변경: 'claude-code' → 'mock'/, "전환을 화면에 남긴다 — 막는 것은 **조용한** 전환뿐이다");
+  rmProject(name);
+});
+
+test("[B-57] provider 필드가 없는 옛 state도 그대로 돈다 (하위 호환)", async () => {
+  const name = "_b57_legacy";
+  makeProject(name);
+  const seam = counting();
+  await quiet(() => nextPipeline({ project: name, providerOverride: seam, now: () => FIXED, internalApprover: async () => true }));
+  const root = projectPaths(name).root;
+  const st = stateOf(name);
+  const legacy: Record<string, unknown> = { ...st };
+  delete legacy.provider; // 필드 도입 전 state
+  writeFileSync(pipelineStatePath(root), JSON.stringify(legacy, null, 2) + "\n", "utf8");
+  assert.equal(stateOf(name).provider, undefined, "전제: 필드가 없다");
+  const pend = stateOf(name).pending!;
+  assert.equal((await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }))).code, "pipeline_approved", "옛 state를 거부하지 않는다");
+  rmProject(name);
+});
+
 // ── A-4 ───────────────────────────────────────────────────────
 test("[A-4] 영수증은 산출물을 저장하는 **그 순간** durable에 적힌다 — 실행 중 크래시가 벽돌을 만들지 않는다", async () => {
   // red: 영수증 쓰기를 runWorkflow **반환 후**(commitAfterRun)로 되돌리면, 실행 중 Ctrl-C/크래시는
