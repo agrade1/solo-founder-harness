@@ -103,9 +103,14 @@ export function researchModeLines(rt) {
  * [C-126/A-6] **실행 후 실제 mode 영수증.** `run`과 `pipeline next`가 같은 함수를 쓴다 — 렌더가 두
  * 벌이면 한쪽만 정직해진다(B-40의 `gateOutcomeLabel`이 잡은 부류). attempt가 없으면 빈 배열이다
  * (리서치 step이 없는 workflow에서 리서치 이야기를 하지 않는다).
+ *
+ * [B-60] **이 run이 만든 attempt만 본다.** 위 문장은 계약이었는데 지켜지지 않았다 — `attempts`가
+ * 앞 run에서 carry-forward되므로 리서치 step이 없는 `mvp-planning`도 배열이 비지 않았고, 그래서
+ * 1단계 영수증을 **바이트 동일하게** 자기 결과로 증언했다(실측). `carried` 앞은 남의 것이다.
+ * 구버전 state(필드 없음)는 0으로 강하한다 — 예전과 같은 동작이고 더 나쁘지 않다.
  */
-export function researchOutcomeLines(attempts) {
-    const a = attempts?.at(-1);
+export function researchOutcomeLines(attempts, carried = 0) {
+    const a = attempts?.slice(carried).at(-1);
     if (!a)
         return [];
     const tail = ` · 영수증 ${a.receipt_path || "(미기록)"}`;
@@ -267,6 +272,14 @@ export function createSessionBackend(inner, scrub, opts = {}) {
             }
             if (calls >= MAX_BACKEND_CALLS_PER_RUN) {
                 throw new ResearchError("research_budget_exceeded", `run 누적 backend 호출이 상한 ${MAX_BACKEND_CALLS_PER_RUN}회를 넘는다`);
+            }
+            // [B-61] **evidence 상한은 유료 호출 앞에서 본다.** `take()`도 같은 검사를 하지만 그것은
+            // `await inner.search()` **뒤**라, 이미 상한에 닿은 채로 resume하면 매번 크레딧을 사서 버렸다
+            // (실측: resume 4회 → 유료 4회 · 저장 0건 · 매번 `research_cap_exceeded`).
+            // `take()`의 검사를 지우지 않는다 — 이것은 "한 건도 못 받는다"이고 그쪽은 "이 배치를 받으면
+            // 넘는다"라서 서로 다른 것을 재고, 둘 다 있어야 경계가 닫힌다.
+            if (results >= RESEARCH_MAX_EVIDENCE_PER_RUN) {
+                throw new ResearchError("research_cap_exceeded", `run 1회 evidence 상한 ${RESEARCH_MAX_EVIDENCE_PER_RUN}건에 이미 도달했다 — backend를 호출하지 않았다`);
             }
             calls++;
             const out = (await inner.search(query)).map(clean);

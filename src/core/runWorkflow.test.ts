@@ -16,9 +16,10 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { runWorkflow, loadRunState, snapshotProjectIdea, gateOutcomeLabel, IDEA_REL, type RunState } from "./runWorkflow.js";
-import { loadWorkflows, isGate, loadAgentRegistry, findAgent, reevaluationWorkflowIds, type AgentDef } from "./registry.js";
+import { loadWorkflows, isGate, findWorkflow, loadAgentRegistry, findAgent, reevaluationWorkflowIds, type AgentDef } from "./registry.js";
 import { extractCeoDecision, CEO_DECISION_TOKENS, validateAgentOutput } from "./validate.js";
 import { buildPromptParts } from "../providers/promptParts.js";
+import { researchOutcomeLines } from "./researchRuntime.js";
 import { buildTaskPrompt } from "./taskPrompt.js";
 import { buildSummary } from "./summary.js";
 import { exportToVault } from "./obsidianExport.js";
@@ -621,6 +622,34 @@ test("[B-50] '검증' 대기 중에는 개발 표면이 열리지 않는다 — 
   const after = (await runWorkflow({ workflowId: "idea-validation", project: name, provider: ceoDeciding("- 검증"), resume: true, now: () => FIXED })).state;
   assert.equal(after.status, "completed", "전제: 사람이 결론 판정으로 고치면 resume이 종결한다");
   assert.match(buildTaskPrompt(name, "2026-01-01"), /## Task/, "확인이 끝나면 개발 표면이 다시 열린다");
+  rmProject(name);
+});
+
+test("[B-60] 리서치 step이 없는 단계는 앞 단계 영수증을 자기 것으로 증언하지 않는다", async () => {
+  // red: `researchOutcomeLines`에서 carried 슬라이스를 지우면 2단계가 1단계 영수증 경로를
+  //      **바이트 동일하게** 자기 결과로 출력한다(실측 2026-09-04). 그 함수 자신의 주석이
+  //      "리서치 step이 없는 workflow에서 리서치 이야기를 하지 않는다"인데 지켜지지 않았다.
+  //      carry-forward 자체는 유지한다 — 지우면 뒤 run이 앞 단계 영수증을 없앤다(A-4 선례).
+  const name = "_b60_carry";
+  makeProject(name);
+  await runWorkflow({ workflowId: "idea-validation", project: name, provider: mockProvider, now: () => FIXED });
+  const s1 = loadRunState(name)!;
+  assert.equal(s1.research?.carried_attempts, 0, "1단계는 물려받은 것이 없다");
+  assert.ok(researchOutcomeLines(s1.research?.attempts, s1.research?.carried_attempts ?? 0).length > 0, "1단계는 자기 리서치를 말한다");
+
+  // mvp-planning에는 research step이 없다 (registry 파생 — 손으로 적은 전제가 아니다)
+  const wf = findWorkflow(loadWorkflows(), "mvp-planning")!;
+  assert.ok(!wf.steps.includes("research"), "전제: mvp-planning에 research step이 없다");
+
+  await runWorkflow({ workflowId: "mvp-planning", project: name, provider: mockProvider, approve: async () => true, now: () => FIXED });
+  const s2 = loadRunState(name)!;
+  assert.ok((s2.research?.attempts?.length ?? 0) > 0, "carry-forward 자체는 유지된다 (결박 대상이 사라지지 않는다)");
+  assert.equal(s2.research?.carried_attempts, s2.research?.attempts?.length, "전부 물려받은 것이다");
+  assert.deepEqual(
+    researchOutcomeLines(s2.research?.attempts, s2.research?.carried_attempts ?? 0),
+    [],
+    "리서치를 돌리지 않은 단계는 리서치 이야기를 하지 않는다",
+  );
   rmProject(name);
 });
 

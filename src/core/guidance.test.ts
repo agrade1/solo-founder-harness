@@ -92,3 +92,30 @@ test("[B-58] 인쇄하는 `scripts/…` 경로가 실제로 존재한다", () =>
   }
   assert.deepEqual(offenders, [], `존재하지 않는 스크립트 경로를 인쇄한다:\n${offenders.join("\n")}`);
 });
+
+// ── B-63 ──────────────────────────────────────────────────────
+test("[B-63] run_state.json에 쓰는 모든 자리가 tmp+rename(원자)을 쓴다 (전수)", () => {
+  // red: 어느 writer든 plain writeFileSync로 되돌리면 걸린다.
+  //      `C-135`가 세 writer를 원자 쓰기로 바꿀 때 `handoff.ts`의 형제 writer가 **빠졌다** —
+  //      개별 자리를 고치는 것만으로는 다음 누락을 막지 못해서 전수로 잰다.
+  //      run_state.json은 `pipeline status`가 설계상 lock 없이 읽고, 폐기 잠금의 유일한 근거이며,
+  //      하류 명령이 fail-closed다. 찢어진 write 한 번 = 모든 명령 거부 + 손 복구.
+  const offenders: string[] = [];
+  for (const file of sourceFiles(join(REPO, "src"))) {
+    const text = readFileSync(file, "utf8");
+    const lines = text.split("\n");
+    for (const [n, line] of lines.entries()) {
+      if (isComment(line)) continue;
+      if (!/writeFileSync\(/.test(line)) continue;
+      // 이 write가 run_state.json을 향하는가: 같은 함수 안(앞 15줄)에 그 경로가 있는가.
+      const before = lines.slice(Math.max(0, n - 15), n + 1).join("\n");
+      if (!/run_state\.json|RUN_STATE_REL/.test(before)) continue;
+      // 원자 쓰기인가: tmp에 쓰고 rename 하는가 (뒤 4줄 안에 renameSync).
+      const after = lines.slice(n, n + 5).join("\n");
+      if (!/tmp/i.test(line) || !/renameSync\(/.test(after)) {
+        offenders.push(`${file.slice(REPO.length + 1)}:${n + 1}  ${line.trim().slice(0, 90)}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, [], `run_state.json을 비원자적으로 쓴다:\n${offenders.join("\n")}`);
+});

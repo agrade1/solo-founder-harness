@@ -129,6 +129,7 @@
         "raw_paths": []
       }
     ],
+    "carried_attempts": 0,
     "totals": {
       "backend_calls": 0,
       "results": 0
