@@ -20,7 +20,7 @@
  */
 import { closeSync, existsSync, openSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { DEFAULT_PIPELINE, PIPELINE_ID, PIPELINE_LOCK_REL, PIPELINE_STATE_REL, lockPipeline, approvedDigests, buildManifest, checkpointIdFor, currentStage, digestArtifacts, driftProblem, effectiveDigests, newPipelineState, pipelineGateStatus, pipelineStatePath, pipelineWorkflowProblem, readLock, readPipelineStateAt, runStateSources, seedFindingsFrom, writePipelineState, PipelineError, } from "../core/pipeline.js";
+import { DEFAULT_PIPELINE, PIPELINE_ID, PIPELINE_LOCK_REL, PIPELINE_STATE_REL, lockPipeline, approvedDigests, buildManifest, checkpointIdFor, currentStage, digestArtifacts, driftProblem, stageWrittenBytes, effectiveDigests, newPipelineState, pipelineGateStatus, pipelineStatePath, pipelineWorkflowProblem, readLock, readPipelineStateAt, runStateSources, seedFindingsFrom, writePipelineState, PipelineError, } from "../core/pipeline.js";
 import { projectExists, projectPaths } from "../core/project.js";
 import { findAgent, findWorkflow, hasKillGate, loadAgentRegistry, loadWorkflows, reevaluationWorkflowIds } from "../core/registry.js";
 import { ideaGateStatus, readRunStateAt, readRunState, runWorkflow, snapshotProjectIdea, } from "../core/runWorkflow.js";
@@ -290,7 +290,7 @@ ctx) {
     // **약화가 아니다**(B-52 규칙 그대로): 예외로 들어오는 것은 **이 단계가 실제로 쓴 바이트 하나**이고
     // 아래 `accept = w ? [w] : [approved]`가 여전히 교체다. 앞 단계 승인 바이트를 되돌려 놓으면
     // `w`와 달라 그대로 거부된다(replay 문구). 넓어지는 것은 "판정 대상 경로"가 아니라 "정본을 아는 경로"다.
-    const stageWrote = state.last_failure?.stage === stage.id ? state.last_failure.written : [];
+    const stageWrote = stageWrittenBytes(state, stage.id);
     const written = new Map(stageWrote.map((w) => [w.path, w]));
     for (const approved of approvedDigests(state).values()) {
         const w = written.get(approved.path);
@@ -445,7 +445,7 @@ function recordStageWrite(root, stageId, workflowId, rel, now) {
         if (read.kind !== "ok")
             return;
         const st = read.state;
-        const carry = st.last_failure?.stage === stageId ? st.last_failure.written : [];
+        const carry = stageWrittenBytes(st, stageId);
         const merged = new Map(carry.map((w) => [w.path, w]));
         for (const w of digestArtifacts(root, [rel], { skipMissing: true }))
             merged.set(w.path, w);
@@ -488,7 +488,7 @@ function commitAfterRun(o, ctx) {
         // `replayProblem`(core/pipeline.ts)이 단계 불일치 state를 아예 unreadable로 막으므로 이 조건이
         // 거짓이 되는 경로는 현재 없다 — **불변식이 다른 파일에 있어서** 여기 한 번 더 적는다.
         // (`workflow_id`는 `stage.id`의 함수라 따로 대조하지 않는다.)
-        const carry = state.last_failure?.stage === stage.id ? state.last_failure.written : [];
+        const carry = stageWrittenBytes(state, stage.id);
         const merged = new Map(carry.map((w) => [w.path, w]));
         for (const w of digestArtifacts(root, result.savedFiles, { skipMissing: true }))
             merged.set(w.path, w);
