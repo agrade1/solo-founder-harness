@@ -337,6 +337,8 @@ function runProcessCount(f: Fixture): number {
   return f.kernel.getState().tasks.reduce(
     (sum, t) =>
       sum +
+      // [B-64] 커널이 세는 것과 같게 — 앞선 attempt들의 몫을 포함한다.
+      t.execution.priorAttemptProcesses +
       t.execution.operationReceipts.filter((r) => r.kind === "run_process").length +
       t.execution.pendingOperations.filter((p) => p.kind === "run_process").length,
     0,
@@ -897,6 +899,46 @@ test("[M5c/3C] spawn 상한: run 전체 프로세스 32번째는 실행되고 33
   assert.equal(readFileSync(join(f.ws, "docs/launches.txt"), "utf8").trim().split("\n").length, 1);
   const pending = f.kernel.getTask("g4")!.execution.pendingOperations.find((p) => p.operationId === "op-33")!;
   assert.equal(pending.attemptedAt, null);
+});
+
+test("[B-64] attempt 롤오버가 run당 프로세스 상한을 다시 열지 않는다", async () => {
+  // **관측이 먼저다**(대장은 코드 대조만 기록했다): 32까지 채운 뒤 task 하나를 pause→resume 하면
+  // `emptyTaskExecution()`이 그 task의 `operationReceipts`를 비운다. run 집계가 그만큼 줄면
+  // 상한이 다시 열린 것이고, 그것이 `B-64`의 주장이다.
+  const fill = ["c1", "c2", "c3", "c4", "g1", "g2", "g3", "g4"];
+  const f = fixture({
+    entrypointBody: '#!/bin/sh\nexit 0\n',
+    taskIds: ["root", ...fill],
+    maxSessions: 9,
+  });
+  fillProcessCount(f, "root", 4);
+  for (const c of ["c1", "c2", "c3", "c4"]) spawnChild(f, "root", c);
+  fillProcessCount(f, "c1", 4);
+  for (const g of ["g1", "g2", "g3", "g4"]) spawnChild(f, "c1", g);
+  for (const t of ["c2", "c3", "c4", "g1", "g2", "g3"]) fillProcessCount(f, t, 4);
+  assert.equal(runProcessCount(f), 32, "전제: 상한까지 찼다");
+
+  // attempt 롤오버 하나 — 이 task는 프로세스 4개를 이미 열었다.
+  const lease = f.kernel.getTask("g3")!.execution.processLeaseMarker!;
+  f.kernel.recordTerminal({ taskId: "g3", actionId: nextId("act"), marker: "process_failed" });
+  f.kernel.confirmCleanup({ taskId: "g3", actionId: nextId("act"), leaseMarker: lease });
+  f.kernel.settleCleanedAttempt({ taskId: "g3", actionId: nextId("act") });
+  assert.equal(f.kernel.getTask("g3")!.state, "retry_wait", "전제: 재시도 여유가 있다");
+  startTask(f, "g3");
+  assert.equal(f.kernel.getTask("g3")!.execution.attemptNo, 2, "전제: attempt가 롤오버됐다");
+
+  assert.equal(
+    runProcessCount(f),
+    32,
+    "attempt 롤오버가 이 task가 연 프로세스 4개를 run 집계에서 지웠다 — 상한이 다시 열린다",
+  );
+
+  // 그리고 상한이 실제로 집행된다 — 33번째는 여전히 spawn 전에 닫힌다.
+  const over = oneShot(f, "turn-33", "op-33", "g3");
+  assert.equal(
+    await codeOfAsync(() => executeRunProcessOperation(over.grant, over.op, over.cap)),
+    "process_spawn_limit_exceeded",
+  );
 });
 
 // ── deadline · 자손 정리 ────────────────────────────────────────────────────

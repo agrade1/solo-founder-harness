@@ -715,6 +715,19 @@ export interface TaskExecution {
   /** 등록됐지만 아직 영수증이 커밋되지 않은 operation(operationId 정렬 · 중복 없음). */
   pendingOperations: PendingOperation[];
   operationReceipts: OperationReceipt[];
+  /**
+   * [B-64] **앞선 attempt들이 이미 연 프로세스 수**(누적 · 단조 증가).
+   *
+   * `operationReceipts`는 attempt 롤오버가 비운다(`emptyTaskExecution()`). 그래서 프로세스 상한을
+   * 영수증만으로 세면 **롤오버가 상한을 다시 연다** — kernel fixture로 관측했다(32까지 채운 뒤
+   * 롤오버 1회에 run 집계가 **28로 떨어졌다**). `maxTaskAttempts` 4 × `maxChildrenPerTask` 4면
+   * task 하나가 16, 8 task면 128 프로세스인데 run 집계는 32를 넘지 않는다.
+   *
+   * 롤오버 지점이 이 값에 그 attempt의 수를 더하고 영수증만 비운다 → 상한은 attempt 밖에 산다.
+   * (기각한 대안: 롤오버가 영수증을 남기게 하기 — 영수증은 attempt에 결박된 실행 증거라 다음
+   * attempt의 정합 검사·중복 operationId 검사에 그대로 걸린다. 세는 것과 남기는 것은 다른 일이다.)
+   */
+  priorAttemptProcesses: number;
 }
 
 /** 새 task의 초기 실행 메타데이터(모든 필드가 durable 계약이라 항상 존재한다). */
@@ -742,6 +755,7 @@ export function emptyTaskExecution(): TaskExecution {
     pendingResult: null,
     pendingOperations: [],
     operationReceipts: [],
+    priorAttemptProcesses: 0,
   };
 }
 

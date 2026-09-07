@@ -1088,7 +1088,10 @@ function launchedProcesses(task: OrchestrationTask): number {
   // 띄우므로 여기 빠져 있으면 `maxProcessesPerRun`이 실제 프로세스 수와 어긋난다(이전 판이 그랬다).
   // V3 M10 T1: 목록을 수기로 다시 적지 않는다 — `opensProcess` 하나가 정본이다(autopilot 정리 판정과 공유).
   const opens = opensProcess;
+  // [B-64] **앞선 attempt들의 몫을 더한다.** 영수증만 세면 attempt 롤오버가 상한을 다시 연다
+  // (kernel fixture 관측: 32까지 채운 뒤 롤오버 1회에 run 집계가 28로 떨어졌다).
   return (
+    task.execution.priorAttemptProcesses +
     task.execution.operationReceipts.filter((r) => opens(r.kind)).length +
     task.execution.pendingOperations.filter((p) => opens(p.kind)).length
   );
@@ -2920,6 +2923,8 @@ export class OrchestrationKernel {
               attemptNo: task.execution.attemptNo + 1,
               attemptId: d.attemptId,
               operationReceipts: [],
+              // [B-64] 영수증은 비우되 **센 것은 이월한다** — 상한은 attempt가 아니라 run의 것이다.
+              priorAttemptProcesses: launchedProcesses(task),
             };
             task.execution.preflightDigest = preflightDigest(draft, task);
             setState(draft, now, mutation, task, "prepared", "preflight_accepted", { actionId, attemptId: d.attemptId });
@@ -3579,6 +3584,15 @@ export class OrchestrationKernel {
           }
         }
         acc.tokensUsed = Math.min(LIMITS.maxAccountedTokens, acc.tokensUsed + delta);
+        // [C-156] **인접한 두 줄이 다른 누적기인 것은 의도다.** 토큰은 합계이고 경과는 최댓값이다:
+        // 경과 상한은 `budgetStartedAt + maxElapsedMs`를 **now와** 비교해 집행되는 wall-clock이라
+        // (`seedAccounting`), 그와 비교 가능한 값은 "예산 시작 이후 경과"뿐이다. turn 합계로 바꾸면
+        // **병렬 task의 같은 wall time을 중복 계산**한다. 대장 `C-156`은 이 자리를 "합계여야 하는데
+        // max"라고 적었는데 kernel fixture 관측 결과 **반증됐다**(`autopilotLifecycle.test.ts`의 [C-156]).
+        //
+        // **호출자 계약**: `elapsedMs`는 turn 단위 delta가 아니라 **`budgetStartedAt` 이후 누적 경과**다.
+        // delta를 넘기면 이 누적기가 조용히 과소 집계한다 — 지금은 production 호출자가 0이라
+        // 관측되지 않는다. 그 잔여는 대장에 남겼다(kernel이 직접 계산하게 하는 것이 후보 수정이다).
         acc.elapsedMsUsed = Math.min(LIMITS.maxAccountedElapsedMs, Math.max(acc.elapsedMsUsed, elapsedMs));
         acc.chargedTurnIds = [...acc.chargedTurnIds, turnId].sort();
         // **claim은 여기서 닫지 않는다**(3A 3차 리비전 A1): 순서가 과금 → grant → 효과이므로 지금 닫으면
@@ -3908,7 +3922,12 @@ export class OrchestrationKernel {
       // 실행 상태를 통째로 리셋하는 지점이다 → 미확정 operation을 여기서 지울 수 없다(3A 3차 리비전 A3).
       assertNoPendingOperations(task, "resume");
       const mutation: Mutation = { events: [], bodies: [] };
-      task.execution = { ...emptyTaskExecution(), attemptNo: task.execution.attemptNo };
+      // [B-64] 여기도 롤오버다 — 이월하지 않으면 pause→resume이 상한을 다시 연다.
+      task.execution = {
+        ...emptyTaskExecution(),
+        attemptNo: task.execution.attemptNo,
+        priorAttemptProcesses: launchedProcesses(task),
+      };
       setState(draft, now, mutation, task, "ready", "resumed", { actionId });
       mutation.events.push(event({ at: now, type: "task_resumed", revision: draft.revision, taskId, actionId }));
       recompute(draft, now, mutation);

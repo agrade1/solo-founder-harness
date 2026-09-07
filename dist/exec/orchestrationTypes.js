@@ -537,6 +537,7 @@ export function emptyTaskExecution() {
         pendingResult: null,
         pendingOperations: [],
         operationReceipts: [],
+        priorAttemptProcesses: 0,
     };
 }
 /**
