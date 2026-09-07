@@ -10,7 +10,7 @@
   "last_failure": {
     "stage": "idea-validation",
     "workflow_id": "idea-validation",
-    "at": "2026-09-07T07:45:10.184Z",
+    "at": "2026-09-07T08:05:05.310Z",
     "written": [
       {
         "path": "outputs/chief_of_staff.md",
@@ -69,8 +69,8 @@
       },
       {
         "path": "docs/01_RESEARCH.md",
-        "size": 22626,
-        "sha256": "3a30069740a12e881fcd4958c190d89ad98fc4fa1dba4a16ba7d6343208189eb"
+        "size": 18703,
+        "sha256": "d59328ca05c12c6b1c20ae669e0f5b03db34f051486b5f2d02390eb3d2aa1df4"
       },
       {
         "path": "outputs/research/receipt-b005823ee82e20b940a103d163488cda5797e7a028eadad0bc38122880af66bb.json",
@@ -79,17 +79,77 @@
       },
       {
         "path": "docs/02_PRD.md",
-        "size": 16087,
-        "sha256": "d12c301f5e91189cbdfc257ba777ad76df352c1f8e0fbdd977c48b337c3dc8d9"
+        "size": 19287,
+        "sha256": "75267b19061944d79f658853c488677f9f75acabcc33943e55ed313b068fe419"
       },
       {
         "path": "docs/05_RED_TEAM.md",
-        "size": 22306,
-        "sha256": "1d4336d2cd50639297b4533d83b3dca5ce027a461d3561c519572e9c352b2981"
+        "size": 13093,
+        "sha256": "835f21d10056fb0f5aeb00a5650e4994cff2e5898ebe1d35d8f1cedd60e66282"
+      },
+      {
+        "path": "docs/06_CEO_DECISION.md",
+        "size": 14022,
+        "sha256": "21429b6d3599b3959029ecbad3d6e0dd850c644633829b6a2a8cb59bb1f3c8ca"
+      },
+      {
+        "path": "outputs/research/raw/c3cb06b85a5bd7778035458c23e6ada05b9f96780585c75c2035df1d862ba8f3.txt",
+        "size": 3098,
+        "sha256": "c3cb06b85a5bd7778035458c23e6ada05b9f96780585c75c2035df1d862ba8f3"
+      },
+      {
+        "path": "outputs/research/raw/c2a5597999016bba26b69258f18ea1306762bf24694fd50188ab2247c20a343b.txt",
+        "size": 3245,
+        "sha256": "c2a5597999016bba26b69258f18ea1306762bf24694fd50188ab2247c20a343b"
+      },
+      {
+        "path": "outputs/research/raw/8f0d30daac381d5f116604f3b90f048937b0bd01ea34f0a2f4256f299975dd5e.txt",
+        "size": 220,
+        "sha256": "8f0d30daac381d5f116604f3b90f048937b0bd01ea34f0a2f4256f299975dd5e"
+      },
+      {
+        "path": "outputs/research/raw/404945cb37ced08def2ecfb4c8b620cc24a26f7a0243282d33fd832707e4dc83.txt",
+        "size": 207,
+        "sha256": "404945cb37ced08def2ecfb4c8b620cc24a26f7a0243282d33fd832707e4dc83"
+      },
+      {
+        "path": "outputs/research/raw/4fe01a7e50f7047953a4530c8cfdb2e21f998b68d796c53232bfda963b012ef0.txt",
+        "size": 216,
+        "sha256": "4fe01a7e50f7047953a4530c8cfdb2e21f998b68d796c53232bfda963b012ef0"
+      },
+      {
+        "path": "outputs/research/raw/14b2e5ca67a909ac9b8b5f6b8c932b388f472ecd58964ffad163913ece86b38b.txt",
+        "size": 3417,
+        "sha256": "14b2e5ca67a909ac9b8b5f6b8c932b388f472ecd58964ffad163913ece86b38b"
+      },
+      {
+        "path": "outputs/research/raw/7709046a9a6cef9edaf80d994a792753e720c8f1a7090e97590b4f3a1ca696d9.txt",
+        "size": 2944,
+        "sha256": "7709046a9a6cef9edaf80d994a792753e720c8f1a7090e97590b4f3a1ca696d9"
+      },
+      {
+        "path": "outputs/research/raw/79a22630c60d346edf2ddfb531a03588eca7f1aae0fa3119d05f5f0aea347ca7.txt",
+        "size": 3323,
+        "sha256": "79a22630c60d346edf2ddfb531a03588eca7f1aae0fa3119d05f5f0aea347ca7"
+      },
+      {
+        "path": "outputs/research/raw/fd12adba6a0c6c00f0fec61c2f6fab022381aa56866670a6e2476edd7874ff1a.txt",
+        "size": 2901,
+        "sha256": "fd12adba6a0c6c00f0fec61c2f6fab022381aa56866670a6e2476edd7874ff1a"
+      },
+      {
+        "path": "outputs/research/raw/9d2f52482f4c5336385bb243e4d2db803294dff4e2a20e9490740b3e7e8967f9.txt",
+        "size": 3059,
+        "sha256": "9d2f52482f4c5336385bb243e4d2db803294dff4e2a20e9490740b3e7e8967f9"
+      },
+      {
+        "path": "outputs/research/receipt-6a083a8abdce9d8d26a76a53341e6883500cce602d89e8610afe9d44466e707f.json",
+        "size": 14097,
+        "sha256": "6a083a8abdce9d8d26a76a53341e6883500cce602d89e8610afe9d44466e707f"
       }
     ]
   },
   "checkpoints": [],
   "started_at": "2026-09-07T07:22:50.998Z",
-  "updated_at": "2026-09-07T07:45:10.185Z"
+  "updated_at": "2026-09-07T08:05:05.310Z"
 }
