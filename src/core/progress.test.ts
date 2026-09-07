@@ -18,6 +18,7 @@ import { join } from "node:path";
 import { runWorkflow } from "./runWorkflow.js";
 import { projectPaths } from "./project.js";
 import type { RunEvent } from "./progress.js";
+import { mockProvider } from "../providers/mockProvider.js";
 import type { Provider, AgentRunInput, AgentResult } from "../providers/provider.js";
 import { createProgressReporter } from "../commands/progress.js";
 
@@ -92,6 +93,11 @@ function makeProvider(
     async generate(input: AgentRunInput): Promise<AgentResult> {
       const id = input.agent.agent_id;
       if (opts.failOn?.has(id)) throw new Error(`scripted fail: ${id}`);
+      // [B-4] design 산출물은 **계약 전체**(토큰 3계층·a11y 대비·focus 토큰·컴포넌트 인벤토리)를
+      // 만족해야 채택된다 — M15에서 그 계약을 실제 경로에 배선했다. 이 scripted doc은 critical·
+      // decision을 조종하려고 있는 것이고 design은 둘 다 필요 없으므로, 계약 만족 fixture를
+      // **mock 하나에서 재사용한다**(토큰 JSON을 테스트마다 복사하면 계약이 바뀔 때 전부 낡는다).
+      if (input.agent.token_output) return mockProvider.generate(input);
       return {
         markdown: doc(input, { critical: opts.criticalFor?.has(id), decision: opts.decisionFor?.[id] }),
         usage: { inputTokens: 0, outputTokens: 0 },
