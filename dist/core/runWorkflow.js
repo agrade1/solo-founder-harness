@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, existsSync, renameSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join, sep } from "node:path";
 import { loadAgentRegistry, loadWorkflows, findWorkflow, findAgent, isCritiqueLoop, isGate, isFanout, isApproval, hasKillGate, reevaluationWorkflowIds, gateDeciderIds, } from "./registry.js";
-import { projectPaths, projectExists } from "./project.js";
+import { IDEA_REL, projectPaths, projectExists } from "./project.js";
 import { leaseAllowsRun, pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 import { runAgent } from "./runAgent.js";
 import { saveArtifact } from "./saveArtifact.js";
@@ -124,8 +124,10 @@ export function loadRunState(project) {
     const r = readRunState(project);
     return r.kind === "ok" ? r.state : null;
 }
-/** 검토 대상 아이디어 문서의 프로젝트 상대경로 — kill 잠금의 기준 파일. */
-export const IDEA_REL = "docs/00_IDEA.md";
+// [C-154ⓒ] 정의는 `core/project.ts`(leaf)로 옮겼다 — `core/pipeline.ts`가 값으로 필요한데
+// 이 파일이 그 파일을 import하므로 반대 방향 값 import는 런타임 순환이 된다. 여기서 re-export해
+// 기존 import 경로를 그대로 유지한다.
+export { IDEA_REL } from "./project.js";
 /** 아이디어 문서를 한 번 읽어 snapshot을 만든다. 파일이 없으면 sha256=null, text="". */
 export function snapshotIdea(ideaAbs) {
     if (!existsSync(ideaAbs))

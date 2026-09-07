@@ -145,8 +145,12 @@ test("[B-41/P1] fresh → next 완주 → awaiting_approval · checkpoint_id 재
       .map((a) => a.path)
       .filter((x) => !x.startsWith("outputs/research/"))
       .sort(),
-    ["docs/01_RESEARCH.md", "docs/02_PRD.md", "docs/05_RED_TEAM.md", "docs/06_CEO_DECISION.md", "outputs/chief_of_staff.md"].sort(),
-    "완료 step의 산출물 전부가 영수증에 있다",
+    // [C-154ⓒ] `docs/00_IDEA.md`가 **늘었다.** 왜 늘었나: 영수증이 산출물만 담아서 승인 뒤 아이디어를
+    // 통째로 바꿔도 다음 단계가 그대로 돌았다(사람이 심사한 것과 다른 아이디어로 진행 = 조용한 오답).
+    // 왜 이 자리인가: 이 목록이 "승인 바이트 perimeter"의 정본이고, 심사받은 **입력**도 그 안이어야
+    // drift 검사가 본다. seed에는 안 들어간다(판단 문서가 아니라 입력이라 요약할 Main Judgment가 없다).
+    ["docs/00_IDEA.md", "docs/01_RESEARCH.md", "docs/02_PRD.md", "docs/05_RED_TEAM.md", "docs/06_CEO_DECISION.md", "outputs/chief_of_staff.md"].sort(),
+    "심사받은 입력과 완료 step의 산출물이 전부 영수증에 있다",
   );
   // digest가 실제 파일 바이트의 것이다.
   for (const a of p.artifacts) {
@@ -262,8 +266,16 @@ test("[B-41/P4] approve 직전 1바이트 수정 → 거부 / 같은 바이트�
   const original = readFileSync(prd);
 
   writeFileSync(prd, Buffer.concat([original, Buffer.from("x")]));
-  const drift = await quiet(() => approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: id, now: () => FIXED }));
+  let drift!: Awaited<ReturnType<typeof approveCheckpoint>>;
+  const driftOut = await captureLogs(async () => {
+    drift = await approveCheckpoint({ project: name, stage: "idea-validation", checkpointId: id, now: () => FIXED });
+  });
+  process.exitCode = undefined;
   assert.equal(drift.code, "pipeline_artifact_drift", "확인한 바이트가 아니면 승인하지 않는다");
+  // [B-54 잔여] 이 자리의 안내도 **하네스가 내용을 보관하지 않는다**는 사실을 말한다 — 다른 drift
+  // 안내 둘은 M15에서 그렇게 고쳤는데 여기만 빠져 있었다(함정 27: 문자열도 형제를 grep해야 한다).
+  assert.match(driftOut, /하네스는 내용을 보관하지 않습니다/, "되돌릴 수 없다는 사실을 먼저 말한다");
+  assert.match(driftOut, /실제로 열려 있습니다/, "이 상태에서 통하는 길(reject)을 통한다고 말한다");
   assert.equal(stateOf(name).status, "awaiting_approval", "상태 불변");
 
   // 되돌린 뒤 같은 workflow를 **다시** 돌린다.
@@ -861,6 +873,40 @@ test("[B-57] provider 필드가 없는 옛 state도 그대로 돈다 (하위 호
   assert.equal(stateOf(name).provider, undefined, "전제: 필드가 없다");
   const pend = stateOf(name).pending!;
   assert.equal((await quiet(() => approveCheckpoint({ project: name, stage: pend.stage, checkpointId: pend.checkpoint_id, now: () => FIXED }))).code, "pipeline_approved", "옛 state를 거부하지 않는다");
+  rmProject(name);
+});
+
+// ── C-154 ─────────────────────────────────────────────────────
+test("[C-154ⓒ] 승인 뒤 아이디어 문서를 통째로 바꾸면 다음 단계가 진행하지 않는다", async () => {
+  // red: 아이디어가 checkpoint manifest에 없으면, 사람이 심사한 아이디어와 **다른 아이디어**로
+  //      2단계가 그대로 돈다. 승인 바이트 perimeter의 구멍이고 **조용한 오답**이다
+  //      (drift는 산출물만 보고 있었다 — 그 산출물을 만들어 낸 입력은 안 봤다).
+  const name = "_c154_idea";
+  makeProject(name);
+  await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  const p1 = stateOf(name).pending!;
+  assert.ok(
+    p1.artifacts.some((a) => a.path === IDEA_REL),
+    `승인 영수증이 아이디어를 결박하지 않는다 (${p1.artifacts.map((a) => a.path).join(", ")})`,
+  );
+  assert.equal((await quiet(() => approveCheckpoint({ project: name, stage: p1.stage, checkpointId: p1.checkpoint_id, now: () => FIXED }))).code, "pipeline_approved");
+
+  writeFileSync(join(projectPaths(name).root, IDEA_REL), "# idea\n\n## 아이디어 한 줄 정의\n\n- 완전히 다른 아이디어\n", "utf8");
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.equal(r.code, "pipeline_artifact_drift", `심사한 것과 다른 아이디어로 2단계가 돌았다 (${r.code})`);
+  rmProject(name);
+});
+
+test("[C-154ⓒ] 아이디어 문서가 아예 없으면 승인 대기로 넘어가지 않는다 (fail closed — 사고가 아니라 결정이다)", async () => {
+  // 아이디어를 결박 대상에 넣으면 **부재도 결박 실패**가 된다(`buildManifest`는 fail closed다).
+  // 그 결과를 여기 고정한다: 심사 대상이 없는 run은 승인 영수증을 받지 못한다. 결박 전에는
+  // 아이디어 없이도 승인까지 갔다 — 그때 승인자는 **무엇을 심사했는지 알 수 없는 영수증**을 받았다.
+  const name = "_c154_noidea";
+  makeProject(name);
+  rmSync(join(projectPaths(name).root, IDEA_REL), { force: true });
+  const r = await quiet(() => nextPipeline({ project: name, providerOverride: counting(), now: () => FIXED, internalApprover: async () => true }));
+  assert.notEqual(r.code, "pipeline_awaiting_approval", "심사 대상이 없는데 승인 대기로 넘어갔다");
+  assert.equal(stateOf(name).pending, null, "pending 영수증을 만들지 않았다");
   rmProject(name);
 });
 

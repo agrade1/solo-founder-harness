@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "pipeline_version": 1,
+  "pipeline_id": "founder-predev",
+  "project": "_c126_a5b",
+  "current_index": 0,
+  "status": "awaiting_run",
+  "pending": null,
+  "last_failure": {
+    "stage": "idea-validation",
+    "workflow_id": "idea-validation",
+    "at": "2026-01-01T00:00:00.000Z",
+    "written": [
+      {
+        "path": "outputs/chief_of_staff.md",
+        "size": 1320,
+        "sha256": "e55f7ff6dd952b6c20efcce744c550f6d90f0e9298385a0d744ab2f62386508e"
+      },
+      {
+        "path": "outputs/research/receipt-fceb20f1642e7da4febea681217f2492cb509902c353b32265d13efff3c96998.json",
+        "size": 324,
+        "sha256": "fceb20f1642e7da4febea681217f2492cb509902c353b32265d13efff3c96998"
+      }
+    ]
+  },
+  "checkpoints": [],
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "provider": "mock"
+}

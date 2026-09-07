@@ -44,7 +44,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { basename, dirname, isAbsolute, join, normalize, sep } from "node:path";
 import { findAgent, loadAgentRegistry } from "./registry.js";
 import { extractMainJudgment } from "./validate.js";
-import { projectPaths } from "./project.js";
+import { IDEA_REL, projectPaths } from "./project.js";
 import type { RunState } from "./runWorkflow.js";
 
 export const PIPELINE_ID = "founder-predev";
@@ -696,6 +696,18 @@ export function digestArtifacts(projectRoot: string, relPaths: string[], opts: {
 export function runStateSources(state: RunState): ManifestSource[] {
   const registry = loadAgentRegistry();
   const out: ManifestSource[] = [];
+  // [C-154ⓒ] **심사받은 입력도 결박한다.** 예전엔 산출물만 담겨서, 승인 뒤 `docs/00_IDEA.md`를
+  // 통째로 바꿔도 다음 단계가 그대로 돌았다 — 사람이 심사한 것과 **다른 아이디어**로 진행하는
+  // 조용한 오답이다(실측 재현). drift 검사는 이미 있었고 보는 목록에 입력이 없었을 뿐이다.
+  //
+  // `seed: false`인 이유: 판단 문서가 아니라 입력이라 요약할 Main Judgment가 없다
+  // (design의 tokens.json·리서치 receipt와 같은 규율 — 억지로 넣으면 "(Main Judgment 없음)"이
+  // 다음 단계 프롬프트에 실린다).
+  //
+  // **부재를 예외로 두지 않는다**(의도한 결과다 · 테스트로 고정): `buildManifest`가 fail closed이므로
+  // 아이디어 없는 run은 승인 대기로 넘어가지 못한다. 결박 전에는 넘어갔고, 그때 승인자는
+  // **무엇을 심사했는지 알 수 없는 영수증**을 받았다. 심사 대상이 없는 승인은 승인이 아니다.
+  out.push({ agent_id: "idea", path: IDEA_REL, seed: false });
   for (const id of state.completed_steps ?? []) {
     const agent = findAgent(registry, id);
     if (agent) {
