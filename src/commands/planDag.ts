@@ -47,7 +47,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { ceoVerifyGateStatus, ideaGateStatus, readRunStateAt } from "../core/runWorkflow.js";
+import { devSurfaceGateStatus, ideaGateStatus, readRunStateAt } from "../core/runWorkflow.js";
 import { pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "../core/pipeline.js";
 import { LIMITS, OrchestrationError, type ApprovedOperation } from "../exec/orchestrationTypes.js";
 import { SPECIALIST_ROLES, validateApprovalManifest } from "../exec/approvalManifest.js";
@@ -146,17 +146,19 @@ function assertIdeaNotKilled(ideaPath: string, bytes: Buffer): void {
   const gate = ideaGateStatus(read, snapshot);
   if (!gate.ok) throw new OrchestrationError("dag_materialize_seed_rejected", `${gate.code}: ${gate.message}`);
 
-  // [B-50] '검증' 대기 중에는 DAG 초안도 만들지 않는다 — task-prompt와 **같은 판정 함수**를 쓴다
-  // (규칙이 두 벌이면 한쪽만 정직해진다). 위 폐기 잠금과 같은 projectRoot 한계를 공유한다.
-  const verifyGate = ceoVerifyGateStatus(read);
-  if (!verifyGate.ok) throw new OrchestrationError("dag_materialize_seed_rejected", `${verifyGate.code}: ${verifyGate.message}`);
-
   // [B-41/2단] **단계 체크포인트 게이트도 같은 자리에서 본다** — 개정 2가 산문으로 "닫힌다"고 적었던
   // 것을 코드로 만든다(소비자 5곳이 같은 함수 하나를 쓴다). 확인 대기·앞 단계·폐기·drift는 전부 거부.
   // 위 폐기 잠금과 **같은 한계**를 공유한다: 아이디어 경로가 `<project>/docs/00_IDEA.md` 꼴이 아니면
   // projectRoot를 못 찾고, 그 경우 두 게이트 모두 아무것도 막지 못한다(신규 악화 없음 — §8 우회 4).
   const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(projectRoot)), projectRoot, "plan-dag");
   if (!pipeGate.ok) throw new OrchestrationError("dag_materialize_seed_rejected", pipeGate.message);
+
+  // [B-50/A-1/A-2] 게이트가 '진행'을 내지 않았으면 DAG 초안도 만들지 않는다 — task-prompt와
+  // **같은 판정 함수**를 쓴다(규칙이 두 벌이면 한쪽만 정직해진다). 위 폐기 잠금과 같은 projectRoot
+  // 한계를 공유한다: 아이디어가 `<project>/docs/00_IDEA.md` 꼴이 아니면 두 게이트 모두 못 막는다.
+  const devGate = devSurfaceGateStatus(projectRoot);
+  if (!devGate.ok) throw new OrchestrationError("dag_materialize_seed_rejected", `${devGate.code}: ${devGate.message}`);
+
 }
 
 /** `["a","b"]` → `` `a` · `b` `` (상수 목록을 지시 산문에 싣는 유일한 형식). */

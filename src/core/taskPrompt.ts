@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectPaths, projectExists } from "./project.js";
 import { extractMainJudgment, extractSectionBullets } from "./validate.js";
-import { ceoVerifyGateStatus, ideaGateStatus, readRunState, snapshotIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
+import { devSurfaceGateStatus, ideaGateStatus, readRunState, snapshotIdea, IDEA_REL, type RunState } from "./runWorkflow.js";
 import { pipelineGateStatus, pipelineStatePath, readPipelineStateAt } from "./pipeline.js";
 
 const NEXT_ACTIONS_RE = /^##\s+.*Next Actions\s*$/;
@@ -46,11 +46,6 @@ export function buildTaskPrompt(project: string, today: string): string {
   const gate = ideaGateStatus(read, ideaSnapshot);
   if (!gate.ok) throw new Error(`${gate.code}: ${gate.message}`);
 
-  // [B-50] '검증' 대기 중에는 지시문을 만들지 않는다 — 게이트가 "개발하지 마라"로 멈춘 상태에서
-  // 개발 착수 문서가 나오면 그것이 곧 상태 전이 우회다(plan-dag와 같은 판정 함수를 쓴다).
-  const verifyGate = ceoVerifyGateStatus(read);
-  if (!verifyGate.ok) throw new Error(`${verifyGate.code}: ${verifyGate.message}`);
-
   // [B-41/2단] 단계 체크포인트 게이트. 파이프라인을 쓰는 프로젝트에서는 **완료 후**(또는 마지막
   // dev-handoff 단계의 실행 대기)에만 지시문을 만든다 — 확인 대기 중인 산출물로 구현을 시작하는 것이
   // 이 기능이 막으려는 것 그 자체다. 승인 후 문서가 바뀌었으면 drift로 거부한다(전수 대조).
@@ -58,6 +53,16 @@ export function buildTaskPrompt(project: string, today: string): string {
   // **정직한 한계**: 이 검증 뒤에 아래 로직이 문서를 다시 읽는다 — 그 사이 창은 남는다(§8-5).
   const pipeGate = pipelineGateStatus(readPipelineStateAt(pipelineStatePath(paths.root)), paths.root, "task-prompt");
   if (!pipeGate.ok) throw new Error(pipeGate.message);
+
+  // [B-50/A-1/A-2] 게이트가 '진행'을 내지 않은 상태에서는 지시문을 만들지 않는다 — 게이트가
+  // "개발하지 마라"로 멈춘 그 자리에서 개발 착수 문서가 나오면 그것이 곧 상태 전이 우회다
+  // (plan-dag와 **같은 판정 함수**를 쓴다 — 규칙이 두 벌이면 한쪽만 정직해진다).
+  // 판정 근거는 durable한 decider 문서다: run_state만 보면 게이트 없는 workflow 한 번으로 지워졌다(A-1).
+  // **drift 게이트 뒤에 둔다**: 승인된 판정 문서를 사람이 갈아치우면 원인은 drift이고, 그때 이 게이트가
+  // 먼저 말하면 원인과 다른 코드를 적게 된다(C-96 부류). 앞뒤 어느 쪽이든 fail closed는 같다.
+  const devGate = devSurfaceGateStatus(paths.root);
+  if (!devGate.ok) throw new Error(`${devGate.code}: ${devGate.message}`);
+
   const state = read.kind === "ok" ? read.state : null;
 
   const ceo = readIfExists(join(paths.docs, "06_CEO_DECISION.md"));

@@ -5,6 +5,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { extractTokensJson } from "./validate.js";
 import {
   contrastRatio,
   DESIGN_REQUIRED_HEADERS,
@@ -183,4 +184,36 @@ test("DESIGN.md: 필수 헤더 하나만 빠져도 red (v1 경고와 달리 fail
     assert.deepEqual(r.errors.map((e) => e.where), [h]);
   }
   assert.equal(validateDesignHeaders(GOOD_DESIGN).ok, true);
+});
+
+// ── B-5 ───────────────────────────────────────────────────────
+test("[B-5] tokens.json은 '## 디자인 토큰' 절에서만 뽑는다 — 앞 절의 요약 스니펫이 이기지 않는다", () => {
+  // red: 추출을 `markdown.match(/```json/)`(문서 전체 첫 펜스)로 되돌리면 '개요' 절의 요약이 뽑힌다.
+  //      같은 프롬프트가 '## 디자인 토큰 개요'(tokens.json **요약**)를 토큰 절보다 **앞에** 요구하므로
+  //      모델이 그 요약을 json으로 적으면 요약이 토큰 파일이 된다 — 저장·해시 결박·Include까지 간다.
+  //      mock은 펜스를 1개만 내서 오프라인으로는 절대 안 잡히고 첫 live mvp-planning에서 터진다.
+  const doc = [
+    "# 디자인",
+    "",
+    "## 디자인 토큰 개요",
+    "",
+    "```json",
+    '{ "요약": "컬러 6개 · 타입 5단" }',
+    "```",
+    "",
+    "## 디자인 토큰",
+    "",
+    "```json",
+    '{ "primitive": { "color": { "blue-500": "#3B82F6" } } }',
+    "```",
+    "",
+  ].join("\n");
+  const got = JSON.parse(extractTokensJson(doc)!);
+  assert.deepEqual(got, { primitive: { color: { "blue-500": "#3B82F6" } } }, "정본 절의 펜스가 이긴다");
+  assert.equal(Object.keys(got)[0], "primitive", "요약 스니펫이 아니다");
+
+  // 헤더 매칭은 줄 전체 일치다 — '개요'만 있는 문서는 토큰이 없는 것이다(헤더 검사가 따로 잡는다).
+  const onlySummary = doc.split("## 디자인 토큰\n")[0];
+  assert.equal(extractTokensJson(onlySummary), null, "'개요'는 '## 디자인 토큰'이 아니다");
+  assert.ok(DESIGN_REQUIRED_HEADERS.includes("디자인 토큰"), "정본 헤더 이름은 계약 상수에서 온다");
 });
