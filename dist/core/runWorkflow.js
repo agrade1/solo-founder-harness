@@ -21,6 +21,18 @@ import { envFilePath } from "./envFile.js";
 class RequiredSectionsMissing extends Error {
 }
 /**
+ * [B-48] **모델 호출 직전** 예산 소진. step 경계 검사만 있던 시절에는 critique_loop 안의
+ * critic→revise→critic 연쇄가 검사 없이 끝까지 돌았다(실측: 예산 700에 1,200 소비 = +71%).
+ * `failed_reason`은 step 경계와 **같은 안정 코드**를 쓴다 — 사람에게도 resume에게도 같은 사건이다.
+ */
+class TokenBudgetExceeded extends Error {
+    spent;
+    constructor(spent) {
+        super("token_budget_exceeded");
+        this.spent = spent;
+    }
+}
+/**
  * [B-40/A-2] 게이트 결과를 사람이 읽는 한 줄로. **CLI와 vault가 이 함수 하나를 쓴다** —
  * 렌더가 두 벌이면 한쪽만 정직해진다(실제로 그렇게 killed가 "진행"으로 적히고 있었다).
  * `outcome`이 없는 옛 run_state는 jumped_to로 추론하되 그 사실을 숨기지 않는다.
@@ -491,6 +503,31 @@ export async function runWorkflow(args) {
         })
         : null;
     const tokensSpent = () => usagePerAgent.reduce((s, u) => s + u.input_tokens + u.output_tokens, 0);
+    /**
+     * [B-48] 예산 초과 판정과 그 안내문을 **한 곳에서** 만든다. 소비자가 둘이다 —
+     * step 경계(게이트처럼 모델을 안 부르는 step 앞에서도 멈춰야 한다)와 **모든 모델 호출 직전**.
+     * 문구를 두 벌로 두면 한쪽만 정직해진다(함정 27).
+     */
+    const budgetExceeded = () => {
+        if (maxTokens <= 0)
+            return null;
+        const spent = tokensSpent();
+        return spent >= maxTokens ? spent : null;
+    };
+    // [B-1] "(--resume으로 재개)"는 **거짓이었다.** 사용량은 영수증에 누적되고 resume이 그것을
+    // 그대로 이어받으므로(`usagePerAgent.push(...prior.usage.per_agent)`), 같은 상한으로 재개하면
+    // 이 검사가 step 하나도 실행하기 전에 다시 걸린다. 실측: 같은 예산으로 3회 연속 재개 →
+    // **모델 호출 0회 · 같은 메시지 · 같은 자리**. 반대로 상한을 빼고 재개하면 상한이 **조용히**
+    // 사라져 남은 step이 전부 무제한으로 돈다 — 어느 쪽도 안내하지 않던 결과다.
+    // 그래서 실제로 통하는 둘만 적는다(`C-138`/`B-49`/`B-50`과 같은 규율 — 코드로 확인한 것만).
+    const budgetMessage = (spent, where) => `  ✗ 토큰 예산 초과: ${spent}/${maxTokens} — ${where} (모델 호출 없이 중단했습니다)\n` +
+        `    ↳ 사용량 ${spent}는 영수증에 누적되어 --resume에 그대로 이어집니다 — ` +
+        `**같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다.**\n` +
+        `      ⓐ 예산을 올려 재개: --max-tokens <${spent}보다 큰 값> --resume\n` +
+        `      ⓑ 상한 없이 재개: --max-tokens와 HARNESS_MAX_TOKENS를 **둘 다** 비우고 --resume ` +
+        `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).\n` +
+        `      [C-2] **파이프라인이 이 run을 소유한 경우**(pipeline next로 들어온 경우)에는 --resume이 없습니다 ` +
+        `— 같은 두 길을 'harness pipeline next --project <name> --max-tokens <더 큰 값>'로 쓰거나 상한을 비우세요.`;
     // [B-41/1단] 앞 단계 승인 영수증에서 온 seed를 findings 체인의 **맨 앞**에 깐다.
     // key를 "agentId: …"의 접두사로 잡는 이유: 같은 agent가 이번 run에서 실행되면 persistFinalOutcome의
     // `findings.set(agent_id, …)`이 **같은 키를 덮어써** 최신 판단이 이긴다(Map은 자리를 유지한다).
@@ -554,6 +591,16 @@ export async function runWorkflow(args) {
     }
     // 한 agent를 실행하고 스키마 재생성 루프를 적용한다. runAgent throw는 호출자에 전파.
     async function runStepWithRegen(agent, nextAgentId, opts) {
+        // [B-48] **모든 모델 호출이 이 함수 하나를 지난다** — critique_loop의 critic/revise, fanout의
+        // 하위 에이전트, 게이트 점프 재실행, 리서치 2차까지. 예산 검사를 step 경계에만 두면 그 안쪽
+        // 연쇄가 통째로 무검사였다. 여기서 막으면 초과분이 **최대 호출 하나**로 제한된다.
+        //
+        // 여기가 `persistFinalOutcome`이 아닌 이유: 그쪽 throw는 **호출이 끝난 뒤**라 이미 쓴 비용을
+        // 되돌리지 못하고, 그 자리의 기각 근거(C-126/A-2)가 그대로 적용된다. 예산은 **쓰기 전에**
+        // 막아야 의미가 있다.
+        const overBudget = budgetExceeded();
+        if (overBudget !== null)
+            throw new TokenBudgetExceeded(overBudget);
         currentAgentId = agent.agent_id;
         const startedAtIso = now();
         const startedAt = Date.now();
@@ -953,32 +1000,21 @@ export async function runWorkflow(args) {
     try {
         for (let i = startIndex; i < workflow.steps.length; i++) {
             // ── 토큰 예산 검사 (step 경계) ──────────────────
-            if (maxTokens > 0) {
-                const spent = tokensSpent();
-                if (spent >= maxTokens) {
+            // 모델 호출 직전 검사(runStepWithRegen)가 생긴 뒤에도 이 검사는 남는다 — 게이트·승인처럼
+            // **모델을 부르지 않는 step** 앞에서도 소진된 run을 전진시키지 않기 위해서다.
+            {
+                const spent = budgetExceeded();
+                if (spent !== null) {
                     failed_reason = "token_budget_exceeded";
                     failedIndex = i; // 아직 실행 안 한 step — resume 시 여기부터
                     budgetStopped = true;
-                    // [B-1] "(--resume으로 재개)"는 **거짓이었다.** 사용량은 영수증에 누적되고 resume이 그것을
-                    // 그대로 이어받으므로(`usagePerAgent.push(...prior.usage.per_agent)`), 같은 상한으로 재개하면
-                    // 이 검사가 step 하나도 실행하기 전에 다시 걸린다. 실측: 같은 예산으로 3회 연속 재개 →
-                    // **모델 호출 0회 · 같은 메시지 · 같은 자리**. 반대로 상한을 빼고 재개하면 상한이 **조용히**
-                    // 사라져 남은 step이 전부 무제한으로 돈다 — 어느 쪽도 안내하지 않던 결과다.
-                    // 그래서 실제로 통하는 둘만 적는다(`C-138`/`B-49`/`B-50`과 같은 규율 — 코드로 확인한 것만).
-                    console.error(`  ✗ 토큰 예산 초과: ${spent}/${maxTokens} — step ${i} 앞에서 중단 (모델 호출 없이 중단했습니다)\n` +
-                        `    ↳ 사용량 ${spent}는 영수증에 누적되어 --resume에 그대로 이어집니다 — ` +
-                        `**같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다.**\n` +
-                        `      ⓐ 예산을 올려 재개: --max-tokens <${spent}보다 큰 값> --resume\n` +
-                        `      ⓑ 상한 없이 재개: --max-tokens와 HARNESS_MAX_TOKENS를 **둘 다** 비우고 --resume ` +
-                        `— 남은 step이 무제한으로 돕니다(상한이 사라집니다).\n` +
-                        `      [C-2] **파이프라인이 이 run을 소유한 경우**(pipeline next로 들어온 경우)에는 --resume이 없습니다 ` +
-                        `— 같은 두 길을 'harness pipeline next --project <name> --max-tokens <더 큰 값>'로 쓰거나 상한을 비우세요.`);
+                    console.error(budgetMessage(spent, `step ${i} 앞에서 중단`));
                     break;
                 }
-                if (!warned80 && spent >= maxTokens * 0.8) {
-                    warned80 = true;
-                    console.warn(`  ⚠ 토큰 예산 80% 도달: ${spent}/${maxTokens}`);
-                }
+            }
+            if (maxTokens > 0 && !warned80 && tokensSpent() >= maxTokens * 0.8) {
+                warned80 = true;
+                console.warn(`  ⚠ 토큰 예산 80% 도달: ${tokensSpent()}/${maxTokens}`);
             }
             const step = workflow.steps[i];
             try {
@@ -1320,6 +1356,17 @@ export async function runWorkflow(args) {
                 console.log(`  ⚖ 비평 루프 종료: ${critic}⟲${target} ${round}라운드, ${resolved ? "Critical 해소" : "미해결(라운드 소진)"}`);
             }
             catch (err) {
+                if (err instanceof TokenBudgetExceeded) {
+                    // step 경계 검사와 **같은 상태**로 착지한다: failed_agent를 남기지 않는다(아무도 실행하지
+                    // 않았다) · failedIndex는 이 step · budgetStopped로 stopped 판정에 들어간다.
+                    // `activeCritiqueRound`는 그대로라 `loop_state.critique_round`가 붙는다 — resume은 C-125
+                    // 규율대로 **그 라운드 하나만** 재시도한다(라운드 예산이 다시 열리지 않는다).
+                    failed_reason = "token_budget_exceeded";
+                    failedIndex = i;
+                    budgetStopped = true;
+                    console.error(budgetMessage(err.spent, `step ${i}의 모델 호출 앞에서 중단`));
+                    break;
+                }
                 failed_agent = currentAgentId || "(unknown)";
                 // [C-127] 필수 섹션 미달만 안정 코드로 승격한다. 그 밖의 예외는 기존대로 message 그대로다.
                 failed_reason = err instanceof RequiredSectionsMissing ? "required_sections_missing" : err.message;

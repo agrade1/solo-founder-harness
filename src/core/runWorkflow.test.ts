@@ -684,6 +684,50 @@ test("[B-60] 리서치 step이 없는 단계는 앞 단계 영수증을 자기 �
   rmProject(name);
 });
 
+test("[B-48] critique_loop 안의 연쇄 호출도 예산에서 멈춘다 — 초과분이 호출 하나를 넘지 않는다", async () => {
+  // red: 예산 검사를 step 경계에만 두면 critic→revise→critic이 무검사로 끝까지 돈다.
+  //      실측(수정 전): maxTokens 700에 **1,200 소비**(+71%) · 유료 호출 6회.
+  //      수정 후: 4회 · 800(초과분 = 마지막 호출 하나).
+  const name = "_b48_loop";
+  makeProject(name);
+  const seq: string[] = [];
+  // mock의 red_team은 Critical 0을 내서 루프가 1라운드에 끝난다 — 연쇄를 재현하려면 Critical을 넣어야 한다.
+  const paid: Provider = {
+    id: "mock",
+    async generate(i) {
+      seq.push(i.agent.agent_id);
+      const r = await mockProvider.generate(i);
+      const usage = { inputTokens: 100, outputTokens: 100 };
+      if (i.agent.agent_id !== "red_team") return { ...r, usage };
+      return { ...r, markdown: r.markdown.replace(/^###\s+Critical\s*$/m, "### Critical\n\n- 치명적 결함 하나"), usage };
+    },
+  };
+
+  const out = await captureLogs(async () => {
+    await runWorkflow({ workflowId: "idea-validation", project: name, provider: paid, maxTokens: 700, now: () => FIXED });
+  });
+  const st = loadRunState(name)!;
+  const spent = (st.usage?.input_tokens ?? 0) + (st.usage?.output_tokens ?? 0);
+  assert.equal(st.failed_reason, "token_budget_exceeded");
+  assert.deepEqual(seq, ["chief_of_staff", "research", "pm", "red_team"], `루프 안에서 유료 호출이 이어졌다 (${seq.join(",")})`);
+  assert.ok(spent - 700 <= 200, `초과분이 호출 하나(200)를 넘었다: ${spent}/700`);
+  assert.match(out, /모델 호출 앞에서 중단/, "어디서 막혔는지 말한다");
+  assert.match(out, /같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다/, "step 경계와 **같은** 안내다 (문구가 두 벌이 아니다)");
+
+  // step 경계 중단과 **같은 모양으로** 착지한다 — resume이 라운드 하나만 재시도한다(C-125 규율).
+  assert.equal(st.failed_agent, null, "아무도 실행하지 않았으므로 실패 agent를 지목하지 않는다");
+  assert.deepEqual(st.loop_state, { step_index: 3, critique_round: 1 });
+
+  // 예산을 올린 재개는 전진한다 (안내가 권하는 길이 실제로 통하는지 잰다).
+  seq.length = 0;
+  await captureLogs(async () => {
+    await runWorkflow({ workflowId: "idea-validation", project: name, provider: paid, maxTokens: 100_000, resume: true, now: () => FIXED });
+  });
+  assert.ok(seq.length > 0, "예산을 올린 재개는 전진한다");
+  assert.equal(loadRunState(name)!.failed_reason, null, `재개가 완주하지 못했다 (${loadRunState(name)!.failed_reason})`);
+  rmProject(name);
+});
+
 test("[B-1] 예산 소진 안내는 '같은 예산 재개'를 권하지 않는다 — 그것이 호출 0회 무한 재차단이다", async () => {
   // red: 안내를 "(--resume으로 재개)"로 되돌리면 사람이 그대로 따라가 **모델 호출 0회로 영원히**
   //      같은 자리에 막힌다(실측: 같은 예산 3회 연속 재개 → 호출 0 · 같은 메시지). 반대로 상한을
