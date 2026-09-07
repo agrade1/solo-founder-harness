@@ -1,0 +1,162 @@
+{
+  "workflow_id": "dev-preflight",
+  "project": "_t_preflight",
+  "provider": "claude-code",
+  "status": "completed",
+  "completed_steps": [
+    "tech_lead",
+    "spawn_indexer",
+    "spawn_search_api",
+    "spawn_web_ui",
+    "spawn_access_guard",
+    "red_team",
+    "chief_of_staff"
+  ],
+  "failed_agent": null,
+  "failed_reason": null,
+  "killed_by": null,
+  "kill_history": [],
+  "cleared_idea_sha256": null,
+  "resume_from": null,
+  "loop_state": null,
+  "warnings": [],
+  "regenerations": [],
+  "critique_rounds": [],
+  "gate_jumps": [],
+  "spawned_agents": [
+    {
+      "parent": "tech_lead",
+      "id": "indexer",
+      "name": "Indexer Agent",
+      "focus": "커넥터 2종(위키 export·로컬 PDF)의 텍스트 추출과 전체 재색인 CLI, 추출 실패 로깅",
+      "executed": true,
+      "output": "outputs/spawned/indexer.md"
+    },
+    {
+      "parent": "tech_lead",
+      "id": "search_api",
+      "name": "Search API Agent",
+      "focus": "SQLite FTS5 스키마·트리거와 GET /search 스니펫/랭킹/페이지네이션 구현",
+      "executed": true,
+      "output": "outputs/spawned/search_api.md"
+    },
+    {
+      "parent": "tech_lead",
+      "id": "web_ui",
+      "name": "Search UI Agent",
+      "focus": "빌드 없는 정적 결과 페이지 1장 — 5가지 상태·XSS 안전 하이라이트·접근성",
+      "executed": true,
+      "output": "outputs/spawned/web_ui.md"
+    },
+    {
+      "parent": "tech_lead",
+      "id": "access_guard",
+      "name": "Access Guard Agent",
+      "focus": "색인 allowlist 기본 거부 로직과 프록시 SSO 헤더 검증·ADMIN_USERS 게이트",
+      "executed": true,
+      "output": "outputs/spawned/access_guard.md"
+    }
+  ],
+  "design_gate": null,
+  "step_timings": [
+    {
+      "agent_id": "tech_lead",
+      "kind": "agent",
+      "started_at": "2026-09-03T04:29:42.776Z",
+      "elapsed_ms": 154038,
+      "ok": true
+    },
+    {
+      "agent_id": "spawn_indexer",
+      "kind": "spawn",
+      "started_at": "2026-09-03T04:32:16.816Z",
+      "elapsed_ms": 109584,
+      "ok": true
+    },
+    {
+      "agent_id": "spawn_search_api",
+      "kind": "spawn",
+      "started_at": "2026-09-03T04:34:06.401Z",
+      "elapsed_ms": 282288,
+      "ok": true
+    },
+    {
+      "agent_id": "spawn_web_ui",
+      "kind": "spawn",
+      "started_at": "2026-09-03T04:38:48.691Z",
+      "elapsed_ms": 205822,
+      "ok": true
+    },
+    {
+      "agent_id": "spawn_access_guard",
+      "kind": "spawn",
+      "started_at": "2026-09-03T04:42:14.515Z",
+      "elapsed_ms": 124929,
+      "ok": true
+    },
+    {
+      "agent_id": "red_team",
+      "kind": "agent",
+      "started_at": "2026-09-03T04:44:19.445Z",
+      "elapsed_ms": 137629,
+      "ok": true
+    },
+    {
+      "agent_id": "chief_of_staff",
+      "kind": "agent",
+      "started_at": "2026-09-03T04:46:37.075Z",
+      "elapsed_ms": 127864,
+      "ok": true
+    },
+    {
+      "agent_id": "approval",
+      "kind": "approval",
+      "started_at": "2026-09-03T04:48:44.940Z",
+      "elapsed_ms": 0,
+      "ok": true
+    }
+  ],
+  "usage": {
+    "input_tokens": 499021,
+    "output_tokens": 72823,
+    "per_agent": [
+      {
+        "agent_id": "tech_lead",
+        "input_tokens": 77087,
+        "output_tokens": 9596
+      },
+      {
+        "agent_id": "spawn_indexer",
+        "input_tokens": 69800,
+        "output_tokens": 6487
+      },
+      {
+        "agent_id": "spawn_search_api",
+        "input_tokens": 70006,
+        "output_tokens": 19422
+      },
+      {
+        "agent_id": "spawn_web_ui",
+        "input_tokens": 70324,
+        "output_tokens": 12921
+      },
+      {
+        "agent_id": "spawn_access_guard",
+        "input_tokens": 70639,
+        "output_tokens": 7651
+      },
+      {
+        "agent_id": "red_team",
+        "input_tokens": 70535,
+        "output_tokens": 8347
+      },
+      {
+        "agent_id": "chief_of_staff",
+        "input_tokens": 70630,
+        "output_tokens": 8399
+      }
+    ]
+  },
+  "started_at": "2026-09-03T04:29:42.775Z",
+  "finished_at": "2026-09-03T04:48:44.940Z"
+}
