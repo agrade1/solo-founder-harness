@@ -3,9 +3,9 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
 import { runProcess } from "./runProcess.js";
 import { AsyncEventQueue } from "./eventQueue.js";
 import { MockExecProvider, type EventScript } from "./mockExecProvider.js";
@@ -24,7 +24,15 @@ class ParallelCoder implements ExecutionProvider {
     this.active++;
     this.maxActive = Math.max(this.maxActive, this.active);
     await new Promise((r) => setTimeout(r, 15)); // 겹침 유도
-    writeFileSync(join(spec.cwd, `f-${spec.sessionId.replace(/[^a-z0-9]/gi, "_")}.txt`), "x\n");
+    // [B-59] **선언된 담당 경로 안에** 쓴다. 예전엔 담당을 `a/**`로 선언해 놓고 worktree 루트에 썼는데
+    // 그 경계를 아무도 집행하지 않아 통과했다 — fixture가 자기 계약을 어기고 있었다는 증거다.
+    // (검사를 약하게 만든 것이 아니다: 이 테스트의 대상은 병렬 실행·직렬 병합이고, 담당 위반은
+    //  sessionRunner.test.ts의 B-59 테스트가 따로 잰다.)
+    const own = (spec.ownership ?? [])[0]?.replace(/\/\*\*$/, "");
+    const rel = `f-${spec.sessionId.replace(/[^a-z0-9]/gi, "_")}.txt`;
+    const target = own ? join(spec.cwd, own, rel) : join(spec.cwd, rel);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, "x\n");
     this.active--;
     const queue = new AsyncEventQueue<SessionEvent>();
     this.q.set(spec.sessionId, queue);
@@ -96,7 +104,9 @@ test("독립 태스크 2개 병렬 실행 + 직렬 병합 → 둘 다 develop", 
     // (worktree 생성 직렬화로 mock의 짧은 관찰 창이 어긋나 maxActive 측정은 타이밍 취약).
     assert.deepEqual(r.merged.sort(), ["t1", "t2"], JSON.stringify(r.tasks));
     const files = (await runProcess("git", ["-C", repo, "ls-tree", "-r", "--name-only", "develop"])).stdout;
-    assert.ok(files.includes("f-s_t1.txt") && files.includes("f-s_t2.txt"));
+    assert.ok(files.includes("a/f-s_t1.txt") && files.includes("b/f-s_t2.txt"), `담당 경로 안에 들어갔다: ${files}`);
+    // [B-59] 선언한 담당이 실제로 지켜졌음을 여기서도 고정한다 — 장식이 아니라 계약이다.
+    assert.ok(!r.tasks.some((t) => t.status === "ownership_violation"), JSON.stringify(r.tasks));
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }

@@ -747,9 +747,9 @@ awk '/^#### 현행 열린 항목 — \*\*정본\*\*/,/^#### 열린 유예 항목
 **둘뿐**이다: 행을 id로 세는 것(79 vs 76)과 `open (nonblocking)` 두 건을 놓치는 것(76 vs 78).
 M10 T5가 찾아낸 부류(**코드는 닫혔는데 행이 열려 있다**)는 이 절이 재지 않았다 — 아래 한계 참조.
 
-##### 열린 항목 — id 125건 (**등급 A 1** · **등급 B 13** · 등급 C 108 · nonblocking `B-1`/`B-2` 2)
+##### 열린 항목 — id 131건 (등급 A **0** · **등급 B 19** · 등급 C 109 · nonblocking `B-1`/`B-2` 2)
 
-**등급 B (14).** (M15: **`B-55`는 등재된 세션에서 그대로 closed다**(`A-4` — 판정 ⑯ ⓙ · 등급 A 잔량 0) · `C-150`·`C-151` 신규 · **`B-54`는 안내의 거짓 절반만 걷어냈고 열린 채다**(판정 ⑯ ⓚ) · **`B-56` 신규(등급 A · 재현 전)** · **`B-57`·`B-58`은 등재된 세션에서 closed**(판정 ⑯ ⓜ). **`A-1`~`A-4`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호다** — `A-4`만 트리거가 도래해 `B-55`로 등재됐다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
+**등급 B (14).** (M15: **`B-55`는 등재된 세션에서 그대로 closed다**(`A-4` — 판정 ⑯ ⓙ · 등급 A 잔량 0) · `C-150`·`C-151` 신규 · **`B-54`는 안내의 거짓 절반만 걷어냈고 열린 채다**(판정 ⑯ ⓚ) · **`B-56`은 등재 다음 날 재현 후 closed**(판정 ⑯ ⓝ) · **`B-59`는 등재 당일 재현 후 closed**(쓰기 경계 미집행 — 판정 ⑯ ⓞ) · **`B-57`·`B-58`은 등재된 세션에서 closed**(판정 ⑯ ⓜ). **`A-1`~`A-4`·`B-1`·`B-5`는 대장 id가 아니라 수색 보고서 번호다** — `A-4`만 트리거가 도래해 `B-55`로 등재됐다.) (M14: **`B-49`·`B-46`·`B-50`·`B-52`·`B-53` closed** · `B-54` 신규(거짓 안내 4번째)(`B-53`은 `C-149` 승격 후 같은 세션에서 closed) · `B-51` 신규(게이트 우회 실증) · **`B-46`·`B-49` closed** — 판정 ⑮ · `B-48`은 `C-125` 머지로 **트리거 도래**하여 열린 채 기한만 갱신 · `B-50` 신규.) (M13: **`B-42`는 판정 ⑭에서 closed** · `B-45`~`B-49` 신규.)
 
 **(옛 머리말)** **등급 B (10) — 전부 트리거 미도래.** (`B-38`은 판정 ⑦에서 fixed · **`B-40`은 판정 ⑪에서 closed** —
 CEO '폐기'가 처음으로 집행된다.)
@@ -770,9 +770,15 @@ CEO '폐기'가 처음으로 집행된다.)
 | `B-48` | **critique_loop 내부에 토큰 예산 검사가 없다** — 예산 검사는 top-level step 시작 전에만 있고 critic/revise/critic 연속 호출 사이에는 없다. **`C-125`가 M14에서 머지되어 트리거가 도래했다** — `idea-validation` 최악 호출이 점프 포함 13(external 15 · `maxRegen=1`이면 30)이다. `B-49`가 resume 무한 증식 항은 없앴으나 **run 내부 상한은 그대로다** | **도래 + live 실현 확인**(2026-08-28: external 15호출 · output 105k→**157k, +49%** · 44.4분) — 다음 하드닝 slice 1순위 | `M13 진행 판정 ⑭` ⓗ 표 · `M14 진행 판정 ⑮` ⓒ |
 | `B-51` | **아이디어 문서로 게이트 심사 범위를 축소할 수 있다 (실증됨)** — `agents/*.md`는 계약 문서라 승인 없이 못 고치는데 **`00_IDEA.md`에는 아무 제약이 없다.** 2026-08-28 `naming` run에서 오케스트레이터가 아이디어 문서에 「평가 기준」 절을 넣어 *무료 대체재는 폐기 사유가 아니다 · 차별점을 요구하지 말 것 · 검증 순서는 반대다* 를 적었더니, **`chief_of_staff`가 지불 의향·경쟁·차별점을 "판정 대상에서 제외"하고 보류/검증 가능성을 "미리 차단"하라고 하류에 전파**했고 research·red_team이 그대로 수용했다(Codex 사실검증 A급). run을 중단시켜 **거짓 영수증 발급은 없었다.** 대조군: `claimrep`은 CEO가 아이디어 문서의 전제를 증거로 반박했고 `sellercs`는 "먼저 만든다" 전제에도 '검증'을 냈다 — **CEO 자체는 건강하다.** 심각도 B · 확률 높음(문서만 쓰면 재현) · 영향 반경 = **모든 게이트 판정의 신뢰성** · 수정 방향 = 사용자 선호 절을 **판정 기준 대체 불가**로 명시하는 공용 문구 규약, 또는 `chief_of_staff`가 아이디어 문서의 지시를 판정 규칙으로 승격하지 못하게 하는 프롬프트 가드 | **파이프라인 실사용 전** | `M14 진행 판정 ⑮` ⓘ |
 | `B-54` | **`pipeline_artifact_drift` 안내가 제시하는 두 탈출구가 둘 다 막혀 있다 (live 실측 2026-09-01)** — `pipeline.ts:399`가 *"파일을 복원하거나 `harness pipeline restart`로 다시 심사하세요"* 라고 안내하는데 `awaiting_run` 상태에서 **둘 다 불가능하다**: ⓐ `restart`는 `pipeline_active`로 거부된다(실측: *"진행 중인 파이프라인은 다시 시작할 수 없습니다 (상태 awaiting_run · 단계 2/4)"*) ⓑ **"파일 복원"이 물리적으로 불가능하다** — checkpoint artifact는 `{path,size,sha256}`만 보관하고 **내용을 보관하지 않아** 승인 시점 바이트를 되살릴 방법이 없다(2단계 `pm`이 이미 덮었다). `reject`도 pending이 없어 거부된다. **즉 drift로 막힌 `awaiting_run` 단계는 탈출구가 0개인데 안내는 2개를 제시한다.** 이 레포가 `C-138`·`B-49`·`B-50`에서 세 번 잡은 **거짓 안내 계열의 네 번째**다. 심각도 **B** · 확률 높음(2단계 이후 drift면 재현) · 영향 반경 = 사람이 없는 길을 따라가 시간을 버린다 · 수정 방향 = 안내를 실제 가능한 것으로 좁히고(현재는 **없음**), 근본적으로는 승인 산출물 내용 스냅샷 보관 또는 `awaiting_run`에서의 restart 허용 여부 재검토 | **파이프라인 2단계 이후 실사용 전** | `M14 진행 판정 ⑮` ⓝ |
-| `C-150` | **전수 수색 후보 13건이 아직 실물 재검 없이 남아 있다** — `harness-latent-defect-sweep`이 확인한 19건 중 `A-1`·`A-2`(M14 오케스트레이터 재확인)와 `A-3`·`B-1`·`B-5`(M15에서 재현·수정)를 뺀 나머지 = 보고서 `B-2`·`B-3`·`B-4`·`B-6`~`B-10` · `C-1`~`C-4`(12건). **적대적 검증은 거쳤으나 실물 확인은 없다.** M15에서 재검한 4건이 전부 보고서대로 재현된 것은 신호이지 증명이 아니다 (그리고 같은 세션에서 **보고서에 없던 거짓 안내 하나를 새로 만들 뻔했다** — 판정 ⑯ ⓒ). 심각도 C · 수정 방향 = 리비전 발행 **전에** 각 건을 실물로 재현하고, 재현되지 않으면 보고서 쪽을 고친다 | **그 13건 중 하나를 근거로 코드를 고치기 직전** | `M15_DEFECT_SWEEP_REPORT.md` PART 1 · `M15 진행 판정 ⑯` ⓖ |
+| `B-60` | **리서치 step이 없는 단계가 앞 단계 영수증을 자기 것으로 증언한다 (재현 2026-09-04)** — `runWorkflow.ts:783`의 `priorState?.research?.attempts` carry-forward에 **resume 조건이 없다**. 실측: `idea-validation` 뒤 `mvp-planning`(research step **없음** · `completed_steps`에 research 없음)을 돌리자 `researchOutcomeLines`가 1단계 영수증 경로를 **바이트 동일하게** 자기 결과로 출력했다. `researchOutcomeLines` 자신의 주석은 *"리서치 step이 없는 workflow에서 리서치 이야기를 하지 않는다"* 라고 적고 있다. 심각도 B · 영향 반경 = 근거 없는 단계가 근거 있는 것처럼 보이고 checkpoint 결박도 함께 오염된다 · 수정 방향 = `ResearchAttempt`에 `workflow_id`를 넣고 `researchOutcomeLines`가 현재 run의 attempt만 렌더 | **파이프라인 실사용 전** | 수색 `B-2` · `M15_UNVERIFIED.md` §3 |
+| `B-61` | **근거 상한 검사가 유료 backend 호출 뒤에 있어 resume마다 크레딧 1회를 사서 버린다 (재현)** — `researchRuntime.ts:356-362`: 예산 검사(`calls >= MAX`) → `calls++` → **`await inner.search()` 유료 호출** → `take()`가 `research_cap_exceeded`를 던진다. 실측(stub backend): `priorResults`가 상한(32)인 채로 resume 4회 → **유료 호출 4회 · 저장 근거 0건 · 매번 `research_cap_exceeded`**. 심각도 B · 확률 = 상한 도달 후 resume하면 항상 · 수정 방향 = `:356` 앞에 `if (results >= RESEARCH_MAX_EVIDENCE_PER_RUN) throw …` **한 줄** | **live 리서치 재개를 쓰기 전** | 수색 `B-3` |
+| `B-62` | **`summary.ts`의 지역 run_state 리더가 손상을 "미실행"으로 접는다 (재현)** — `summary.ts:8-16`이 `catch { return null }`이다. `B-40/A-4`가 `taskPrompt`에서 지운 바로 그 리더이고 core의 `readRunState`(부재/손상 구분)가 이미 있다. 실측: run_state를 40바이트로 자르자 summary가 *"아직 workflow 미실행 — `harness run <workflow> --project <name>` 실행"* 을 durable 문서에 적었고, **그 명령은 `run_state_unreadable`로 거부된다**(실행 확인). 폐기 기록이 그 파일에 있을 수 있다. 심각도 B · 수정 방향 = `readRunStateAt`으로 교체하고 `unreadable`을 사실대로 렌더 | **다음 슬라이스** | 수색 `B-6` |
+| `B-63` | **`handoff`가 `run_state.json`을 비원자적으로 덮는다 — `C-135`의 tmp+rename이 형제 writer에 미적용** — `handoff.ts:325-330`이 plain `readFileSync`+`writeFileSync`이고 lock도 tmp+rename도 없다(`runWorkflow.ts`는 같은 파일을 원자적으로 쓴다 · 실측 위치까지 주석에 있다). run_state는 폐기 잠금의 유일한 근거이고 하류 명령이 fail-closed라 **찢어진 write = 벽돌**이다(그 결과는 `B-62` 재현이 그대로 보여준다). 심각도 B · 수정 방향 = `runWorkflow`의 tmp+rename 3줄을 그대로 옮긴다 | **다음 슬라이스** | 수색 `B-7` |
+| `B-64` | **`maxProcessesPerRun`(32)이 attempt 롤오버마다 리셋된다** — `launchedProcesses`(`orchestrationKernel.ts:1086-1094`)가 `task.execution.operationReceipts` + `pendingOperations`만 세는데, attempt 롤오버가 `task.execution`을 `emptyTaskExecution()`+`operationReceipts: []`로 갈아끼운다(`:2916-2921` · `:3911`). 같은 함수의 주석은 *"재시작해도 상한이 다시 열리지 않는다"* 라고 적지만 그것은 **프로세스 재시작**에 대한 말이고 **attempt 롤오버는 연다**. maxTaskAttempts 4 × maxChildrenPerTask 4 → task 하나가 16 프로세스, 8 task면 128인데 run 집계는 32를 넘지 않는다. 심각도 B · **정직한 한계: 코드 대조만 했고 kernel fixture로 관측하지 않았다** · 수정 방향 = 카운터를 attempt 밖(task 또는 run accounting)에 둔다 | **v3 실행층을 실사용하기 전** | 수색 `B-10` |
+| `B-65` | **완료 파이프라인에 drift가 있으면 summary가 같은 문서 안에서 정면 모순을 낸다 (재현)** — `summary.ts`의 `pipelineOwns`가 `completed`만 배제해서, 완료+drift 상태가 파이프라인 안내(*"task-prompt·handoff·plan-dag가 **거부된다**"*)와 기존 문구(*"`harness task-prompt --project X`로 작업 지시문 **생성**"*)를 **연달아** 적는다. 실측: 그 명령은 `exit 2`. 이 레포 거짓 안내 계열이고 **사람이 두 줄을 같은 화면에서 본다.** 심각도 B · 수정 방향 = `pipelineOwns` 판정에 drift 검사를 넣는다(그 상태에서 `pipeline restart`는 **실제로 열린다** — 실행 확인) | **다음 슬라이스** | 수색 `C-1` |
+| `C-156` | **`accounting.elapsedMsUsed`가 합계가 아니라 running max인데 소비량으로 렌더된다** — `orchestrationKernel.ts:3581`은 `tokensUsed + delta`(합계)인데 **바로 다음 줄** `:3582`는 `Math.max(elapsedMsUsed, elapsedMs)`다. `orchestrationStore.ts:1241`이 `elapsedMsUsed / maxElapsedMs`로 **같은 모양으로** 렌더한다. 진행 차단은 wall-clock이 따로 하므로 우회는 아니고 **영수증만 거짓**이다. 심각도 C · **코드 대조만 했다**(런타임 관측 없음) | **회계 영수증을 근거로 인용하기 전** | 수색 `C-3` |
+| `C-157` | **a11y 대비 검사의 "공허함 방지"가 다크모드 분기에서 0회 돈다 (재현)** — `designContract.ts:322-331`이 `semantic.color`의 `text-*` **정확한 이름**만 훑는데, 같은 프롬프트(`agents/design_agent.md:77`)가 다크모드를 `semantic.light`/`semantic.dark`로 분기하라고 지시한다. 실측: **동일 토큰**이 `semantic.color`면 `a11y_text_uncovered` 1건, `semantic.light`면 **`ok:true` 오류 0건** — 대비 2.9(AA 4.5 미달) 텍스트가 통과했다. 심각도 C(`B-4`로 v1에서는 도달 불가) · 수정 방향 = semantic 하위 그룹을 전부 훑거나 그룹 이름을 계약으로 고정 | **design 산출물을 구현 입력으로 쓰기 전** | 수색 `C-4` |
 | `C-151` | **`test:core`가 이 호스트에서 결정적이지 않다** — 683건 중 **매 실행마다 다른 2~10건**이 실패하고 전부 `src/tools/` MCP·shadcn spawn 테스트의 **~5000ms 타임아웃**이다(연속 두 실행에서 겹치지 않는 쌍이 실패 · 단독 실행하면 통과 · **`git stash`한 HEAD에서도 8건 실패**해 코드 변경과 무관함을 확인). 심각도 C · 확률 = 부하가 있으면 거의 매번 · 영향 반경 = **"전체 suite 1회 green"이 handoff 게이트로 기능하지 못한다** (진짜 회귀가 flake 소음에 묻히고, 인계문서의 `core 677`류 수치도 재현되지 않는다) · **2026-09-03 보강 — acceptance도 같다**: `npm run acceptance`를 다른 suite와 겹쳐 돌리자 **PASS=244·FAIL=28**, 단독으로 돌리자 **272·0**(연속 2회). `scripts/suite-lock.mjs`가 `npm test` 경로만 지키므로 `test:core`·`acceptance`를 **직접** 부르면 보호가 없다 — 이 세션이 실제로 그 실수를 했고 28건을 회귀로 오인할 뻔했다. | 수정 방향 = spawn 테스트의 타임아웃을 부하에 비례시키거나 그 파일들을 직렬 그룹으로 분리하고, `test:core`·`acceptance` 직접 호출에도 lock을 걸어 겹침 자체를 막는다 | **suite green을 다시 handoff 근거로 인용하기 전** | `M15 진행 판정 ⑯` ⓘ |
-| `B-56` | **[등급 A] `exec`/`mission` 자동 병합이 3단으로 뚫려 있다 (2026-09-03 Codex 재검수 · 코드 확인)** — ⓐ Claude가 non-zero로 죽어도 `unknown/exit_error` **이벤트 하나**만 나고(`claudeCliProvider.ts:94-104`) `consumeTurn`이 그것을 실패로 바꾸지 않는다(`sessionRunner.ts:90-97`) ⓑ 대상 레포에 test/lint/typecheck/build 스크립트가 하나도 없으면 `runMachineGate`가 `checks=[]`로 **통과**한다(`machineGate.ts:77-106`) ⓒ `mergeCoordinator.ts:57-72`가 그 통과로 **바로 push**하고 `mission`은 `merge:true`·`approver:autoApprove`다. `"체크 없음"` 공개는 `commands/exec.ts:79` **한 곳뿐**이라 mission·parallel 경로는 아무 말도 하지 않으면서 `mission.ts:47`이 *"게이트 통과 시 develop 자동 병합"*이라고 광고한다. **중단된 작업의 부분 코드가 검증 0회로 develop에 병합될 수 있다.** 심각도 **A** · 확률 = 스크립트 없는 레포에서 mission을 쓰면 항상 · 영향 반경 = **develop 브랜치** · 수정 방향 = exit_error를 세션 실패로 접고, `checks=[]`를 통과가 아니라 명시적 `skipped`+경고로 만들고, 자동 병합 경로에서 게이트 결과를 보고서에 남긴다 | **`exec`/`mission`을 실사용하기 전** | `M15_CODEX_AUDIT.md` §5ⓑ |
 | `C-154` | **파이프라인 입구·아이디어 결박·취소 전이 4종** — ⓐ `init`이 `harness run`을 안내해 4단계 파이프라인으로 가는 길을 말하지 않는다(`init.ts:48`) ⓑ 97B 자리표시자 아이디어가 그대로 1단계를 통과한다(실측) — 프롬프트 층이 빈 아이디어를 명시적으로 허용한다 ⓒ 승인 후 `00_IDEA.md`를 통째로 바꿔도 2단계가 진행한다(실측) — 아이디어는 checkpoint manifest에 없다 ⓓ **사용자가 조종할 수 있는 활성 파이프라인 취소가 없다**(restart=`pipeline_active` · reject=같은 index 복귀). 단 게이트가 '폐기'를 내면 terminal에 닿는다 ⓔ 단독 `task-prompt` 산출물에 경로 루트 선언이 없다 — 계약은 `handoff.ts:193-207`에만 있고 그 주석이 막는 실패를 단독 경로가 그대로 맞는다. 심각도 C(개별) · 다만 ⓑ+ⓒ는 **조용한 오답** 계열 | **파이프라인을 남에게 쥐여 주기 전** | `M15_CODEX_AUDIT.md` §5 |
 | `C-155` | **`briefGenerator`의 `asStrings`가 잘못된 항목을 조용히 버린다 — `deps`에서 의미가 바뀐다** — `briefGenerator.ts:48-64`가 배열이 아니면 `undefined`, 배열이면 비-문자열 원소를 제거한다. `deps: "task-a"`(스칼라)는 `undefined`가 되고 스케줄러가 **의존성 없음**으로 취급해(`mission.ts:99-105` · `parallelMission.ts:67-73`) 선행 완료 전에 실행하고 병렬 모드에선 자동 병합까지 간다. `deps`는 미지 id·순환·타입도 검증하지 않는다. **초판 판정("영향 낮음")은 틀렸다** — Codex 재검수가 뒤집었다. 심각도 C(트리거 도래 시 B) | **`mission` 실사용 전** | `M15_CODEX_AUDIT.md` §5 |
 | `C-152` | **fanout 하위 에이전트가 직렬로 돈다** — `P1` 실측(2026-09-03): step 소요 합 1,142.2초 = wall clock 1,142.2초(**차이 0.0초** = 겹침 0). 4개는 `tech_lead` 계획을 서로 독립적으로 나눠 받고 서로의 산출물을 입력으로 받지 않는데도 한 줄로 선다. spawn 구간 합 722.6초 · 최댓값 282.3초 → **병렬이면 440.3초 절감(run 전체 -39%)**. 심각도 C · 확률 = fanout을 쓰면 항상 · 영향 반경 = 벽시계 시간(정확성·영수증 무관) · 유예 비용 = fanout 단계마다 누적 · 수정 공수 = **중** (프로세스 회계 `maxProcessesPerRun`·부분 실패 처리·영수증 순서와 얽힌다 — `B-10` 계열의 열린 결함 위에 얹힌다) | **fanout 단계 시간이 실사용에서 문제가 될 때** | `M15 진행 판정 ⑯` ⓛ · `M15_P1_LIVE_MEASUREMENT.md` §3ⓐ |
@@ -795,7 +801,7 @@ C-65  C-66  C-68  C-70  C-71  C-72  C-73  C-74  C-75  C-77  C-78  C-79  C-82  C-
 C-84  C-85  C-88  C-89  C-91  C-92  C-94  C-95  C-96  C-99  C-100 C-102 C-103 C-105
 C-106 C-107 C-108 C-110 C-113 C-114 C-115 C-116 C-118 C-119
 C-120 C-121 C-122 C-123 C-124 C-128 C-129
-C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-141 C-142 C-143 C-145 C-146 C-147 C-148 C-150 C-151 C-152 C-153 C-154 C-155
+C-130 C-131 C-132 C-133 C-134 C-136 C-137 C-139 C-141 C-142 C-143 C-145 C-146 C-147 C-148 C-151 C-152 C-153 C-154 C-155 C-156 C-157
 ```
 
 > **판정 방법과 그 한계(정직하게).** 78건은 **id별 마지막 등재 행을 읽어** 판정했다. 자동 분류를
@@ -2106,6 +2112,97 @@ drift 안내 *"파일을 복원하거나 `harness pipeline restart`로 다시 �
 **CLI 재추적**(안내를 읽지 말고 따라가라 — 함정 25): `init` → 인쇄된 `pipeline next` → 인쇄된 `approve`
 → 인쇄된 `next --provider mock` → 4단계 완주 → summary가 인쇄한 `task-prompt --project f1` 실행 →
 지시문이 인쇄한 `node scripts/token-lint.mjs` 경로 존재 확인. **전 구간 복붙 가능.**
+
+### ⓝ `B-56` closed — 등급 A를 **재현하고** 닫았다 (등재 다음 날)
+
+`M15_UNVERIFIED.md` §1이 "이건 코드만 읽었다"고 적어 둔 유일한 등급 A였다. 그 문서가 적어 둔
+재현 방법(**스크립트 없는 임시 레포 + 중간에 죽는 provider stub · live Claude 불필요**)을 그대로 했다.
+
+**재현 결과 — 두 실패 모드 모두 `merged`였다.**
+
+| 코더 종료 모양 | 수정 전 | 수정 후 |
+|---|---|---|
+| `unknown/exit_error` (프로세스 non-zero 사망 · `result` 이벤트 없음) | **`merged`** | `coder_failed` |
+| `result.isError = true` (세션이 오류로 종료) | **`merged`** | `coder_failed` |
+
+즉 **부분 산출물(`half.txt`)이 develop에 그대로 병합됐다.** 3단이 겹친 결과다.
+
+**고친 것은 ⓐ 하나다.** `consumeTurn`이 실패 신호를 **반환**하고 호출자가 **게이트 전에** 멈춘다
+(`start` 직후와 revise 루프 양쪽). 실패 사유를 `outcome.error`에 남기고 브랜치는 보존한다.
+
+**ⓑ(빈 게이트 통과)는 의도된 동작이라 건드리지 않았다** — 바로 위 happy-path 테스트가 `initRepo()`
+(package.json 없음)로 병합하고, 그것이 계약이다. 대신 **사실을 결과에 남긴다**: `GateResult.vacuous`.
+`passed`는 그대로 `true`이고(막을 근거가 없다) 바뀐 것은 **"검증됐다"로 읽히지 않게 하는 것**뿐이다.
+
+**공개는 순차·병렬 **양쪽**에 넣었다** — `TaskResult.gateVacuous` + `renderMissionReport`가
+*"게이트 체크 0개(레포에 test/lint/typecheck/build 스크립트 없음 — 검증되지 않았다)"* 를 병합 옆에 적는다.
+`parallelMission`에도 같이 실었다. **M15가 문자열에서 저지른 형제 miss를 여기서 반복하지 않으려고
+고치기 전에 grep했다**(`B-58`의 교훈).
+
+**분리해 등재**: `ownership`·`hookDenyPatterns` 미집행은 자동 병합과 **다른 결함**인데 앞선 등재에서
+빠뜨렸다 — **`B-59`**로 넣었다. 그쪽은 여전히 미검이다(정적으로 소비자 0인 것만 확정 · 실제로 경계
+밖에 쓸 수 있는지는 안 돌려 봤다).
+
+### ⓞ `B-59` closed — 담당 경계가 **장식이었다**는 것을 재현하고 집행으로 바꿨다
+
+등재 당일 검증했다. **정적·동적 둘 다 확정.**
+
+**정적**(실측): `compilePermissions`가 만드는 `ownership`은 `allow`/`ask`/`deny` 어디에도 들어가지
+않는다 — `settings.json`에 그 경로가 **등장하지 않는다**(`only-here` 문자열 검색 `false`).
+정책의 `T1_bounded`가 `Edit`·`Write`·`MultiEdit`를 **경로 제약 없는 맨 도구 이름**으로 allow에 넣고
+`permissionMode`는 `acceptEdits`다. `hookDenyPatterns` 4건(`curl|sh`·`wget|sh`·`git push main`·`rm -rf /`)은
+비-테스트 소비자가 **0**이다.
+
+> **자기 정정**: 첫 probe가 "settings에 hookDeny 흔적 true"를 냈는데 **오탐이었다** — 그 `curl`은
+> `T2_policy.bash`(→ `ask` 규칙)에서 온 것이다. 부분문자열로 판정한 내 스크립트가 틀렸고, 확인해서 잡았다.
+
+**동적**(재현): `ownership: ["mine.txt"]`을 선언한 세션이 `not-mine.txt`를 쓰고 **`merged`** 됐다.
+
+**고친 것**: `runSession`이 diff를 얻은 직후 — **리뷰·승인·병합 앞에서** — 담당 밖 변경을 찾아
+`ownership_violation`으로 멈춘다. **부분 병합은 하지 않는다**(담당 밖을 건드린 세션은 나머지도 그것을
+전제로 쓰였을 수 있다). `ownership`이 비어 있으면 **아무것도 막지 않는다** — 선언되지 않은 경계를
+지어내지 않는다. **revise 루프에도 같은 검사를 넣었다**(첫 turn만 보면 리뷰 되먹임이 우회 통로가 된다 —
+`B-58`의 교훈대로 고치기 전에 `finalize()` 호출자를 grep했다).
+
+**`exec`의 exit code**도 같이 고쳤다: `coder_failed`·`ownership_violation`이 0으로 나가고 있었다.
+목록을 손으로 유지하지 않도록 **성공 집합의 여집합**으로 적었다 — 상태가 늘면 기본이 실패다.
+
+**부수 발견 — 경계가 장식이었다는 증거**: `parallelMission.test.ts`의 fixture가 담당을 `a/**`로
+선언해 놓고 worktree **루트**에 쓰고 있었다. 아무도 집행하지 않아 통과했던 것이다. fixture가 자기
+계약을 지키도록 고치고(대상은 병렬·직렬 병합이므로 측정 대상은 그대로), **담당이 지켜졌다는 단정을
+추가**했다. 완화 0.
+
+**남는 한계(정직하게)**: 접두 매칭이다(`src/api/**`·정확한 경로를 덮는다). `src/*.ts`처럼 중간
+와일드카드가 필요해지면 그때 matcher를 넣는다. 그리고 이것은 **사후 검사**다 — 에이전트가 쓰는 것
+자체를 막지는 않고, **병합 전에 잡는다**. Claude Code 권한 층의 end-to-end 검증은 여전히 미검이다
+(`permissionCompiler.ts:10-12` 주석 자신이 그렇게 표시하고 있다).
+
+### ⓟ 수색 보고서 잔여 11건 **전수 검증** — 8건 확인 · 3건은 이미 닫혀 있었다 · **반증 0**
+
+`C-150`이 "적대적 검증은 거쳤으나 실물 확인 없음"으로 묶어 두었던 마지막 덩어리다. 전부 판정했다.
+
+| 수색 번호 | 판정 | 방법 | 대장 |
+|---|---|---|---|
+| `B-2` 앞 단계 리서치 영수증을 자기 것으로 증언 | **확인** | 재현 — 2단계가 1단계 영수증을 **바이트 동일**하게 출력 | `B-60` |
+| `B-3` 상한 검사가 유료 호출 뒤 | **확인** | 재현 — resume 4회 = **유료 4회 · 근거 0건** | `B-61` |
+| `B-6` 손상 state를 "미실행"으로 | **확인** | 재현 — durable 문서에 "미실행"을 적고, 지시한 명령은 **거부됨**(실행 확인) | `B-62` |
+| `B-7` `handoff`의 비원자적 write | **확인** | 코드 대조(plain read+write · lock 없음 · tmp+rename 없음) | `B-63` |
+| `B-8` `B-52` 거부가 권하는 `reject` 도달 불가 | **이미 closed** | M15 `B-58` 슬라이스가 replay 분기를 고쳤다 | — |
+| `B-9` killed에서 거부되는 명령을 지시 | **이미 closed** | M15 `B-58` 슬라이스가 summary killed 분기를 고쳤다 | — |
+| `B-10` 프로세스 상한이 attempt마다 리셋 | **확인** | 코드 대조 — `emptyTaskExecution()`이 `operationReceipts`를 비운다 | `B-64` |
+| `C-1` 완료+drift에서 summary 모순 | **확인** | 재현 — 같은 문서에 "거부된다"와 "생성"이 연달아, 그 명령 **exit 2** | `B-65`(B로 승격) |
+| `C-2` `--resume`이 파이프라인 경로에도 출력 | **이미 closed** | M15 `B-1` 슬라이스가 파이프라인 예외를 명시했다 | — |
+| `C-3` `elapsedMsUsed`가 running max | **확인** | 코드 대조 — **인접 두 줄**이 sum vs max, 렌더는 동일 | `C-156` |
+| `C-4` a11y 공허함 방지가 다크모드에서 0회 | **확인** | 재현 — 동일 토큰이 `semantic.light`면 **`ok:true` 0건**(대비 2.9 통과) | `C-157` |
+
+**반증은 0건이다.** 수색 워크플로가 낸 19건 중 이제 **전부** 실물 확인을 거쳤고(`A-1`~`A-4`·`B-1`·`B-4`·`B-5`는
+앞선 슬라이스에서), 하나도 틀리지 않았다. **그것이 그 워크플로를 신뢰할 근거이지, 다음 보고서를 무검증으로
+받을 근거는 아니다** — 같은 M15가 보고서에 없던 거짓 안내를 **스스로 세 개 만들었다**(`B-58`).
+
+**`B-10`·`C-3`은 코드 대조만 했다**(kernel fixture로 관측하지 않았다) — 그 사실을 각 행에 적었다.
+
+**비용이 싼 것부터**: `B-61`은 **한 줄**(유료 호출 앞에 상한 검사), `B-63`은 **세 줄**(tmp+rename 이식),
+`B-62`는 리더 교체 하나. `B-60`·`B-65`는 조건 하나씩이다.
 
 ### ⓖ 증명하지 못한 것 (정직하게)
 

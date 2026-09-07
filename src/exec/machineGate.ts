@@ -28,6 +28,16 @@ export interface GateCheckResult {
 export interface GateResult {
   passed: boolean;
   checks: GateCheckResult[];
+  /**
+   * [B-56] **실행한 체크가 0개였다.** `passed`는 여전히 true다(막을 근거가 없다) — 게이트 의미는
+   * 바꾸지 않는다. 바꾸는 것은 **그 사실이 결과에 남는가**다.
+   *
+   * 예전엔 `checks=[]`가 그냥 `passed:true`로만 나갔고, "체크 없음" 공개는 `commands/exec.ts`
+   * **한 곳뿐**이었다. `mission`·`parallelMission`은 게이트도 이 사실도 리포트에 남기지 않으면서
+   * 사용자에게는 *"게이트 통과 시 develop 자동 병합"* 이라고 광고했다 — 아무것도 검사하지 않은
+   * 병합이 "게이트를 통과한 병합"으로 읽혔다.
+   */
+  vacuous: boolean;
 }
 
 /** L1 표준 순서. package.json scripts에 존재하는 것만 대상(없으면 skip). */
@@ -103,5 +113,5 @@ export async function runMachineGate(opts: RunGateOpts): Promise<GateResult> {
     }
   }
   const passed = results.every((r) => r.ok || r.skipped);
-  return { passed, checks: results };
+  return { passed, checks: results, vacuous: results.length === 0 };
 }

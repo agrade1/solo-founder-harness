@@ -88,7 +88,9 @@ export async function runParallelMission(opts) {
         // 게이트·리뷰 통과(status "merged" = 병합 준비됨)만 직렬 병합 대상
         const ready = [];
         for (const { task, outcome } of outcomes) {
-            results.set(task.id, { taskId: task.id, status: outcome.status, branch: outcome.branch, turns: outcome.turns, usage: outcome.usage, reviews: outcome.reviews, error: outcome.error });
+            // [B-56] `gateVacuous`를 여기서도 싣는다 — 순차 경로만 고치면 병렬 리포트에서 같은 사실이 사라진다
+            // (M15가 문자열에서 정확히 이 형제 miss를 저질렀다: 한 자리만 고치고 같은 말을 하는 곳을 놓쳤다).
+            results.set(task.id, { taskId: task.id, status: outcome.status, branch: outcome.branch, turns: outcome.turns, usage: outcome.usage, reviews: outcome.reviews, error: outcome.error, gateVacuous: outcome.gate?.vacuous === true });
             if (outcome.status === "merged") {
                 ready.push({ taskId: task.id, branch: outcome.branch, worktreePath: outcome.worktreePath });
                 opts.onPhase?.(task.id, "merging");
@@ -102,7 +104,7 @@ export async function runParallelMission(opts) {
             const prev = results.get(m.taskId);
             if (m.status === "merged") {
                 mergedIds.add(m.taskId);
-                results.set(m.taskId, { ...prev, status: "merged" });
+                results.set(m.taskId, { ...prev, status: "merged", gateVacuous: prev.gateVacuous === true || m.gate?.vacuous === true });
                 opts.onPhase?.(m.taskId, "merged");
             }
             else {

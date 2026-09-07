@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createInterface } from "node:readline";
 import { WORKSPACE_ROOT } from "../core/paths.js";
 import { ClaudeCliProvider } from "../exec/claudeCliProvider.js";
-import { runSession } from "../exec/sessionRunner.js";
+import { type SessionStatus, runSession } from "../exec/sessionRunner.js";
 import type { SessionSpec, SessionEvent } from "../exec/types.js";
 import type { Approver, Decision } from "../exec/approvalQueue.js";
 
@@ -85,5 +85,9 @@ export async function runExec(opts: {
   if (outcome.usage) console.log(`토큰: in ${outcome.usage.inputTokens} / out ${outcome.usage.outputTokens}`);
   if (outcome.error) console.log(`오류: ${outcome.error}`);
 
-  if (outcome.status === "error" || outcome.status === "gate_failed") process.exitCode = 1;
+  // [B-56/B-59] **실패는 exit code로도 신호한다.** `coder_failed`·`ownership_violation`은 `gate_failed`와
+  // 같은 부류다(사람이 판정한 `rejected`·`deferred`·`no_changes`는 실패가 아니라 결론이라 0으로 둔다).
+  // 이 목록을 손으로 유지하지 않도록 **성공 집합의 여집합**으로 적는다 — 상태가 늘면 기본이 실패다.
+  const OK: SessionStatus[] = ["merged", "rejected", "deferred", "no_changes", "review_deferred"];
+  if (!OK.includes(outcome.status)) process.exitCode = 1;
 }
