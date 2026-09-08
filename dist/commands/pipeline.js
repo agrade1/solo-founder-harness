@@ -18,10 +18,11 @@
  * 자동 승인하며, **checkpoint 전이 함수에는 approver·boolean 인자가 아예 없다** — 그래서 그 플래그가
  * 체크포인트에 닿으려면 시그니처를 바꿔야 하고, 컴파일이 월경을 먼저 막는다(의도).
  */
-import { closeSync, existsSync, openSync, renameSync, unlinkSync } from "node:fs";
+import { closeSync, existsSync, openSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DEFAULT_PIPELINE, PIPELINE_ID, PIPELINE_LOCK_REL, PIPELINE_STATE_REL, lockPipeline, approvedDigests, buildManifest, checkpointIdFor, currentStage, digestArtifacts, driftProblem, stageWrittenBytes, effectiveDigests, newPipelineState, pipelineGateStatus, pipelineStatePath, pipelineWorkflowProblem, readLock, readPipelineStateAt, runStateSources, seedFindingsFrom, writePipelineState, PipelineError, } from "../core/pipeline.js";
 import { projectExists, projectPaths } from "../core/project.js";
+import { buildCheckpointReport, checkpointReportPath, CHECKPOINT_REPORT_REL } from "../core/checkpointReport.js";
 import { findAgent, findWorkflow, hasKillGate, loadAgentRegistry, loadWorkflows, reevaluationWorkflowIds } from "../core/registry.js";
 import { ideaGateStatus, readRunStateAt, readRunState, runWorkflow, snapshotProjectIdea, } from "../core/runWorkflow.js";
 import { generateTaskPrompt } from "../core/taskPrompt.js";
@@ -615,9 +616,37 @@ function exportVault(o, root, runState) {
 function commitPending(root, state, base, at, project) {
     const pending = { ...base, checkpoint_id: checkpointIdFor(base) };
     writePipelineState(root, { ...state, status: "awaiting_approval", pending, last_failure: null, updated_at: at });
+    // [C-164] 확인 요청서를 **state를 쓴 뒤에** 만든다. 이 문서는 증거가 아니라 뷰라서
+    // checkpoint manifest에 결박되지 않는다(결박하면 이 파일을 쓰는 행위가 곧 drift가 된다).
+    // 실패해도 승인 흐름을 죽이지 않는다 — 원문은 이미 디스크에 있고 안내도 아래에 그대로 나간다.
+    let reportRel = null;
+    try {
+        const idx = DEFAULT_PIPELINE.findIndex((x) => x.id === pending.stage);
+        writeFileSync(checkpointReportPath(root), buildCheckpointReport(root, {
+            project,
+            stage: pending.stage,
+            stageNo: idx >= 0 ? idx + 1 : state.current_index + 1,
+            stageTotal: DEFAULT_PIPELINE.length,
+            checkpointId: pending.checkpoint_id,
+            at,
+            artifacts: pending.artifacts,
+            seeds: pending.seeds,
+        }), "utf8");
+        reportRel = CHECKPOINT_REPORT_REL;
+    }
+    catch (err) {
+        console.warn(`  ⚠ 확인 요청서를 만들지 못했습니다 (${err.message}) — 원문은 그대로 있습니다.`);
+    }
     console.log("");
     console.log(`✅ '${pending.stage}' 단계 완료 — **확인 대기**로 들어갑니다 (다음 단계는 승인 후에 돕니다).`);
     console.log(`checkpoint: ${pending.checkpoint_id}`);
+    if (reportRel) {
+        console.log("");
+        console.log(`📋 **먼저 이것부터 읽으세요**: projects/${project}/${reportRel}`);
+        console.log(`   판정 한 줄 · 지금 결정할 것 · 담당별 핵심 판단 · 걸린 Critical 리스크 순입니다.`);
+        console.log(`   (요약이고 승인 대상은 아래 원문 바이트입니다.)`);
+    }
+    console.log("");
     for (const a of pending.artifacts)
         console.log(`  - ${a.path} (${a.size}B · ${a.sha256.slice(0, 12)}…)`);
     console.log("문서를 확인한 뒤:");
