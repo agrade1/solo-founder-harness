@@ -1,0 +1,161 @@
+{
+  "workflow_id": "mvp-planning",
+  "project": "_guide",
+  "provider": "mock",
+  "status": "completed",
+  "completed_steps": [
+    "pm",
+    "ux_ui",
+    "design",
+    "tech_lead",
+    "red_team",
+    "founder_ceo"
+  ],
+  "failed_agent": null,
+  "failed_reason": null,
+  "killed_by": null,
+  "kill_history": [],
+  "cleared_idea_sha256": "99f621a423f719f578f87f83b85da8267633cc08d158840d2d50c0fa5ab8369d",
+  "resume_from": null,
+  "loop_state": null,
+  "warnings": [],
+  "regenerations": [],
+  "critique_rounds": [
+    {
+      "target": "tech_lead",
+      "critic": "red_team",
+      "rounds": 1,
+      "resolved": true
+    }
+  ],
+  "gate_jumps": [
+    {
+      "decider": "founder_ceo",
+      "decision": "진행",
+      "jumped_to": null,
+      "outcome": "proceed"
+    }
+  ],
+  "spawned_agents": [],
+  "design_gate": {
+    "status": "approved",
+    "tokens_hash": "4f36a8c2752b6e7f1bf72a21b749d0136ac659844563120220377ae37b1d9e1f"
+  },
+  "step_timings": [
+    {
+      "agent_id": "pm",
+      "kind": "agent",
+      "started_at": "2026-09-08T04:34:02.041Z",
+      "elapsed_ms": 1,
+      "ok": true
+    },
+    {
+      "agent_id": "ux_ui",
+      "kind": "agent",
+      "started_at": "2026-09-08T04:34:02.043Z",
+      "elapsed_ms": 0,
+      "ok": true
+    },
+    {
+      "agent_id": "design",
+      "kind": "agent",
+      "started_at": "2026-09-08T04:34:02.044Z",
+      "elapsed_ms": 2,
+      "ok": true
+    },
+    {
+      "agent_id": "approval",
+      "kind": "approval",
+      "started_at": "2026-09-08T04:34:02.046Z",
+      "elapsed_ms": 0,
+      "ok": true
+    },
+    {
+      "agent_id": "tech_lead",
+      "kind": "agent",
+      "started_at": "2026-09-08T04:34:02.046Z",
+      "elapsed_ms": 1,
+      "ok": true
+    },
+    {
+      "agent_id": "red_team",
+      "kind": "critic",
+      "started_at": "2026-09-08T04:34:02.048Z",
+      "elapsed_ms": 0,
+      "ok": true
+    },
+    {
+      "agent_id": "founder_ceo",
+      "kind": "agent",
+      "started_at": "2026-09-08T04:34:02.049Z",
+      "elapsed_ms": 0,
+      "ok": true
+    },
+    {
+      "agent_id": "founder_ceo",
+      "kind": "gate",
+      "started_at": "2026-09-08T04:34:02.050Z",
+      "elapsed_ms": 0,
+      "ok": true
+    }
+  ],
+  "usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "per_agent": [
+      {
+        "agent_id": "pm",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "ux_ui",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "design",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "tech_lead",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "red_team",
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      {
+        "agent_id": "founder_ceo",
+        "input_tokens": 0,
+        "output_tokens": 0
+      }
+    ]
+  },
+  "started_at": "2026-09-08T04:34:02.040Z",
+  "finished_at": "2026-09-08T04:34:02.050Z",
+  "research": {
+    "attempts": [
+      {
+        "started_at": "2026-09-08T04:33:56.546Z",
+        "mode": "external_declined",
+        "requests": [],
+        "backend_calls": 0,
+        "cache_hits": 0,
+        "dropped_by_domain": 0,
+        "first_pass_sha256": "8490951eb13f71801f0e90265f19fa1eaeb134ed55a1dff4c8f37703e48c3bbe",
+        "evidence": [],
+        "receipt_path": "outputs/research/receipt-db4e8ae21ad87c27bb2dcd21b5abf082fdcc6168cf37a7e5186e46a33cc64f86.json",
+        "raw_paths": []
+      }
+    ],
+    "carried_attempts": 1,
+    "totals": {
+      "backend_calls": 0,
+      "results": 0
+    }
+  }
+}
