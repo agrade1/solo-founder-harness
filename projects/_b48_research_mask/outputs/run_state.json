@@ -1,0 +1,96 @@
+{
+  "workflow_id": "idea-validation",
+  "project": "_b48_research_mask",
+  "provider": "mock",
+  "status": "failed",
+  "completed_steps": [
+    "chief_of_staff"
+  ],
+  "failed_agent": "research",
+  "failed_reason": "research_second_pass_failed",
+  "killed_by": null,
+  "kill_history": [],
+  "cleared_idea_sha256": null,
+  "resume_from": 1,
+  "loop_state": {
+    "step_index": 1
+  },
+  "warnings": [],
+  "regenerations": [],
+  "critique_rounds": [],
+  "gate_jumps": [],
+  "spawned_agents": [],
+  "design_gate": null,
+  "step_timings": [
+    {
+      "agent_id": "chief_of_staff",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 2,
+      "ok": true
+    },
+    {
+      "agent_id": "research",
+      "kind": "agent",
+      "started_at": "2026-01-01T00:00:00.000Z",
+      "elapsed_ms": 0,
+      "ok": true
+    }
+  ],
+  "usage": {
+    "input_tokens": 200,
+    "output_tokens": 200,
+    "per_agent": [
+      {
+        "agent_id": "chief_of_staff",
+        "input_tokens": 100,
+        "output_tokens": 100
+      },
+      {
+        "agent_id": "research",
+        "input_tokens": 100,
+        "output_tokens": 100
+      }
+    ]
+  },
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "finished_at": "2026-01-01T00:00:00.000Z",
+  "research": {
+    "attempts": [
+      {
+        "started_at": "2026-01-01T00:00:00.000Z",
+        "mode": null,
+        "requests": [
+          {
+            "redacted_query": "시장 규모"
+          }
+        ],
+        "backend_calls": 1,
+        "cache_hits": 0,
+        "dropped_by_domain": 0,
+        "first_pass_sha256": "88dae1f14aef222c06f7b37711bdf49c53082f624142a6585208dde1ad0d5455",
+        "evidence": [
+          {
+            "source": "https://ex1.example.com/a",
+            "sha256": "df678c834f955476268d4886e24886018d254e766cbe76c610d5b08071041ada",
+            "retrievedAt": "2026-01-01T00:00:00.000Z",
+            "bytes": 25,
+            "rawPath": "raw/df678c834f955476268d4886e24886018d254e766cbe76c610d5b08071041ada.txt",
+            "title": "제목 1",
+            "summary": "저장된 응답 1 본문"
+          }
+        ],
+        "receipt_path": "outputs/research/receipt-4355549c4374149ce1c6e683dcde0f49f745bddba5f7d63ffa348af9c7ea5d18.json",
+        "raw_paths": [
+          "outputs/research/raw/df678c834f955476268d4886e24886018d254e766cbe76c610d5b08071041ada.txt"
+        ],
+        "error_code": "research_second_pass_failed"
+      }
+    ],
+    "carried_attempts": 0,
+    "totals": {
+      "backend_calls": 1,
+      "results": 1
+    }
+  }
+}

@@ -1345,6 +1345,15 @@ export async function runWorkflow(args: RunWorkflowArgs): Promise<RunWorkflowRes
           kind: "revise",
         });
       } catch (err) {
+        // [C-163] **예산 소진은 리서치의 실패가 아니라 run의 실패다.** 아래 B-2 안정화가 모든 예외를
+        // 삼키는 바람에, `B-48`이 예산 가드를 모델 호출 직전으로 내린 뒤로는 `--max-tokens` 소진이
+        // `research_second_pass_failed`로 둔갑했다 — 사용자 live 실행이 "원인(키 오류·네트워크·
+        // 크레딧)을 고치라"는 **틀린 안내**를 받았다(2026-09-08 실측). 봉인은 하되 다시 던져서
+        // step loop의 예산 처리가 제 코드와 제 안내를 내게 한다.
+        if (err instanceof TokenBudgetExceeded) {
+          seal(null, "research_budget_stopped");
+          throw err;
+        }
         // [B-2] 2차 실패도 **안정 사유 코드로 돌려준다.** 예전엔 원래 예외를 다시 throw해서 outer
         // catch가 `failed_reason = err.message`로 덮었고, 그러면 복구 안내(`research_` 접두사 검사)가
         // 이 실패를 못 보고 attempt의 코드만 고립됐다.
