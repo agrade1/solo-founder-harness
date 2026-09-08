@@ -26,14 +26,14 @@
       "agent_id": "chief_of_staff",
       "kind": "agent",
       "started_at": "2026-01-01T00:00:00.000Z",
-      "elapsed_ms": 1,
+      "elapsed_ms": 0,
       "ok": true
     },
     {
       "agent_id": "research",
       "kind": "agent",
       "started_at": "2026-01-01T00:00:00.000Z",
-      "elapsed_ms": 1,
+      "elapsed_ms": 0,
       "ok": true
     },
     {

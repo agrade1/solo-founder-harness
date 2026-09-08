@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "pipeline_version": 1,
+  "pipeline_id": "founder-predev",
+  "project": "_b48_research_mask",
+  "current_index": 0,
+  "status": "awaiting_run",
+  "pending": null,
+  "last_failure": {
+    "stage": "idea-validation",
+    "workflow_id": "idea-validation",
+    "at": "2026-01-01T00:00:00.000Z",
+    "written": [
+      {
+        "path": "outputs/chief_of_staff.md",
+        "size": 1338,
+        "sha256": "c05b377a7fb42f985d0b4e09284a85a3a5710cc6c4d9cd4a7aad6fed73e99fb3"
+      },
+      {
+        "path": "outputs/research/raw/df678c834f955476268d4886e24886018d254e766cbe76c610d5b08071041ada.txt",
+        "size": 25,
+        "sha256": "df678c834f955476268d4886e24886018d254e766cbe76c610d5b08071041ada"
+      },
+      {
+        "path": "outputs/research/receipt-4355549c4374149ce1c6e683dcde0f49f745bddba5f7d63ffa348af9c7ea5d18.json",
+        "size": 854,
+        "sha256": "4355549c4374149ce1c6e683dcde0f49f745bddba5f7d63ffa348af9c7ea5d18"
+      }
+    ]
+  },
+  "checkpoints": [],
+  "started_at": "2026-01-01T00:00:00.000Z",
+  "updated_at": "2026-01-01T00:00:00.000Z",
+  "provider": "mock"
+}

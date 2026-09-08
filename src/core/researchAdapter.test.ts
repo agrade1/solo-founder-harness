@@ -1207,6 +1207,38 @@ test("[C-126/A5] 파이프라인 소유 상태의 failed run에서 summary가 `-
   rmProject(name);
 });
 
+test("[B-48/C-163] 리서치 2차에서 예산이 소진되면 **예산 실패**로 남는다 — 리서치 실패로 둔갑하지 않는다", async () => {
+  // red: 2차 호출을 감싸는 catch가 **모든 예외**를 `research_second_pass_failed`로 안정화한다(B-2).
+  //      B-48이 예산 가드를 모델 호출 직전으로 내리면서 그 예외도 여기 걸리기 시작했고, 그래서
+  //      사용자 live 실행이 "원인(키 오류·네트워크·크레딧)을 고치라"는 **틀린 안내**를 받았다
+  //      (실제 원인은 --max-tokens였다). 예산은 리서치의 문제가 아니라 run의 문제다.
+  const name = "_b48_research_mask";
+  makeProject(name);
+  const paid: Provider = {
+    id: "mock",
+    async generate(i) {
+      const r = await tap().generate(i);
+      return { ...r, usage: { inputTokens: 100, outputTokens: 100 } };
+    },
+  };
+  // chief_of_staff(200) → research 1차(200) = 400. 상한 300이면 **2차 호출 직전**에 걸린다.
+  const out = await captureLogs(() =>
+    nextPipeline({
+      project: name,
+      providerOverride: paid,
+      maxTokens: 300,
+      now: () => FIXED,
+      researchRuntimeOverride: externalRuntime(fakeBackend([item(1)])),
+    }),
+  );
+  const st = loadRunState(name)!;
+  assert.equal(st.failed_reason, "token_budget_exceeded", `예산 실패가 리서치 실패로 둔갑했다 (${st.failed_reason})`);
+  assert.match(out, /토큰 예산 초과/, "예산이 원인이라고 말하지 않았다");
+  assert.match(out, /같은 --max-tokens로 재개하면 호출 0회로 이 자리에서 다시 막힙니다/, "B-1 경고가 빠졌다");
+  assert.doesNotMatch(out, /키 오류·네트워크·크레딧/, "리서치 복구 안내가 예산 실패에 붙었다 (틀린 원인)");
+  rmProject(name);
+});
+
 test("[C-126/A5b] 리서치 실패 출력에 복구 경로 ⓐⓑ가 있고, 실패 attempt를 지우지 않는다", async () => {
   const name = "_c126_a5b";
   makeProject(name);
